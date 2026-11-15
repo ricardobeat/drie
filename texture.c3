@@ -34,6 +34,8 @@ struct Texture
     Vector2 offset;
     bool generate_mipmaps;
     int anisotropy;
+    // Drawn into, not loaded (see canvas_texture): black until the first drawing.
+    bool render_target;
     // For an environment map captured with distances (Renderer.capture_environment): alpha 1
     // stands for this many meters from where it was captured. 0: no distances.
     float env_distance_range;
@@ -60,6 +62,41 @@ fn Texture* data_texture(char[] rgba, int width, int height, ColorSpace color_sp
     t.pixels[..] = rgba[:(sz)width * height * 4];
     return t;
 }
+
+// A texture that is drawn into instead of loaded, like THREE.WebGLRenderTarget's `.texture`:
+// for a screen in the scene, say. Draw with sokol between begin_canvas and end_canvas (not
+// inside another pass), and use `canvas.texture` as any material's map.
+//   CanvasTexture* screen = three::canvas_texture(256, 144);
+//   material.map = screen.texture;
+//   screen.begin(0x001000); sdtx::draw(); screen.end();
+struct CanvasTexture
+{
+    Texture* texture;
+    SgView attachment;
+}
+
+fn CanvasTexture* canvas_texture(int width, int height)
+{
+    CanvasTexture* c = mem::new(CanvasTexture);
+    Texture* t = mem::new(Texture);
+    *t = { .width = width, .height = height, .repeat = { 1, 1 }, .wrap_s = CLAMP_TO_EDGE_WRAPPING,
+           .wrap_t = CLAMP_TO_EDGE_WRAPPING, .render_target = true };
+    c.texture = t;
+    return c;
+}
+
+// Starts drawing into the texture, cleared to `clear`.
+fn void CanvasTexture.begin(&self, Color clear = 0x000000)
+{
+    SgPass pass = { .action.colors[0] = { .load_action = CLEAR,
+        .clear_value = { ((clear >> 16) & 0xff) / 255.0f, ((clear >> 8) & 0xff) / 255.0f, (clear & 0xff) / 255.0f, 1 } } };
+    self.texture.upload();
+    if (!self.attachment.id) self.attachment = sg::make_view(&&{ .color_attachment = { .image = self.texture.image } });
+    pass.attachments.colors[0] = self.attachment;
+    sg::begin_pass(&pass);
+}
+
+fn void CanvasTexture.end(&self) => sg::end_pass();
 
 // Decodes a PNG or JPEG held in memory.
 fn Texture*? decode_texture(char[] encoded, ColorSpace color_space = SRGB_COLOR_SPACE)
@@ -142,6 +179,24 @@ fn void Texture.upload(&self)
 {
     if (self.uploaded) return;
     self.dispose();
+    if (self.render_target)
+    {
+        self.image = sg::make_image(&&{
+            .usage = { .color_attachment = true },
+            .width = self.width, .height = self.height, .pixel_format = RGBA8, .sample_count = 1,
+        });
+        self.view = sg::make_view(&&{ .texture = { .image = self.image } });
+        self.sampler = sg::make_sampler(&&{ .min_filter = LINEAR, .mag_filter = LINEAR,
+                                            .wrap_u = sg_wrap(self.wrap_s), .wrap_v = sg_wrap(self.wrap_t) });
+        // a render target's first row is at the top, except in GL
+        if (depth_zero_to_one())
+        {
+            self.repeat.y = -math::abs(self.repeat.y);
+            self.offset.y = 1;
+        }
+        self.uploaded = true;
+        return;
+    }
     SgImageDesc desc = {
         .width = self.width,
         .height = self.height,

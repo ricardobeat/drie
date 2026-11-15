@@ -102,12 +102,32 @@ fn BufferGeometry* BufferGeometry.add_vertex(&self, Vector3 p, Vector3 n, Vector
     return self;
 }
 
+// Appends one indexed triangle of vertices already added (counter-clockwise from the front).
+fn BufferGeometry* BufferGeometry.add_triangle(&self, uint a, uint b, uint c)
+{
+    self.indices.push(a);
+    self.indices.push(b);
+    self.indices.push(c);
+    self.uploaded = false;
+    return self;
+}
+
 fn uint BufferGeometry.vertex_count(&self) => (uint)(self.vertices.len() / FLOATS_PER_VERTEX);
 
 fn Vector3 BufferGeometry.get_position(&self, uint i)
 {
     sz o = (sz)i * FLOATS_PER_VERTEX;
     return { self.vertices[o], self.vertices[o + 1], self.vertices[o + 2] };
+}
+
+// Sets one vertex's colour (or whatever else a material reads from that attribute).
+fn void BufferGeometry.set_vertex_color(&self, uint i, Vector3 rgb)
+{
+    sz o = (sz)i * FLOATS_PER_VERTEX;
+    self.vertices[o + 8] = rgb.x;
+    self.vertices[o + 9] = rgb.y;
+    self.vertices[o + 10] = rgb.z;
+    self.uploaded = false;
 }
 
 fn void BufferGeometry.set_normal(&self, uint i, Vector3 n)
@@ -424,6 +444,39 @@ fn SphereGeometry* sphere_geometry(float radius = 1, int width_segments = 32, in
             uint d = (uint)((iy + 1) * row + ix + 1);
             if (iy != 0) { g.indices.push(a); g.indices.push(b); g.indices.push(d); }
             if (iy != height_segments - 1) { g.indices.push(b); g.indices.push(c); g.indices.push(d); }
+        }
+    }
+    return g;
+}
+
+// Like THREE.LatheGeometry: turns a profile around the y axis. `points` are (radius, height)
+// pairs along the profile, from the bottom up for a surface that faces outwards.
+fn BufferGeometry* lathe_geometry(Vector2[] points, int segments = 12)
+{
+    BufferGeometry* g = buffer_geometry();
+    segments = math::max(3, segments);
+    int rows = (int)points.len;
+    for (int i = 0; i <= segments; i++)
+    {
+        float u = (float)i / segments;
+        float s = math::sin(u * 2 * PI);
+        float c = math::cos(u * 2 * PI);
+        for (int j = 0; j < rows; j++)
+        {
+            // the normal: across the profile's direction at this point
+            Vector2 along = points[math::min(j + 1, rows - 1)] - points[math::max(j - 1, 0)];
+            Vector3 n = ((Vector3){ along.y * s, -along.x, along.y * c }).normalize();
+            g.add_vertex({ points[j].x * s, points[j].y, points[j].x * c }, n, { u, (float)j / math::max(rows - 1, 1) });
+        }
+    }
+    for (int i = 0; i < segments; i++)
+    {
+        for (int j = 0; j + 1 < rows; j++)
+        {
+            uint a = (uint)(i * rows + j);
+            uint b = a + (uint)rows;
+            g.indices.push(a); g.indices.push(b); g.indices.push(a + 1);
+            g.indices.push(b); g.indices.push(b + 1); g.indices.push(a + 1);
         }
     }
     return g;

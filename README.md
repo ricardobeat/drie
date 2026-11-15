@@ -66,17 +66,20 @@ and parameter objects become named arguments.
   geometry with `set_skin`, `set_skin_blend` and `skin_range`. Vertices are skinned on the CPU:
   pose the bones, then call `mesh.update()` once per frame. glTF skins and animation clips are
   not loaded. See `skeleton.c3`.
-- **Geometry:** `box`, `plane`, `sphere`, `cylinder`, `cone`, `torus`, plus custom geometry via
+- **Geometry:** `box`, `plane`, `sphere`, `cylinder`, `cone`, `torus`, `lathe` (a profile of
+  (radius, height) points turned around the y axis, like `THREE.LatheGeometry`), plus custom geometry via
   `three::buffer_geometry(positions, indices)` (normals are computed for you), or built up with
   `add_vertex`, `merge` and `compute_vertex_normals`
 - **Materials:** `MeshBasicMaterial`, `MeshLambertMaterial`, `MeshPhongMaterial`,
   `MeshStandardMaterial`, `MeshNormalMaterial`, with `opacity`/`transparent`, `side`, `wireframe`,
   `emissive`, `fog`, `map`, `normal_map` + `normal_scale`, `alpha_test`
 - **Textures:** `three::load_texture(path)` (PNG and JPEG), `three::data_texture(rgba, w, h)`,
+  `three::canvas_texture(w, h)` (a texture you draw into with sokol between `.begin()` and `.end()`,
+  for screens in the scene; like a render target's `.texture`),
   with mipmaps and anisotropic filtering. Pass `NO_COLOR_SPACE` for data such as normal maps.
 - **Models:** `three::load_gltf(path)` reads binary glTF (`.glb`) with its materials and
   textures; `model.get("name")` finds a node.
-- **Lights:** `AmbientLight`, `HemisphereLight`, `DirectionalLight` (up to 4), `PointLight` (up to 4),
+- **Lights:** `AmbientLight`, `HemisphereLight`, `DirectionalLight` (up to 4), `PointLight` (up to 6),
   `SpotLight` (up to 4). Intensities and color handling follow modern three.js (r155+): sRGB hex
   colors, linear lighting, physically based light units.
 - **Shadows:** spot lights cast them: `light.cast_shadow = true`, and `cast_shadow` /
@@ -85,7 +88,8 @@ and parameter objects become named arguments.
   that are drawn once (see `auto_update` below).
 - **Fog:** `Fog` (linear) and `FogExp2`
 - **Controls:** `OrbitControls` (left drag rotates, right drag or shift+drag pans, scroll zooms, damping, auto-rotate)
-- **Menus** (`menu.c3`, not in three.js): `three::menu(title, handler)` makes a game menu that
+- **Menus** (`menu.c3`, not in three.js; `menu.locked = true` leaves the toggle key to the game
+  for a while): `three::menu(title, handler)` makes a game menu that
   opens with escape and takes the keyboard and mouse while open (key releases still reach the
   game). Items are actions or pages; the handler gets `OPEN`, `CLOSE`, `SELECT`, `CONFIRM` and
   `BACK`. With `overlay = true` it is drawn with a plain built-in look over the finished frame
@@ -93,6 +97,11 @@ and parameter objects become named arguments.
   in it). Otherwise draw it yourself from its fields, inside the picture if you like.
   `three::screen_fade` fades to and from black with a callback at the end. `three::ui_setup()`
   sets up sokol_debugtext and sokol_gl once, for games that draw text of their own too.
+- **Game controllers** (`gamepad.c3`, macOS GameController framework, needs `--lib gamectl`):
+  `three::gamepad()` has the sticks (dead zone removed), triggers and buttons (`PAD_*`, with
+  `pressed()` / `released()` for this frame). The renderer polls it before every frame, and
+  by default the d-pad, cross / A, circle / B and options also send arrow, enter, backspace
+  and escape key events, so menus and keyboard code work with a controller unchanged.
 - **Rewind** (`timeline.c3`): `Timeline{Input, State}` records each frame's input and snapshots
   the state a few times a second; `seek()` goes back by loading a snapshot and replaying the
   input after it. Needs a deterministic step function.
@@ -145,7 +154,12 @@ These aren't in three.js:
   also stores how far away each direction's surface is (in its alpha). A box-projected glossy
   material then follows its reflected rays through the room as the map saw it, so that what
   stands in the middle of the room is mirrored where it stands, not smeared over the walls.
-- Up to 5 spot lights.
+- Up to 8 spot lights; 7 of them can be lamps whose shadow map is drawn once
+  (`shadow.auto_update = false`), sharing one atlas.
+- `material.blending = ADDITIVE_BLENDING`, like three's `AdditiveBlending`: a see-through
+  material's pixels are added to what is behind them (flames, glows).
+- `object.render_order`, like three's `renderOrder`: among see-through meshes, higher ones are
+  drawn later whatever their distance (a film of dirt over a pane of glass).
 - `renderer.lod_scale`: multiplies every `Lod` distance, to keep detail further out.
 - `three::fog_exp(color, density)`: plain exponential fog, `exp(-density * distance)`.
 - `fog.light_scatter`: point and spot lights light up the fog around them, and are dimmed by it
@@ -171,7 +185,8 @@ These aren't in three.js:
 - Objects are allocated with the heap allocator and never freed. `geometry.dispose()` frees GPU buffers.
 - Create objects outside of `@pool()` blocks. Their lists live on the heap, but anything you
   build with the temp allocator and hand to the library does not outlive the pool.
-- Shaders are built for Metal, GL 4.3 and D3D11, but the library has only been tested on macOS/Metal.
+- Shaders are built for Metal, GL 4.3 and D3D11, but the library has only been tested on macOS/Metal. `./build.sh windows` cross-compiles a
+  D3D11 build for Windows.
 
 ## Editing the shader
 

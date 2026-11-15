@@ -38,6 +38,27 @@ vec3 apply_sway(vec3 wp, float height, vec4 sway) {
     wp.xz += d * gust * sway.y * h * sqrt(h);
     return wp;
 }
+
+// Someone pushing through: what is near `pusher` (xyz = their feet, w = reach in m) gives
+// way sideways and sags a little, the more the nearer. `pin` is the point the vertex
+// follows: itself for wood, which bends, and the middle of the leaf for a leaf's vertices,
+// so that the leaf moves in one piece. What is close to the plant's stem (at `stem` on the
+// ground plan) stays put. `strength` is the material's push.
+vec3 apply_push(vec3 wp, vec3 pin, vec2 stem, vec4 pusher, float strength) {
+    if (strength <= 0.0 || pusher.w <= 0.0) return wp;
+    vec2 away = pin.xz - pusher.xz;
+    float d = length(away);
+    if (d >= pusher.w) return wp;
+    float dy = pin.y - pusher.y;
+    float k = 1.0 - d / pusher.w;
+    k = k * k * (3.0 - 2.0 * k) * smoothstep(-0.3, 0.2, dy) * (1.0 - smoothstep(1.7, 2.3, dy));
+    k *= smoothstep(0.12, 0.8, length(pin.xz - stem));
+    float amount = k * strength * pusher.w * 0.22;
+    // no direction right at the pusher's own spot
+    wp.xz += away / max(d, 0.15) * amount;
+    wp.y -= amount * 0.3;
+    return wp;
+}
 @end
 
 @vs vs
@@ -46,7 +67,8 @@ layout(binding=0) uniform vs_params {
     mat4 model;
     mat4 normal_mat;
     vec4 uv_transform;  // xy = repeat, zw = offset
-    vec4 sway;
+    vec4 sway;          // w = how much the material gives way to the pusher
+    vec4 pusher;
 };
 
 @include_block vertex_common
@@ -60,6 +82,10 @@ void main() {
     vec3 ip = instance_point(position);
     vec4 wp = model * vec4(ip, 1.0);
     wp.xyz = apply_sway(wp.xyz, ip.y, sway);
+    if (sway.w > 0.0) {
+        wp.xyz = apply_push(wp.xyz, (model * vec4(instance_point(color0), 1.0)).xyz,
+                            (model * vec4(inst0.w, inst1.w, inst2.w, 1.0)).xz, pusher, sway.w);
+    }
     v_world_pos = wp.xyz;
     v_normal = (normal_mat * vec4(instance_dir(normal), 0.0)).xyz;
     v_uv = uv * uv_transform.xy + uv_transform.zw;
@@ -74,6 +100,7 @@ layout(binding=0) uniform shadow_vs_params {
     mat4 s_model;
     vec4 s_uv_transform;
     vec4 s_sway;
+    vec4 s_pusher;
 };
 
 @include_block vertex_common
@@ -84,6 +111,10 @@ void main() {
     vec3 ip = instance_point(position);
     vec4 wp = s_model * vec4(ip, 1.0);
     wp.xyz = apply_sway(wp.xyz, ip.y, s_sway);
+    if (s_sway.w > 0.0) {
+        wp.xyz = apply_push(wp.xyz, (s_model * vec4(instance_point(color0), 1.0)).xyz,
+                            (s_model * vec4(inst0.w, inst1.w, inst2.w, 1.0)).xz, s_pusher, s_sway.w);
+    }
     v_uv = uv * s_uv_transform.xy + s_uv_transform.zw;
     // keep the unused attributes alive so both programs share one vertex layout
     v_uv += (normal.xy + color0.xy) * 0.0;
@@ -153,18 +184,22 @@ layout(binding=1) uniform fs_params {
     vec4 counts;       // x = directional lights, y = point lights, z = spot lights
     vec4 dir_dir[4];   // world-space direction towards the light
     vec4 dir_color[4];
-    vec4 point_pos[4];   // w = distance cutoff
-    vec4 point_color[4]; // w = decay
-    vec4 point_params[4]; // x = source radius
-    vec4 spot_pos[5];    // w = distance cutoff
-    vec4 spot_dir[5];    // direction the light points to, w = cos(angle)
-    vec4 spot_color[5];  // w = decay
-    vec4 spot_params[5]; // x = cos(inner angle) (from penumbra), y = source radius, z = specular radius,
+    vec4 point_pos[6];   // w = distance cutoff
+    vec4 point_color[6]; // w = decay
+    vec4 point_params[6]; // x = source radius
+    vec4 spot_pos[8];    // w = distance cutoff
+    vec4 spot_dir[8];    // direction the light points to, w = cos(angle)
+    vec4 spot_color[8];  // w = decay
+    vec4 spot_params[8]; // x = cos(inner angle) (from penumbra), y = source radius, z = specular radius,
                          //   w = how much the light glows in the fog
-    mat4 shadow_mat[5];    // world -> shadow map uv + depth, per spot light
-    vec4 shadow_params[5]; // x = 0: none, 1: in shadow_map, 2: in shadow_atlas, y = normal bias (m),
+    mat4 shadow_mat[8];    // world -> shadow map uv + depth, per spot light
+    vec4 shadow_params[8]; // x = 0: none, 1: in shadow_map, 2: in shadow_atlas, y = normal bias (m),
                            //   z = texel size, w = blur radius in texels
-    vec4 shadow_rect[5];   // the light's tile in shadow_atlas: xy = offset, zw = size
+    vec4 shadow_rect[8];   // the light's tile in shadow_atlas: xy = offset, zw = size
+    vec4 shadow_soft[8];   // x = size of the source (m; 0: edges equally sharp everywhere), y = near,
+                           //   z = far, w = width of the map 1 m from the light (negative: depth is -1..1)
+    vec4 grime_params;     // x = dirt on the surface (0: none), y = the room's floor, z = its height (m),
+                           //   w = seed
     mat4 ssr_view_proj;    // world -> the last frame's clip space
     vec4 ssr_params;       // x = this material's screen-space reflections (0: none), y = reach (m),
                            //   z = noise seed, w = 1: the last frame's row 0 is its top
@@ -320,6 +355,28 @@ float fog_glow(vec3 lp, float radius, vec3 ray, float depth, vec4 cone, float co
     return sum / 6.0 * (a1 - a0) / h;
 }
 
+// Distance from the light's plane of a depth in its shadow map, and back.
+float shadow_distance(float z, vec4 soft) {
+    if (soft.w < 0.0) z = 2.0 * z - 1.0;
+    return soft.w < 0.0 ? 2.0 * soft.y * soft.z / (soft.z + soft.y - z * (soft.z - soft.y))
+                        : soft.y * soft.z / (soft.z - z * (soft.z - soft.y));
+}
+
+float shadow_depth(float d, vec4 soft) {
+    return soft.w < 0.0 ? 0.5 + 0.5 * ((soft.z + soft.y) * d - 2.0 * soft.y * soft.z) / (d * (soft.z - soft.y))
+                        : soft.z * (d - soft.y) / (d * (soft.z - soft.y));
+}
+
+// 1 where the light's map has nothing nearer than depth `z` at `uv`.
+float shadow_tap(bool tiled, vec4 rect, float texel, vec2 uv, float z) {
+    if (tiled) {
+        // stay half a texel inside the tile: the neighbours belong to other lights
+        uv = rect.xy + clamp(uv, vec2(texel), vec2(1.0 - texel)) * rect.zw;
+        return texture(sampler2DShadow(shadow_atlas, shadow_smp), vec3(uv, z));
+    }
+    return texture(sampler2DShadow(shadow_map, shadow_smp), vec3(uv, z));
+}
+
 // Shadow of spot light `i`. Lights whose map is redrawn every frame have shadow_map to
 // themselves; the ones drawn once share shadow_atlas, a tile each.
 float shadow(int i, vec3 n) {
@@ -335,27 +392,58 @@ float shadow(int i, vec3 n) {
     vec3 c = sp.xyz / sp.w;
     if (c.x < 0.0 || c.x > 1.0 || c.y < 0.0 || c.y > 1.0 || c.z > 1.0) return 1.0;
     // rotated disk of taps for a soft edge
-    float angle = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453) * 6.2831;
+    float angle = fract(sin(dot(gl_FragCoord.xy + ssr_params.z * vec2(5.0, 3.0), vec2(12.9898, 78.233))) * 43758.5453) * 6.2831;
     float ca = cos(angle);
     float sa = sin(angle);
     float r = params.z * params.w;
     bool tiled = params.x > 1.5;
     vec4 rect = shadow_rect[i];
+    vec4 soft = shadow_soft[i];
+    int taps = 8;
+    // how the depth changes over the map along this surface, so that a wide blur does not
+    // run the surface into its own shadow
+    vec2 grad = vec2(0.0);
+    if (soft.x > 0.0) {
+        // A source with a size: the edge of a shadow is as wide as the source looks from there
+        // past the thing that casts it. Sharp where the two touch, wide far behind. How far the
+        // caster is comes from asking the map at a few depths, nearer each time.
+        float dr = shadow_distance(c.z, soft);
+        float per_m = 1.0 / (abs(soft.w) * dr);
+        float search = clamp(soft.x * 1.6 * per_m, r, 0.04);
+        float found = 0.0;
+        float nearest = 0.0;
+        for (int k = 0; k < 7; k++) {
+            float a = float(k) * 1.0472;
+            vec2 o = k == 0 ? vec2(0.0) : vec2(cos(a) * ca - sin(a) * sa, cos(a) * sa + sin(a) * ca) * search;
+            if (shadow_tap(tiled, rect, params.z, c.xy + o, c.z) > 0.5) continue;
+            float lo = soft.y;
+            float hi = dr;
+            for (int j = 0; j < 5; j++) {
+                float mid = 0.5 * (lo + hi);
+                if (shadow_tap(tiled, rect, params.z, c.xy + o, shadow_depth(mid, soft)) > 0.5) lo = mid; else hi = mid;
+            }
+            nearest += 0.5 * (lo + hi);
+            found += 1.0;
+        }
+        if (found < 0.5) return 1.0;
+        float db = nearest / found;
+        r = clamp(soft.x * (dr - db) / db * per_m, r, 0.04);
+        taps = 14;
+        vec3 dx = dFdx(c);
+        vec3 dy = dFdy(c);
+        float det = dx.x * dy.y - dx.y * dy.x;
+        if (abs(det) > 1e-12) grad = vec2(dy.y * dx.z - dx.y * dy.z, dx.x * dy.z - dy.x * dx.z) / det;
+    }
     float sum = 0.0;
-    for (int k = 0; k < 8; k++) {
+    for (int k = 0; k < 14; k++) {
+        if (k >= taps) break;
         float a = float(k) * 2.39996;
-        float rr = sqrt((float(k) + 0.5) / 8.0) * r;
+        float rr = sqrt((float(k) + 0.5) / float(taps)) * r;
         vec2 o = vec2(cos(a), sin(a)) * rr;
         o = vec2(o.x * ca - o.y * sa, o.x * sa + o.y * ca);
-        if (tiled) {
-            // stay half a texel inside the tile: the neighbours belong to other lights
-            vec2 uv = rect.xy + clamp(c.xy + o, vec2(params.z), vec2(1.0 - params.z)) * rect.zw;
-            sum += texture(sampler2DShadow(shadow_atlas, shadow_smp), vec3(uv, c.z));
-        } else {
-            sum += texture(sampler2DShadow(shadow_map, shadow_smp), vec3(c.xy + o, c.z));
-        }
+        sum += shadow_tap(tiled, rect, params.z, c.xy + o, c.z + clamp(dot(grad, o), -0.004, 0.004));
     }
-    return sum / 8.0;
+    return sum / float(taps);
 }
 
 // Bounced light from the scene's irradiance volume, for a surface facing `n`. Each probe
@@ -530,6 +618,62 @@ float cloud_noise(vec2 p) {
                mix(cloud_hash(i + vec2(0.0, 1.0)), cloud_hash(i + vec2(1.0, 1.0)), f.x), f.y);
 }
 
+float cloud_fbm(vec2 p) {
+    return cloud_noise(p) * 0.55 + cloud_noise(p * 2.3 + 5.1) * 0.3 + cloud_noise(p * 5.9 + 11.7) * 0.15;
+}
+
+// Where water has come through above a room: 0 dry .. 1 soaked, over the plan of the house.
+// The ceiling, the walls under it and the floor all read the same places from it.
+float grime_leak(vec2 xz) {
+    return smoothstep(0.5, 0.66, cloud_fbm(xz * 0.42 + 5.5));
+}
+
+// Years of neglect on the surfaces of a room (material.grime), worked out from where the
+// surface is. Water has come through the ceiling in places and left yellowed patches there;
+// under those it has run down the walls, as far as there was water, the paint has lifted in
+// the damp, and the floor below is marked. Apart from that, walls are dirty along the floor.
+void apply_grime(vec3 n, inout vec3 albedo, inout float rough) {
+    vec3 p = v_world_pos;
+    float h = (p.y - grime_params.y) / grime_params.z;
+    float seed = grime_params.w;
+    vec3 tint = vec3(0.4, 0.29, 0.16);
+    float wet = grime_leak(p.xz);
+    float dirt;
+    if (abs(n.y) < 0.6) {
+        bool along_z = abs(n.x) > abs(n.z);
+        float u = (along_z ? p.z + 17.3 : p.x) + seed;
+        vec2 q = vec2(u, p.y);
+        float down = 1.0 - h;
+        // how far down the water got: further where there was more of it, in uneven tongues
+        float reach = wet * (0.25 + 0.95 * cloud_noise(vec2(u * 0.8, 4.0)))
+                    + wet * (cloud_noise(vec2(u * 6.0, 2.0)) - 0.5) * 0.35;
+        float damp = reach > 0.02 ? 1.0 - smoothstep(reach * 0.35, reach, down) : 0.0;
+        // it dried from the edge inwards: the lower edge is the darkest
+        float edge = reach > 0.02 ? smoothstep(reach * 0.7, reach * 0.97, down) * (1.0 - smoothstep(reach * 0.97, reach * 1.06, down)) : 0.0;
+        float trickle = 0.65 + 0.35 * cloud_noise(vec2(u * 22.0, p.y * 1.2));
+        float low = (1.0 - smoothstep(0.0, 0.06 + 0.22 * cloud_noise(vec2(u * 0.9, 3.0)), h)) * (0.5 + 0.5 * cloud_noise(q * 5.0));
+        float mottle = cloud_fbm(q * 0.45 + 9.0);
+        dirt = damp * trickle * 0.9 + edge * 0.5 * wet + low * 0.7 + smoothstep(0.5, 0.9, mottle) * 0.15;
+        // in the damp the paint has lifted and come away, in a few places
+        float flake = cloud_fbm(q * 2.6 + 31.0);
+        float bare = smoothstep(0.6, 0.68, flake) * smoothstep(0.35, 0.9, damp) * grime_params.x;
+        float lum = dot(albedo, vec3(0.33));
+        albedo = mix(albedo, vec3(0.6, 0.57, 0.5) * (0.45 + 0.55 * lum), bare * 0.7);
+    } else if (n.y > 0.0) {
+        vec2 q = p.xz + seed;
+        dirt = wet * (0.45 + 0.25 * cloud_noise(q * 3.0)) + smoothstep(0.55, 0.9, cloud_fbm(q * 0.5)) * 0.25
+             + smoothstep(0.75, 0.92, cloud_noise(q * 8.0)) * 0.15;
+    } else {
+        float raw = cloud_fbm(p.xz * 0.42 + 5.5);
+        // yellowed where it was wet, with the darker line it dried to
+        dirt = wet * (0.5 + 0.25 * cloud_noise(p.xz * 2.5)) + smoothstep(0.48, 0.51, raw) * (1.0 - smoothstep(0.51, 0.56, raw)) * 0.4;
+        tint = vec3(0.5, 0.36, 0.16);
+    }
+    dirt = clamp(dirt * grime_params.x, 0.0, 0.85);
+    albedo *= mix(vec3(1.0), tint, dirt);
+    rough = mix(rough, 1.0, dirt * 0.6);
+}
+
 // How much a reflected ray from `o` along `r` hits the viewer: no figure, only a dark cloud
 // hanging where the camera stands, thick in the middle, thinning out in wisps and grain.
 float viewer_mask(vec3 o, vec3 r) {
@@ -589,6 +733,8 @@ void main() {
         g_metal *= arm.b;
     }
 
+    if (grime_params.x > 0.0 && mode != 0) apply_grime(geo_n, g_base.rgb, g_rough);
+
     vec3 outc;
     vec3 spec = vec3(0.0);
     vec3 to_cam = camera_pos.xyz - v_world_pos;
@@ -615,7 +761,7 @@ void main() {
             outc += direct(mode, n, v, normalize(dir_dir[i].xyz), 1e6, dir_color[i].rgb, diffuse_color, spec);
         }
         int npoint = int(counts.y);
-        for (int i = 0; i < 4; i++) {
+        for (int i = 0; i < 6; i++) {
             if (i >= npoint) break;
             vec3 lv = point_pos[i].xyz - v_world_pos;
             float d = length(lv);
@@ -627,7 +773,7 @@ void main() {
             outc += direct(mode, n, v, lv / d, d, radiance, diffuse_color, spec);
         }
         int nspot = int(counts.z);
-        for (int i = 0; i < 5; i++) {
+        for (int i = 0; i < 8; i++) {
             if (i >= nspot) break;
             vec3 lv = spot_pos[i].xyz - v_world_pos;
             float d = length(lv);
@@ -691,12 +837,12 @@ void main() {
             float in_fog = fd / max(depth, 1e-4);
             vec3 glow = vec3(0.0);
             int npoint = int(counts.y);
-            for (int i = 0; i < 4; i++) {
+            for (int i = 0; i < 6; i++) {
                 if (i >= npoint) break;
                 glow += point_color[i].rgb * fog_glow(point_pos[i].xyz, point_params[i].x, ray, depth, vec4(0.0), -2.0);
             }
             int nspot = int(counts.z);
-            for (int i = 0; i < 5; i++) {
+            for (int i = 0; i < 8; i++) {
                 if (i >= nspot) break;
                 if (spot_params[i].w <= 0.0) continue;
                 glow += spot_color[i].rgb * spot_params[i].w
