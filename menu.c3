@@ -53,6 +53,8 @@ struct MenuItem
 
 struct Menu
 {
+    // While set, the toggle key does not open the menu: the game has another use for it.
+    bool locked;
     String title;
     List{MenuItem} items;
     int selected;
@@ -233,6 +235,7 @@ fn bool Menu.handle_event(&self, Event* e)
 {
     if (!self.is_open)
     {
+        if (self.locked) return false;
         if (e.type == KEY_DOWN && e.key_code == self.toggle_key && !e.key_repeat)
         {
             self.open();
@@ -373,7 +376,7 @@ fn void ui_rect(float x, float y, float w, float h, float r, float g, float b, f
     sgl::end();
 }
 
-fn void ui_text(float col, float row, String text, float r, float g, float b, float a = 1) @local
+fn void ui_text(float col, float row, String text, float r, float g, float b, float a = 1) @private
 {
     sdtx::color4f(r, g, b, a);
     sdtx::pos(col, row);
@@ -439,15 +442,17 @@ fn void Menu.draw_default(&self, float cw, float ch)
     }
 }
 
-// Draws the overlay (open menus with `overlay`, the fade unless it is `custom`) into the
-// current pass, which must be a pass to the window. render() to the window calls it; a game
-// whose last pass to the window is its own calls it before ending that pass.
+// Draws the overlay (open menus with `overlay`, the fade unless it is `custom`, the touch
+// controls once they are enabled) into the current pass, which must be a pass to the window.
+// render() to the window calls it; a game whose last pass to the window is its own calls it
+// before ending that pass.
 fn void draw_ui()
 {
     bool menus;
     foreach (m : ui.menus) if (m.is_open && m.overlay) menus = true;
     bool fade = !screen_fade.custom && screen_fade.level > 0;
-    if (!menus && !fade) return;
+    bool touch = touch_controls().enabled;
+    if (!menus && !fade && !touch) return;
     ui_setup();
     // in pixels (without a window: the renderer's size)
     float w = sapp::isvalid() ? sapp::widthf() : window_width();
@@ -471,6 +476,7 @@ fn void draw_ui()
     @pool()
     {
         foreach (m : ui.menus) if (m.is_open && m.overlay) m.draw_default(cw, ch);
+        if (touch) draw_touch_controls(scale / (sapp::isvalid() ? sapp::dpi_scale() : 1));
     };
     sgl::layer(1);
     if (fade) ui_rect(0, 0, cw, ch, 0, 0, 0, screen_fade.level);

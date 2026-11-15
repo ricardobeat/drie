@@ -91,7 +91,10 @@ fn float Accessor.value(&self, sz i, int c)
     switch (self.component_type)
     {
         case 5126: return ((float*)p)[c]; // may be unaligned, which arm64 and x86 allow
+        // normalized integers (KHR_mesh_quantization)
+        case 5120: return math::max((float)((ichar*)p)[c] / 127.0f, -1.0f);
         case 5121: return p[c] / 255.0f;
+        case 5122: return math::max((float)((short*)p)[c] / 32767.0f, -1.0f);
         case 5123: return ((ushort*)p)[c] / 65535.0f;
         default: return 0;
     }

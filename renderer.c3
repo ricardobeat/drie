@@ -9,10 +9,12 @@ alias Event = SappEvent;
 alias KeyCode = SappKeycode;
 
 const int MAX_DIR_LIGHTS = 4;
-const int MAX_POINT_LIGHTS = 4;
-const int MAX_SPOT_LIGHTS = 5;
-// spot lights whose shadow map is drawn once (shadow.auto_update off): a 2x2 atlas
-const int MAX_FIXED_SHADOWS = 4;
+const int MAX_POINT_LIGHTS = 6;
+const int MAX_SPOT_LIGHTS = 8;
+// spot lights whose shadow map is drawn once (shadow.auto_update off): an atlas of ATLAS_COLUMNS x 2 tiles
+const int MAX_FIXED_SHADOWS = 7;
+// their tiles in the atlas: this many in a row, in two rows
+const int ATLAS_COLUMNS = 4;
 
 // An offscreen image to render into, like three's WebGLRenderTarget.
 // Use `texture` (a sokol texture view) to sample the result in your own passes.
@@ -105,6 +107,8 @@ struct Renderer
     int height;
     int sample_count;
     String title;
+    // Open the window full screen (set before set_animation_loop). F11 or Alt+Enter toggles it.
+    bool fullscreen;
     Color clear_color;
     float clear_alpha;
     // Keep perspective cameras' aspect in sync with the window (three apps usually do this in onresize).
@@ -120,6 +124,13 @@ struct Renderer
     Vector3 cull_box_max;
     // LOD distances are multiplied by this (above 1 keeps detail and draws further).
     float lod_scale;
+    // Someone walking through the plants: materials with `push` give way around this point
+    // (their feet), up to pusher_reach meters from it. 0 = nobody.
+    Vector3 pusher;
+    float pusher_reach;
+    // In shadow maps, LOD objects are picked as if they were this many times further away
+    // (1 or less: as in the picture). Shadows of grass and leaves need less than the plants.
+    float shadow_lod_bias;
     // Seconds, drives material sway. Follows the clock unless auto_time is switched off.
     float time;
     bool auto_time;
@@ -187,9 +198,9 @@ struct RendererState @local
     bool gfx_ready;
     SgShader shader;
     SgShader shadow_shader;
-    // indexed [side][transparent][wireframe][target: swapchain, offscreen 1x, offscreen 4x][alpha to coverage]
+    // indexed [side][opaque, transparent, additive][wireframe][target: swapchain, offscreen 1x, offscreen 4x][alpha to coverage]
     // (C3 declares array dimensions innermost first)
-    SgPipeline[2][3][2][2][3] pipelines;
+    SgPipeline[2][3][2][3][3] pipelines;
     SgPipeline shadow_pipeline;
     List{DrawItem} opaque;
     List{DrawItem} transparent;
@@ -217,6 +228,8 @@ struct RendererState @local
     SgView atlas_view;
     int atlas_tile;
     SpotLight*[MAX_FIXED_SHADOWS] atlas_lights;
+    // set while gathering the casters of a light with shadow.skip_instanced
+    bool skip_instanced;
     // Sphere around the camera that carries the fog where there is no geometry.
     Mesh* backdrop;
 }
@@ -281,6 +294,7 @@ fn void Renderer.set_animation_loop(&self, AnimationLoop cb)
         .height = self.height,
         .sample_count = self.sample_count,
         .high_dpi = true,
+        .fullscreen = self.fullscreen,
         .window_title = (ZString)self.title.zstr_tcopy(),
         .icon.sokol_default = true,
         .logger.func = &slog::func,
@@ -330,20 +344,19 @@ fn void on_init() @local
     setup_gfx(sglue::environment());
 }
 
-// Sets up the GPU without opening a window (macOS / Metal only), for rendering into
+// Sets up the GPU without opening a window (Metal on macOS, D3D11 on Windows), for rendering into
 // RenderTargets from scripts, tests or on a machine without a display. Use instead of
 // set_animation_loop: call render() with a render target set, then three::commit().
 fn void Renderer.init_headless(&self)
 {
     state.renderer = self;
-    setup_gfx({
-        .defaults = { .color_format = BGRA8, .depth_format = DEPTH_STENCIL, .sample_count = 1 },
-        .metal = { .device = readback::create_device() },
-    });
+    setup_gfx(readback::headless_environment());
 }
 
 fn void on_frame() @local
 {
+    // the controller's state for this frame, and its key events (gamepad.c3)
+    poll_gamepad();
     if (state.renderer.animation_loop) state.renderer.animation_loop(stm::ms(stm::since(state.start_ticks)));
 }
 
@@ -352,8 +365,38 @@ fn void on_cleanup() @local
     sg::shutdown();
 }
 
+// Passes an event to the menus and listeners as if it came from the window (the gamepad's
+// key events, say).
+fn void send_event(SappEvent* e) => on_event(e);
+
 fn void on_event(SappEvent* e) @local
 {
+    switch (e.type)
+    {
+        case TOUCHES_BEGAN:
+        case TOUCHES_MOVED:
+        case TOUCHES_ENDED:
+        case TOUCHES_CANCELLED:
+            touch_event(e);
+        case MOUSE_DOWN:
+        case MOUSE_UP:
+        case MOUSE_MOVE:
+        case MOUSE_SCROLL:
+        case MOUSE_ENTER:
+        case MOUSE_LEAVE:
+            if (touch_from_mouse(e)) return;
+        case UNFOCUSED:
+        case SUSPENDED:
+            touch_reset();
+        default:
+            break;
+    }
+    if (e.type == KEY_DOWN && !e.key_repeat
+        && (e.key_code == F11 || (e.key_code == ENTER && (e.modifiers & sapp::MODIFIER_ALT))))
+    {
+        sapp::toggle_fullscreen();
+        return;
+    }
     // an open menu takes the input (see menu.c3)
     if (menu_filter_event(e)) return;
     foreach (c : state.controls) c.handle_event(e);
@@ -380,13 +423,15 @@ fn SgVertexLayoutState vertex_layout(int[7] attrs) @local
     return layout;
 }
 
-fn SgPipeline get_pipeline(Side side, bool transparent, bool wireframe, RenderTarget* rt, bool alpha_test) @local
+fn SgPipeline get_pipeline(Side side, bool transparent, bool wireframe, RenderTarget* rt, bool alpha_test,
+                           Blending blending = NORMAL_BLENDING) @local
 {
     int target = rt ? (rt.samples > 1 ? 2 : 1) : 0;
     if (rt && rt.samples != 1 && rt.samples != 4) abort("three: render targets support 1 or 4 samples");
     int samples = rt ? rt.samples : sapp::sample_count();
     bool a2c = alpha_test && !transparent && samples > 1;
-    SgPipeline* pip = &state.pipelines[side.ordinal][transparent ? 1 : 0][wireframe ? 1 : 0][target][a2c ? 1 : 0];
+    bool additive = transparent && blending == ADDITIVE_BLENDING;
+    SgPipeline* pip = &state.pipelines[side.ordinal][transparent ? (additive ? 2 : 1) : 0][wireframe ? 1 : 0][target][a2c ? 1 : 0];
     if (pip.id) return *pip;
     SgCullMode cull;
     switch (side)
@@ -421,9 +466,9 @@ fn SgPipeline get_pipeline(Side side, bool transparent, bool wireframe, RenderTa
         desc.colors[0].blend = {
             .enabled = true,
             .src_factor_rgb = SRC_ALPHA,
-            .dst_factor_rgb = ONE_MINUS_SRC_ALPHA,
-            .src_factor_alpha = ONE,
-            .dst_factor_alpha = ONE_MINUS_SRC_ALPHA,
+            .dst_factor_rgb = additive ? SgBlendFactor.ONE : SgBlendFactor.ONE_MINUS_SRC_ALPHA,
+            .src_factor_alpha = additive ? SgBlendFactor.ZERO : SgBlendFactor.ONE,
+            .dst_factor_alpha = additive ? SgBlendFactor.ONE : SgBlendFactor.ONE_MINUS_SRC_ALPHA,
         };
     }
     *pip = sg::make_pipeline(&desc);
@@ -493,7 +538,7 @@ fn void ensure_shadow_atlas(int tile) @local
     state.atlas_lights = {};
     state.atlas_image = sg::make_image(&&{
         .usage = { .depth_stencil_attachment = true },
-        .width = tile * 2, .height = tile * 2, .sample_count = 1, .pixel_format = DEPTH,
+        .width = tile * ATLAS_COLUMNS, .height = tile * 2, .sample_count = 1, .pixel_format = DEPTH,
     });
     state.atlas_attachment = sg::make_view(&&{ .depth_stencil_attachment = { .image = state.atlas_image } });
     state.atlas_view = sg::make_view(&&{ .texture = { .image = state.atlas_image } });
@@ -546,9 +591,11 @@ fn void update_shadow_atlas(Scene* scene, Camera* camera) @local
         Mat4 light_vp = shadow_view_proj(sl);
         Frustum light_frustum = frustum_from(light_vp);
         state.casters.clear();
+        state.skip_instanced = sl.shadow.skip_instanced;
         collect(scene, camera.matrix_world_inverse, &light_frustum, camera_pos, true);
-        sg::apply_viewport((i % 2) * tile, (i / 2) * tile, tile, tile, top_left);
-        sg::apply_scissor_rect((i % 2) * tile, (i / 2) * tile, tile, tile, top_left);
+        state.skip_instanced = false;
+        sg::apply_viewport((i % ATLAS_COLUMNS) * tile, (i / ATLAS_COLUMNS) * tile, tile, tile, top_left);
+        sg::apply_scissor_rect((i % ATLAS_COLUMNS) * tile, (i / ATLAS_COLUMNS) * tile, tile, tile, top_left);
         foreach (&item : state.casters) draw_shadow_item(item, light_vp);
     }
     sg::end_pass();
@@ -633,6 +680,7 @@ fn void collect(Object3D* obj, Mat4 view, Frustum* frustum, Vector3 lod_from, bo
             Mesh* m = (Mesh*)obj;
             if (!m.geometry || !m.material || !m.material.visible) break;
             if (shadow_pass && (!m.cast_shadow || m.material.transparent)) break;
+            if (shadow_pass && state.skip_instanced && m.instance_data.len() > 0) break;
             BufferGeometry* g = m.geometry;
             if (!g.uploaded && g.indices.len() == 0) break;
             g.upload();
@@ -668,6 +716,8 @@ fn void collect(Object3D* obj, Mat4 view, Frustum* frustum, Vector3 lod_from, bo
         case LOD:
             Lod* l = (Lod*)obj;
             float d = (l.matrix_world.get_position() - lod_from).length() / math::max(state.renderer.lod_scale, 0.01f);
+            // a shadow shows less of a thing's shape than the thing does
+            if (shadow_pass) d *= math::max(state.renderer.shadow_lod_bias, 1.0f);
             sz pick = -1;
             for (sz i = 0; i < l.distances.len(); i++)
             {
@@ -776,7 +826,12 @@ fn FsParams build_light_params(Scene* scene, Camera* camera, SpotLight* caster) 
                     p.shadow_mat[slot] = bias.mul(shadow_view_proj(sl));
                     float size = sl == caster ? (float)state.shadow_size : (float)state.atlas_tile;
                     p.shadow_params[slot] = { sl == caster ? 1 : 2, sl.shadow.normal_bias, 1.0f / size, sl.shadow.radius };
-                    if (sl != caster) p.shadow_rect[slot] = { (float)(tile % 2) * 0.5f, (float)(tile / 2) * 0.5f, 0.5f, 0.5f };
+                    float fov = math::min(sl.angle * 2 * RAD2DEG * clamp(sl.shadow.focus, 0.05f, 1) + 4, 150.0f);
+                    float width = 2 * math::tan(fov * DEG2RAD * 0.5f);
+                    float far = sl.shadow.far > 0 ? sl.shadow.far : (sl.distance > 0 ? sl.distance : 50.0f);
+                    p.shadow_soft[slot] = { sl.shadow.softness, math::max(sl.shadow.near, 0.01f), far, zo ? width : -width };
+                    if (sl != caster) p.shadow_rect[slot] = { (float)(tile % ATLAS_COLUMNS) / ATLAS_COLUMNS, (float)(tile / ATLAS_COLUMNS) * 0.5f,
+                                                             1.0f / ATLAS_COLUMNS, 0.5f };
                 }
                 if (sl != caster) nspot++;
         }
@@ -821,7 +876,8 @@ fn Vec4 uv_transform(Material* mat) @local
     return t ? (Vec4){ t.repeat.x, t.repeat.y, t.offset.x, t.offset.y } : (Vec4){ 1, 1, 0, 0 };
 }
 
-fn Vec4 sway_params(Material* mat) @local => { state.renderer.time, mat.sway, mat.sway_speed, 0 };
+fn Vec4 sway_params(Material* mat) @local => { state.renderer.time, mat.sway, mat.sway_speed, mat.push };
+fn Vec4 pusher_params() @local => { ...state.renderer.pusher, state.renderer.pusher_reach };
 
 fn int draw_geometry(Mesh* m, bool wireframe) @local
 {
@@ -842,7 +898,7 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs) @local
 
     Texture* map = ready(mat.map);
     if (mat.screen_target) map = state.white;
-    sg::apply_pipeline(get_pipeline(mat.side, mat.transparent, mat.wireframe, r.render_target, mat.alpha_test > 0));
+    sg::apply_pipeline(get_pipeline(mat.side, mat.transparent, mat.wireframe, r.render_target, mat.alpha_test > 0, mat.blending));
     SgBindings bind = {
         .vertex_buffers[0] = g.vbuf,
         .vertex_buffers[1] = m.instance_data.len() > 0 ? m.instance_buf : state.identity_instance,
@@ -854,8 +910,8 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs) @local
     bind.views[VIEW_SHADOW_MAP] = state.shadow_view;
     bind.views[VIEW_SHADOW_ATLAS] = state.atlas_view;
     bool ssr = r.ssr_color.id != 0 && r.ssr_depth.id != 0 && mat.ssr > 0;
-    bind.views[VIEW_SSR_COLOR] = ssr ? r.ssr_color : state.white.view;
-    bind.views[VIEW_SSR_DEPTH] = ssr ? r.ssr_depth : state.white.view;
+    bind.views[VIEW_SSR_COLOR] = ssr ? r.ssr_color : ready(state.white).view;
+    bind.views[VIEW_SSR_DEPTH] = ssr ? r.ssr_depth : ready(state.white).view;
     if (!state.clamp_sampler.id)
     {
         state.clamp_sampler = sg::make_sampler(&&{
@@ -883,6 +939,7 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs) @local
         .normal_mat = m.matrix_world.invert().transpose(),
         .uv_transform = uv_transform(mat),
         .sway = sway_params(mat),
+        .pusher = pusher_params(),
     };
     sg::apply_uniforms(UB_VS_PARAMS, &&{ .ptr = &vs, .size = VsParams::size });
 
@@ -907,6 +964,7 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs) @local
     fs.env_pos = { ...mat.env_position, boxed ? 1 : 0 };
     fs.env_box_min = { ...mat.env_box_min, 0 };
     fs.env_box_max = { ...mat.env_box_max, 0 };
+    fs.grime_params = { mat.grime, mat.grime_floor, mat.grime_height > 0 ? mat.grime_height : 2.6f, mat.grime_seed };
     fs.ssr_view_proj = r.ssr_view_proj;
     fs.ssr_params = { ssr ? mat.ssr : 0, r.ssr_reach, (float)(r.ssr_frame % 64), depth_zero_to_one() ? 1 : 0 };
     float fog_mode = fs.fog_params.w;
@@ -936,6 +994,7 @@ fn void draw_shadow_item(DrawItem* item, Mat4 light_vp) @local
         .s_model = m.matrix_world,
         .s_uv_transform = uv_transform(mat),
         .s_sway = sway_params(mat),
+        .s_pusher = pusher_params(),
     };
     sg::apply_uniforms(UB_SHADOW_VS_PARAMS, &&{ .ptr = &vs, .size = ShadowVsParams::size });
     ShadowFsParams fs = { .s_params = { mat.map ? mat.alpha_test : 0, mat.opacity, 0, 0 } };
@@ -945,7 +1004,11 @@ fn void draw_shadow_item(DrawItem* item, Mat4 light_vp) @local
 }
 
 fn int cmp_opaque(DrawItem a, DrawItem b) @local => a.depth < b.depth ? 1 : (a.depth > b.depth ? -1 : 0);
-fn int cmp_transparent(DrawItem a, DrawItem b) @local => a.depth < b.depth ? -1 : (a.depth > b.depth ? 1 : 0);
+fn int cmp_transparent(DrawItem a, DrawItem b) @local
+{
+    if (a.mesh.render_order != b.mesh.render_order) return a.mesh.render_order < b.mesh.render_order ? -1 : 1;
+    return a.depth < b.depth ? -1 : (a.depth > b.depth ? 1 : 0);
+}
 
 // The background color as it comes out of the lit shader, so that it matches fog of the same color.
 fn Vector3 tone_mapped(Renderer* r, Color color) @local
@@ -1128,8 +1191,7 @@ fn Texture* Renderer.capture_environment(&self, Scene* scene, Vector3 position, 
         self.set_render_target(rt);
         self.render(scene, cam);
         commit();
-        SgMtlImageInfo info = sg::mtl_query_image_info(rt.texture_image);
-        readback::read_texture(info.tex[info.active_slot], sg::mtl_command_queue(), face_size, face_size,
+        readback::read_image(rt.texture_image, face_size, face_size,
                                &faces[face_bytes * (usz)i]);
     }
     self.set_render_target(prev_target);

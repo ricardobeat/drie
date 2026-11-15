@@ -1,6 +1,6 @@
 // Scene graph: Object3D, Group, Scene, Mesh, cameras, lights, fog.
 module three;
-import std::collections::list;
+import std::collections::list, libc;
 import sokol;
 
 enum ObjectKind
@@ -28,10 +28,21 @@ struct Object3D
     // Meshes: render into shadow maps / get darkened by them.
     bool cast_shadow;
     bool receive_shadow;
+    // Like three.js renderOrder: among see-through meshes, higher ones are drawn later
+    // whatever their distance (a film of dirt over the glass it lies on).
+    int render_order;
     Object3D* parent;
     List{Object3D*} children;
     Mat4 matrix;
     Mat4 matrix_world;
+    // What update_matrix_world last built `matrix` from: an object that has not moved is
+    // not computed again (most of a scene stands still).
+    Vector3 placed_position;
+    Euler placed_rotation;
+    Vector3 placed_scale;
+    bool placed;
+    // matrix_world was changed outside update_world, which has yet to tell the children
+    bool world_dirty;
     // Free slot for your own data, like three's object.userData.
     void* user_data;
 }
@@ -56,6 +67,7 @@ fn Object3D* Object3D.add(&self, Object3D* child)
     if (child == self) return self;
     if (child.parent) child.parent.remove(child);
     child.parent = self;
+    child.placed = false;
     self.children.push(child);
     return self;
 }
@@ -91,6 +103,36 @@ fn Object3D* Object3D.get_object_by_name(&self, String name)
     return null;
 }
 
+// Like three's object.clone(): a copy of this object and its descendants that shares their
+// geometries and materials, without a parent. For groups and meshes (a loaded model's
+// nodes, say: scene.add(model.get("chair").clone())); lights, cameras, LODs and instanced
+// meshes come out as empty groups.
+fn Object3D* Object3D.clone(&self)
+{
+    Object3D* copy;
+    if (self.kind == MESH && ((Mesh*)self).instance_data.len() == 0)
+    {
+        Mesh* from = (Mesh*)self;
+        copy = mesh(from.geometry, from.material);
+    }
+    else
+    {
+        copy = group();
+    }
+    copy.name = self.name;
+    copy.position = self.position;
+    copy.rotation = self.rotation;
+    copy.scale = self.scale;
+    copy.up = self.up;
+    copy.visible = self.visible;
+    copy.frustum_culled = self.frustum_culled;
+    copy.cast_shadow = self.cast_shadow;
+    copy.receive_shadow = self.receive_shadow;
+    copy.user_data = self.user_data;
+    foreach (c : self.children) copy.add(c.clone());
+    return copy;
+}
+
 alias TraverseCallback = fn void(Object3D*);
 
 fn void Object3D.traverse(&self, TraverseCallback cb)
@@ -104,12 +146,37 @@ fn void Object3D.update_matrix(&self)
     self.matrix = mat4_compose(self.position, self.rotation, self.scale);
 }
 
-// Recomputes matrix_world for this object and all its descendants.
-fn void Object3D.update_matrix_world(&self)
+// Brings matrix_world up to date for this object and all its descendants. Only what moved
+// since the last call (or hangs under something that did) is computed. Set position,
+// rotation and scale, not `matrix`: it is rebuilt from them.
+fn void Object3D.update_matrix_world(&self) => self.update_world(true);
+
+fn void Object3D.update_world(&self, bool parent_moved)
 {
-    self.update_matrix();
-    self.matrix_world = self.parent ? self.parent.matrix_world.mul(self.matrix) : self.matrix;
-    foreach (c : self.children) c.update_matrix_world();
+    bool moved = !self.placed
+        || self.position != self.placed_position
+        || self.rotation != self.placed_rotation
+        || self.scale != self.placed_scale;
+    if (moved)
+    {
+        self.update_matrix();
+        self.placed_position = self.position;
+        self.placed_rotation = self.rotation;
+        self.placed_scale = self.scale;
+        self.placed = true;
+    }
+    if (moved || parent_moved)
+    {
+        Mat4 world = self.parent ? self.parent.matrix_world.mul(self.matrix) : self.matrix;
+        // (the first object of the walk can't tell whether its parent moved, so it is
+        // always computed: its descendants only if that changed anything)
+        moved = libc::memcmp(&world, &self.matrix_world, Mat4::size) != 0;
+        self.matrix_world = world;
+    }
+    // moved already, by update_world_matrix_from_parents (a bone its skeleton placed)
+    moved = moved || self.world_dirty;
+    self.world_dirty = false;
+    foreach (c : self.children) c.update_world(moved);
 }
 
 // Recomputes matrix_world for this object using its ancestors' current transforms.
@@ -117,7 +184,10 @@ fn void Object3D.update_world_matrix_from_parents(&self)
 {
     if (self.parent) self.parent.update_world_matrix_from_parents();
     self.update_matrix();
-    self.matrix_world = self.parent ? self.parent.matrix_world.mul(self.matrix) : self.matrix;
+    Mat4 world = self.parent ? self.parent.matrix_world.mul(self.matrix) : self.matrix;
+    // update_world must still carry the move down to the children (a mesh hung on a bone)
+    if (libc::memcmp(&world, &self.matrix_world, Mat4::size) != 0) self.world_dirty = true;
+    self.matrix_world = world;
 }
 
 fn Vector3 Object3D.get_world_position(&self)
@@ -497,6 +567,10 @@ struct LightShadow
     float normal_bias;
     // Blur radius of the shadow edge in shadow map texels.
     float radius;
+    // Size of the light source in meters, for shadows whose edge is sharp where they touch
+    // what casts them and widens with the distance behind it (`radius` is then the least
+    // blur). 0 = the same edge everywhere, which is cheaper.
+    float softness;
     float near;
     // Distance up to which shadows are cast (0 = the light's distance, or 50).
     float far;
@@ -510,6 +584,9 @@ struct LightShadow
     // whose map follows every frame.
     bool auto_update;
     bool needs_update;
+    // Leave instanced meshes (scattered plants, usually by the thousand) out of this
+    // light's map.
+    bool skip_instanced;
 }
 
 struct SpotLight
