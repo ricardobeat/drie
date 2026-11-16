@@ -3,7 +3,9 @@ module three;
 import std::collections::list, std::math;
 import sokol;
 
-const int FLOATS_PER_VERTEX = 11;
+// position 3, normal 3, uv 2, color 4 (rgba: the alpha is used by materials with vertex_colors,
+// like three.js's vertexAlphas)
+const int FLOATS_PER_VERTEX = 12;
 
 struct BufferGeometry
 {
@@ -86,7 +88,7 @@ fn BufferGeometry* BufferGeometry.box_project_uv(&self, float tiles_per_unit = 1
     return self;
 }
 
-fn BufferGeometry* BufferGeometry.add_vertex(&self, Vector3 p, Vector3 n, Vector2 uv, Vector3 color = { 1, 1, 1 })
+fn BufferGeometry* BufferGeometry.add_vertex(&self, Vector3 p, Vector3 n, Vector2 uv, Vector3 color = { 1, 1, 1 }, float alpha = 1)
 {
     self.vertices.push(p.x);
     self.vertices.push(p.y);
@@ -99,6 +101,7 @@ fn BufferGeometry* BufferGeometry.add_vertex(&self, Vector3 p, Vector3 n, Vector
     self.vertices.push(color.x);
     self.vertices.push(color.y);
     self.vertices.push(color.z);
+    self.vertices.push(alpha);
     return self;
 }
 
@@ -232,7 +235,7 @@ fn BufferGeometry* BufferGeometry.merge(&self, BufferGeometry* other, Mat4 matri
         Vector3 n = nm.transform_point({ other.vertices[o + 3], other.vertices[o + 4], other.vertices[o + 5] });
         if (n.length() > 0) n = n.normalize();
         Vector3 c = { other.vertices[o + 8], other.vertices[o + 9], other.vertices[o + 10] };
-        self.add_vertex(p, n, { other.vertices[o + 6], other.vertices[o + 7] }, c * tint);
+        self.add_vertex(p, n, { other.vertices[o + 6], other.vertices[o + 7] }, c * tint, other.vertices[o + 11]);
     }
     foreach (i : other.indices) self.indices.push(base + i);
     self.uploaded = false;

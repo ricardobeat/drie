@@ -291,6 +291,10 @@ struct Fog
     Color sun_color;
     float sun_sharpness;
     float shade_density;
+    // Light shafts: how much the shadows of the directional light that casts them (see
+    // DirectionalLight.shadow) take the sun out of the fog, 0..1. The fog towards the sun goes
+    // dark behind whatever stands in the way, bright in the gaps (0 = no shafts).
+    float sun_shafts;
 }
 
 // Extension: exponential fog, exp(-density * distance).
@@ -406,6 +410,10 @@ struct Lod
 {
     inline Object3D object;
     List{float} distances;
+    // Meters over which one level dissolves into the next instead of swapping at once (0: swap).
+    // Both levels are drawn in that band, each through a screen-door dither that is the
+    // other's complement, so nothing doubles and nothing pops (like Unity's LOD cross-fade).
+    float fade;
 }
 
 fn Lod* lod()
@@ -559,6 +567,20 @@ struct DirectionalLight
     inline Light light;
     // The light shines from its position towards target's world position.
     Object3D* target;
+    // Like three's light.shadow (set cast_shadow). Its camera is a box of parallel rays,
+    // shadow.far deep. shadow.radius is the blur of the edge in texels; softness and focus
+    // are not used. One directional light at a time has a shadow, in a map of its own (spot
+    // lights keep theirs).
+    // Extension: cascaded shadow maps. With shadow.cascades above 1 the camera's view, up to
+    // shadow.max_distance, is cut into that many slices, each with a box of its own (2x2 tiles
+    // of map_size), so shadows near the camera are sharp and far ones still there.
+    LightShadow shadow;
+    // With shadow.cascades = 1: one box, `shadow_extent` half its width and height in meters
+    // (three's shadow.camera.right and .top), around the light's target.
+    float shadow_extent;
+    // Extension (with shadow.cascades = 1): the box travels with the camera, a little ahead of
+    // it, instead of sitting on the light's target.
+    bool shadow_follow;
 }
 
 struct PointLight
@@ -599,6 +621,15 @@ struct LightShadow
     // Leave instanced meshes (scattered plants, usually by the thousand) out of this
     // light's map.
     bool skip_instanced;
+    // Directional lights only (extension): cascaded shadow maps.
+    // Number of slices of the view, 1..4 (1: one box, see DirectionalLight.shadow_extent).
+    int cascades;
+    // Where the slices end: 0 = evenly spaced, 1 = logarithmic (near ones small).
+    float split_lambda;
+    // Distance from the camera up to which there are shadows (meters, capped at camera.far).
+    float max_distance;
+    // Width of the band where one slice fades into the next, as a part of the slice, 0..1.
+    float cascade_blend;
 }
 
 struct SpotLight
@@ -654,6 +685,9 @@ fn DirectionalLight* directional_light(Color color = 0xffffff, float intensity =
     l.init_light(DIRECTIONAL, color, intensity);
     l.position = { 0, 1, 0 };
     l.target = object3d();
+    l.shadow = { .map_size = 2048, .normal_bias = 0.03f, .radius = 2, .near = 0.5f, .far = 300, .auto_update = true,
+                 .cascades = 4, .split_lambda = 0.7f, .max_distance = 150, .cascade_blend = 0.1f };
+    l.shadow_extent = 30;
     return l;
 }
 
