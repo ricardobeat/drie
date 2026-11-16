@@ -103,6 +103,15 @@ struct Material
     float push;
 }
 
+// A copy of the material to change on its own (like three's Material.clone). Textures are
+// shared.
+fn Material* Material.clone(&self)
+{
+    Material* m = mem::new(Material);
+    *m = *self;
+    return m;
+}
+
 struct MeshBasicMaterial { inline Material material; }
 struct MeshLambertMaterial { inline Material material; }
 struct MeshPhongMaterial { inline Material material; }

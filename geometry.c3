@@ -114,6 +114,12 @@ fn BufferGeometry* BufferGeometry.add_triangle(&self, uint a, uint b, uint c)
 
 fn uint BufferGeometry.vertex_count(&self) => (uint)(self.vertices.len() / FLOATS_PER_VERTEX);
 
+fn Vector2 BufferGeometry.get_uv(&self, uint i)
+{
+    sz at = (sz)i * FLOATS_PER_VERTEX + 6;
+    return { self.vertices[at], self.vertices[at + 1] };
+}
+
 fn Vector3 BufferGeometry.get_position(&self, uint i)
 {
     sz o = (sz)i * FLOATS_PER_VERTEX;

@@ -181,6 +181,9 @@ layout(binding=1) uniform fs_params {
     vec4 fog_params;   // x = near, y = far, z = density, w = mode (0 none, 1 linear, 2 exp2, 3 exp)
     vec4 fog_box_min;  // fog-free box, w = 1 when enabled
     vec4 fog_box_max;
+    vec4 fog_height;   // x = base height, y = falloff per meter (0 = none), w = density away from the sun's side
+    vec4 fog_sun_dir;  // towards the sun, w = sharpness (0 = no sun)
+    vec4 fog_sun_color;
     vec4 counts;       // x = directional lights, y = point lights, z = spot lights
     vec4 dir_dir[4];   // world-space direction towards the light
     vec4 dir_color[4];
@@ -498,7 +501,9 @@ vec3 screen_reflection(vec3 n, vec3 geo_n, vec3 v, float rough, out float found)
     vec3 t1 = normalize(cross(r, abs(r.y) < 0.9 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0)));
     vec3 t2 = cross(r, t1);
     float turn = n1 * 2.0 * PI;
-    r = normalize(r + (t1 * cos(turn) + t2 * sin(turn)) * sqrt(n2) * rough * rough * 0.5);
+    // (a quarter of the cone by sending the ray astray, the rest by blurring what it finds:
+    // all of it by chance makes a small bright thing into a patch of sparks)
+    r = normalize(r + (t1 * cos(turn) + t2 * sin(turn)) * sqrt(n2) * rough * rough * 0.125);
     if (dot(r, geo_n) < 0.02) return vec3(0.0);
 
     vec3 origin = v_world_pos + geo_n * 0.02;
@@ -519,14 +524,24 @@ vec3 screen_reflection(vec3 n, vec3 geo_n, vec3 v, float rough, out float found)
                 if (m.z - ssr_depth_at(m.xy) > 0.02) hi = mid; else lo = mid;
             }
             s = ssr_project(origin + r * hi);
-            vec4 c = textureLod(sampler2D(ssr_color, ssr_smp), s.xy, 0.0);
             vec2 edge = min(s.xy, 1.0 - s.xy);
             found = smoothstep(0.0, 0.07, min(edge.x, edge.y)) * (1.0 - smoothstep(0.6, 1.0, hi / ssr_params.y));
-            // back from what the tone mapping made of it, roughly; light sources were far over white
-            vec3 lin = srgb_to_linear(c.rgb);
-            lin /= max(1.0 - 0.7 * max(lin.r, max(lin.g, lin.b)), 0.3);
-            lin *= 1.0 + 5.0 * (1.0 - c.a);
-            return lin / max(camera_pos.w, 0.05);
+            // what a rough surface mirrors is spread over a disc that grows with the way the
+            // ray went: a few taps over it, turned differently at every pixel
+            vec2 size = vec2(textureSize(sampler2D(ssr_color, ssr_smp), 0));
+            float spread = rough * rough * 0.4 * hi / max(s.z, 0.1);
+            vec2 radius = vec2(spread * size.y / size.x, spread);
+            vec3 sum = vec3(0.0);
+            for (int k = 0; k < 8; k++) {
+                float a = turn + float(k) * 2.39996;
+                vec2 at = s.xy + vec2(cos(a), sin(a)) * radius * sqrt((float(k) + 0.5) / 8.0);
+                vec4 c = textureLod(sampler2D(ssr_color, ssr_smp), at, 0.0);
+                // back from what the tone mapping made of it, roughly; light sources were far over white
+                vec3 lin = srgb_to_linear(c.rgb);
+                lin /= max(1.0 - 0.7 * max(lin.r, max(lin.g, lin.b)), 0.3);
+                sum += lin * (1.0 + 5.0 * (1.0 - c.a));
+            }
+            return sum / 8.0 / max(camera_pos.w, 0.05);
         }
         t_prev = t;
         step_len *= 1.16;
@@ -712,6 +727,15 @@ void main() {
     if (tex_params.x > 0.5) g_base *= texture(sampler2D(tex_map, tex_smp), v_uv);
     float alpha = g_base.a;
     if (tex_params.w > 0.0) {
+        // far away the texture's smaller levels average leaves and gaps into an alpha under
+        // the cutoff, and the whole plant would go: make up for it, so as much stays covered
+        if (tex_params.x > 0.5) {
+            vec2 texel = v_uv * vec2(textureSize(sampler2D(tex_map, tex_smp), 0));
+            vec2 tx = dFdx(texel);
+            vec2 ty = dFdy(texel);
+            float level = 0.5 * log2(max(max(dot(tx, tx), dot(ty, ty)), 1.0));
+            alpha *= 1.0 + 0.3 * min(level, 6.0);
+        }
         // sharpen the cutout edge to about a pixel so alpha-to-coverage can antialias it
         alpha = (alpha - tex_params.w) / max(fwidth(alpha), 1e-4) + 0.5;
         if (alpha <= 0.0) discard;
@@ -819,7 +843,10 @@ void main() {
         if (ssr_params.x > 0.0) {
             // the surface's sheen: a mirror image, strongest at a glancing angle
             float found;
-            vec3 rn = normalize(mix(geo_n, n, 0.5));
+            // (far off, where a pixel covers many bumps of the normal map, each would throw
+            // the image somewhere else: blotches. There the surface mirrors as if flat)
+            float bumps = 0.5 * (1.0 - smoothstep(1.5, 5.0, length(camera_pos.xyz - v_world_pos)));
+            vec3 rn = normalize(mix(geo_n, n, bumps));
             vec3 mirrored = screen_reflection(rn, geo_n, v, g_rough, found);
             float fresnel = 0.04 + 0.96 * pow(1.0 - clamp(dot(rn, v), 0.0, 1.0), 5.0);
             outc += mirrored * (found * fresnel * ssr_params.x * ao);
@@ -830,8 +857,23 @@ void main() {
     int fog_mode = int(fog_params.w);
     if (fog_mode != 0) {
         float fd = fog_distance(camera_pos.xyz, v_world_pos);
+        vec3 fog_own = fog_color.rgb;
+        if (fog_height.y > 0.0) {
+            // fog lying on the ground: the mean of exp(-k * height) along the ray
+            float ya = max(camera_pos.y - fog_height.x, 0.0);
+            float yb = max(v_world_pos.y - fog_height.x, 0.0);
+            float k = fog_height.y;
+            float dy = yb - ya;
+            fd *= abs(dy) > 0.01 ? (exp(-k * ya) - exp(-k * yb)) / (k * dy) : exp(-k * ya);
+        }
+        if (fog_sun_dir.w > 0.0) {
+            vec3 look = normalize(v_world_pos - camera_pos.xyz);
+            fog_own = mix(fog_own, fog_sun_color.rgb, pow(max(dot(look, fog_sun_dir.xyz), 0.0), fog_sun_dir.w));
+            float side = dot(normalize(look.xz + vec2(1e-5)), normalize(fog_sun_dir.xz + vec2(1e-5)));
+            fd *= mix(fog_height.w, 1.0, smoothstep(-0.3, 0.7, side));
+        }
         float t = fog_transmittance(fd);
-        vec3 fog_lit = fog_color.rgb * (1.0 - t);
+        vec3 fog_lit = fog_own * (1.0 - t);
         if (fog_color.w > 0.0 && fd > 0.0) {
             vec3 ray = -v;
             float in_fog = fd / max(depth, 1e-4);

@@ -279,13 +279,25 @@ struct Fog
     bool has_clear_box;
     Vector3 clear_box_min;
     Vector3 clear_box_max;
+    // Fog that lies on the ground: its density falls off by exp(-height_falloff * (y -
+    // height_base)) above height_base, and is `density` at it. 0 = the same at every height.
+    float height_falloff;
+    float height_base;
+    // A sun in the fog: looking towards sun_direction (a unit vector towards the sun) the fog
+    // takes sun_color instead of its own, the more sharply the higher sun_sharpness (0 = no
+    // sun). Looking away from the sun's side there is only shade_density of the fog (1 = as
+    // much all round).
+    Vector3 sun_direction;
+    Color sun_color;
+    float sun_sharpness;
+    float shade_density;
 }
 
 // Extension: exponential fog, exp(-density * distance).
 fn Fog* fog_exp(Color color, float density = 0.01)
 {
     Fog* f = mem::new(Fog);
-    *f = { .type = EXP, .color = color, .density = density };
+    *f = { .type = EXP, .color = color, .density = density, .shade_density = 1 };
     return f;
 }
 
