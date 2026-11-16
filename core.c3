@@ -601,6 +601,9 @@ struct LightShadow
     float normal_bias;
     // Blur radius of the shadow edge in shadow map texels.
     float radius;
+    // How dark the shadow is, 0..1, like three's LightShadow.intensity (r166+): 1 takes all
+    // of the light away, 0.5 half of it. Default 1.
+    float intensity;
     // Size of the light source in meters, for shadows whose edge is sharp where they touch
     // what casts them and widens with the distance behind it (`radius` is then the least
     // blur). 0 = the same edge everywhere, which is cheaper.
@@ -685,7 +688,7 @@ fn DirectionalLight* directional_light(Color color = 0xffffff, float intensity =
     l.init_light(DIRECTIONAL, color, intensity);
     l.position = { 0, 1, 0 };
     l.target = object3d();
-    l.shadow = { .map_size = 2048, .normal_bias = 0.03f, .radius = 2, .near = 0.5f, .far = 300, .auto_update = true,
+    l.shadow = { .map_size = 2048, .normal_bias = 0.03f, .radius = 2, .intensity = 1, .near = 0.5f, .far = 300, .auto_update = true,
                  .cascades = 4, .split_lambda = 0.7f, .max_distance = 150, .cascade_blend = 0.1f };
     l.shadow_extent = 30;
     return l;
@@ -712,7 +715,7 @@ fn SpotLight* spot_light(Color color = 0xffffff, float intensity = 1, float dist
     l.penumbra = penumbra;
     l.decay = decay;
     l.fog_glow = 1;
-    l.shadow = { .map_size = 1024, .normal_bias = 0.006f, .radius = 2, .near = 0.05f, .focus = 1,
+    l.shadow = { .map_size = 1024, .normal_bias = 0.006f, .radius = 2, .intensity = 1, .near = 0.05f, .focus = 1,
                  .auto_update = true, .needs_update = true };
     return l;
 }

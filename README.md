@@ -79,13 +79,14 @@ and parameter objects become named arguments.
   with mipmaps and anisotropic filtering. Pass `NO_COLOR_SPACE` for data such as normal maps.
 - **Models:** `three::load_gltf(path)` reads binary glTF (`.glb`) with its materials and
   textures; `model.get("name")` finds a node.
-- **Lights:** `AmbientLight`, `HemisphereLight`, `DirectionalLight` (up to 4), `PointLight` (up to 6),
-  `SpotLight` (up to 4). Intensities and color handling follow modern three.js (r155+): sRGB hex
+- **Lights:** `AmbientLight`, `HemisphereLight`, `DirectionalLight`, `PointLight`, `SpotLight`, as
+  many as you like (clustered, see below). Intensities and color handling follow modern three.js (r155+): sRGB hex
   colors, linear lighting, physically based light units.
 - **Shadows:** spot and directional lights cast them: `light.cast_shadow = true`, and
   `cast_shadow` / `receive_shadow` on meshes. `light.shadow` has `map_size`, `normal_bias`,
-  `radius`, `near`, `far` and `focus` (spot lights). One spot light's map is redrawn every
-  frame; up to seven more can cast shadows that are drawn once (see `auto_update` below). One
+  `radius`, `intensity` (how dark, 0..1, like three r166+), `near`, `far` and `focus` (spot
+  lights). One spot light's map is redrawn every
+  frame; `renderer.shadow_atlas_capacity` more (default 8) can cast shadows that are drawn once (see `auto_update` below). One
   directional light (the first that casts) has a map of its own at the same time, in cascades
   (see below).
 - **Fog:** `Fog` (linear) and `FogExp2`
@@ -136,7 +137,7 @@ These aren't in three.js:
   the result back from the GPU, so call it once at load. `on_face` runs after the camera is
   aimed at each face (to aim a light with it, for example).
 - `light.shadow.auto_update = false`: for a light that stays put among things that stay put. Its
-  shadow map is drawn once into a shared atlas (four such lights at most) and costs nothing
+  shadow map is drawn once into a shared atlas (`renderer.shadow_atlas_capacity` of them) and costs nothing
   after that. Set `light.shadow.needs_update = true` to redraw it, as in three.js.
 - Cascaded shadow maps for a `DirectionalLight` (like three's `CSM` addon, built in):
   `light.shadow.cascades` (1..4, default 4) cuts the camera's view up to
@@ -169,8 +170,14 @@ These aren't in three.js:
   also stores how far away each direction's surface is (in its alpha). A box-projected glossy
   material then follows its reflected rays through the room as the map saw it, so that what
   stands in the middle of the room is mirrored where it stands, not smeared over the walls.
-- Up to 8 spot lights; 7 of them can be lamps whose shadow map is drawn once
-  (`shadow.auto_update = false`), sharing one atlas.
+- Clustered forward lighting (`clusters.c3`): lights go to the GPU in storage buffers, and
+  the view is cut into 16x9x24 clusters (screen tiles x exponential depth slices). Each
+  cluster lists the point and spot lights whose bounding sphere reaches it, and a fragment
+  only shades its own cluster's lights. `renderer.max_lights` (default 1024 per kind, 0 = no
+  limit) caps a render, with a warning. The assignment runs on the CPU;
+  `renderer.assign_clusters` (a `ClusterAssignFn`) can replace it. Fog glow
+  (`light_scatter`) still loops over every light. Storage buffers need GL 4.3 for a GL
+  backend (Metal and D3D11 have them).
 - `material.blending = ADDITIVE_BLENDING`, like three's `AdditiveBlending`: a see-through
   material's pixels are added to what is behind them (flames, glows).
 - `object.render_order`, like three's `renderOrder`: among see-through meshes, higher ones are

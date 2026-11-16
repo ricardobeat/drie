@@ -188,23 +188,12 @@ layout(binding=1) uniform fs_params {
     vec4 fog_height;   // x = base height, y = falloff per meter (0 = none), w = density away from the sun's side
     vec4 fog_sun_dir;  // towards the sun, w = sharpness (0 = no sun)
     vec4 fog_sun_color; // w = light shafts (0..1)
-    vec4 counts;       // x = directional lights, y = point lights, z = spot lights
-    vec4 dir_dir[4];   // world-space direction towards the light
-    vec4 dir_color[4];
-    vec4 point_pos[6];   // w = distance cutoff
-    vec4 point_color[6]; // w = decay
-    vec4 point_params[6]; // x = source radius
-    vec4 spot_pos[8];    // w = distance cutoff
-    vec4 spot_dir[8];    // direction the light points to, w = cos(angle)
-    vec4 spot_color[8];  // w = decay
-    vec4 spot_params[8]; // x = cos(inner angle) (from penumbra), y = source radius, z = specular radius,
-                         //   w = how much the light glows in the fog
-    mat4 shadow_mat[8];    // world -> shadow map uv + depth, per spot light
-    vec4 shadow_params[8]; // x = 0: none, 1: in shadow_map, 2: in shadow_atlas, y = normal bias (m),
-                           //   z = texel size, w = blur radius in texels
-    vec4 shadow_rect[8];   // the light's tile in shadow_atlas: xy = offset, zw = size
-    vec4 shadow_soft[8];   // x = size of the source (m; 0: edges equally sharp everywhere), y = near,
-                           //   z = far, w = width of the map 1 m from the light (negative: depth is -1..1)
+    vec4 counts;       // x = directional lights, y = point lights, z = spot lights (all of them, in
+                       //   dir_lights, point_lights and spot_lights)
+    mat4 cluster_view_proj; // world -> the camera's clip space, for the fragment's cluster
+    vec4 cluster_grid;      // xyz = clusters across, up and in depth
+    vec4 cluster_depth;     // x = view depth where the first slice starts, y = slices per unit of
+                            //   log(depth), z = where the last ends
     mat4 dir_shadow_mat[4]; // world -> uv in its tile + depth, per cascade of the directional light's shadow
     vec4 dir_shadow_params; // x = which directional light + 1 (0: none), y = normal bias (m),
                             //   z = texel size of sun_shadow, w = blur radius in texels
@@ -212,13 +201,54 @@ layout(binding=1) uniform fs_params {
     vec4 dir_cascade_info[4];  // per cascade: x = view depth (m) where it ends, y = size of a texel (m)
     vec4 dir_cascade_params;   // x = cascades, y = blend band (part of a cascade), z = 1: tint them,
                                //   w = 1: one box (no cascades), faded at its edge
-    vec4 dir_cascade_fwd;      // the camera's forward direction
+    vec4 dir_cascade_fwd;      // the camera's forward direction, w = shadow intensity (0..1)
     vec4 grime_params;     // x = dirt on the surface (0: none), y = the room's floor, z = its height (m),
                            //   w = seed
     mat4 ssr_view_proj;    // world -> the last frame's clip space
     vec4 ssr_params;       // x = this material's screen-space reflections (0: none), y = reach (m),
                            //   z = noise seed, w = 1: the last frame's row 0 is its top
 };
+
+// Lights live in storage buffers, as many as there are. Point and spot lights are sorted into
+// a grid of clusters (froxels: tiles of the screen, cut into slices of depth that grow
+// exponentially), and a fragment only looks at the lights of its own cluster.
+struct gpu_dir_light {
+    vec4 dir;    // world-space direction towards the light
+    vec4 color;
+};
+struct gpu_point_light {
+    vec4 pos;    // w = distance cutoff
+    vec4 color;  // w = decay
+    vec4 params; // x = source radius
+};
+struct gpu_spot_light {
+    vec4 pos;    // w = distance cutoff
+    vec4 dir;    // direction the light points to, w = cos(angle)
+    vec4 color;  // w = decay
+    vec4 params; // x = cos(inner angle) (from penumbra), y = source radius, z = specular radius,
+                 //   w = how much the light glows in the fog
+    vec4 shadow; // x = its shadow in spot_shadows (-1: none), y = shadow intensity (0..1)
+};
+struct gpu_spot_shadow {
+    mat4 mat;    // world -> shadow map uv + depth
+    vec4 params; // x = 1: in shadow_map, 2: in shadow_atlas, y = normal bias (m), z = texel size,
+                 //   w = blur radius in texels
+    vec4 rect;   // the light's tile in shadow_atlas: xy = offset, zw = size
+    vec4 soft;   // x = size of the source (m; 0: edges equally sharp everywhere), y = near,
+                 //   z = far, w = width of the map 1 m from the light (negative: depth is -1..1)
+};
+struct gpu_light_cluster {
+    uvec4 range; // x = its first entry in light_indices, y = point lights, z = spot lights after them
+};
+struct gpu_light_index {
+    uint index;  // into point_lights or spot_lights
+};
+layout(binding=10) readonly buffer dir_lights { gpu_dir_light dirs[]; };
+layout(binding=11) readonly buffer point_lights { gpu_point_light points[]; };
+layout(binding=12) readonly buffer spot_lights { gpu_spot_light spots[]; };
+layout(binding=13) readonly buffer spot_shadows { gpu_spot_shadow spot_shadow_data[]; };
+layout(binding=14) readonly buffer light_clusters { gpu_light_cluster clusters[]; };
+layout(binding=15) readonly buffer light_indices { gpu_light_index cluster_lights[]; };
 
 in vec3 v_world_pos;
 in vec3 v_normal;
@@ -383,6 +413,20 @@ float shadow_depth(float d, vec4 soft) {
                         : soft.z * (d - soft.y) / (d * (soft.z - soft.y));
 }
 
+// The cluster that holds world position `p`: its tile of the screen, and its slice of view
+// depth (slices grow exponentially from cluster_depth.x to .z). Matches cluster_lights_cpu in
+// renderer.c3.
+int cluster_of(vec3 p) {
+    ivec3 grid = ivec3(cluster_grid.xyz);
+    vec4 clip = cluster_view_proj * vec4(p, 1.0);
+    vec2 ndc = clip.xy / max(abs(clip.w), 1e-6);
+    ivec2 tile = clamp(ivec2(floor((ndc * 0.5 + 0.5) * vec2(grid.xy))), ivec2(0), grid.xy - 1);
+    float depth = dot(p - camera_pos.xyz, dir_cascade_fwd.xyz);
+    int slice = depth <= cluster_depth.x ? 0 : int(floor(log(depth / cluster_depth.x) * cluster_depth.y));
+    slice = clamp(slice, 0, grid.z - 1);
+    return tile.x + grid.x * (tile.y + grid.y * slice);
+}
+
 // 1 where the light's map has nothing nearer than depth `z` at `uv`.
 float shadow_tap(bool tiled, vec4 rect, float texel, vec2 uv, float z) {
     if (tiled) {
@@ -393,17 +437,16 @@ float shadow_tap(bool tiled, vec4 rect, float texel, vec2 uv, float z) {
     return texture(sampler2DShadow(shadow_map, shadow_smp), vec3(uv, z));
 }
 
-// Shadow of spot light `i`. Lights whose map is redrawn every frame have shadow_map to
-// themselves; the ones drawn once share shadow_atlas, a tile each.
-float shadow(int i, vec3 n) {
-    vec4 params = shadow_params[i];
-    if (params.x < 0.5 || (flags() & 4) == 0) return 1.0;
-    vec3 to_light = spot_pos[i].xyz - v_world_pos;
+// Shadow of spot light `s`, whose map is `si` in spot_shadows. Lights whose map is redrawn
+// every frame have shadow_map to themselves; the ones drawn once share shadow_atlas, a tile each.
+float spot_shadow_of(int s, int si, vec3 n) {
+    vec4 params = spot_shadow_data[si].params;
+    vec3 to_light = spots[s].pos.xyz - v_world_pos;
     float dist = length(to_light);
     // push the lookup off the surface, more at grazing angles and far away where texels are big
     float slope = 1.0 - clamp(dot(n, to_light / dist), 0.0, 1.0);
     vec3 p = v_world_pos + n * params.y * dist * (0.4 + slope);
-    vec4 sp = shadow_mat[i] * vec4(p, 1.0);
+    vec4 sp = spot_shadow_data[si].mat * vec4(p, 1.0);
     if (sp.w <= 0.0) return 1.0;
     vec3 c = sp.xyz / sp.w;
     if (c.x < 0.0 || c.x > 1.0 || c.y < 0.0 || c.y > 1.0 || c.z > 1.0) return 1.0;
@@ -413,8 +456,8 @@ float shadow(int i, vec3 n) {
     float sa = sin(angle);
     float r = params.z * params.w;
     bool tiled = params.x > 1.5;
-    vec4 rect = shadow_rect[i];
-    vec4 soft = shadow_soft[i];
+    vec4 rect = spot_shadow_data[si].rect;
+    vec4 soft = spot_shadow_data[si].soft;
     int taps = 8;
     // how the depth changes over the map along this surface, so that a wide blur does not
     // run the surface into its own shadow
@@ -460,6 +503,12 @@ float shadow(int i, vec3 n) {
         sum += shadow_tap(tiled, rect, params.z, c.xy + o, c.z + clamp(dot(grad, o), -0.004, 0.004));
     }
     return sum / float(taps);
+}
+
+float shadow(int s, vec3 n) {
+    int si = int(spots[s].shadow.x);
+    if (si < 0 || (flags() & 4) == 0) return 1.0;
+    return mix(1.0, spot_shadow_of(s, si, n), spots[s].shadow.y);
 }
 
 // 1 where cascade `i` of the sun's map has nothing nearer than depth `z` at `uv` (0..1 in its tile).
@@ -509,8 +558,7 @@ float dir_shadow_in(int i, vec3 n, vec3 l) {
 
 // Shadow of the directional light that casts one, picking the cascade by view depth and
 // fading into the next one near its end.
-float dir_shadow(vec3 n, vec3 l) {
-    if ((flags() & 4) == 0) return 1.0;
+float dir_shadow_full(vec3 n, vec3 l) {
     float depth = dot(v_world_pos - camera_pos.xyz, dir_cascade_fwd.xyz);
     int i = sun_cascade(depth);
     if (i < 0) return 1.0;
@@ -524,6 +572,11 @@ float dir_shadow(vec3 n, vec3 l) {
     // the last one fades out to no shadow
     float next = i + 1 < int(dir_cascade_params.x) ? dir_shadow_in(i + 1, n, l) : 1.0;
     return mix(lit, next, t);
+}
+
+float dir_shadow(vec3 n, vec3 l) {
+    if ((flags() & 4) == 0) return 1.0;
+    return mix(1.0, dir_shadow_full(n, l), dir_cascade_fwd.w);
 }
 
 // How much of the fog between the camera and here the directional light reaches, 0..1:
@@ -556,7 +609,7 @@ float sun_in_fog(vec3 from, vec3 to, float sigma) {
     }
     float all_fog = 1.0 - exp(-sigma * len);
     lit += last - (1.0 - all_fog);
-    return all_fog > 1e-5 ? clamp(lit / all_fog, 0.0, 1.0) : 1.0;
+    return all_fog > 1e-5 ? mix(1.0, clamp(lit / all_fog, 0.0, 1.0), dir_cascade_fwd.w) : 1.0;
 }
 
 // Light from the scene's irradiance volume, for a surface facing `n`; `fade` is 1 inside the
@@ -901,45 +954,47 @@ void main() {
         outc = irradiance * diffuse_color * RECIPROCAL_PI * ao;
 
         int ndir = int(counts.x);
-        for (int i = 0; i < 4; i++) {
-            if (i >= ndir) break;
+        for (int i = 0; i < ndir; i++) {
             g_radius = 0.0;
-            vec3 l = normalize(dir_dir[i].xyz);
+            vec3 l = normalize(dirs[i].dir.xyz);
             float lit = int(dir_shadow_params.x) == i + 1 ? dir_shadow(n, l) : 1.0;
-            if (lit > 0.0) outc += direct(mode, n, v, l, 1e6, dir_color[i].rgb * lit, diffuse_color, spec);
+            if (lit > 0.0) outc += direct(mode, n, v, l, 1e6, dirs[i].color.rgb * lit, diffuse_color, spec);
         }
         if (dir_cascade_params.z > 0.5 && dir_shadow_params.x > 0.5) {
             // renderer.debug_cascades: red, green, blue, yellow
             int k = sun_cascade(dot(v_world_pos - camera_pos.xyz, dir_cascade_fwd.xyz));
             if (k >= 0) outc = mix(outc, k == 0 ? vec3(1.0, 0.0, 0.0) : (k == 1 ? vec3(0.0, 1.0, 0.0) : (k == 2 ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 1.0, 0.0))), 0.5);
         }
-        int npoint = int(counts.y);
-        for (int i = 0; i < 6; i++) {
-            if (i >= npoint) break;
-            vec3 lv = point_pos[i].xyz - v_world_pos;
+        // the point and spot lights that reach this fragment's cluster
+        uvec4 range = clusters[cluster_of(v_world_pos)].range;
+        int first = int(range.x);
+        int npoint = int(range.y);
+        int nspot = int(range.z);
+        for (int k = 0; k < npoint; k++) {
+            gpu_point_light pl = points[cluster_lights[first + k].index];
+            vec3 lv = pl.pos.xyz - v_world_pos;
             float d = length(lv);
             // a light source with a size: falloff softens up close instead of blowing out
-            g_radius = point_params[i].x;
+            g_radius = pl.params.x;
             float d_soft = sqrt(d * d + g_radius * g_radius);
-            vec3 radiance = point_color[i].rgb * distance_attenuation(d_soft, point_pos[i].w, point_color[i].w);
-            radiance *= fog_transmittance(fog_distance(point_pos[i].xyz, v_world_pos));
+            vec3 radiance = pl.color.rgb * distance_attenuation(d_soft, pl.pos.w, pl.color.w);
+            radiance *= fog_transmittance(fog_distance(pl.pos.xyz, v_world_pos));
             outc += direct(mode, n, v, lv / d, d, radiance, diffuse_color, spec);
         }
-        int nspot = int(counts.z);
-        for (int i = 0; i < 8; i++) {
-            if (i >= nspot) break;
-            vec3 lv = spot_pos[i].xyz - v_world_pos;
+        for (int k = 0; k < nspot; k++) {
+            int i = int(cluster_lights[first + npoint + k].index);
+            vec3 lv = spots[i].pos.xyz - v_world_pos;
             float d = length(lv);
             // out of the light's reach
-            if (spot_pos[i].w > 0.0 && d > spot_pos[i].w) continue;
+            if (spots[i].pos.w > 0.0 && d > spots[i].pos.w) continue;
             vec3 l = lv / d;
-            float cone = smoothstep(spot_dir[i].w, spot_params[i].x, dot(-l, spot_dir[i].xyz));
+            float cone = smoothstep(spots[i].dir.w, spots[i].params.x, dot(-l, spots[i].dir.xyz));
             if (cone <= 0.0) continue;
-            g_radius = spot_params[i].y;
+            g_radius = spots[i].params.y;
             float d_soft = sqrt(d * d + g_radius * g_radius);
-            g_radius = spot_params[i].z;
-            vec3 radiance = spot_color[i].rgb * cone * distance_attenuation(d_soft, spot_pos[i].w, spot_color[i].w);
-            radiance *= fog_transmittance(fog_distance(spot_pos[i].xyz, v_world_pos));
+            g_radius = spots[i].params.z;
+            vec3 radiance = spots[i].color.rgb * cone * distance_attenuation(d_soft, spots[i].pos.w, spots[i].color.w);
+            radiance *= fog_transmittance(fog_distance(spots[i].pos.xyz, v_world_pos));
             radiance *= shadow(i, geo_n);
             outc += direct(mode, n, v, l, d, radiance, diffuse_color, spec);
         }
@@ -1014,17 +1069,16 @@ void main() {
             vec3 ray = -v;
             float in_fog = fd / max(depth, 1e-4);
             vec3 glow = vec3(0.0);
+            // (all of them: the glow is along the whole view ray, not at the fragment's cluster)
             int npoint = int(counts.y);
-            for (int i = 0; i < 6; i++) {
-                if (i >= npoint) break;
-                glow += point_color[i].rgb * fog_glow(point_pos[i].xyz, point_params[i].x, ray, depth, vec4(0.0), -2.0);
+            for (int i = 0; i < npoint; i++) {
+                glow += points[i].color.rgb * fog_glow(points[i].pos.xyz, points[i].params.x, ray, depth, vec4(0.0), -2.0);
             }
             int nspot = int(counts.z);
-            for (int i = 0; i < 8; i++) {
-                if (i >= nspot) break;
-                if (spot_params[i].w <= 0.0) continue;
-                glow += spot_color[i].rgb * spot_params[i].w
-                    * fog_glow(spot_pos[i].xyz, spot_params[i].y, ray, depth, spot_dir[i], spot_params[i].x);
+            for (int i = 0; i < nspot; i++) {
+                if (spots[i].params.w <= 0.0) continue;
+                glow += spots[i].color.rgb * spots[i].params.w
+                    * fog_glow(spots[i].pos.xyz, spots[i].params.y, ray, depth, spots[i].dir, spots[i].params.x);
             }
             fog_lit += glow * fog_color.w * in_fog;
         }
