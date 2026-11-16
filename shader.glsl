@@ -10,7 +10,7 @@
 in vec3 position;
 in vec3 normal;
 in vec2 uv;
-in vec3 color0;
+in vec4 color0;
 // Rows of the per-instance 3x4 matrix (identity for plain meshes).
 in vec4 inst0;
 in vec4 inst1;
@@ -77,19 +77,21 @@ out vec3 v_world_pos;
 out vec3 v_normal;
 out vec2 v_uv;
 out vec3 v_color;
+out float v_alpha;
 
 void main() {
     vec3 ip = instance_point(position);
     vec4 wp = model * vec4(ip, 1.0);
     wp.xyz = apply_sway(wp.xyz, ip.y, sway);
     if (sway.w > 0.0) {
-        wp.xyz = apply_push(wp.xyz, (model * vec4(instance_point(color0), 1.0)).xyz,
+        wp.xyz = apply_push(wp.xyz, (model * vec4(instance_point(color0.xyz), 1.0)).xyz,
                             (model * vec4(inst0.w, inst1.w, inst2.w, 1.0)).xz, pusher, sway.w);
     }
     v_world_pos = wp.xyz;
     v_normal = (normal_mat * vec4(instance_dir(normal), 0.0)).xyz;
     v_uv = uv * uv_transform.xy + uv_transform.zw;
-    v_color = color0;
+    v_color = color0.rgb;
+    v_alpha = color0.a;
     gl_Position = view_proj * wp;
 }
 @end
@@ -112,7 +114,7 @@ void main() {
     vec4 wp = s_model * vec4(ip, 1.0);
     wp.xyz = apply_sway(wp.xyz, ip.y, s_sway);
     if (s_sway.w > 0.0) {
-        wp.xyz = apply_push(wp.xyz, (s_model * vec4(instance_point(color0), 1.0)).xyz,
+        wp.xyz = apply_push(wp.xyz, (s_model * vec4(instance_point(color0.xyz), 1.0)).xyz,
                             (s_model * vec4(inst0.w, inst1.w, inst2.w, 1.0)).xz, s_pusher, s_sway.w);
     }
     v_uv = uv * s_uv_transform.xy + s_uv_transform.zw;
@@ -149,6 +151,7 @@ layout(binding=5) uniform texture2D shadow_atlas;
 layout(binding=6) uniform texture3D tex_gi;
 layout(binding=7) uniform texture2D ssr_color;   // the last frame: tone mapped, sRGB, a = 0 at light sources
 layout(binding=8) uniform texture2D ssr_depth;   // g = its distance from the camera's plane (m)
+layout(binding=9) uniform texture2D sun_shadow;  // the directional light's map: 2x2 cascades, or one box
 layout(binding=0) uniform sampler tex_smp;
 layout(binding=1) uniform sampler shadow_smp;
 layout(binding=2) uniform sampler env_smp;
@@ -167,14 +170,15 @@ layout(binding=1) uniform fs_params {
     vec4 env_pos;      // where the map was captured, w = 1 for box projection
     vec4 env_box_min;  // the room the map shows, for box projection
     vec4 env_box_max;
-    vec4 screen_params; // xy = 1 / render target size (screen-space map)
+    vec4 screen_params; // xy = 1 / render target size (screen-space map), z = LOD cross-fade (0..1),
+                        //   w = 1 fading in, -1 fading out, 0 none
     vec4 cull_min;      // w = 1: fragments inside cull_min..cull_max are not drawn
     vec4 cull_max;
     vec4 camera_pos;   // w = tone mapping exposure (0 = no tone mapping)
     vec4 ambient;      // summed ambient light
     vec4 hemi_sky;
     vec4 hemi_ground;
-    vec4 gi_min;       // irradiance volume: its box, w = 1 when there is one
+    vec4 gi_min;       // irradiance volume: its box, w = 1 when there is one, 2 when it replaces the ambient light
     vec4 gi_inv_size;  // w = intensity
     vec4 gi_dims;      // probes along x, y, z, w = lookup offset along the normal (m)
     vec4 fog_color;    // w = how strongly lights glow in the fog
@@ -183,7 +187,7 @@ layout(binding=1) uniform fs_params {
     vec4 fog_box_max;
     vec4 fog_height;   // x = base height, y = falloff per meter (0 = none), w = density away from the sun's side
     vec4 fog_sun_dir;  // towards the sun, w = sharpness (0 = no sun)
-    vec4 fog_sun_color;
+    vec4 fog_sun_color; // w = light shafts (0..1)
     vec4 counts;       // x = directional lights, y = point lights, z = spot lights
     vec4 dir_dir[4];   // world-space direction towards the light
     vec4 dir_color[4];
@@ -201,6 +205,14 @@ layout(binding=1) uniform fs_params {
     vec4 shadow_rect[8];   // the light's tile in shadow_atlas: xy = offset, zw = size
     vec4 shadow_soft[8];   // x = size of the source (m; 0: edges equally sharp everywhere), y = near,
                            //   z = far, w = width of the map 1 m from the light (negative: depth is -1..1)
+    mat4 dir_shadow_mat[4]; // world -> uv in its tile + depth, per cascade of the directional light's shadow
+    vec4 dir_shadow_params; // x = which directional light + 1 (0: none), y = normal bias (m),
+                            //   z = texel size of sun_shadow, w = blur radius in texels
+    vec4 dir_cascade_rect[4];  // each cascade's tile in sun_shadow: xy = offset, zw = size
+    vec4 dir_cascade_info[4];  // per cascade: x = view depth (m) where it ends, y = size of a texel (m)
+    vec4 dir_cascade_params;   // x = cascades, y = blend band (part of a cascade), z = 1: tint them,
+                               //   w = 1: one box (no cascades), faded at its edge
+    vec4 dir_cascade_fwd;      // the camera's forward direction
     vec4 grime_params;     // x = dirt on the surface (0: none), y = the room's floor, z = its height (m),
                            //   w = seed
     mat4 ssr_view_proj;    // world -> the last frame's clip space
@@ -212,6 +224,7 @@ in vec3 v_world_pos;
 in vec3 v_normal;
 in vec2 v_uv;
 in vec3 v_color;
+in float v_alpha;
 
 out vec4 frag_color;
 
@@ -449,13 +462,112 @@ float shadow(int i, vec3 n) {
     return sum / float(taps);
 }
 
-// Bounced light from the scene's irradiance volume, for a surface facing `n`. Each probe
-// holds the light arriving from the six axis directions, side by side along x in the texture.
-vec3 gi_irradiance(vec3 n) {
+// 1 where cascade `i` of the sun's map has nothing nearer than depth `z` at `uv` (0..1 in its tile).
+float sun_tap(int i, vec2 uv, float z) {
+    vec4 rect = dir_cascade_rect[i];
+    // stay half a texel inside the tile: the neighbours belong to other cascades
+    vec2 t = dir_shadow_params.z / rect.zw;
+    uv = rect.xy + clamp(uv, t * 0.5, 1.0 - t * 0.5) * rect.zw;
+    return texture(sampler2DShadow(sun_shadow, shadow_smp), vec3(uv, z));
+}
+
+// The cascade that covers view depth `depth`, -1 past the last.
+int sun_cascade(float depth) {
+    if (dir_cascade_params.w > 0.5) return 0;
+    int count = int(dir_cascade_params.x);
+    for (int i = 0; i < 4; i++) {
+        if (i >= count) break;
+        if (depth < dir_cascade_info[i].x) return i;
+    }
+    return -1;
+}
+
+// Shadow of the directional light in cascade `i`: a box of parallel rays towards `l`.
+float dir_shadow_in(int i, vec3 n, vec3 l) {
+    vec4 params = dir_shadow_params;
+    // texels of the far cascades are bigger: push further off the surface, blur fewer texels
+    float scale = dir_cascade_info[i].y / max(dir_cascade_info[0].y, 1e-6);
+    float slope = 1.0 - clamp(dot(n, l), 0.0, 1.0);
+    vec3 c = (dir_shadow_mat[i] * vec4(v_world_pos + n * params.y * scale * (0.4 + slope), 1.0)).xyz;
+    if (c.x < 0.0 || c.x > 1.0 || c.y < 0.0 || c.y > 1.0 || c.z > 1.0 || c.z < 0.0) return 1.0;
+    float angle = fract(sin(dot(gl_FragCoord.xy + ssr_params.z * vec2(5.0, 3.0), vec2(12.9898, 78.233))) * 43758.5453) * 6.2831;
+    float ca = cos(angle);
+    float sa = sin(angle);
+    float texel = params.z / dir_cascade_rect[i].z;
+    float r = texel * max(params.w / scale, min(params.w, 1.0));
+    float sum = 0.0;
+    for (int k = 0; k < 10; k++) {
+        float a = float(k) * 2.39996;
+        vec2 o = vec2(cos(a), sin(a)) * (sqrt((float(k) + 0.5) / 10.0) * r);
+        sum += sun_tap(i, c.xy + vec2(o.x * ca - o.y * sa, o.x * sa + o.y * ca), c.z);
+    }
+    if (dir_cascade_params.w < 0.5) return sum / 10.0;
+    // one box: nothing is shadowed outside of it, fade towards its edge
+    vec2 edge = min(c.xy, 1.0 - c.xy);
+    return mix(1.0, sum / 10.0, clamp(min(edge.x, edge.y) * 10.0, 0.0, 1.0));
+}
+
+// Shadow of the directional light that casts one, picking the cascade by view depth and
+// fading into the next one near its end.
+float dir_shadow(vec3 n, vec3 l) {
+    if ((flags() & 4) == 0) return 1.0;
+    float depth = dot(v_world_pos - camera_pos.xyz, dir_cascade_fwd.xyz);
+    int i = sun_cascade(depth);
+    if (i < 0) return 1.0;
+    float lit = dir_shadow_in(i, n, l);
+    if (dir_cascade_params.w > 0.5) return lit;
+    float start = i == 0 ? 0.0 : dir_cascade_info[i - 1].x;
+    float band = (dir_cascade_info[i].x - start) * dir_cascade_params.y;
+    if (band <= 0.0) return lit;
+    float t = clamp((depth - (dir_cascade_info[i].x - band)) / band, 0.0, 1.0);
+    if (t <= 0.0) return lit;
+    // the last one fades out to no shadow
+    float next = i + 1 < int(dir_cascade_params.x) ? dir_shadow_in(i + 1, n, l) : 1.0;
+    return mix(lit, next, t);
+}
+
+// How much of the fog between the camera and here the directional light reaches, 0..1:
+// marched through its shadow map, each step weighted by how much of the fog's light it gives
+// (`sigma`: the fog's density along this ray). Beyond the map's reach the fog counts as lit.
+float sun_in_fog(vec3 from, vec3 to, float sigma) {
+    vec3 ray = to - from;
+    float len = length(ray);
+    const float REACH = 70.0;
+    const int STEPS = 14;
+    float span = min(len, REACH);
+    float jitter = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))) + ssr_params.z * 0.618);
+    float lit = 0.0;
+    float last = 1.0;
+    for (int i = 0; i < STEPS; i++) {
+        float s1 = span * (float(i) + 1.0) / float(STEPS);
+        float s = span * (float(i) + jitter) / float(STEPS);
+        float next = exp(-sigma * s1);
+        vec3 at = from + ray * (s / max(len, 1e-4));
+        int k = sun_cascade(dot(at - camera_pos.xyz, dir_cascade_fwd.xyz));
+        vec3 c = (dir_shadow_mat[max(k, 0)] * vec4(at, 1.0)).xyz;
+        float seen = 1.0;
+        if (k >= 0 && c.x > 0.0 && c.x < 1.0 && c.y > 0.0 && c.y < 1.0 && c.z < 1.0 && c.z > 0.0) {
+            seen = sun_tap(k, c.xy, c.z);
+            vec2 edge = min(c.xy, 1.0 - c.xy);
+            seen = mix(1.0, seen, clamp(min(edge.x, edge.y) * 10.0, 0.0, 1.0));
+        }
+        lit += (last - next) * seen;
+        last = next;
+    }
+    float all_fog = 1.0 - exp(-sigma * len);
+    lit += last - (1.0 - all_fog);
+    return all_fog > 1e-5 ? clamp(lit / all_fog, 0.0, 1.0) : 1.0;
+}
+
+// Light from the scene's irradiance volume, for a surface facing `n`; `fade` is 1 inside the
+// volume, 0 outside it, between the two over its outermost half cell. Each probe holds the
+// light arriving from the six axis directions, side by side along x in the texture.
+vec3 gi_irradiance(vec3 n, out float fade) {
+    fade = 0.0;
     if (gi_min.w < 0.5) return vec3(0.0);
     vec3 p = (v_world_pos + n * gi_dims.w - gi_min.xyz) * gi_inv_size.xyz;
     vec3 edge = min(p, 1.0 - p) * gi_dims.xyz;
-    float fade = clamp(min(edge.x, min(edge.y, edge.z)) * 2.0, 0.0, 1.0);
+    fade = clamp(min(edge.x, min(edge.y, edge.z)) * 2.0, 0.0, 1.0);
     if (fade <= 0.0) return vec3(0.0);
     // stay inside a direction's slab
     float x = clamp(p.x, 0.5 / gi_dims.x, 1.0 - 0.5 / gi_dims.x) / 6.0;
@@ -464,7 +576,7 @@ vec3 gi_irradiance(vec3 n) {
     vec3 e = textureLod(sampler3D(tex_gi, gi_smp), vec3(x + slab.x, p.y, p.z), 0.0).rgb * w.x
            + textureLod(sampler3D(tex_gi, gi_smp), vec3(x + slab.y, p.y, p.z), 0.0).rgb * w.y
            + textureLod(sampler3D(tex_gi, gi_smp), vec3(x + slab.z, p.y, p.z), 0.0).rgb * w.z;
-    return e * (fade * gi_inv_size.w);
+    return e * gi_inv_size.w;
 }
 
 vec3 srgb_to_linear(vec3 c) {
@@ -715,6 +827,12 @@ void main() {
     bool foliage = (fl & 2) != 0;
 
     if (cull_min.w > 0.5 && all(greaterThan(v_world_pos, cull_min.xyz)) && all(lessThan(v_world_pos, cull_max.xyz))) discard;
+    // LOD cross-fade: a screen-door dither, the incoming level where it is below the fade and
+    // the outgoing one where it is not (interleaved gradient noise: no visible pattern)
+    if (screen_params.w != 0.0) {
+        float dither = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
+        if (screen_params.w > 0.0 ? dither >= screen_params.z : dither < screen_params.z) discard;
+    }
     if ((fl & 32) != 0) {
         // a window onto another render: its pixels as they are, already tone mapped
         frag_color = vec4(texture(sampler2D(tex_map, tex_smp), gl_FragCoord.xy * screen_params.xy).rgb, 1.0);
@@ -726,6 +844,7 @@ void main() {
     if ((fl & 1) != 0 && !baked) g_base.rgb *= v_color;
     if (tex_params.x > 0.5) g_base *= texture(sampler2D(tex_map, tex_smp), v_uv);
     float alpha = g_base.a;
+    if ((fl & 1) != 0) alpha *= v_alpha;
     if (tex_params.w > 0.0) {
         // far away the texture's smaller levels average leaves and gaps into an alpha under
         // the cutoff, and the whole plant would go: make up for it, so as much stays covered
@@ -775,14 +894,24 @@ void main() {
         vec3 diffuse_color = g_base.rgb;
         if (mode == 3) diffuse_color *= (1.0 - g_metal);
 
-        vec3 irradiance = ambient.rgb + mix(hemi_ground.rgb, hemi_sky.rgb, 0.5 * n.y + 0.5) + gi_irradiance(n);
+        vec3 sky_light = ambient.rgb + mix(hemi_ground.rgb, hemi_sky.rgb, 0.5 * n.y + 0.5);
+        float gi_fade;
+        vec3 gi = gi_irradiance(n, gi_fade);
+        vec3 irradiance = gi_min.w > 1.5 ? mix(sky_light, gi, gi_fade) : sky_light + gi * gi_fade;
         outc = irradiance * diffuse_color * RECIPROCAL_PI * ao;
 
         int ndir = int(counts.x);
         for (int i = 0; i < 4; i++) {
             if (i >= ndir) break;
             g_radius = 0.0;
-            outc += direct(mode, n, v, normalize(dir_dir[i].xyz), 1e6, dir_color[i].rgb, diffuse_color, spec);
+            vec3 l = normalize(dir_dir[i].xyz);
+            float lit = int(dir_shadow_params.x) == i + 1 ? dir_shadow(n, l) : 1.0;
+            if (lit > 0.0) outc += direct(mode, n, v, l, 1e6, dir_color[i].rgb * lit, diffuse_color, spec);
+        }
+        if (dir_cascade_params.z > 0.5 && dir_shadow_params.x > 0.5) {
+            // renderer.debug_cascades: red, green, blue, yellow
+            int k = sun_cascade(dot(v_world_pos - camera_pos.xyz, dir_cascade_fwd.xyz));
+            if (k >= 0) outc = mix(outc, k == 0 ? vec3(1.0, 0.0, 0.0) : (k == 1 ? vec3(0.0, 1.0, 0.0) : (k == 2 ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 1.0, 0.0))), 0.5);
         }
         int npoint = int(counts.y);
         for (int i = 0; i < 6; i++) {
@@ -868,9 +997,16 @@ void main() {
         }
         if (fog_sun_dir.w > 0.0) {
             vec3 look = normalize(v_world_pos - camera_pos.xyz);
-            fog_own = mix(fog_own, fog_sun_color.rgb, pow(max(dot(look, fog_sun_dir.xyz), 0.0), fog_sun_dir.w));
             float side = dot(normalize(look.xz + vec2(1e-5)), normalize(fog_sun_dir.xz + vec2(1e-5)));
             fd *= mix(fog_height.w, 1.0, smoothstep(-0.3, 0.7, side));
+            float sunlit = pow(max(dot(look, fog_sun_dir.xyz), 0.0), fog_sun_dir.w);
+            if (fog_sun_color.w > 0.0 && dir_shadow_params.x > 0.5 && fog_mode == 3) {
+                // light shafts: the sun's part of the fog only where the sun gets to it
+                float len = length(v_world_pos - camera_pos.xyz);
+                float lit = sun_in_fog(camera_pos.xyz, v_world_pos, fog_params.z * fd / max(len, 1e-4));
+                sunlit *= mix(1.0, lit, fog_sun_color.w);
+            }
+            fog_own = mix(fog_own, fog_sun_color.rgb, sunlit);
         }
         float t = fog_transmittance(fd);
         vec3 fog_lit = fog_own * (1.0 - t);

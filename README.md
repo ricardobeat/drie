@@ -82,10 +82,12 @@ and parameter objects become named arguments.
 - **Lights:** `AmbientLight`, `HemisphereLight`, `DirectionalLight` (up to 4), `PointLight` (up to 6),
   `SpotLight` (up to 4). Intensities and color handling follow modern three.js (r155+): sRGB hex
   colors, linear lighting, physically based light units.
-- **Shadows:** spot lights cast them: `light.cast_shadow = true`, and `cast_shadow` /
-  `receive_shadow` on meshes. `light.shadow` has `map_size`, `normal_bias`, `radius`, `near`,
-  `far` and `focus`. One light's map is redrawn every frame; up to four more can cast shadows
-  that are drawn once (see `auto_update` below).
+- **Shadows:** spot and directional lights cast them: `light.cast_shadow = true`, and
+  `cast_shadow` / `receive_shadow` on meshes. `light.shadow` has `map_size`, `normal_bias`,
+  `radius`, `near`, `far` and `focus` (spot lights). One spot light's map is redrawn every
+  frame; up to seven more can cast shadows that are drawn once (see `auto_update` below). One
+  directional light (the first that casts) has a map of its own at the same time, in cascades
+  (see below).
 - **Fog:** `Fog` (linear) and `FogExp2`
 - **Controls:** `OrbitControls` (left drag rotates, right drag or shift+drag pans, scroll zooms, damping, auto-rotate)
 - **Menus** (`menu.c3`, not in three.js; `menu.locked = true` leaves the toggle key to the game
@@ -136,6 +138,19 @@ These aren't in three.js:
 - `light.shadow.auto_update = false`: for a light that stays put among things that stay put. Its
   shadow map is drawn once into a shared atlas (four such lights at most) and costs nothing
   after that. Set `light.shadow.needs_update = true` to redraw it, as in three.js.
+- Cascaded shadow maps for a `DirectionalLight` (like three's `CSM` addon, built in):
+  `light.shadow.cascades` (1..4, default 4) cuts the camera's view up to
+  `shadow.max_distance` meters (default 150) into slices, each with its own box of parallel
+  rays, `map_size` square, in a 2x2 atlas. `shadow.split_lambda` places the cuts (0: evenly,
+  1: logarithmic; default 0.7) and `shadow.cascade_blend` is the band where one slice fades into
+  the next (a part of the slice, default 0.1); the last fades to no shadow. Each box is fitted
+  around the slice's bounding sphere and moves in whole texels, so edges do not crawl as the
+  camera turns or moves. The blur (`radius`) and `normal_bias` are scaled to each cascade's
+  texel size, so the softness matches across the cuts. Needs a perspective camera.
+  `renderer.debug_cascades = true` tints them red, green, blue and yellow, nearest first.
+- `shadow.cascades = 1`: one box, `light.shadow_extent` meters from its centre to its sides
+  (three's `shadow.camera.right`/`top`), on the light's target, or ahead of the camera with
+  `light.shadow_follow = true`. Faded out towards its edge.
 - `spot_light.fog_glow`: scales how much the light shows in `fog.light_scatter` fog (0: not at all).
 - `scene.irradiance`: an `IrradianceVolume`, a grid of probes holding light that has bounced
   around a room. Lit materials inside its box receive it on top of the scene's lights. The
@@ -177,7 +192,7 @@ These aren't in three.js:
 - Named arguments must be in declaration order (a C3 rule). For example, `color:` comes before `roughness:`.
 - Colors are plain sRGB hex `uint`s, not `Color` objects.
 - Rotations are XYZ Euler only (no quaternions or `rotation.order`).
-- No raycasting, animation or skinning. Only spot lights cast shadows.
+- No raycasting, animation or skinning. Point lights cast no shadows.
 - `InstancedMesh` grows: `add_instance(matrix)` appends, `set_matrix_at(index, matrix)` changes one.
 - `Lod` (three.js `LOD`) levels are added with `lod.add_level(object, distance)`, in increasing
   distance. A `null` object shows nothing from that distance on.

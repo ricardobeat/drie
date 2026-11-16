@@ -31,6 +31,11 @@ struct IrradianceVolume
     // Surfaces look up the volume this far off along their normal (meters), so that a wall
     // takes its light from the room it faces and not from the probes behind it.
     float normal_offset;
+    // Extension: the probes hold all the light from around them, the sky's included, instead of
+    // what bounces on top of it. Inside the box they take the place of the scene's ambient and
+    // hemisphere lights, which then light only what is outside it: a building's shade and its
+    // dark corners, out of doors.
+    bool replaces_ambient;
     SgImage image;
     SgView view;
     SgSampler sampler;

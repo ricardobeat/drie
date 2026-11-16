@@ -168,6 +168,9 @@ struct Renderer
     bool auto_time;
     // Statistics of the last render() call, like three's renderer.info.render.
     RenderInfo info;
+    // Extension: tint what each cascade of the directional light's shadow covers (red, green,
+    // blue, yellow, nearest first), to see where they fall.
+    bool debug_cascades;
     // What materials with `ssr` reflect (see set_reflection_source).
     SgView ssr_color;
     SgView ssr_depth;
@@ -217,6 +220,10 @@ struct DrawItem @local
 {
     Mesh* mesh;
     float depth;
+    // in a LOD's cross-fade: how far it has gone (0..1), and 1 for the level fading in, -1 for
+    // the one fading out (0: drawn whole)
+    float fade;
+    float fade_dir;
 }
 
 struct Frustum @local
@@ -262,6 +269,19 @@ struct RendererState @local
     SpotLight*[MAX_FIXED_SHADOWS] atlas_lights;
     // set while gathering the casters of a light with shadow.skip_instanced
     bool skip_instanced;
+    // the directional light with a shadow, if any, and its map: one box, or 2x2 cascades
+    DirectionalLight* sun_caster;
+    SgImage sun_image;
+    SgView sun_attachment;
+    SgView sun_view;
+    int sun_size;
+    // its cascades: count (0: one box), view-projection, tile, where each ends (view depth, m)
+    // and the size of its texels (m)
+    int sun_cascades;
+    Mat4[4] sun_view_proj;
+    Vec4[4] sun_rect;
+    Vec4[4] sun_info;
+    Vector3 sun_forward;
     // Sphere around the camera that carries the fog where there is no geometry.
     Mesh* backdrop;
 }
@@ -357,6 +377,9 @@ fn void setup_gfx(SgEnvironment environment) @local
         .environment = environment,
         .logger.func = &slog::func,
         .buffer_pool_size = 16384,
+        // room for the uniforms of some thousands of draws a frame (sokol's default, 4 MB,
+        // is too little for a scene of many scattered plants seen from afar)
+        .uniform_buffer_size = 16 * 1024 * 1024,
         .image_pool_size = 1024,
         .view_pool_size = 1024,
         .sampler_pool_size = 1024,
@@ -448,7 +471,7 @@ fn SgVertexLayoutState vertex_layout(int[7] attrs) @local
     layout.attrs[attrs[0]] = { .format = FLOAT3, .offset = 0 };
     layout.attrs[attrs[1]] = { .format = FLOAT3, .offset = 12 };
     layout.attrs[attrs[2]] = { .format = FLOAT2, .offset = 24 };
-    layout.attrs[attrs[3]] = { .format = FLOAT3, .offset = 32 };
+    layout.attrs[attrs[3]] = { .format = FLOAT4, .offset = 32 };
     layout.attrs[attrs[4]] = { .format = FLOAT4, .offset = 0, .buffer_index = 1 };
     layout.attrs[attrs[5]] = { .format = FLOAT4, .offset = 16, .buffer_index = 1 };
     layout.attrs[attrs[6]] = { .format = FLOAT4, .offset = 32, .buffer_index = 1 };
@@ -555,6 +578,24 @@ fn void ensure_shadow_map(int size) @local
     });
     state.shadow_attachment = sg::make_view(&&{ .depth_stencil_attachment = { .image = state.shadow_image } });
     state.shadow_view = sg::make_view(&&{ .texture = { .image = state.shadow_image } });
+}
+
+fn void ensure_sun_map(int size) @local
+{
+    if (state.sun_size == size) return;
+    if (state.sun_size)
+    {
+        sg::destroy_view(state.sun_attachment);
+        sg::destroy_view(state.sun_view);
+        sg::destroy_image(state.sun_image);
+    }
+    state.sun_size = size;
+    state.sun_image = sg::make_image(&&{
+        .usage = { .depth_stencil_attachment = true },
+        .width = size, .height = size, .sample_count = 1, .pixel_format = DEPTH,
+    });
+    state.sun_attachment = sg::make_view(&&{ .depth_stencil_attachment = { .image = state.sun_image } });
+    state.sun_view = sg::make_view(&&{ .texture = { .image = state.sun_image } });
 }
 
 fn void ensure_shadow_atlas(int tile) @local
@@ -703,7 +744,7 @@ fn void upload_instances(Mesh* m) @local
 }
 
 // Gathers what to draw. `lod_from` is the position LOD levels are measured from.
-fn void collect(Object3D* obj, Mat4 view, Frustum* frustum, Vector3 lod_from, bool shadow_pass) @local
+fn void collect(Object3D* obj, Mat4 view, Frustum* frustum, Vector3 lod_from, bool shadow_pass, float fade = 0, float fade_dir = 0) @local
 {
     if (!obj.visible) return;
     switch (obj.kind)
@@ -730,7 +771,7 @@ fn void collect(Object3D* obj, Mat4 view, Frustum* frustum, Vector3 lod_from, bo
                 float r = radius * max_scale(m.matrix_world) + m.material.sway * 2;
                 if (!frustum.contains_sphere(wc, r)) break;
             }
-            DrawItem item = { m, view.transform_point(wc).z };
+            DrawItem item = { m, view.transform_point(wc).z, fade, fade_dir };
             if (shadow_pass)
             {
                 state.casters.push(item);
@@ -755,12 +796,25 @@ fn void collect(Object3D* obj, Mat4 view, Frustum* frustum, Vector3 lod_from, bo
             {
                 if (d >= l.distances[i]) pick = i;
             }
+            // near the next level's distance (or past this one's), both are drawn, dissolving
+            if (l.fade > 0 && !shadow_pass)
+            {
+                float half = l.fade * 0.5f;
+                for (sz i = 1; i < l.distances.len() && i < l.children.len(); i++)
+                {
+                    float t = (d - (l.distances[i] - half)) / l.fade;
+                    if (t <= 0 || t >= 1) continue;
+                    collect(l.children[i - 1], view, frustum, lod_from, shadow_pass, t, -1);
+                    collect(l.children[i], view, frustum, lod_from, shadow_pass, t, 1);
+                    return;
+                }
+            }
             if (pick >= 0 && pick < l.children.len()) collect(l.children[pick], view, frustum, lod_from, shadow_pass);
             return;
         default:
             break;
     }
-    foreach (c : obj.children) collect(c, view, frustum, lod_from, shadow_pass);
+    foreach (c : obj.children) collect(c, view, frustum, lod_from, shadow_pass, fade, fade_dir);
 }
 
 // The one light whose shadow map is drawn every frame.
@@ -772,6 +826,151 @@ fn SpotLight* shadow_light() @local
         if (((SpotLight*)l).shadow.auto_update) return (SpotLight*)l;
     }
     return null;
+}
+
+// The directional light to draw a shadow map for: the first that casts one.
+fn DirectionalLight* directional_shadow_light() @local
+{
+    foreach (l : state.lights)
+    {
+        if (l.light_type == DIRECTIONAL && l.cast_shadow && l.visible && l.intensity > 0) return (DirectionalLight*)l;
+    }
+    return null;
+}
+
+// View-projection of a directional light's shadow box.
+fn Mat4 directional_shadow_view_proj(DirectionalLight* d, Camera* camera) @local
+{
+    Vector3 target = d.target ? d.target.get_world_position() : (Vector3){ 0, 0, 0 };
+    Vector3 dir = (d.matrix_world.get_position() - target).normalize();
+    float extent = math::max(d.shadow_extent, 0.1f);
+    Vector3 center = target;
+    if (d.shadow_follow)
+    {
+        Vector3 at = camera.matrix_world.get_position();
+        Mat4 cw = camera.matrix_world;
+        Vector3 ahead = { -cw[2][0], 0, -cw[2][2] };
+        if (ahead.length() > 1e-4f) center = at + ahead.normalize() * (extent * 0.55f);
+    }
+    return sun_box_view_proj(d, dir, center, extent, d.shadow.map_size);
+}
+
+// View-projection of a box of parallel rays towards `dir`, `radius` meters around `center`,
+// moved a whole texel of a `size` map at a time (or the shadows' edges crawl as it travels).
+fn Mat4 sun_box_view_proj(DirectionalLight* d, Vector3 dir, Vector3 center, float radius, int size) @local
+{
+    Vector3 up = math::abs(dir.y) > 0.99f ? (Vector3){ 1, 0, 0 } : (Vector3){ 0, 1, 0 };
+    Vector3 right = up.cross(dir).normalize();
+    up = dir.cross(right);
+    float texel = 2 * radius / (float)math::max(size, 1);
+    center -= right * (center.dot(right) % texel) + up * (center.dot(up) % texel);
+    float far = d.shadow.far > 0 ? d.shadow.far : 300.0f;
+    Vector3 eye = center + dir * (far * 0.5f);
+    Mat4 world = mat4_look_at(eye, center, up, true);
+    world[3] = { eye.x, eye.y, eye.z, 1 };
+    Mat4 proj = mat4_orthographic(-radius, radius, radius, -radius, math::max(d.shadow.near, 0.01f), far, depth_zero_to_one());
+    return proj.mul(world.invert());
+}
+
+// Splits the camera's view up to shadow.max_distance into the light's cascades and fits a box
+// to each: around the sphere that holds the slice, so its size does not change as the camera
+// turns. Fills state.sun_*; returns how many there are (0: the camera is not a perspective
+// one, use one box).
+fn int fit_sun_cascades(DirectionalLight* d, Camera* camera, Vector3 dir) @local
+{
+    int n = math::min(math::max(d.shadow.cascades, 1), 4);
+    if (n < 2 || camera.camera_type != PERSPECTIVE) return 0;
+    Mat4 p = camera.projection_matrix;
+    // tangents of the half angles of the view
+    float tx = p[0][0] != 0 ? 1 / math::abs(p[0][0]) : 1;
+    float ty = p[1][1] != 0 ? 1 / math::abs(p[1][1]) : 1;
+    float k = tx * tx + ty * ty;
+    float near = math::max(camera.near, 0.01f);
+    float far = math::max(math::min(d.shadow.max_distance > 0 ? d.shadow.max_distance : 150.0f, camera.far), near + 1);
+    float lambda = clamp(d.shadow.split_lambda, 0, 1);
+    Mat4 cw = camera.matrix_world;
+    Vector3 at = cw.get_position();
+    Vector3 fwd = ((Vector3){ -cw[2][0], -cw[2][1], -cw[2][2] }).normalize();
+    state.sun_forward = fwd;
+    int tile = math::max(d.shadow.map_size, 4);
+    float from = near;
+    for (int i = 0; i < n; i++)
+    {
+        float f = (float)(i + 1) / (float)n;
+        float to = lambda * near * math::pow(far / near, f) + (1 - lambda) * (near + (far - near) * f);
+        // the slice's sphere: centred on the view axis, as far from its near corners as from its far ones
+        float z = math::min((from + to) * (1 + k) * 0.5f, to);
+        float radius = math::sqrt((to - z) * (to - z) + to * to * k);
+        // in steps, so that rounding does not change its size from one frame to the next
+        radius = math::ceil(radius * 16) / 16;
+        state.sun_view_proj[i] = sun_box_view_proj(d, dir, at + fwd * z, radius, tile);
+        state.sun_rect[i] = { (float)(i % 2) * 0.5f, (float)(i / 2) * 0.5f, 0.5f, 0.5f };
+        state.sun_info[i] = { to, 2 * radius / (float)tile, 0, 0 };
+        from = to;
+    }
+    return n;
+}
+
+// Draws the directional light's shadow map: its cascades, each into a tile of a 2x2 atlas with
+// the casters inside its own box, or one box.
+fn void draw_sun_shadow(Scene* scene, Camera* camera, DirectionalLight* sun) @local
+{
+    if (!sun)
+    {
+        ensure_sun_map(state.sun_size ?: 4);
+        return;
+    }
+    Vector3 target = sun.target ? sun.target.get_world_position() : (Vector3){ 0, 0, 0 };
+    Vector3 dir = (sun.matrix_world.get_position() - target).normalize();
+    int tile = math::max(sun.shadow.map_size, 4);
+    int n = fit_sun_cascades(sun, camera, dir);
+    state.sun_cascades = n;
+    if (!n)
+    {
+        state.sun_view_proj[0] = directional_shadow_view_proj(sun, camera);
+        state.sun_rect[0] = { 0, 0, 1, 1 };
+        state.sun_info[0] = { 1e9f, 2 * math::max(sun.shadow_extent, 0.1f) / (float)tile, 0, 0 };
+    }
+    ensure_sun_map(n ? tile * 2 : tile);
+    Vector3 camera_pos = camera.matrix_world.get_position();
+    bool top_left = depth_zero_to_one();
+    sg::begin_pass(&&{
+        // depth is not stored by default: ask for it, the main pass samples this map
+        .action = { .depth = { .load_action = CLEAR, .store_action = STORE, .clear_value = 1 } },
+        .attachments = { .depth_stencil = state.sun_attachment },
+    });
+    sg::apply_pipeline(get_shadow_pipeline());
+    for (int i = 0; i < math::max(n, 1); i++)
+    {
+        Mat4 light_vp = state.sun_view_proj[i];
+        Frustum light_frustum = frustum_from(light_vp);
+        state.casters.clear();
+        state.skip_instanced = sun.shadow.skip_instanced;
+        collect(scene, camera.matrix_world_inverse, &light_frustum, camera_pos, true);
+        state.skip_instanced = false;
+        if (n)
+        {
+            sg::apply_viewport((i % 2) * tile, (i / 2) * tile, tile, tile, top_left);
+            sg::apply_scissor_rect((i % 2) * tile, (i / 2) * tile, tile, tile, top_left);
+        }
+        foreach (&item : state.casters) draw_shadow_item(item, light_vp);
+    }
+    sg::end_pass();
+    state.casters.clear();
+}
+
+// Clip space -> shadow map uv (v points down outside of GL) and 0..1 depth.
+fn Mat4 shadow_bias() @local
+{
+    bool zo = depth_zero_to_one();
+    Mat4 bias = mat4_identity();
+    bias[0][0] = 0.5f;
+    bias[3][0] = 0.5f;
+    bias[1][1] = zo ? -0.5f : 0.5f;
+    bias[3][1] = 0.5f;
+    bias[2][2] = zo ? 1.0f : 0.5f;
+    bias[3][2] = zo ? 0.0f : 0.5f;
+    return bias;
 }
 
 fn Vector3 spot_direction(SpotLight* sl) @local
@@ -824,6 +1023,20 @@ fn FsParams build_light_params(Scene* scene, Camera* camera, SpotLight* caster) 
                 Vector3 dir = l.matrix_world.get_position() - target;
                 p.dir_dir[ndir] = { ...dir, 0 };
                 p.dir_color[ndir] = { ...c, 0 };
+                if (d == state.sun_caster)
+                {
+                    int n = state.sun_cascades;
+                    for (int i = 0; i < math::max(n, 1); i++)
+                    {
+                        p.dir_shadow_mat[i] = shadow_bias().mul(state.sun_view_proj[i]);
+                        p.dir_cascade_rect[i] = state.sun_rect[i];
+                        p.dir_cascade_info[i] = state.sun_info[i];
+                    }
+                    p.dir_shadow_params = { (float)(ndir + 1), d.shadow.normal_bias, 1.0f / (float)state.sun_size, d.shadow.radius };
+                    p.dir_cascade_params = { (float)math::max(n, 1), clamp(d.shadow.cascade_blend, 0, 1),
+                                             r.debug_cascades ? 1 : 0, n ? 0 : 1 };
+                    p.dir_cascade_fwd = { ...state.sun_forward, 0 };
+                }
                 ndir++;
             case POINT:
                 if (npoint >= MAX_POINT_LIGHTS) break;
@@ -873,7 +1086,7 @@ fn FsParams build_light_params(Scene* scene, Camera* camera, SpotLight* caster) 
     {
         IrradianceVolume* v = scene.irradiance;
         Vector3 size = v.max - v.min;
-        p.gi_min = { ...v.min, 1 };
+        p.gi_min = { ...v.min, v.replaces_ambient ? 2 : 1 };
         p.gi_inv_size = { 1 / size.x, 1 / size.y, 1 / size.z, v.intensity };
         p.gi_dims = { v.nx, v.ny, v.nz, v.normal_offset };
     }
@@ -893,7 +1106,7 @@ fn FsParams build_light_params(Scene* scene, Camera* camera, SpotLight* caster) 
         p.fog_box_max = { ...f.clear_box_max, 0 };
         p.fog_height = { f.height_base, f.height_falloff, 0, f.shade_density };
         p.fog_sun_dir = { ...f.sun_direction, f.sun_sharpness };
-        p.fog_sun_color = { ...color_to_linear(f.sun_color), 0 };
+        p.fog_sun_color = { ...color_to_linear(f.sun_color), f.sun_shafts };
     }
     return p;
 }
@@ -944,6 +1157,7 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs) @local
     bind.views[VIEW_TEX_ARM] = ready(mat.arm_map).view;
     bind.views[VIEW_SHADOW_MAP] = state.shadow_view;
     bind.views[VIEW_SHADOW_ATLAS] = state.atlas_view;
+    bind.views[VIEW_SUN_SHADOW] = state.sun_view;
     bool ssr = r.ssr_color.id != 0 && r.ssr_depth.id != 0 && mat.ssr > 0;
     bind.views[VIEW_SSR_COLOR] = ssr ? r.ssr_color : ready(state.white).view;
     bind.views[VIEW_SSR_DEPTH] = ssr ? r.ssr_depth : ready(state.white).view;
@@ -984,11 +1198,11 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs) @local
     fs.emissive = { ...color_to_linear(mat.emissive) * mat.emissive_intensity, mat.vertex_light };
     if (r.render_target)
     {
-        fs.screen_params = { 1.0f / r.render_target.width, 1.0f / r.render_target.height, 0, 0 };
+        fs.screen_params = { 1.0f / r.render_target.width, 1.0f / r.render_target.height, item.fade, item.fade_dir };
     }
     else
     {
-        fs.screen_params = { 1.0f / sapp::widthf(), 1.0f / sapp::heightf(), 0, 0 };
+        fs.screen_params = { 1.0f / sapp::widthf(), 1.0f / sapp::heightf(), item.fade, item.fade_dir };
     }
     fs.specular = { ...color_to_linear(mat.specular), (float)flags };
     fs.mat_params = { (float)mat.type, mat.roughness, mat.metalness, mat.shininess };
@@ -1089,7 +1303,7 @@ fn void draw_backdrop(Scene* scene, Camera* camera, Mat4 view_proj, FsParams* fs
     float r = ((PerspectiveCamera*)camera).far * 0.9f;
     m.matrix_world = mat4_compose(camera.matrix_world.get_position(), { 0, 0, 0 }, { r, r, r });
     m.geometry.upload();
-    DrawItem item = { m, 0 };
+    DrawItem item = { m, 0, 0, 0 };
     draw_item(&item, view_proj, fs);
 }
 
@@ -1133,8 +1347,10 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera)
     if (caster)
     {
         Mat4 light_vp = shadow_view_proj(caster);
+        state.skip_instanced = caster.shadow.skip_instanced;
         Frustum light_frustum = frustum_from(light_vp);
         collect(scene, camera.matrix_world_inverse, &light_frustum, camera_pos, true);
+        state.skip_instanced = false;
         sg::begin_pass(&&{
             // depth is not stored by default: ask for it, the main pass samples this map
             .action = { .depth = { .load_action = CLEAR, .store_action = STORE, .clear_value = 1 } },
@@ -1145,6 +1361,10 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera)
         sg::end_pass();
     }
 
+    // the directional light's map is its own, so a sun and a spot light can both have shadows
+    DirectionalLight* sun = directional_shadow_light();
+    state.sun_caster = sun;
+    draw_sun_shadow(scene, camera, sun);
     update_shadow_atlas(scene, camera);
     if (!state.no_irradiance) state.no_irradiance = irradiance_volume({ 0, 0, 0 }, { 1, 1, 1 }, 1);
     state.irradiance = scene.irradiance ?: state.no_irradiance;

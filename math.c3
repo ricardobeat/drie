@@ -81,6 +81,19 @@ fn Vector3 color_to_linear(Color c)
     };
 }
 
+// Linear rgb (0..1) -> sRGB hex, what color_to_linear undoes (three.js: convertLinearToSRGB).
+fn Color linear_to_color(Vector3 c)
+{
+    uint hex;
+    for (int k = 0; k < 3; k++)
+    {
+        float x = clamp(c[k], 0, 1);
+        x = x <= 0.0031308f ? x * 12.92f : 1.055f * math::pow(x, 1 / 2.4f) - 0.055f;
+        hex = (hex << 8) | (uint)(x * 255 + 0.5f);
+    }
+    return (Color)hex;
+}
+
 fn Vector3 color_to_rgb(Color c)
 {
     return { ((c >> 16) & 0xff) / 255.0f, ((c >> 8) & 0xff) / 255.0f, (c & 0xff) / 255.0f };
