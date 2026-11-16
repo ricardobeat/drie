@@ -8,13 +8,9 @@ alias EventListener = fn void(SappEvent* event);
 alias Event = SappEvent;
 alias KeyCode = SappKeycode;
 
-const int MAX_DIR_LIGHTS = 4;
-const int MAX_POINT_LIGHTS = 6;
-const int MAX_SPOT_LIGHTS = 8;
-// spot lights whose shadow map is drawn once (shadow.auto_update off): an atlas of ATLAS_COLUMNS x 2 tiles
-const int MAX_FIXED_SHADOWS = 7;
-// their tiles in the atlas: this many in a row, in two rows
-const int ATLAS_COLUMNS = 4;
+// Defaults of Renderer.max_lights and Renderer.shadow_atlas_capacity.
+const int DEFAULT_MAX_LIGHTS = 1024;
+const int DEFAULT_SHADOW_ATLAS_CAPACITY = 8;
 
 // An offscreen image to render into, like three's WebGLRenderTarget.
 // Use `texture` (a sokol texture view) to sample the result in your own passes.
@@ -168,6 +164,14 @@ struct Renderer
     bool auto_time;
     // Statistics of the last render() call, like three's renderer.info.render.
     RenderInfo info;
+    // Extension: how many lights of each kind (directional, point, spot) a render takes at
+    // most; the buffers that hold them grow up to it. 0 = no limit.
+    int max_lights;
+    // Extension: how many spot lights with shadow.auto_update off get a tile in the shadow
+    // atlas (the atlas has max(4, sqrt(n)) columns of tiles).
+    int shadow_atlas_capacity;
+    // Extension: sorts the lights into clusters (see clusters.c3). null: on the CPU.
+    ClusterAssignFn assign_clusters;
     // Extension: tint what each cascade of the directional light's shadow covers (red, green,
     // blue, yellow, nearest first), to see where they fall.
     bool debug_cascades;
@@ -266,7 +270,12 @@ struct RendererState @local
     SgView atlas_attachment;
     SgView atlas_view;
     int atlas_tile;
-    SpotLight*[MAX_FIXED_SHADOWS] atlas_lights;
+    // the lights in it, in the order of their tiles, and its grid
+    List{SpotLight*} atlas_lights;
+    int atlas_columns;
+    int atlas_rows;
+    // the lights that want a tile, while updating it
+    List{SpotLight*} atlas_pending;
     // set while gathering the casters of a light with shadow.skip_instanced
     bool skip_instanced;
     // the directional light with a shadow, if any, and its map: one box, or 2x2 cascades
@@ -302,12 +311,17 @@ fn Renderer* webgl_renderer(bool antialias = true, int width = 800, int height =
         .tone_mapping_exposure = 1,
         .lod_scale = 1,
         .auto_time = true,
+        .max_lights = DEFAULT_MAX_LIGHTS,
+        .shadow_atlas_capacity = DEFAULT_SHADOW_ATLAS_CAPACITY,
     };
     state.renderer = r;
     state.opaque.allocator = mem;
     state.transparent.allocator = mem;
     state.casters.allocator = mem;
     state.lights.allocator = mem;
+    state.atlas_lights.allocator = mem;
+    state.atlas_pending.allocator = mem;
+    lights_gpu.init_lists();
     state.listeners.allocator = mem;
     state.controls.allocator = mem;
     return r;
@@ -598,9 +612,14 @@ fn void ensure_sun_map(int size) @local
     state.sun_view = sg::make_view(&&{ .texture = { .image = state.sun_image } });
 }
 
-fn void ensure_shadow_atlas(int tile) @local
+fn void ensure_shadow_atlas(int tile, int capacity) @local
 {
-    if (state.atlas_tile == tile) return;
+    int columns = math::max(4, (int)math::ceil(math::sqrt((float)capacity)));
+    int rows = math::max((capacity + columns - 1) / columns, 1);
+    // within the GPU's largest texture
+    int most = sg::query_limits().max_image_size_2d;
+    if (most > 0) tile = math::max(math::min(tile, most / math::max(columns, rows)), 4);
+    if (state.atlas_tile == tile && state.atlas_columns == columns && state.atlas_rows == rows) return;
     if (state.atlas_tile)
     {
         sg::destroy_view(state.atlas_attachment);
@@ -608,10 +627,12 @@ fn void ensure_shadow_atlas(int tile) @local
         sg::destroy_image(state.atlas_image);
     }
     state.atlas_tile = tile;
-    state.atlas_lights = {};
+    state.atlas_columns = columns;
+    state.atlas_rows = rows;
+    state.atlas_lights.clear();
     state.atlas_image = sg::make_image(&&{
         .usage = { .depth_stencil_attachment = true },
-        .width = tile * ATLAS_COLUMNS, .height = tile * 2, .sample_count = 1, .pixel_format = DEPTH,
+        .width = tile * columns, .height = tile * rows, .sample_count = 1, .pixel_format = DEPTH,
     });
     state.atlas_attachment = sg::make_view(&&{ .depth_stencil_attachment = { .image = state.atlas_image } });
     state.atlas_view = sg::make_view(&&{ .texture = { .image = state.atlas_image } });
@@ -631,25 +652,28 @@ fn int atlas_tile_of(SpotLight* sl) @local
 // the set of lights has changed.
 fn void update_shadow_atlas(Scene* scene, Camera* camera) @local
 {
-    SpotLight*[MAX_FIXED_SHADOWS] lights;
-    int count;
+    int capacity = math::max(state.renderer.shadow_atlas_capacity, 1);
+    state.atlas_pending.clear();
     int tile = 4;
     bool dirty;
     foreach (l : state.lights)
     {
         if (l.light_type != SPOT || !l.cast_shadow || !l.visible || l.intensity <= 0) continue;
         SpotLight* sl = (SpotLight*)l;
-        if (sl.shadow.auto_update || count >= MAX_FIXED_SHADOWS) continue;
-        lights[count++] = sl;
+        if (sl.shadow.auto_update || state.atlas_pending.len() >= capacity) continue;
+        state.atlas_pending.push(sl);
         tile = math::max(tile, sl.shadow.map_size);
         dirty = dirty || sl.shadow.needs_update;
     }
+    int count = (int)state.atlas_pending.len();
     // keep the atlas while nothing uses it: the lights may only be switched off for a moment
     if (!count && state.atlas_tile) return;
-    ensure_shadow_atlas(tile);
-    for (int i = 0; i < count; i++) dirty = dirty || atlas_tile_of(lights[i]) < 0;
+    ensure_shadow_atlas(tile, capacity);
+    tile = state.atlas_tile;
+    for (int i = 0; i < count; i++) dirty = dirty || atlas_tile_of(state.atlas_pending[i]) < 0;
     if (!dirty) return;
-    state.atlas_lights = lights;
+    state.atlas_lights.clear();
+    foreach (l : state.atlas_pending) state.atlas_lights.push(l);
     Vector3 camera_pos = camera.matrix_world.get_position();
     bool top_left = depth_zero_to_one();
     sg::begin_pass(&&{
@@ -659,7 +683,7 @@ fn void update_shadow_atlas(Scene* scene, Camera* camera) @local
     sg::apply_pipeline(get_shadow_pipeline());
     for (int i = 0; i < count; i++)
     {
-        SpotLight* sl = lights[i];
+        SpotLight* sl = state.atlas_pending[i];
         sl.shadow.needs_update = false;
         Mat4 light_vp = shadow_view_proj(sl);
         Frustum light_frustum = frustum_from(light_vp);
@@ -667,8 +691,9 @@ fn void update_shadow_atlas(Scene* scene, Camera* camera) @local
         state.skip_instanced = sl.shadow.skip_instanced;
         collect(scene, camera.matrix_world_inverse, &light_frustum, camera_pos, true);
         state.skip_instanced = false;
-        sg::apply_viewport((i % ATLAS_COLUMNS) * tile, (i / ATLAS_COLUMNS) * tile, tile, tile, top_left);
-        sg::apply_scissor_rect((i % ATLAS_COLUMNS) * tile, (i / ATLAS_COLUMNS) * tile, tile, tile, top_left);
+        int columns = state.atlas_columns;
+        sg::apply_viewport((i % columns) * tile, (i / columns) * tile, tile, tile, top_left);
+        sg::apply_scissor_rect((i % columns) * tile, (i / columns) * tile, tile, tile, top_left);
         foreach (&item : state.casters) draw_shadow_item(item, light_vp);
     }
     sg::end_pass();
@@ -973,7 +998,7 @@ fn Mat4 shadow_bias() @local
     return bias;
 }
 
-fn Vector3 spot_direction(SpotLight* sl) @local
+fn Vector3 spot_direction(SpotLight* sl) @private
 {
     Vector3 target = sl.target ? sl.target.get_world_position() : (Vector3){ 0, 0, 0 };
     return (target - sl.matrix_world.get_position()).normalize();
@@ -997,14 +1022,14 @@ fn FsParams build_light_params(Scene* scene, Camera* camera, SpotLight* caster) 
 {
     FsParams p;
     Renderer* r = state.renderer;
+    LightData* g = &lights_gpu;
+    g.clear();
     float exposure = r.tone_mapping == ACES_FILMIC_TONE_MAPPING ? math::max(r.tone_mapping_exposure, 1e-4f) : 0;
     p.camera_pos = { ...camera.matrix_world.get_position(), exposure };
     p.cull_min = { ...r.cull_box_min, r.cull_box ? 1 : 0 };
     p.cull_max = { ...r.cull_box_max, 0 };
-    int ndir;
-    int npoint;
-    // the shadow caster always takes spot slot 0
-    int nspot = caster ? 1 : 0;
+    Mat4 cw = camera.matrix_world;
+    p.dir_cascade_fwd = { ...((Vector3){ -cw[2][0], -cw[2][1], -cw[2][2] }).normalize(), 1 };
     foreach (l : state.lights)
     {
         Vector3 c = color_to_linear(l.color) * l.intensity;
@@ -1017,12 +1042,10 @@ fn FsParams build_light_params(Scene* scene, Camera* camera, SpotLight* caster) 
                 p.hemi_sky += { ...c, 0 };
                 p.hemi_ground += { ...color_to_linear(h.ground_color) * l.intensity, 0 };
             case DIRECTIONAL:
-                if (ndir >= MAX_DIR_LIGHTS) break;
+                if (!g.room(g.dirs.len(), r.max_lights)) break;
                 DirectionalLight* d = (DirectionalLight*)l;
                 Vector3 target = d.target ? d.target.get_world_position() : (Vector3){ 0, 0, 0 };
                 Vector3 dir = l.matrix_world.get_position() - target;
-                p.dir_dir[ndir] = { ...dir, 0 };
-                p.dir_color[ndir] = { ...c, 0 };
                 if (d == state.sun_caster)
                 {
                     int n = state.sun_cascades;
@@ -1032,30 +1055,37 @@ fn FsParams build_light_params(Scene* scene, Camera* camera, SpotLight* caster) 
                         p.dir_cascade_rect[i] = state.sun_rect[i];
                         p.dir_cascade_info[i] = state.sun_info[i];
                     }
-                    p.dir_shadow_params = { (float)(ndir + 1), d.shadow.normal_bias, 1.0f / (float)state.sun_size, d.shadow.radius };
+                    p.dir_shadow_params = { (float)(g.dirs.len() + 1), d.shadow.normal_bias, 1.0f / (float)state.sun_size, d.shadow.radius };
                     p.dir_cascade_params = { (float)math::max(n, 1), clamp(d.shadow.cascade_blend, 0, 1),
                                              r.debug_cascades ? 1 : 0, n ? 0 : 1 };
-                    p.dir_cascade_fwd = { ...state.sun_forward, 0 };
+                    p.dir_cascade_fwd.w = clamp(d.shadow.intensity, 0, 1);
                 }
-                ndir++;
+                g.dirs.push({ .dir = { ...dir, 0 }, .color = { ...c, 0 } });
             case POINT:
-                if (npoint >= MAX_POINT_LIGHTS) break;
+                if (!g.room(g.points.len(), r.max_lights)) break;
                 PointLight* pl = (PointLight*)l;
-                p.point_pos[npoint] = { ...l.matrix_world.get_position(), pl.distance };
-                p.point_color[npoint] = { ...c, pl.decay };
-                p.point_params[npoint] = { pl.radius, 0, 0, 0 };
-                npoint++;
+                g.points.push({
+                    .pos = { ...l.matrix_world.get_position(), pl.distance },
+                    .color = { ...c, pl.decay },
+                    .params = { pl.radius, 0, 0, 0 },
+                });
+                // a light that adds nothing needs no place in the clusters
+                LightBounds b = point_light_bounds(pl);
+                if (l.intensity <= 0) b = { {}, 0 };
+                g.point_bounds.push(b);
             case SPOT:
                 SpotLight* sl = (SpotLight*)l;
-                int slot = sl == caster ? 0 : nspot;
-                if (slot >= MAX_SPOT_LIGHTS) break;
+                if (!g.room(g.spots.len(), r.max_lights)) break;
                 float cos_outer = math::cos(clamp(sl.angle, 0, PI / 2));
                 float cos_inner = math::cos(clamp(sl.angle, 0, PI / 2) * (1 - clamp(sl.penumbra, 0, 1)));
-                p.spot_pos[slot] = { ...l.matrix_world.get_position(), sl.distance };
-                p.spot_dir[slot] = { ...spot_direction(sl), cos_outer };
-                p.spot_color[slot] = { ...c, sl.decay };
-                p.spot_params[slot] = { math::max(cos_inner, cos_outer + 1e-4f), sl.radius,
-                                        sl.specular_radius > 0 ? sl.specular_radius : sl.radius, sl.fog_glow };
+                GpuSpotLight gs = {
+                    .pos = { ...l.matrix_world.get_position(), sl.distance },
+                    .dir = { ...spot_direction(sl), cos_outer },
+                    .color = { ...c, sl.decay },
+                    .params = { math::max(cos_inner, cos_outer + 1e-4f), sl.radius,
+                                sl.specular_radius > 0 ? sl.specular_radius : sl.radius, sl.fog_glow },
+                    .shadow = { -1, 1, 0, 0 },
+                };
                 // clip space -> shadow map uv (v points down outside of GL) and 0..1 depth
                 int tile = atlas_tile_of(sl);
                 if (sl == caster || (tile >= 0 && sl.cast_shadow))
@@ -1068,19 +1098,38 @@ fn FsParams build_light_params(Scene* scene, Camera* camera, SpotLight* caster) 
                     bias[3][1] = 0.5f;
                     bias[2][2] = zo ? 1.0f : 0.5f;
                     bias[3][2] = zo ? 0.0f : 0.5f;
-                    p.shadow_mat[slot] = bias.mul(shadow_view_proj(sl));
+                    GpuSpotShadow sh;
+                    sh.mat = bias.mul(shadow_view_proj(sl));
                     float size = sl == caster ? (float)state.shadow_size : (float)state.atlas_tile;
-                    p.shadow_params[slot] = { sl == caster ? 1 : 2, sl.shadow.normal_bias, 1.0f / size, sl.shadow.radius };
+                    sh.params = { sl == caster ? 1 : 2, sl.shadow.normal_bias, 1.0f / size, sl.shadow.radius };
                     float fov = math::min(sl.angle * 2 * RAD2DEG * clamp(sl.shadow.focus, 0.05f, 1) + 4, 150.0f);
                     float width = 2 * math::tan(fov * DEG2RAD * 0.5f);
                     float far = sl.shadow.far > 0 ? sl.shadow.far : (sl.distance > 0 ? sl.distance : 50.0f);
-                    p.shadow_soft[slot] = { sl.shadow.softness, math::max(sl.shadow.near, 0.01f), far, zo ? width : -width };
-                    if (sl != caster) p.shadow_rect[slot] = { (float)(tile % ATLAS_COLUMNS) / ATLAS_COLUMNS, (float)(tile / ATLAS_COLUMNS) * 0.5f,
-                                                             1.0f / ATLAS_COLUMNS, 0.5f };
+                    sh.soft = { sl.shadow.softness, math::max(sl.shadow.near, 0.01f), far, zo ? width : -width };
+                    if (sl != caster)
+                    {
+                        float cols = (float)state.atlas_columns;
+                        float rows = (float)state.atlas_rows;
+                        sh.rect = { (float)(tile % state.atlas_columns) / cols, (float)(tile / state.atlas_columns) / rows,
+                                    1.0f / cols, 1.0f / rows };
+                    }
+                    gs.shadow = { (float)g.shadows.len(), clamp(sl.shadow.intensity, 0, 1), 0, 0 };
+                    g.shadows.push(sh);
                 }
-                if (sl != caster) nspot++;
+                g.spots.push(gs);
+                LightBounds b = spot_light_bounds(sl);
+                if (l.intensity <= 0) b = { {}, 0 };
+                g.spot_bounds.push(b);
         }
     }
+    int ndir = (int)g.dirs.len();
+    int npoint = (int)g.points.len();
+    int nspot = (int)g.spots.len();
+    ClusterGrid grid = cluster_grid(camera);
+    p.cluster_view_proj = camera.projection_matrix.mul(camera.matrix_world_inverse);
+    p.cluster_grid = { CLUSTER_X, CLUSTER_Y, CLUSTER_Z, 0 };
+    p.cluster_depth = { grid.near, grid.log_scale, grid.far, 0 };
+    g.upload(&grid, r.assign_clusters);
     p.counts = { ndir, npoint, nspot, 0 };
     if (scene.irradiance)
     {
@@ -1180,6 +1229,7 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs) @local
         bind.samplers[SMP_TEX_SMP] = state.white.sampler;
     }
     bind.samplers[SMP_SHADOW_SMP] = state.shadow_sampler;
+    lights_gpu.bind(&bind);
     sg::apply_bindings(&bind);
 
     VsParams vs = {
