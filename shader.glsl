@@ -194,7 +194,7 @@ void main() {
 }
 @end
 
-@fs fs
+@block fs_main
 layout(binding=0) uniform texture2D tex_map;
 layout(binding=1) uniform texture2D tex_normal;
 layout(binding=2) uniform texture2D tex_arm;
@@ -238,7 +238,7 @@ layout(binding=1) uniform fs_params {
     vec4 fog_color;    // w = how strongly lights glow in the fog
     vec4 fog_params;   // x = near, y = far, z = density, w = mode (0 none, 1 linear, 2 exp2, 3 exp)
     vec4 fog_box_min;  // fog-free box, w = 1 when enabled
-    vec4 fog_box_max;
+    vec4 fog_box_max;  // w = the part of the density left in the box
     vec4 fog_height;   // x = base height, y = falloff per meter (0 = none), w = density away from the sun's side
     vec4 fog_sun_dir;  // towards the sun, w = sharpness (0 = no sun)
     vec4 fog_sun_color; // w = light shafts (0..1)
@@ -380,6 +380,8 @@ vec4 g_base;      // rgb = albedo, a = alpha
 float g_rough;
 float g_metal;
 float g_radius;   // source radius of the light being evaluated
+vec3 g_dpdx;      // how the world position changes from one pixel to the next (taken where
+vec3 g_dpdy;      // the flow is uniform, for the shadows' tap counts)
 
 // Direct light contribution, following three.js's (r155+) physically based light units.
 // Returns diffuse in rgb; adds specular to `spec`.
@@ -424,7 +426,7 @@ float fog_distance(vec3 a, vec3 b) {
     vec3 tmax = max(t0, t1);
     float enter = max(max(tmin.x, tmin.y), max(tmin.z, 0.0));
     float exit = min(min(tmax.x, tmax.y), min(tmax.z, 1.0));
-    return len * (1.0 - max(exit - enter, 0.0));
+    return len * (1.0 - (1.0 - fog_box_max.w) * max(exit - enter, 0.0));
 }
 
 // Fraction of light that makes it through `d` meters of fog.
@@ -529,10 +531,18 @@ float spot_shadow_of(int s, int si, vec3 n) {
     // push the lookup off the surface, more at grazing angles and far away where texels are big
     float slope = 1.0 - clamp(dot(n, to_light / dist), 0.0, 1.0);
     vec3 p = v_world_pos + n * params.y * dist * (0.4 + slope);
-    vec4 sp = spot_shadow_data[si].mat * vec4(p, 1.0);
+    mat4 m = spot_shadow_data[si].mat;
+    vec4 sp = m * vec4(p, 1.0);
     if (sp.w <= 0.0) return 1.0;
     vec3 c = sp.xyz / sp.w;
     if (c.x < 0.0 || c.x > 1.0 || c.y < 0.0 || c.y > 1.0 || c.z > 1.0) return 1.0;
+    // the map's footprint of a pixel of the screen: blurs much smaller than that need few taps,
+    // and the search for what casts the shadow none
+    vec4 spx = m * vec4(p + g_dpdx, 1.0);
+    vec4 spy = m * vec4(p + g_dpdy, 1.0);
+    vec3 dx = spx.w > 0.0 ? spx.xyz / spx.w - c : vec3(0.0);
+    vec3 dy = spy.w > 0.0 ? spy.xyz / spy.w - c : vec3(0.0);
+    float pixel = max(max(length(dx.xy), length(dy.xy)), 1e-6);
     // rotated disk of taps for a soft edge
     float angle = fract(sin(dot(gl_FragCoord.xy + ssr_params.z * vec2(5.0, 3.0), vec2(12.9898, 78.233))) * 43758.5453) * 6.2831;
     float ca = cos(angle);
@@ -541,10 +551,10 @@ float spot_shadow_of(int s, int si, vec3 n) {
     bool tiled = params.x > 1.5;
     vec4 rect = spot_shadow_data[si].rect;
     vec4 soft = spot_shadow_data[si].soft;
-    int taps = 8;
     // how the depth changes over the map along this surface, so that a wide blur does not
     // run the surface into its own shadow
     vec2 grad = vec2(0.0);
+    int most = 8;
     if (soft.x > 0.0) {
         // A source with a size: the edge of a shadow is as wide as the source looks from there
         // past the thing that casts it. Sharp where the two touch, wide far behind. How far the
@@ -552,30 +562,33 @@ float spot_shadow_of(int s, int si, vec3 n) {
         float dr = shadow_distance(c.z, soft);
         float per_m = 1.0 / (abs(soft.w) * dr);
         float search = clamp(soft.x * 1.6 * per_m, r, 0.04);
-        float found = 0.0;
-        float nearest = 0.0;
-        for (int k = 0; k < 7; k++) {
-            float a = float(k) * 1.0472;
-            vec2 o = k == 0 ? vec2(0.0) : vec2(cos(a) * ca - sin(a) * sa, cos(a) * sa + sin(a) * ca) * search;
-            if (shadow_tap(tiled, rect, params.z, c.xy + o, c.z) > 0.5) continue;
-            float lo = soft.y;
-            float hi = dr;
-            for (int j = 0; j < 5; j++) {
-                float mid = 0.5 * (lo + hi);
-                if (shadow_tap(tiled, rect, params.z, c.xy + o, shadow_depth(mid, soft)) > 0.5) lo = mid; else hi = mid;
+        most = 14;
+        // the widest edge the source could make here is under a pixel: no need to look
+        if (search > pixel) {
+            float found = 0.0;
+            float nearest = 0.0;
+            for (int k = 0; k < 7; k++) {
+                float a = float(k) * 1.0472;
+                vec2 o = k == 0 ? vec2(0.0) : vec2(cos(a) * ca - sin(a) * sa, cos(a) * sa + sin(a) * ca) * search;
+                if (shadow_tap(tiled, rect, params.z, c.xy + o, c.z) > 0.5) continue;
+                float lo = soft.y;
+                float hi = dr;
+                for (int j = 0; j < 5; j++) {
+                    float mid = 0.5 * (lo + hi);
+                    if (shadow_tap(tiled, rect, params.z, c.xy + o, shadow_depth(mid, soft)) > 0.5) lo = mid; else hi = mid;
+                }
+                nearest += 0.5 * (lo + hi);
+                found += 1.0;
             }
-            nearest += 0.5 * (lo + hi);
-            found += 1.0;
+            if (found < 0.5) return 1.0;
+            float db = nearest / found;
+            r = clamp(soft.x * (dr - db) / db * per_m, r, 0.04);
         }
-        if (found < 0.5) return 1.0;
-        float db = nearest / found;
-        r = clamp(soft.x * (dr - db) / db * per_m, r, 0.04);
-        taps = 14;
-        vec3 dx = dFdx(c);
-        vec3 dy = dFdy(c);
         float det = dx.x * dy.y - dx.y * dy.x;
         if (abs(det) > 1e-12) grad = vec2(dy.y * dx.z - dx.y * dy.z, dx.x * dy.z - dy.x * dx.z) / det;
     }
+    // about three taps per pixel across the blur, at least four (each tap is a bilinear 2x2)
+    int taps = clamp(int(ceil(r / pixel * 3.0)), 4, most);
     float sum = 0.0;
     for (int k = 0; k < 14; k++) {
         if (k >= taps) break;
@@ -962,6 +975,7 @@ void main() {
     int fl = flags();
     bool foliage = (fl & 2) != 0;
 
+#ifndef NO_DISCARD
     if (cull_min.w > 0.5 && all(greaterThan(v_world_pos, cull_min.xyz)) && all(lessThan(v_world_pos, cull_max.xyz))) discard;
     // LOD cross-fade: a screen-door dither, the incoming level where it is below the fade and
     // the outgoing one where it is not (interleaved gradient noise: no visible pattern)
@@ -969,6 +983,7 @@ void main() {
         float dither = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
         if (screen_params.w > 0.0 ? dither >= screen_params.z : dither < screen_params.z) discard;
     }
+#endif
     if ((fl & 32) != 0) {
         // a window onto another render: its pixels as they are, already tone mapped
         frag_color = vec4(texture(sampler2D(tex_map, tex_smp), gl_FragCoord.xy * screen_params.xy).rgb, 1.0);
@@ -981,6 +996,10 @@ void main() {
     if (tex_params.x > 0.5) g_base *= texture(sampler2D(tex_map, tex_smp), v_uv);
     float alpha = g_base.a;
     if ((fl & 1) != 0) alpha *= v_alpha;
+#ifdef NO_DISCARD
+    // cut out by the depth prepass already (depth_fs): whatever is drawn here is covered
+    if (tex_params.w < 0.0) alpha = 1.0;
+#else
     if (tex_params.w > 0.0) {
         // far away the texture's smaller levels average leaves and gaps into an alpha under
         // the cutoff, and the whole plant would go: make up for it, so as much stays covered
@@ -996,10 +1015,13 @@ void main() {
         if (alpha <= 0.0) discard;
         alpha = min(alpha, 1.0);
     }
+#endif
 
     vec3 n = normalize(v_normal);
     if (!gl_FrontFacing && !foliage) n = -n;
     vec3 geo_n = n;
+    g_dpdx = dFdx(v_world_pos);
+    g_dpdy = dFdy(v_world_pos);
     if (tex_params.y != 0.0 && mode != 0) n = perturb_normal(n, tex_params.y);
 
     g_rough = mat_params.y;
@@ -1180,5 +1202,69 @@ void main() {
 }
 @end
 
+@fs fs
+@include_block fs_main
+@end
+
+// The same without discard: for what the depth prepass has cut out already, and what has
+// no holes
+@fs fs_opaque
+#define NO_DISCARD
+@include_block fs_main
+@end
+
+// The depth prepass (renderer.c3, Renderer.depth_prepass): depth only, for what has holes in
+// it (alpha tested, LOD cross-fades, the cull box). The main pass then draws those with
+// fs_opaque and an EQUAL depth test, so that no shader of the main pass discards (a shader
+// that can discard costs the GPU its early depth test, whatever it draws). Cuts out exactly
+// what fs does.
+@fs depth_fs
+layout(binding=0) uniform texture2D tex_map;
+layout(binding=0) uniform sampler tex_smp;
+layout(binding=1) uniform depth_fs_params {
+    vec4 d_color;          // a = the material's opacity
+    vec4 d_params;         // x = has a map, y = alpha test threshold, z = 1: vertex colors' alpha
+    vec4 d_screen_params;  // as screen_params in fs
+    vec4 d_cull_min;       // as cull_min in fs
+    vec4 d_cull_max;
+};
+
+in vec3 v_world_pos;
+in vec3 v_normal;
+in vec2 v_uv;
+in vec3 v_color;
+in float v_alpha;
+
+out vec4 frag_color;
+
+void main() {
+    if (d_cull_min.w > 0.5 && all(greaterThan(v_world_pos, d_cull_min.xyz)) && all(lessThan(v_world_pos, d_cull_max.xyz))) discard;
+    if (d_screen_params.w != 0.0) {
+        float dither = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
+        if (d_screen_params.w > 0.0 ? dither >= d_screen_params.z : dither < d_screen_params.z) discard;
+    }
+    float alpha = 1.0;
+    if (d_params.y > 0.0) {
+        alpha = d_color.a;
+        if (d_params.x > 0.5) alpha *= texture(sampler2D(tex_map, tex_smp), v_uv).a;
+        if (d_params.z > 0.5) alpha *= v_alpha;
+        if (d_params.x > 0.5) {
+            vec2 texel = v_uv * vec2(textureSize(sampler2D(tex_map, tex_smp), 0));
+            vec2 tx = dFdx(texel);
+            vec2 ty = dFdy(texel);
+            float level = 0.5 * log2(max(max(dot(tx, tx), dot(ty, ty)), 1.0));
+            alpha *= 1.0 + 0.3 * min(level, 6.0);
+        }
+        alpha = (alpha - d_params.y) / max(fwidth(alpha), 1e-4) + 0.5;
+        if (alpha <= 0.0) discard;
+        alpha = min(alpha, 1.0);
+    }
+    // for alpha to coverage; nothing is written
+    frag_color = vec4(v_normal * 0.0 + v_color * 0.0 + v_world_pos * 0.0, alpha);
+}
+@end
+
 @program three vs fs
+@program three_opaque vs fs_opaque
+@program depth vs depth_fs
 @program shadow shadow_vs shadow_fs

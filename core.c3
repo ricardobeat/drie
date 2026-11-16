@@ -43,6 +43,14 @@ struct Object3D
     bool placed;
     // matrix_world was changed outside update_world, which has yet to tell the children
     bool world_dirty;
+    // Like three's matrixAutoUpdate: `matrix` is rebuilt from position, rotation and scale
+    // when they change. Off, `matrix` is yours to set (update_matrix() rebuilds it).
+    bool matrix_auto_update;
+    // Like three's matrixWorldAutoUpdate: the scene's update_matrix_world() brings this
+    // object and its descendants up to date. Off, it leaves the whole subtree alone (call
+    // update_matrix_world() on it after moving something in it): for the parts of a big
+    // scene that never move, which then cost nothing per frame.
+    bool matrix_world_auto_update;
     // Free slot for your own data, like three's object.userData.
     void* user_data;
 }
@@ -54,6 +62,8 @@ fn void Object3D.init(&self, ObjectKind kind)
     self.up = { 0, 1, 0 };
     self.visible = true;
     self.frustum_culled = true;
+    self.matrix_auto_update = true;
+    self.matrix_world_auto_update = true;
     self.matrix = mat4_identity();
     self.matrix_world = mat4_identity();
     // lists live on the heap: by default they would use the temp allocator and be freed
@@ -153,12 +163,15 @@ fn void Object3D.update_matrix_world(&self) => self.update_world(true);
 
 fn void Object3D.update_world(&self, bool parent_moved)
 {
-    bool moved = !self.placed
+    // (with matrix_auto_update off the matrix may have changed in any way: matrix_world is
+    // computed, and compared below)
+    bool moved = !self.matrix_auto_update;
+    if (self.matrix_auto_update && (!self.placed
         || self.position != self.placed_position
         || self.rotation != self.placed_rotation
-        || self.scale != self.placed_scale;
-    if (moved)
+        || self.scale != self.placed_scale))
     {
+        moved = true;
         self.update_matrix();
         self.placed_position = self.position;
         self.placed_rotation = self.rotation;
@@ -175,15 +188,19 @@ fn void Object3D.update_world(&self, bool parent_moved)
     }
     // moved already, by update_world_matrix_from_parents (a bone its skeleton placed)
     moved = moved || self.world_dirty;
+
     self.world_dirty = false;
-    foreach (c : self.children) c.update_world(moved);
+    foreach (c : self.children)
+    {
+        if (c.matrix_world_auto_update) c.update_world(moved);
+    }
 }
 
 // Recomputes matrix_world for this object using its ancestors' current transforms.
 fn void Object3D.update_world_matrix_from_parents(&self)
 {
     if (self.parent) self.parent.update_world_matrix_from_parents();
-    self.update_matrix();
+    if (self.matrix_auto_update) self.update_matrix();
     Mat4 world = self.parent ? self.parent.matrix_world.mul(self.matrix) : self.matrix;
     // update_world must still carry the move down to the children (a mesh hung on a bone)
     if (libc::memcmp(&world, &self.matrix_world, Mat4::size) != 0) self.world_dirty = true;
@@ -287,6 +304,9 @@ struct VolumetricFog
     bool has_clear_box;
     Vector3 clear_box_min;
     Vector3 clear_box_max;
+    // The part of the fog's density left in the clear box, 0..1 (0 = none: clear air; a
+    // little for a haze indoors that the lamps' beams show in).
+    float clear_box_density;
     // Fog that lies on the ground: its density falls off by exp(-height_falloff * (y -
     // height_base)) above height_base, and is `density` at it. 0 = the same at every height.
     float height_falloff;

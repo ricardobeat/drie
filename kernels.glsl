@@ -175,7 +175,7 @@ layout(binding=0) uniform fog_cs_params {
     vec4 vf_color;      // the fog's own color (linear), w = light scatter
     vec4 vf_params;     // as fog_params in shader.glsl: near, far, density, mode
     vec4 vf_box_min;    // fog-free box, w = 1 when enabled
-    vec4 vf_box_max;
+    vec4 vf_box_max;    // w = the part of the density left in the box
     vec4 vf_height;     // x = base height, y = falloff, w = density away from the sun's side
     vec4 vf_sun_dir;    // towards the sun, w = sharpness (0: no sun)
     vec4 vf_sun_color;  // w = light shafts
@@ -234,7 +234,7 @@ float vf_transmittance(float d) {
     return mode == 2 ? exp(-dd * dd) : exp(-dd);
 }
 
-// The part of the segment a-b outside the fog-free box, 0..1.
+// The part of the segment a-b outside the fog-free box, 0..1 (inside counts for vf_box_max.w).
 float vf_box_fraction(vec3 a, vec3 b) {
     if (vf_box_min.w < 0.5) return 1.0;
     vec3 d = b - a;
@@ -245,7 +245,7 @@ float vf_box_fraction(vec3 a, vec3 b) {
     vec3 tmax = max(t0, t1);
     float enter = max(max(tmin.x, tmin.y), max(tmin.z, 0.0));
     float exit = min(min(tmax.x, tmax.y), min(tmax.z, 1.0));
-    return 1.0 - max(exit - enter, 0.0);
+    return 1.0 - (1.0 - vf_box_max.w) * max(exit - enter, 0.0);
 }
 
 // The mean of the height falloff between heights ya and yb.

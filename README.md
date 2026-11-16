@@ -61,6 +61,10 @@ and parameter objects become named arguments.
 
 - **Objects:** `Object3D`, `Group`, `Scene`, `Mesh`, `InstancedMesh`, `Lod`, `PerspectiveCamera`,
   `OrthographicCamera`
+  `object.matrix_auto_update` and `matrix_world_auto_update` are three's `matrixAutoUpdate`
+  and `matrixWorldAutoUpdate`: with the second off the scene's update leaves that object and
+  everything under it alone, so a big world that stands still costs nothing per frame (place
+  it once with `update_matrix_world()` first).
 - **Skeletons:** `Bone`, `Skeleton`, `SkinnedMesh` (`three::bone()`, `three::skeleton(bones)`,
   `three::skinned_mesh(geometry, material)`, `mesh.bind(skeleton)`). Skin weights are set on the
   geometry with `set_skin`, `set_skin_blend` and `skin_range`. Vertices are skinned on the CPU:
@@ -138,7 +142,10 @@ These aren't in three.js:
   aimed at each face (to aim a light with it, for example).
 - `light.shadow.auto_update = false`: for a light that stays put among things that stay put. Its
   shadow map is drawn once into a shared atlas (`renderer.shadow_atlas_capacity` of them) and costs nothing
-  after that. Set `light.shadow.needs_update = true` to redraw it, as in three.js.
+  after that. Set `light.shadow.needs_update = true` to redraw it, as in three.js: only that
+  light's tile is drawn again. The soft edge takes about three taps per pixel it spans (4 to
+  14), and the search for the caster of a `softness` shadow is skipped where its edge could not
+  be a pixel wide, so far and small shadows cost little.
 - Cascaded shadow maps for a `DirectionalLight` (like three's `CSM` addon, built in):
   `light.shadow.cascades` (1..4, default 4) cuts the camera's view up to
   `shadow.max_distance` meters (default 150) into slices, each with its own box of parallel
@@ -152,7 +159,9 @@ These aren't in three.js:
 - `shadow.cascades = 1`: one box, `light.shadow_extent` meters from its centre to its sides
   (three's `shadow.camera.right`/`top`), on the light's target, or ahead of the camera with
   `light.shadow_follow = true`. Faded out towards its edge.
-- `spot_light.fog_glow`: scales how much the light shows in `fog.light_scatter` fog (0: not at all).
+- `spot_light.fog_glow`: scales how much the light shows in `fog.light_scatter` fog (0: not at all),
+  and only that: a dim lamp can still throw a beam (values far above 1 are fine). In volumetric
+  fog the beam stops where the light's shadow map says it does.
 - `scene.irradiance`: an `IrradianceVolume`, a grid of probes holding light that has bounced
   around a room. Lit materials inside its box receive it on top of the scene's lights. The
   engine stores and samples the probes; what goes into them is up to you (see `irradiance.c3`).
@@ -201,6 +210,13 @@ These aren't in three.js:
   instances, `frustum_culled` off, or whose instances keep changing after their first upload
   (`set_matrix_at` every frame) are drawn whole. Level of detail is still picked per `Lod`, not
   per instance.
+- `renderer.depth_prepass` (on by default): what has holes in it (`alpha_test`, LOD
+  cross-fades) is drawn twice, first only its depth with a cheap shader that cuts the holes,
+  then lit where that depth is (an EQUAL depth test) with a shader that cuts nothing. Leaves
+  and blades are lit once per pixel instead of once per layer, and no shader of the main pass
+  can discard, which keeps the GPU's early depth test for everything. Only for what covers
+  at least `renderer.depth_prepass_pixels` (default 1.5) pixels per triangle: a far-off tree
+  is mostly triangles and is cheaper drawn once.
 - `renderer.check_compute`: also computes on the CPU what the compute shaders do (clusters,
   instance culls) and prints where they differ; `three::print_compute_checks()` sums it up.
 - `material.blending = ADDITIVE_BLENDING`, like three's `AdditiveBlending`: a see-through
@@ -228,6 +244,7 @@ These aren't in three.js:
   (shadow casting) directional light, `sun_color` 0 its color. `fog.volumetric = false`
   keeps the older per-pixel fog (unshadowed glow summed over every light at every pixel).
 - `fog.set_clear_box(min, max)`: a box without fog, such as the inside of a building.
+  `fog.clear_box_density` (0..1) leaves that part of the fog in it: a thin haze indoors.
 - `geometry.box_project_uv(tiles_per_unit)`: texture coordinates from world-space position, for
   tiling a texture over walls and floors without stretching.
 - `renderer.init_headless()`: sets up rendering without a window, for tests and screenshots.
