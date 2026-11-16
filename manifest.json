@@ -1,0 +1,14 @@
+{
+    "provides": "drie",
+    "dependencies": ["sokol", "readback", "imageio", "gamectl"],
+    "c-sources": [],
+    "targets": {
+        "macos-aarch64": {},
+        "macos-x64": {},
+        "linux-x64": {},
+        "windows-x64": {},
+        "mingw-x64": {},
+        "ios-aarch64": {},
+        "ios-aarch64-sim": {}
+    }
+}
