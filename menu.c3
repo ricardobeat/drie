@@ -25,7 +25,8 @@
 //
 // Items that are pages keep the menu open on a screen of their own (`page` is their index):
 // the built-in look shows their `text`; a game can draw anything there and read the held
-// arrow keys with axis_x() / axis_y(), to scrub or adjust something.
+// arrow keys with axis_x() / axis_y(), to scrub or adjust something. Other keys pressed on a
+// page come to the handler as KEY events, with the key in `key`.
 module three;
 import std::collections::list, std::math, std::time::clock;
 import sokol;
@@ -38,6 +39,7 @@ enum MenuEvent
     CONFIRM,    // enter on a page
     BACK,       // escape or backspace on a page; the list shows again afterwards, unless the
                 // handler moved somewhere else
+    KEY,        // another key went down while a page shows (Menu.key holds it)
 }
 
 alias MenuHandler = fn void(Menu* menu, MenuEvent event, int item);
@@ -74,6 +76,8 @@ struct Menu
     bool right;
     bool up;
     bool down;
+    // the key of the last KEY event
+    KeyCode key;
     // when the selection or page last changed (ns), for blinking cursors
     ulong changed_at;
     bool relock;
@@ -259,6 +263,11 @@ fn bool Menu.handle_event(&self, Event* e)
                 {
                     self.notify(BACK, p);
                     if (self.is_open && self.page == p) self.show_page(-1);
+                }
+                if (!enter && !back)
+                {
+                    self.key = k;
+                    self.notify(KEY, p);
                 }
                 break;
             }

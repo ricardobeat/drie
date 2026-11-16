@@ -36,6 +36,36 @@ struct RenderTarget
     // an attachment for drawing over the resolved picture.
     SgView depth_texture;
     SgView overlay_view;
+    // see as_map
+    Texture* map_texture;
+}
+
+// The picture as a Texture, for any material's map, like three's `renderTarget.texture`: a
+// screen in the scene showing what another camera sees, say. It follows set_size. Call it
+// once the target has a size.
+//   RenderTarget* feed = three::render_target(256, 144);
+//   screen_material.map = feed.as_map();
+//   renderer.set_render_target(feed); renderer.render(scene, other_camera);
+fn Texture* RenderTarget.as_map(&self)
+{
+    if (!self.map_texture)
+    {
+        Texture* t = mem::new(Texture);
+        *t = { .repeat = { 1, 1 }, .wrap_s = CLAMP_TO_EDGE_WRAPPING, .wrap_t = CLAMP_TO_EDGE_WRAPPING, .uploaded = true };
+        t.sampler = sg::make_sampler(&&{ .min_filter = LINEAR, .mag_filter = LINEAR, .wrap_u = CLAMP_TO_EDGE, .wrap_v = CLAMP_TO_EDGE });
+        // a render target's first row is at the top, except in GL
+        if (depth_zero_to_one())
+        {
+            t.repeat.y = -1;
+            t.offset.y = 1;
+        }
+        self.map_texture = t;
+    }
+    self.map_texture.width = self.width;
+    self.map_texture.height = self.height;
+    self.map_texture.image = self.texture_image;
+    self.map_texture.view = self.texture;
+    return self.map_texture;
 }
 
 // samples > 1 renders with MSAA and resolves into `texture`. Must be called after the window opened.
@@ -57,7 +87,8 @@ fn void RenderTarget.dispose(&self)
     if (self.color.id) sg::destroy_image(self.color);
     if (self.resolve.id) sg::destroy_image(self.resolve);
     if (self.depth.id) sg::destroy_image(self.depth);
-    *self = {};
+    Texture* map = self.map_texture;
+    *self = { .map_texture = map };
 }
 
 fn void RenderTarget.set_size(&self, int width, int height, int samples = 1)
@@ -90,6 +121,7 @@ fn void RenderTarget.set_size(&self, int width, int height, int samples = 1)
     self.texture = sg::make_view(&&{ .texture = { .image = self.texture_image } });
     self.depth_texture = sg::make_view(&&{ .texture = { .image = self.depth } });
     self.overlay_view = sg::make_view(&&{ .color_attachment = { .image = self.texture_image } });
+    if (self.map_texture) self.as_map();
 }
 
 fn SgAttachments RenderTarget.attachments(&self)
@@ -859,6 +891,9 @@ fn FsParams build_light_params(Scene* scene, Camera* camera, SpotLight* caster) 
         p.fog_params = { f.near, f.far, f.density, mode };
         p.fog_box_min = { ...f.clear_box_min, f.has_clear_box ? 1 : 0 };
         p.fog_box_max = { ...f.clear_box_max, 0 };
+        p.fog_height = { f.height_base, f.height_falloff, 0, f.shade_density };
+        p.fog_sun_dir = { ...f.sun_direction, f.sun_sharpness };
+        p.fog_sun_color = { ...color_to_linear(f.sun_color), 0 };
     }
     return p;
 }
