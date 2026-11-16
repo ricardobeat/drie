@@ -89,7 +89,7 @@ fn CanvasTexture* canvas_texture(int width, int height)
 fn void CanvasTexture.begin(&self, Color clear = 0x000000)
 {
     SgPass pass = { .action.colors[0] = { .load_action = CLEAR,
-        .clear_value = { ((clear >> 16) & 0xff) / 255.0f, ((clear >> 8) & 0xff) / 255.0f, (clear & 0xff) / 255.0f, 1 } } };
+        .clear_value = { ((clear >> 16) & 0xff) / 255.0f, ((clear >> 8) & 0xff) / 255.0f, (clear & 0xff) / 255.0f, 1 } }, .label = "three-canvas" };
     self.texture.upload();
     if (!self.attachment.id) self.attachment = sg::make_view(&&{ .color_attachment = { .image = self.texture.image } });
     pass.attachments.colors[0] = self.attachment;
