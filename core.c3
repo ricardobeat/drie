@@ -264,14 +264,22 @@ enum FogType
     EXP,
 }
 
-struct Fog
+// Extension: the settings of fog that is lit (by the sun, its shadows and the lamps), after
+// three.js's volumetric lighting example (webgpu_volume_lighting, VolumeNodeMaterial). Part of
+// every Fog (`fog.light_scatter`, `fog.volumetric`...), and made whole by `three::volumetric_fog`.
+//
+// With `volumetric` on (the default) and something for the fog to scatter (light_scatter,
+// sun_shafts or noise_amount above 0), the renderer marches the fog in a pass of its own
+// before the main one: a grid of froxels (cells of the camera's view, like the light clusters,
+// but finer), lit by the sun through its cascaded shadow, by the spot lights through their
+// shadow maps (lamp beams stop at walls) and by the point lights, each cell with only the
+// lights of its own cluster. A surface then reads the fog in front of it from the grid. Off,
+// the fog is worked out per pixel of each surface: no shadows on the lamps' glow, and the
+// glow of every light in the scene added up at every pixel.
+struct VolumetricFog
 {
-    FogType type;
-    Color color;
-    float near;
-    float far;
-    float density;
-    // Extensions (not in three.js):
+    // Use the froxel grid when the fog has light to scatter (false: the per-pixel fog).
+    bool volumetric;
     // How much point and spot lights light up the fog around them (0 = fog has a constant color).
     // Light is also dimmed by the fog on its way to surfaces.
     float light_scatter;
@@ -283,10 +291,11 @@ struct Fog
     // height_base)) above height_base, and is `density` at it. 0 = the same at every height.
     float height_falloff;
     float height_base;
-    // A sun in the fog: looking towards sun_direction (a unit vector towards the sun) the fog
-    // takes sun_color instead of its own, the more sharply the higher sun_sharpness (0 = no
-    // sun). Looking away from the sun's side there is only shade_density of the fog (1 = as
-    // much all round).
+    // A sun in the fog: looking towards sun_direction (a unit vector towards the sun; zero:
+    // towards the scene's directional light, the one that casts a shadow if any) the fog
+    // takes sun_color (0: the light's color) instead of its own, the more sharply the higher
+    // sun_sharpness (0 = no sun). Looking away from the sun's side there is only
+    // shade_density of the fog (1 = as much all round).
     Vector3 sun_direction;
     Color sun_color;
     float sun_sharpness;
@@ -295,13 +304,45 @@ struct Fog
     // DirectionalLight.shadow) take the sun out of the fog, 0..1. The fog towards the sun goes
     // dark behind whatever stands in the way, bright in the gaps (0 = no shafts).
     float sun_shafts;
+    // Patchy mist (volumetric only): the density varies by up to noise_amount (0..1) in
+    // blobs about 1 / noise_scale meters across, drifting with noise_wind (m/s).
+    float noise_amount;
+    float noise_scale;
+    Vector3 noise_wind;
+    // The froxel grid: its cells across and up the picture, as a part of its pixels (0.125:
+    // a cell per 8x8 pixels), and its slices of depth (from the camera to its far plane,
+    // thinner near the camera).
+    float resolution;
+    int slices;
 }
+
+struct Fog
+{
+    // Extensions (not in three.js): fog.light_scatter, fog.volumetric... (see VolumetricFog)
+    inline VolumetricFog volume;
+    FogType type;
+    Color color;
+    float near;
+    float far;
+    float density;
+}
+
+const VolumetricFog VOLUMETRIC_FOG_DEFAULTS = { .volumetric = true, .shade_density = 1, .noise_scale = 0.15f,
+                                                .resolution = 0.125f, .slices = 96 };
 
 // Extension: exponential fog, exp(-density * distance).
 fn Fog* fog_exp(Color color, float density = 0.01)
 {
     Fog* f = mem::new(Fog);
-    *f = { .type = EXP, .color = color, .density = density, .shade_density = 1 };
+    *f = { .type = EXP, .color = color, .density = density, .volume = VOLUMETRIC_FOG_DEFAULTS };
+    return f;
+}
+
+// Extension: exponential fog that lights scatter in: lamp beams, light shafts (see VolumetricFog).
+fn Fog* volumetric_fog(Color color, float density = 0.01, float light_scatter = 1)
+{
+    Fog* f = fog_exp(color, density);
+    f.light_scatter = light_scatter;
     return f;
 }
 
@@ -316,7 +357,7 @@ fn void Fog.set_clear_box(&self, Vector3 min, Vector3 max)
 fn Fog* fog(Color color, float near = 1, float far = 1000)
 {
     Fog* f = mem::new(Fog);
-    *f = { .type = LINEAR, .color = color, .near = near, .far = far };
+    *f = { .type = LINEAR, .color = color, .near = near, .far = far, .volume = VOLUMETRIC_FOG_DEFAULTS };
     return f;
 }
 
@@ -324,7 +365,7 @@ fn Fog* fog(Color color, float near = 1, float far = 1000)
 fn Fog* fog_exp2(Color color, float density = 0.00025)
 {
     Fog* f = mem::new(Fog);
-    *f = { .type = EXP2, .color = color, .density = density };
+    *f = { .type = EXP2, .color = color, .density = density, .volume = VOLUMETRIC_FOG_DEFAULTS };
     return f;
 }
 
