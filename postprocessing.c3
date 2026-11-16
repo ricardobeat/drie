@@ -213,7 +213,7 @@ fn void ShaderPass.set_uniform_bytes(&self, int slot, char* data, usz size)
     self.uniform_size[slot] = size;
 }
 
-fn SgPipeline ShaderPass.pipeline_for(&self, PassFormat f) @local
+fn SgPipeline ShaderPass.pipeline_for(&self, PassFormat f)
 {
     foreach (p : self.pipelines)
     {
