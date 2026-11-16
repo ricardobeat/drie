@@ -3,7 +3,8 @@
 //
 // An application with surfaces of its own compiles its own copy of the shader: a .glsl file
 // with its own @header (its module) and the two blocks below, then `@include` of
-// shader_core.glsl. It hands the result to the renderer as Renderer.shaders. The hooks run
+// tonemapping.glsl and shader_core.glsl, in that order (sokol-shdc finds an include from the
+// file it compiles, so shader_core.glsl can't include it itself). It hands the result to the renderer as Renderer.shaders. The hooks run
 // inside the engine's shaders and read Material.custom (`material_custom[2]`) and
 // Renderer.custom (`frame_custom[2]`):
 //
@@ -30,4 +31,5 @@ void surface_hook(vec3 geo_n, inout vec4 base, inout float rough, inout float me
 void reflection_hook(vec3 dir, inout vec3 sky) {}
 @end
 
+@include tonemapping.glsl
 @include shader_core.glsl

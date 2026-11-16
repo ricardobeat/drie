@@ -111,7 +111,10 @@ and parameter objects become named arguments.
   with `render_over` (with `MULTIPLY_BLEND`, say), or with `draw()` into a pass you began
   (`target.begin()`, `begin_screen(aspect: ...)` / `end_screen()`). It keeps its textures,
   samplers and uniforms (`set_texture`, `set_sampler`, `set_uniforms`) and makes a pipeline for
-  each kind of target it draws into. `ping_pong(w, h, format)` is a pair of targets for what
+  each kind of target it draws into. `output_pass(renderer)` is three's `OutputPass`: the end of a
+  chain in linear light, tone mapped with the renderer's settings when it draws (an
+  `exposure_map`, a 1x1 texture, can scale the exposure from the GPU, for auto exposure).
+  The composer's buffers are RGBA16F by default, as three's are. `ping_pong(w, h, format)` is a pair of targets for what
   builds up from frame to frame. `effect_composer(renderer)` with `add_pass()` and `render()`
   chains passes as three's does: a `ShaderPass` gets the picture of the pass before at its
   `input_view`, and the last pass draws into the window. See `postprocessing.c3`.
@@ -133,11 +136,17 @@ and parameter objects become named arguments.
 - **Rewind** (`three::timeline`): `Timeline{Input, State}` records each frame's input and snapshots
   the state a few times a second; `seek()` goes back by loading a snapshot and replaying the
   input after it. Needs a deterministic step function.
-- **Renderer:** render targets, ACES tone mapping, frustum culling, and `renderer.info`
+- **Renderer:** render targets, tone mapping, frustum culling, and `renderer.info`
   (draw calls and triangles of the last frame, shadow pass counted separately).
   `three::render_target(w, h, samples, format, depth_buffer)` takes three's `type`/`format` and
-  `depthBuffer` options as a sokol pixel format and a flag; a scene is rendered into RGBA8 with
-  depth, passes can use any format.
+  `depthBuffer` options as a sokol pixel format and a flag; passes can use any format.
+  A scene is rendered into RGBA8 (tone mapped and sRGB, ready to show) or, like three's
+  `HalfFloatType` targets, into RGBA16F, where it stays in linear light (a lamp brighter than
+  white keeps its brightness through blurs, reflections and blending) until an `OutputPass`
+  tone maps it. `renderer.tone_mapping` takes three's tone mappings (`LINEAR_`, `REINHARD_`,
+  `CINEON_`, `ACES_FILMIC_`, `AGX_` and `NEUTRAL_TONE_MAPPING`) with `tone_mapping_exposure`;
+  `three::tone_map(color, mode, exposure)` does the same on the CPU. Shaders of your own can
+  `@include tonemapping.glsl` and use `tone_map()`, `linear_to_srgb()` and `srgb_to_linear()`.
 - **Profiling** (`three::profile`): `profile::enabled = true`, then `profile::start()` /
   `profile::stop(name, t)` around stages and `profile::report(frames)`. The renderer times its
   own stages this way.
