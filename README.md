@@ -174,10 +174,35 @@ These aren't in three.js:
   the view is cut into 16x9x24 clusters (screen tiles x exponential depth slices). Each
   cluster lists the point and spot lights whose bounding sphere reaches it, and a fragment
   only shades its own cluster's lights. `renderer.max_lights` (default 1024 per kind, 0 = no
-  limit) caps a render, with a warning. The assignment runs on the CPU;
+  limit) caps a render, with a warning. The assignment runs in a compute shader
+  (`cluster_lights_gpu`; `cluster_lights_cpu` gives the same result on the CPU), and
   `renderer.assign_clusters` (a `ClusterAssignFn`) can replace it. Fog glow
   (`light_scatter`) still loops over every light. Storage buffers need GL 4.3 for a GL
   backend (Metal and D3D11 have them).
+- Compute shaders (`compute.c3`), after three.js's WebGPU `renderer.compute()` and storage
+  buffers. `three::storage_buffer(size)` makes a buffer that kernels read and write
+  (`cpu_write: true` for one the CPU fills with `write()` once a frame), and
+  `three::compute_pass(my_shader_desc(sg::query_backend()))` a kernel written in GLSL with
+  sokol-shdc's `@cs` (see `kernels.glsl`). Bind with `pass.set_buffer(VIEW_X, buffer)` and
+  `pass.set_uniforms(UB_X, &params, Params::size)`, then `renderer.compute(pass, groups_x)`
+  (or `begin_compute()`, several `pass.dispatch(x, y, z)`, `end_compute()`). Outside of
+  `render()`. Results come back to the CPU without stalling: `buffer.track(slot)` (slots from
+  `three::readback_slot()`) queues a copy, and `three::read_back(slot, out, bytes)` returns it
+  once the GPU has got there, a frame or two later (`wait: true` waits, after the frame is
+  committed).
+- GPU instance culling (`culling.c3`, `renderer.gpu_culling`, on by default): an
+  `InstancedMesh` in view (by the sphere around all its instances) has each instance's sphere
+  tested by a compute shader, for the camera and for the shadow maps drawn every frame (the
+  sun's cascades, the spot light's map), and only the instances inside are drawn: the vertex
+  shader reads their matrices from a storage buffer by index. sokol has no indirect draws, so
+  a draw asks for as many instances as the cull of a frame or two before kept, plus some room
+  (`renderer.info` counts those), and the vertex shader drops any past this frame's count. When
+  the view turns fast, a few instances can be missing for a frame. Meshes with fewer than 8
+  instances, `frustum_culled` off, or whose instances keep changing after their first upload
+  (`set_matrix_at` every frame) are drawn whole. Level of detail is still picked per `Lod`, not
+  per instance.
+- `renderer.check_compute`: also computes on the CPU what the compute shaders do (clusters,
+  instance culls) and prints where they differ; `three::print_compute_checks()` sums it up.
 - `material.blending = ADDITIVE_BLENDING`, like three's `AdditiveBlending`: a see-through
   material's pixels are added to what is behind them (flames, glows).
 - `object.render_order`, like three's `renderOrder`: among see-through meshes, higher ones are
@@ -212,4 +237,5 @@ These aren't in three.js:
 
 ## Editing the shader
 
-`three/shader.glsl` is the source. Run `./build.sh shaders` to regenerate `three/shader.c3`.
+`three/shader.glsl` is the source. Run `./build.sh shaders` to regenerate `three/shader.c3`
+(and `three/kernels.c3` from `three/kernels.glsl`, the compute shaders).

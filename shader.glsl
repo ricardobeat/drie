@@ -16,13 +16,49 @@ in vec4 inst0;
 in vec4 inst1;
 in vec4 inst2;
 
+// Instances culled on the GPU (renderer.c3, kernels.glsl cull_cs) are not read from the
+// attributes above but from the storage buffers below: instance i of the draw is
+// rows[3 * visible[first + i]], if i is under counts[job] (the cull's survivors; the draw may
+// ask for more, its count comes from an earlier frame).
+struct inst_row {
+    vec4 row;
+};
+struct inst_index {
+    uint index;
+};
+layout(binding=16) readonly buffer inst_rows { inst_row rows[]; };
+layout(binding=17) readonly buffer inst_visible { inst_index visible[]; };
+layout(binding=18) readonly buffer inst_counts { inst_index counts[]; };
+
+vec4 m0;
+vec4 m1;
+vec4 m2;
+
+// Picks this vertex's instance matrix. `cull`: x = 1 if culled on the GPU, y = its first entry
+// in visible, z = its job (in counts). False: an instance past the survivors, not drawn.
+bool fetch_instance(vec4 cull) {
+    if (cull.x < 0.5) {
+        m0 = inst0;
+        m1 = inst1;
+        m2 = inst2;
+        return true;
+    }
+    uint i = uint(gl_InstanceIndex);
+    if (i >= counts[uint(cull.z)].index) return false;
+    uint s = visible[uint(cull.y) + i].index * 3;
+    m0 = rows[s].row;
+    m1 = rows[s + 1].row;
+    m2 = rows[s + 2].row;
+    return true;
+}
+
 vec3 instance_point(vec3 p) {
     vec4 l = vec4(p, 1.0);
-    return vec3(dot(inst0, l), dot(inst1, l), dot(inst2, l));
+    return vec3(dot(m0, l), dot(m1, l), dot(m2, l));
 }
 
 vec3 instance_dir(vec3 d) {
-    return vec3(dot(inst0.xyz, d), dot(inst1.xyz, d), dot(inst2.xyz, d));
+    return vec3(dot(m0.xyz, d), dot(m1.xyz, d), dot(m2.xyz, d));
 }
 
 // Wind: bends vertices sideways the higher they sit above the model's origin.
@@ -69,6 +105,7 @@ layout(binding=0) uniform vs_params {
     vec4 uv_transform;  // xy = repeat, zw = offset
     vec4 sway;          // w = how much the material gives way to the pusher
     vec4 pusher;
+    vec4 inst_cull;     // see fetch_instance
 };
 
 @include_block vertex_common
@@ -80,12 +117,22 @@ out vec3 v_color;
 out float v_alpha;
 
 void main() {
+    if (!fetch_instance(inst_cull)) {
+        // outside the clip volume: nothing drawn
+        v_world_pos = vec3(0.0);
+        v_normal = vec3(0.0, 1.0, 0.0);
+        v_uv = vec2(0.0);
+        v_color = vec3(0.0);
+        v_alpha = 0.0;
+        gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+        return;
+    }
     vec3 ip = instance_point(position);
     vec4 wp = model * vec4(ip, 1.0);
     wp.xyz = apply_sway(wp.xyz, ip.y, sway);
     if (sway.w > 0.0) {
         wp.xyz = apply_push(wp.xyz, (model * vec4(instance_point(color0.xyz), 1.0)).xyz,
-                            (model * vec4(inst0.w, inst1.w, inst2.w, 1.0)).xz, pusher, sway.w);
+                            (model * vec4(m0.w, m1.w, m2.w, 1.0)).xz, pusher, sway.w);
     }
     v_world_pos = wp.xyz;
     v_normal = (normal_mat * vec4(instance_dir(normal), 0.0)).xyz;
@@ -103,6 +150,7 @@ layout(binding=0) uniform shadow_vs_params {
     vec4 s_uv_transform;
     vec4 s_sway;
     vec4 s_pusher;
+    vec4 s_inst_cull;
 };
 
 @include_block vertex_common
@@ -110,12 +158,17 @@ layout(binding=0) uniform shadow_vs_params {
 out vec2 v_uv;
 
 void main() {
+    if (!fetch_instance(s_inst_cull)) {
+        v_uv = vec2(0.0);
+        gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+        return;
+    }
     vec3 ip = instance_point(position);
     vec4 wp = s_model * vec4(ip, 1.0);
     wp.xyz = apply_sway(wp.xyz, ip.y, s_sway);
     if (s_sway.w > 0.0) {
         wp.xyz = apply_push(wp.xyz, (s_model * vec4(instance_point(color0.xyz), 1.0)).xyz,
-                            (s_model * vec4(inst0.w, inst1.w, inst2.w, 1.0)).xz, s_pusher, s_sway.w);
+                            (s_model * vec4(m0.w, m1.w, m2.w, 1.0)).xz, s_pusher, s_sway.w);
     }
     v_uv = uv * s_uv_transform.xy + s_uv_transform.zw;
     // keep the unused attributes alive so both programs share one vertex layout
