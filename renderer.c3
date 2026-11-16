@@ -181,6 +181,15 @@ struct Renderer
     // Extension: culls the instances of instanced meshes one by one on the GPU, for the
     // camera and the shadow maps drawn every frame (see culling.c3). On by default.
     bool gpu_culling;
+    // Extension: what has holes in it (alpha_test cut-outs, LOD cross-fades) is drawn twice:
+    // first only its depth, with a cheap shader that cuts the holes, then lit where that depth
+    // is, by a shader that cuts nothing. The lit shader then runs once per pixel instead of
+    // for every layer of leaves and blades, and no shader of the main pass discards (one that
+    // can costs the GPU its early depth test). On by default.
+    bool depth_prepass;
+    // ...for what covers at least this many pixels per triangle (about: its bounding sphere's
+    // disk on the screen, over its triangles). Default 1.5.
+    float depth_prepass_pixels;
     // Extension: also does on the CPU what compute shaders do (light clusters, instance
     // culling) and reports where the results differ, on stderr.
     bool check_compute;
@@ -242,6 +251,8 @@ struct DrawItem @local
     float fade_dir;
     // its instances culled on the GPU: the job (culling.c3) + 1; 0: drawn whole
     int job;
+    // how much of the view its bounding sphere takes, about (radius / distance)^2
+    float cover;
 }
 
 struct Frustum @private
@@ -254,11 +265,16 @@ struct RendererState @local
     Renderer* renderer;
     bool gfx_ready;
     SgShader shader;
+    SgShader opaque_shader;
+    SgShader depth_shader;
     SgShader shadow_shader;
-    // indexed [side][opaque, transparent, additive][wireframe][target: swapchain, offscreen 1x, offscreen 4x][alpha to coverage]
-    // (C3 declares array dimensions innermost first)
-    SgPipeline[2][3][2][3][3] pipelines;
+    // indexed [DrawKind][side][opaque, transparent, additive][wireframe][target: swapchain, offscreen 1x, offscreen 4x]
+    // [alpha to coverage] (C3 declares array dimensions innermost first)
+    SgPipeline[2][3][2][3][3][4] pipelines;
     SgPipeline shadow_pipeline;
+    // writes the far depth wherever it draws: clears one tile of the shadow atlas
+    SgPipeline tile_clear_pipeline;
+    BufferGeometry* tile_quad;
     List{DrawItem} opaque;
     List{DrawItem} transparent;
     List{DrawItem} casters;
@@ -312,6 +328,8 @@ struct RendererState @local
     Mesh* backdrop;
     // the volumetric fog's grid for this render (fog.c3), or a white texture
     SgView fog_view;
+    // the camera's focal length in pixels (0: not a perspective camera), for prepassed()
+    float prepass_focal;
 }
 
 RendererState state @local;
@@ -331,6 +349,8 @@ fn Renderer* webgl_renderer(bool antialias = true, int width = 800, int height =
         .lod_scale = 1,
         .auto_time = true,
         .gpu_culling = true,
+        .depth_prepass = true,
+        .depth_prepass_pixels = 1.5f,
         .max_lights = DEFAULT_MAX_LIGHTS,
         .shadow_atlas_capacity = DEFAULT_SHADOW_ATLAS_CAPACITY,
     };
@@ -425,6 +445,8 @@ fn void setup_gfx(SgEnvironment environment) @local
     stm::setup();
     state.start_ticks = stm::now();
     state.shader = sg::make_shader(&&three_shader_desc(sg::query_backend()));
+    state.opaque_shader = sg::make_shader(&&three_opaque_shader_desc(sg::query_backend()));
+    state.depth_shader = sg::make_shader(&&depth_shader_desc(sg::query_backend()));
     state.shadow_shader = sg::make_shader(&&shadow_shader_desc(sg::query_backend()));
     state.white = data_texture({ 255, 255, 255, 255 }, 1, 1, NO_COLOR_SPACE);
     float[12] identity = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0 };
@@ -516,15 +538,29 @@ fn SgVertexLayoutState vertex_layout(int[7] attrs) @local
     return layout;
 }
 
+// How a draw of the main pass is made (see Renderer.depth_prepass).
+enum DrawKind : char @local
+{
+    // the shader that can cut holes (transparent things, or without a depth prepass)
+    CUT,
+    // the shader that cuts none, for what has no holes
+    SOLID,
+    // the same, where the depth prepass has drawn: an EQUAL depth test, no depth written
+    PRETESTED,
+    // the depth prepass: depth only, holes cut
+    DEPTH,
+}
+
 fn SgPipeline get_pipeline(Side side, bool transparent, bool wireframe, RenderTarget* rt, bool alpha_test,
-                           Blending blending = NORMAL_BLENDING) @local
+                           Blending blending = NORMAL_BLENDING, DrawKind kind = CUT) @local
 {
     int target = rt ? (rt.samples > 1 ? 2 : 1) : 0;
     if (rt && rt.samples != 1 && rt.samples != 4) abort("three: render targets support 1 or 4 samples");
     int samples = rt ? rt.samples : sapp::sample_count();
-    bool a2c = alpha_test && !transparent && samples > 1;
+    // after the prepass, the coverage of the cut-out's edge is in the depth buffer's samples
+    bool a2c = alpha_test && !transparent && samples > 1 && kind != PRETESTED;
     bool additive = transparent && blending == ADDITIVE_BLENDING;
-    SgPipeline* pip = &state.pipelines[side.ordinal][transparent ? (additive ? 2 : 1) : 0][wireframe ? 1 : 0][target][a2c ? 1 : 0];
+    SgPipeline* pip = &state.pipelines[kind.ordinal][side.ordinal][transparent ? (additive ? 2 : 1) : 0][wireframe ? 1 : 0][target][a2c ? 1 : 0];
     if (pip.id) return *pip;
     SgCullMode cull;
     switch (side)
@@ -533,8 +569,16 @@ fn SgPipeline get_pipeline(Side side, bool transparent, bool wireframe, RenderTa
         case BACK_SIDE: cull = FRONT;
         case DOUBLE_SIDE: cull = NONE;
     }
+    SgShader shader;
+    switch (kind)
+    {
+        case CUT: shader = state.shader;
+        case SOLID:
+        case PRETESTED: shader = state.opaque_shader;
+        case DEPTH: shader = state.depth_shader;
+    }
     SgPipelineDesc desc = {
-        .shader = state.shader,
+        .shader = shader,
         .index_type = UINT32,
         .primitive_type = wireframe ? LINES : TRIANGLES,
         .cull_mode = wireframe ? NONE : cull,
@@ -542,12 +586,13 @@ fn SgPipeline get_pipeline(Side side, bool transparent, bool wireframe, RenderTa
         .layout = vertex_layout({ ATTR_THREE_POSITION, ATTR_THREE_NORMAL, ATTR_THREE_UV, ATTR_THREE_COLOR0,
                                   ATTR_THREE_INST0, ATTR_THREE_INST1, ATTR_THREE_INST2 }),
         .depth = {
-            .write_enabled = !transparent,
-            .compare = LESS_EQUAL,
+            .write_enabled = !transparent && kind != PRETESTED,
+            .compare = kind == PRETESTED ? SgCompareFunc.EQUAL : SgCompareFunc.LESS_EQUAL,
         },
         .alpha_to_coverage_enabled = a2c,
-        .label = "three-pipeline",
+        .label = kind == DEPTH ? "three-depth-prepass" : "three-pipeline",
     };
+    if (kind == DEPTH) desc.colors[0].write_mask = NONE;
     if (rt)
     {
         desc.sample_count = rt.samples;
@@ -588,6 +633,48 @@ fn SgPipeline get_shadow_pipeline() @local
         .label = "three-shadow-pipeline",
     });
     return state.shadow_pipeline;
+}
+
+// Clears the atlas's tile at the current viewport to the far depth (a pass clears all of it).
+fn void clear_atlas_tile() @local
+{
+    if (!state.tile_clear_pipeline.id)
+    {
+        state.tile_clear_pipeline = sg::make_pipeline(&&{
+            .shader = state.shadow_shader,
+            .index_type = UINT32,
+            .cull_mode = NONE,
+            .layout = vertex_layout({ ATTR_SHADOW_POSITION, ATTR_SHADOW_NORMAL, ATTR_SHADOW_UV, ATTR_SHADOW_COLOR0,
+                                      ATTR_SHADOW_INST0, ATTR_SHADOW_INST1, ATTR_SHADOW_INST2 }),
+            .depth = { .pixel_format = DEPTH, .write_enabled = true, .compare = ALWAYS },
+            .color_count = 0,
+            .colors[0].pixel_format = NONE,
+            .sample_count = 1,
+            .label = "three-atlas-tile-clear",
+        });
+        state.tile_quad = plane_geometry(2, 2);
+    }
+    BufferGeometry* g = state.tile_quad;
+    g.upload();
+    sg::apply_pipeline(state.tile_clear_pipeline);
+    SgBindings bind = { .vertex_buffers[0] = g.vbuf, .vertex_buffers[1] = state.identity_instance, .index_buffer = g.ibuf };
+    Vec4 inst_cull = cull_bind(&bind, -1);
+    Texture* white = ready(state.white);
+    bind.views[VIEW_S_MAP] = white.view;
+    bind.samplers[SMP_S_SMP] = white.sampler;
+    sg::apply_bindings(&bind);
+    // the quad's x and y as they are, at depth 1 (clip z = w: the far plane in both of the
+    // depth ranges)
+    Mat4 to_far = mat4_identity();
+    to_far[2][2] = 0;
+    to_far[3][2] = 1;
+    ShadowVsParams vs = { .s_view_proj = to_far, .s_model = mat4_identity(), .s_uv_transform = { 1, 1, 0, 0 },
+                          .s_inst_cull = inst_cull };
+    sg::apply_uniforms(UB_SHADOW_VS_PARAMS, &&{ .ptr = &vs, .size = ShadowVsParams::size });
+    ShadowFsParams fs;
+    sg::apply_uniforms(UB_SHADOW_FS_PARAMS, &&{ .ptr = &fs, .size = ShadowFsParams::size });
+    sg::draw(0, (int)g.index_count, 1);
+    sg::apply_pipeline(get_shadow_pipeline());
 }
 
 fn void ensure_shadow_map(int size) @local
@@ -672,14 +759,13 @@ fn int atlas_tile_of(SpotLight* sl) @local
     return -1;
 }
 
-// Draws the maps of the lights with shadow.auto_update off, when one of them asks for it or
-// the set of lights has changed.
+// Draws the maps of the lights with shadow.auto_update off: the tiles of those that ask for
+// it, or whose tile has changed hands.
 fn void update_shadow_atlas(Scene* scene, Camera* camera) @local
 {
     int capacity = math::max(state.renderer.shadow_atlas_capacity, 1);
     state.atlas_pending.clear();
     int tile = 4;
-    bool dirty;
     foreach (l : state.lights)
     {
         if (l.light_type != SPOT || !l.cast_shadow || !l.visible || l.intensity <= 0) continue;
@@ -687,27 +773,44 @@ fn void update_shadow_atlas(Scene* scene, Camera* camera) @local
         if (sl.shadow.auto_update || state.atlas_pending.len() >= capacity) continue;
         state.atlas_pending.push(sl);
         tile = math::max(tile, sl.shadow.map_size);
-        dirty = dirty || sl.shadow.needs_update;
     }
     int count = (int)state.atlas_pending.len();
     // keep the atlas while nothing uses it: the lights may only be switched off for a moment
     if (!count && state.atlas_tile) return;
+    int old_tile = state.atlas_tile;
     ensure_shadow_atlas(tile, capacity);
     tile = state.atlas_tile;
-    for (int i = 0; i < count; i++) dirty = dirty || atlas_tile_of(state.atlas_pending[i]) < 0;
-    if (!dirty) return;
+    // a new atlas (ensure_shadow_atlas forgot its lights): every tile
+    bool all = state.atlas_tile != old_tile || state.atlas_lights.len() == 0;
+    // a tile is drawn again for a light that asks for it, or that it newly belongs to
+    bool[64] redraw;
+    int redraws;
+    for (int i = 0; i < count; i++)
+    {
+        SpotLight* sl = state.atlas_pending[i];
+        bool moved = i >= state.atlas_lights.len() || state.atlas_lights[i] != sl;
+        if (all || moved || sl.shadow.needs_update || i >= redraw.len)
+        {
+            if (i < redraw.len) redraw[i] = true;
+            redraws++;
+        }
+    }
+    if (!redraws) return;
+    // most of them: clear all of it, as a pass does
+    if (redraws * 2 > count || count > redraw.len) all = true;
     state.atlas_lights.clear();
     foreach (l : state.atlas_pending) state.atlas_lights.push(l);
     Vector3 camera_pos = camera.matrix_world.get_position();
     bool top_left = depth_zero_to_one();
     sg::begin_pass(&&{
-        .action = { .depth = { .load_action = CLEAR, .store_action = STORE, .clear_value = 1 } },
+        .action = { .depth = { .load_action = all ? CLEAR : LOAD, .store_action = STORE, .clear_value = 1 } },
         .attachments = { .depth_stencil = state.atlas_attachment },
         .label = "three-spot-atlas",
     });
     sg::apply_pipeline(get_shadow_pipeline());
     for (int i = 0; i < count; i++)
     {
+        if (!all && !redraw[i]) continue;
         SpotLight* sl = state.atlas_pending[i];
         sl.shadow.needs_update = false;
         Mat4 light_vp = shadow_view_proj(sl);
@@ -719,6 +822,7 @@ fn void update_shadow_atlas(Scene* scene, Camera* camera) @local
         int columns = state.atlas_columns;
         sg::apply_viewport((i % columns) * tile, (i / columns) * tile, tile, tile, top_left);
         sg::apply_scissor_rect((i % columns) * tile, (i / columns) * tile, tile, tile, top_left);
+        if (!all) clear_atlas_tile();
         foreach (&item : state.casters) draw_shadow_item(item, light_vp);
     }
     sg::end_pass();
@@ -784,12 +888,11 @@ fn void collect(Object3D* obj, Mat4 view, Frustum* frustum, Vector3 lod_from, bo
                 radius = m.instance_radius;
             }
             Vector3 wc = m.matrix_world.transform_point(center);
-            if (m.frustum_culled)
-            {
-                float r = radius * max_scale(m.matrix_world) + m.material.sway * 2;
-                if (!frustum.contains_sphere(wc, r)) break;
-            }
-            DrawItem item = { m, view.transform_point(wc).z, fade, fade_dir, 0 };
+            float r = radius * max_scale(m.matrix_world) + m.material.sway * 2;
+            if (m.frustum_culled && !frustum.contains_sphere(wc, r)) break;
+            Vector3 vc = view.transform_point(wc);
+            float dist = math::max(vc.length(), r);
+            DrawItem item = { m, vc.z, fade, fade_dir, 0, r * r / (dist * dist) };
             if (shadow_pass)
             {
                 state.casters.push(item);
@@ -1170,7 +1273,7 @@ fn FsParams build_light_params(Scene* scene, Camera* camera, SpotLight* caster) 
         p.fog_color = { ...color_to_linear(f.color), state.renderer.prof_no_fog_scatter ? 0 : f.light_scatter };
         p.fog_params = { f.near, f.far, f.density, mode };
         p.fog_box_min = { ...f.clear_box_min, f.has_clear_box ? 1 : 0 };
-        p.fog_box_max = { ...f.clear_box_max, 0 };
+        p.fog_box_max = { ...f.clear_box_max, clamp(f.clear_box_density, 0, 1) };
         p.fog_height = { f.height_base, f.height_falloff, 0, f.shade_density };
         Vector3 sun_dir = f.sun_direction;
         Color sun_color = f.sun_color;
@@ -1221,7 +1324,79 @@ fn int draw_geometry(DrawItem* item, bool wireframe) @local
     return elements / 3 * instances;
 }
 
-fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs) @local
+fn float alpha_test_of(Material* mat) @local => state.renderer.prof_no_alpha_test ? 0 : mat.alpha_test;
+
+// Whether the main pass's shader would cut holes into `item`.
+fn bool has_holes(DrawItem* item) @local
+{
+    Material* mat = item.mesh.material;
+    if (mat.screen_target) return false;
+    return alpha_test_of(mat) > 0 || item.fade_dir != 0 || state.renderer.cull_box;
+}
+
+// Whether `item` goes through the depth prepass (see Renderer.depth_prepass): it has holes,
+// and enough pixels per triangle that shading them once saves more than drawing its
+// triangles twice costs (a far tree is mostly triangles, a meadow mostly pixels).
+fn bool prepassed(DrawItem* item) @local
+{
+    if (item.mesh.material.wireframe || !has_holes(item)) return false;
+    if (state.prepass_focal <= 0) return true;
+    Mesh* m = item.mesh;
+    int instances = m.instance_data.len() > 0 ? m.instance_count : 1;
+    if (item.job) instances = cull_draw_count(item.job - 1);
+    float triangles = (float)m.geometry.index_count / 3 * math::max(instances, 1);
+    // the pixels of its bounding sphere's disk, about
+    float pixels = PI * item.cover * state.prepass_focal * state.prepass_focal;
+    return pixels > state.renderer.depth_prepass_pixels * triangles;
+}
+
+// `normals`: false when nothing reads them (the depth prepass), to save the inverse.
+fn VsParams vs_params_of(DrawItem* item, Mat4 view_proj, bool normals = true) @local
+{
+    Mesh* m = item.mesh;
+    Material* mat = m.material;
+    return {
+        .view_proj = view_proj,
+        .model = m.matrix_world,
+        .normal_mat = normals ? m.matrix_world.invert().transpose() : m.matrix_world,
+        .uv_transform = uv_transform(mat),
+        .sway = sway_params(mat),
+        .pusher = pusher_params(),
+    };
+}
+
+// The depth prepass's draw of an opaque item with holes (see Renderer.depth_prepass).
+fn void draw_depth_item(DrawItem* item, Mat4 view_proj) @local
+{
+    Mesh* m = item.mesh;
+    Material* mat = m.material;
+    BufferGeometry* g = m.geometry;
+    Renderer* r = state.renderer;
+    float alpha_test = alpha_test_of(mat);
+    sg::apply_pipeline(get_pipeline(mat.side, false, false, r.render_target, alpha_test > 0, mat.blending, DEPTH));
+    SgBindings bind = { .vertex_buffers[0] = g.vbuf, .index_buffer = g.ibuf };
+    bind_instances(&bind, item);
+    Vec4 inst_cull = cull_bind(&bind, item.job - 1);
+    Texture* map = ready(mat.map);
+    bind.views[VIEW_TEX_MAP] = map.view;
+    bind.samplers[SMP_TEX_SMP] = map.sampler;
+    sg::apply_bindings(&bind);
+    VsParams vs = vs_params_of(item, view_proj, false);
+    vs.inst_cull = inst_cull;
+    sg::apply_uniforms(UB_VS_PARAMS, &&{ .ptr = &vs, .size = VsParams::size });
+    DepthFsParams fs = {
+        .d_color = { 0, 0, 0, mat.opacity },
+        .d_params = { mat.map ? 1 : 0, alpha_test, mat.vertex_colors ? 1 : 0, 0 },
+        .d_screen_params = { 0, 0, item.fade, item.fade_dir },
+        .d_cull_min = { ...r.cull_box_min, r.cull_box ? 1 : 0 },
+        .d_cull_max = { ...r.cull_box_max, 0 },
+    };
+    sg::apply_uniforms(UB_DEPTH_FS_PARAMS, &&{ .ptr = &fs, .size = DepthFsParams::size });
+    r.info.calls++;
+    draw_geometry(item, false);
+}
+
+fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = CUT) @local
 {
     Mesh* m = item.mesh;
     Material* mat = m.material;
@@ -1231,8 +1406,10 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs) @local
 
     Texture* map = ready(mat.map);
     if (mat.screen_target) map = state.white;
-    float alpha_test = r.prof_no_alpha_test ? 0 : mat.alpha_test;
-    sg::apply_pipeline(get_pipeline(mat.side, mat.transparent, mat.wireframe, r.render_target, alpha_test > 0, mat.blending));
+    float alpha_test = alpha_test_of(mat);
+    sg::apply_pipeline(get_pipeline(mat.side, mat.transparent, mat.wireframe, r.render_target, alpha_test > 0, mat.blending, kind));
+    // the prepass has cut it out already (the shader takes a negative threshold as "covered")
+    if (kind == PRETESTED && alpha_test > 0) alpha_test = -1;
     SgBindings bind = {
         .vertex_buffers[0] = g.vbuf,
         .index_buffer = mat.wireframe ? g.wire_ibuf : g.ibuf,
@@ -1271,15 +1448,8 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs) @local
     lights_gpu.bind(&bind);
     sg::apply_bindings(&bind);
 
-    VsParams vs = {
-        .view_proj = view_proj,
-        .model = m.matrix_world,
-        .normal_mat = m.matrix_world.invert().transpose(),
-        .uv_transform = uv_transform(mat),
-        .sway = sway_params(mat),
-        .pusher = pusher_params(),
-        .inst_cull = inst_cull,
-    };
+    VsParams vs = vs_params_of(item, view_proj);
+    vs.inst_cull = inst_cull;
     sg::apply_uniforms(UB_VS_PARAMS, &&{ .ptr = &vs, .size = VsParams::size });
 
     int flags = (mat.vertex_colors ? 1 : 0) | (mat.foliage ? 2 : 0) | (m.receive_shadow ? 4 : 0) | (mat.glass ? 8 : 0)
@@ -1410,8 +1580,8 @@ fn void draw_backdrop(Scene* scene, Camera* camera, Mat4 view_proj, FsParams* fs
     float r = ((PerspectiveCamera*)camera).far * 0.9f;
     m.matrix_world = mat4_compose(camera.matrix_world.get_position(), { 0, 0, 0 }, { r, r, r });
     m.geometry.upload();
-    DrawItem item = { m, 0, 0, 0, 0 };
-    draw_item(&item, view_proj, fs);
+    DrawItem item = { m, 0, 0, 0, 0, 1 };
+    draw_item(&item, view_proj, fs, has_holes(&item) ? CUT : SOLID);
 }
 
 // Draws the scene from the camera's point of view. Call once per frame from the animation loop.
@@ -1542,7 +1712,30 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera)
         pass.swapchain = sglue::swapchain();
     }
     sg::begin_pass(&pass);
-    foreach (&item : state.opaque) draw_item(item, view_proj, &fs);
+    // (not with a cull box: everything would have holes)
+    bool prepass = self.depth_prepass && !self.cull_box;
+    // pixels per unit of tan(angle) up the view, for prepassed()
+    state.prepass_focal = 0;
+    if (camera.camera_type == PERSPECTIVE)
+    {
+        RenderTarget* rt = self.render_target;
+        state.prepass_focal = camera.projection_matrix[1][1] * 0.5f * (rt ? rt.height : sapp::heightf());
+    }
+    if (prepass)
+    {
+        foreach (&item : state.opaque)
+        {
+            if (prepassed(item)) draw_depth_item(item, view_proj);
+        }
+    }
+    prof_stop("render: depth prepass", pt);
+    pt = prof_start();
+    foreach (&item : state.opaque)
+    {
+        DrawKind kind = SOLID;
+        if (item.mesh.material.wireframe || has_holes(item)) kind = prepass && prepassed(item) ? PRETESTED : CUT;
+        draw_item(item, view_proj, &fs, kind);
+    }
     prof_stop("render: main opaque", pt);
     pt = prof_start();
     draw_backdrop(scene, camera, view_proj, &fs);
