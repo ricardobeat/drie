@@ -19,6 +19,10 @@ struct RenderTarget
     int width;
     int height;
     int samples;
+    // its pixel format (like three's `type` and `format` options; 0 is RGBA8) and whether it
+    // has a depth buffer (`depthBuffer`). Rendering a scene into it needs RGBA8 with depth.
+    SgPixelFormat format;
+    bool depth_buffer;
     SgImage color;
     SgImage resolve;
     SgImage depth;
@@ -26,7 +30,7 @@ struct RenderTarget
     SgView resolve_view;
     SgView depth_view;
     SgView texture;
-    // The resolved RGBA8 image that `texture` reads from.
+    // The resolved image that `texture` reads from.
     SgImage texture_image;
     // For post-processing: the depth of the last render (multisampled if the target is), and
     // an attachment for drawing over the resolved picture.
@@ -64,13 +68,20 @@ fn Texture* RenderTarget.as_map(&self)
     return self.map_texture;
 }
 
-// samples > 1 renders with MSAA and resolves into `texture`. Must be called after the window opened.
-fn RenderTarget* render_target(int width, int height, int samples = 1)
+// samples > 1 renders with MSAA and resolves into `texture`. A target for post-processing
+// passes takes a format of its own (RGBA16F, RG16F, R16F...) and no depth buffer:
+//   three::render_target(w, h, format: RGBA16F, depth_buffer: false)
+// Must be called after the window opened.
+fn RenderTarget* render_target(int width, int height, int samples = 1, SgPixelFormat format = RGBA8, bool depth_buffer = true)
 {
     RenderTarget* rt = mem::new(RenderTarget);
+    rt.format = format;
+    rt.depth_buffer = depth_buffer;
     rt.set_size(width, height, samples);
     return rt;
 }
+
+fn SgPixelFormat RenderTarget.pixel_format(&self) => self.format == DEFAULT ? RGBA8 : self.format;
 
 fn void RenderTarget.dispose(&self)
 {
@@ -84,7 +95,9 @@ fn void RenderTarget.dispose(&self)
     if (self.resolve.id) sg::destroy_image(self.resolve);
     if (self.depth.id) sg::destroy_image(self.depth);
     Texture* map = self.map_texture;
-    *self = { .map_texture = map };
+    SgPixelFormat format = self.format;
+    bool depth_buffer = self.depth_buffer;
+    *self = { .map_texture = map, .format = format, .depth_buffer = depth_buffer };
 }
 
 fn void RenderTarget.set_size(&self, int width, int height, int samples = 1)
@@ -94,28 +107,32 @@ fn void RenderTarget.set_size(&self, int width, int height, int samples = 1)
     self.width = width;
     self.height = height;
     self.samples = samples;
+    SgPixelFormat format = self.pixel_format();
     self.color = sg::make_image(&&{
         .usage = { .color_attachment = true },
-        .width = width, .height = height, .sample_count = samples, .pixel_format = RGBA8,
-    });
-    self.depth = sg::make_image(&&{
-        .usage = { .depth_stencil_attachment = true },
-        .width = width, .height = height, .sample_count = samples, .pixel_format = DEPTH,
+        .width = width, .height = height, .sample_count = samples, .pixel_format = format,
     });
     self.color_view = sg::make_view(&&{ .color_attachment = { .image = self.color } });
-    self.depth_view = sg::make_view(&&{ .depth_stencil_attachment = { .image = self.depth } });
+    if (self.depth_buffer)
+    {
+        self.depth = sg::make_image(&&{
+            .usage = { .depth_stencil_attachment = true },
+            .width = width, .height = height, .sample_count = samples, .pixel_format = DEPTH,
+        });
+        self.depth_view = sg::make_view(&&{ .depth_stencil_attachment = { .image = self.depth } });
+        self.depth_texture = sg::make_view(&&{ .texture = { .image = self.depth } });
+    }
     self.texture_image = self.color;
     if (samples > 1)
     {
         self.resolve = sg::make_image(&&{
             .usage = { .resolve_attachment = true, .color_attachment = true },
-            .width = width, .height = height, .sample_count = 1, .pixel_format = RGBA8,
+            .width = width, .height = height, .sample_count = 1, .pixel_format = format,
         });
         self.resolve_view = sg::make_view(&&{ .resolve_attachment = { .image = self.resolve } });
         self.texture_image = self.resolve;
     }
     self.texture = sg::make_view(&&{ .texture = { .image = self.texture_image } });
-    self.depth_texture = sg::make_view(&&{ .texture = { .image = self.depth } });
     self.overlay_view = sg::make_view(&&{ .color_attachment = { .image = self.texture_image } });
     if (self.map_texture) self.as_map();
 }
@@ -152,10 +169,12 @@ struct Renderer
     Vector3 cull_box_max;
     // LOD distances are multiplied by this (above 1 keeps detail and draws further).
     float lod_scale;
-    // Someone walking through the plants: materials with `push` give way around this point
-    // (their feet), up to pusher_reach meters from it. 0 = nobody.
-    Vector3 pusher;
-    float pusher_reach;
+    // For the application's own shader hooks (see `shaders`), which read them as
+    // `frame_custom[0]` and `[1]`, the same for every draw.
+    Vec4[2] custom;
+    // The application's own build of the material shader, with its hooks (see shader.glsl).
+    // Unset, the engine's (no hooks). Read when the renderer starts.
+    MaterialShaders shaders;
     // In shadow maps, LOD objects are picked as if they were this many times further away
     // (1 or less: as in the picture). Shadows of grass and leaves need less than the plants.
     float shadow_lod_bias;
@@ -263,6 +282,9 @@ struct Frustum @private
 struct RendererState @local
 {
     Renderer* renderer;
+    List{FrameHook} frame_hooks;
+    List{EventFilter} event_filters;
+    List{FrameHook} overlays;
     bool gfx_ready;
     SgShader shader;
     SgShader opaque_shader;
@@ -427,6 +449,19 @@ fn bool depth_zero_to_one()
     return b != GLCORE && b != GLES3;
 }
 
+alias ShaderDescFn = fn SgShaderDesc(SgBackend backend);
+
+// The four programs of the material shader, as sokol-shdc generates them from a .glsl file that
+// includes shader_core.glsl: `my_module::three_shader_desc`, `three_opaque_shader_desc`,
+// `depth_shader_desc` and `shadow_shader_desc`.
+struct MaterialShaders
+{
+    ShaderDescFn main;
+    ShaderDescFn opaque;
+    ShaderDescFn depth;
+    ShaderDescFn shadow;
+}
+
 fn void setup_gfx(SgEnvironment environment) @local
 {
     sg::setup(&&{
@@ -444,10 +479,12 @@ fn void setup_gfx(SgEnvironment environment) @local
     });
     stm::setup();
     state.start_ticks = stm::now();
-    state.shader = sg::make_shader(&&three_shader_desc(sg::query_backend()));
-    state.opaque_shader = sg::make_shader(&&three_opaque_shader_desc(sg::query_backend()));
-    state.depth_shader = sg::make_shader(&&depth_shader_desc(sg::query_backend()));
-    state.shadow_shader = sg::make_shader(&&shadow_shader_desc(sg::query_backend()));
+    MaterialShaders s = state.renderer ? state.renderer.shaders : {};
+    SgBackend backend = sg::query_backend();
+    state.shader = sg::make_shader(&&(s.main ? s.main(backend) : three_shader_desc(backend)));
+    state.opaque_shader = sg::make_shader(&&(s.opaque ? s.opaque(backend) : three_opaque_shader_desc(backend)));
+    state.depth_shader = sg::make_shader(&&(s.depth ? s.depth(backend) : depth_shader_desc(backend)));
+    state.shadow_shader = sg::make_shader(&&(s.shadow ? s.shadow(backend) : shadow_shader_desc(backend)));
     state.white = data_texture({ 255, 255, 255, 255 }, 1, 1, NO_COLOR_SPACE);
     float[12] identity = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0 };
     state.identity_instance = sg::make_buffer(&&{ .data = { .ptr = &identity, .size = identity.len * float::size } });
@@ -468,10 +505,35 @@ fn void Renderer.init_headless(&self)
     setup_gfx(readback::headless_environment());
 }
 
+// What runs around the frame besides the application: before it (reading a game controller),
+// on the window's events before the listeners (menus that take the input), and over the
+// picture in the window (menus, fades). three::input and three::ui hook in this way, and an
+// application can too.
+alias FrameHook = fn void();
+alias EventFilter = fn bool(Event* e);
+
+// Runs `hook` before every frame, ahead of the animation loop.
+fn void add_frame_hook(FrameHook hook) => state.frame_hooks.push(hook);
+
+// Gives every window event to `filter` first: when it returns true, the event is used up.
+fn void add_event_filter(EventFilter filter) => state.event_filters.push(filter);
+
+// Draws `overlay` over the picture whenever a frame goes into the window (render() to the
+// window, postprocessing's end_screen(), or draw_overlays() in a pass of the application's).
+fn void add_overlay(FrameHook overlay) => state.overlays.push(overlay);
+
+// Draws the overlays into the current pass, which must be a pass to the window.
+fn void draw_overlays()
+{
+    foreach (o : state.overlays) o();
+}
+
+// What Lod distances are divided by (Renderer.lod_scale of the renderer in use).
+fn float lod_distance_scale() @private => state.renderer ? math::max(state.renderer.lod_scale, 0.01f) : 1;
+
 fn void on_frame() @local
 {
-    // the controller's state for this frame, and its key events (gamepad.c3)
-    poll_gamepad();
+    foreach (h : state.frame_hooks) h();
     if (state.renderer.animation_loop) state.renderer.animation_loop(stm::ms(stm::since(state.start_ticks)));
 }
 
@@ -486,34 +548,14 @@ fn void send_event(SappEvent* e) => on_event(e);
 
 fn void on_event(SappEvent* e) @local
 {
-    switch (e.type)
-    {
-        case TOUCHES_BEGAN:
-        case TOUCHES_MOVED:
-        case TOUCHES_ENDED:
-        case TOUCHES_CANCELLED:
-            touch_event(e);
-        case MOUSE_DOWN:
-        case MOUSE_UP:
-        case MOUSE_MOVE:
-        case MOUSE_SCROLL:
-        case MOUSE_ENTER:
-        case MOUSE_LEAVE:
-            if (touch_from_mouse(e)) return;
-        case UNFOCUSED:
-        case SUSPENDED:
-            touch_reset();
-        default:
-            break;
-    }
     if (e.type == KEY_DOWN && !e.key_repeat
         && (e.key_code == F11 || (e.key_code == ENTER && (e.modifiers & sapp::MODIFIER_ALT))))
     {
         sapp::toggle_fullscreen();
         return;
     }
-    // an open menu takes the input (see menu.c3)
-    if (menu_filter_event(e)) return;
+    // an open menu takes the input (three::ui), for one
+    foreach (f : state.event_filters) if (f(e)) return;
     foreach (c : state.controls) c.handle_event(e);
     foreach (l : state.listeners) l(e);
 }
@@ -1309,8 +1351,7 @@ fn Vec4 uv_transform(Material* mat) @local
     return t ? (Vec4){ t.repeat.x, t.repeat.y, t.offset.x, t.offset.y } : (Vec4){ 1, 1, 0, 0 };
 }
 
-fn Vec4 sway_params(Material* mat) @local => { state.renderer.time, mat.sway, mat.sway_speed, mat.push };
-fn Vec4 pusher_params() @local => { ...state.renderer.pusher, state.renderer.pusher_reach };
+fn Vec4 sway_params(Material* mat) @local => { state.renderer.time, mat.sway, mat.sway_speed, 0 };
 
 // Draws `m`'s geometry; with item.job, as many instances as its cull asks for.
 fn int draw_geometry(DrawItem* item, bool wireframe) @local
@@ -1361,7 +1402,8 @@ fn VsParams vs_params_of(DrawItem* item, Mat4 view_proj, bool normals = true) @l
         .normal_mat = normals ? m.matrix_world.invert().transpose() : m.matrix_world,
         .uv_transform = uv_transform(mat),
         .sway = sway_params(mat),
-        .pusher = pusher_params(),
+        .vs_material_custom = mat.custom,
+        .vs_frame_custom = state.renderer.custom,
     };
 }
 
@@ -1467,13 +1509,14 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     fs.specular = { ...color_to_linear(mat.specular), (float)flags };
     fs.mat_params = { (float)mat.type, mat.roughness, mat.metalness, mat.shininess };
     fs.tex_params = { mat.map ? 1 : 0, mat.normal_map ? mat.normal_scale : 0, mat.arm_map ? 1 : 0, alpha_test };
-    fs.env_params = { mat.env_map ? 1 : 0, mat.env_intensity > 0 ? mat.env_intensity : 1, mat.reflect_viewer,
+    fs.env_params = { mat.env_map ? 1 : 0, mat.env_intensity > 0 ? mat.env_intensity : 1, 0,
                       mat.env_map ? mat.env_map.env_distance_range : 0 };
     bool boxed = mat.env_box_min != mat.env_box_max;
     fs.env_pos = { ...mat.env_position, boxed ? 1 : 0 };
     fs.env_box_min = { ...mat.env_box_min, 0 };
     fs.env_box_max = { ...mat.env_box_max, 0 };
-    fs.grime_params = { mat.grime, mat.grime_floor, mat.grime_height > 0 ? mat.grime_height : 2.6f, mat.grime_seed };
+    fs.material_custom = mat.custom;
+    fs.frame_custom = r.custom;
     fs.ssr_view_proj = r.ssr_view_proj;
     fs.ssr_params = { ssr ? mat.ssr : 0, r.ssr_reach, (float)(r.ssr_frame % 64), depth_zero_to_one() ? 1 : 0 };
     float fog_mode = fs.fog_params.w;
@@ -1504,8 +1547,9 @@ fn void draw_shadow_item(DrawItem* item, Mat4 light_vp) @local
         .s_model = m.matrix_world,
         .s_uv_transform = uv_transform(mat),
         .s_sway = sway_params(mat),
-        .s_pusher = pusher_params(),
         .s_inst_cull = inst_cull,
+        .s_material_custom = mat.custom,
+        .s_frame_custom = state.renderer.custom,
     };
     sg::apply_uniforms(UB_SHADOW_VS_PARAMS, &&{ .ptr = &vs, .size = ShadowVsParams::size });
     ShadowFsParams fs = { .s_params = { mat.map && !state.renderer.prof_no_alpha_test ? mat.alpha_test : 0, mat.opacity, 0, 0 } };
@@ -1597,7 +1641,7 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera)
         RenderTarget* rt = self.render_target;
         pc.aspect = rt ? (float)rt.width / rt.height : sapp::widthf() / sapp::heightf();
     }
-    ulong pt = prof_start();
+    ulong pt = profile::start();
     camera.update_projection_matrix();
 
     if (!scene.no_matrix_world_update) scene.update_matrix_world();
@@ -1607,8 +1651,8 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera)
     Mat4 view_proj = camera.projection_matrix.mul(camera.matrix_world_inverse);
     Vector3 camera_pos = camera.matrix_world.get_position();
 
-    prof_stop("render: matrices", pt);
-    pt = prof_start();
+    profile::stop("render: matrices", pt);
+    pt = profile::start();
     state.opaque.clear();
     state.transparent.clear();
     state.casters.clear();
@@ -1616,16 +1660,16 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera)
     cull_begin(self.gpu_culling, self.check_compute);
     Frustum frustum = frustum_from(view_proj);
     collect(scene, camera.matrix_world_inverse, &frustum, camera_pos, false);
-    prof_stop("render: collect", pt);
-    pt = prof_start();
+    profile::stop("render: collect", pt);
+    pt = profile::start();
     // front-to-back for opaque, back-to-front for transparent (view space looks down -Z)
     sort::quicksort(&state.opaque, &cmp_opaque);
     sort::quicksort(&state.transparent, &cmp_transparent);
     int view = cull_view(&frustum);
     foreach (&item : state.opaque) item.job = cull_job(item.mesh, view) + 1;
     foreach (&item : state.transparent) item.job = cull_job(item.mesh, view) + 1;
-    prof_stop("render: sort + jobs", pt);
-    pt = prof_start();
+    profile::stop("render: sort + jobs", pt);
+    pt = profile::start();
 
     // shadow map of the shadow casting spot light
     SpotLight* caster = shadow_light();
@@ -1641,17 +1685,17 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera)
         gather_casters(scene, camera, &light_frustum, caster.shadow.skip_instanced, &state.spot_casters);
     }
     // the directional light's map is its own, so a sun and a spot light can both have shadows
-    prof_stop("render: spot casters", pt);
-    pt = prof_start();
+    profile::stop("render: spot casters", pt);
+    pt = profile::start();
     DirectionalLight* sun = directional_shadow_light();
     state.sun_caster = sun;
     prepare_sun_shadow(scene, camera, sun);
-    prof_stop("render: sun casters", pt);
-    pt = prof_start();
+    profile::stop("render: sun casters", pt);
+    pt = profile::start();
     // every view's instances culled at once, before the passes that draw them
     cull_dispatch();
-    prof_stop("render: cull dispatch", pt);
-    pt = prof_start();
+    profile::stop("render: cull dispatch", pt);
+    pt = profile::start();
 
     if (caster)
     {
@@ -1665,21 +1709,21 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera)
         foreach (&item : state.spot_casters) draw_shadow_item(item, caster_vp);
         sg::end_pass();
     }
-    prof_stop("render: spot shadow", pt);
-    pt = prof_start();
+    profile::stop("render: spot shadow", pt);
+    pt = profile::start();
     draw_sun_shadow(sun);
-    prof_stop("render: sun shadow", pt);
-    pt = prof_start();
+    profile::stop("render: sun shadow", pt);
+    pt = profile::start();
     update_shadow_atlas(scene, camera);
-    prof_stop("render: spot atlas", pt);
-    pt = prof_start();
+    profile::stop("render: spot atlas", pt);
+    pt = profile::start();
     if (!state.no_irradiance) state.no_irradiance = irradiance_volume({ 0, 0, 0 }, { 1, 1, 1 }, 1);
     state.irradiance = scene.irradiance ?: state.no_irradiance;
     state.irradiance.upload();
 
     FsParams fs = build_light_params(scene, camera, caster);
-    prof_stop("render: lights/clusters", pt);
-    pt = prof_start();
+    profile::stop("render: lights/clusters", pt);
+    pt = profile::start();
     state.fog_view = ready(state.white).view;
     if (fog_volume_wanted(scene.fog, camera, self.prof_no_fog_scatter))
     {
@@ -1688,8 +1732,8 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera)
         state.fog_view = update_fog_volume(scene, camera, &fs, rt ? rt.width : sapp::width(), rt ? rt.height : sapp::height(),
                                            views, self.time);
     }
-    prof_stop("render: volumetric fog", pt);
-    pt = prof_start();
+    profile::stop("render: volumetric fog", pt);
+    pt = profile::start();
 
     Vector3 clear = tone_mapped(self, scene.background ? scene.background : self.clear_color);
     SgPass pass = {
@@ -1728,22 +1772,22 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera)
             if (prepassed(item)) draw_depth_item(item, view_proj);
         }
     }
-    prof_stop("render: depth prepass", pt);
-    pt = prof_start();
+    profile::stop("render: depth prepass", pt);
+    pt = profile::start();
     foreach (&item : state.opaque)
     {
         DrawKind kind = SOLID;
         if (item.mesh.material.wireframe || has_holes(item)) kind = prepass && prepassed(item) ? PRETESTED : CUT;
         draw_item(item, view_proj, &fs, kind);
     }
-    prof_stop("render: main opaque", pt);
-    pt = prof_start();
+    profile::stop("render: main opaque", pt);
+    pt = profile::start();
     draw_backdrop(scene, camera, view_proj, &fs);
     if (!self.prof_no_transparent) foreach (&item : state.transparent) draw_item(item, view_proj, &fs);
-    // menus and fades on top (see menu.c3)
-    if (!self.render_target) draw_ui();
+    // menus and fades on top (three::ui)
+    if (!self.render_target) draw_overlays();
     sg::end_pass();
-    prof_stop("render: main transparent", pt);
+    profile::stop("render: main transparent", pt);
     // When rendering to the window, finish the frame. With a render target, the caller
     // usually runs more passes (post-processing) and must call three::commit() at the end.
     if (!self.render_target) sg::commit();

@@ -7,11 +7,12 @@
 //
 // How it looks is up to the game:
 //   - `overlay = true` draws it with a plain built-in look on top of the finished frame
-//     (render() to the window does it; a game with its own final pass calls draw_ui()).
+//     (render() to the window does it, and postprocessing's end_screen(); a game with a
+//     final pass of its own calls ui::draw()).
 //   - otherwise read the fields (items, selected, page, is_open...) and draw it yourself,
 //     inside the picture if you like (into a texture that goes through post-processing).
 //
-//   Menu* menu = three::menu("PAUSED", &on_menu);
+//   Menu* menu = ui::menu("PAUSED", &on_menu);
 //   menu.add("RESUME");
 //   menu.add("ABOUT", page: true, text: "Made with three.c3");
 //   menu.add("QUIT");
@@ -27,9 +28,9 @@
 // the built-in look shows their `text`; a game can draw anything there and read the held
 // arrow keys with axis_x() / axis_y(), to scrub or adjust something. Other keys pressed on a
 // page come to the handler as KEY events, with the key in `key`.
-module three;
+module three::ui;
 import std::collections::list, std::math, std::time::clock;
-import sokol;
+import sokol, three, three::input;
 
 enum MenuEvent
 {
@@ -65,7 +66,7 @@ struct Menu
     bool is_open;
     // opens and closes the menu
     KeyCode toggle_key;
-    // draw with the built-in look in draw_ui()
+    // draw with the built-in look in draw()
     bool overlay;
     // releases the mouse while open, and locks it again on close if it was locked
     bool keep_mouse;
@@ -102,7 +103,7 @@ const int FONT_ORIC = 5;
 // Sets up sokol_debugtext (with the FONT_* fonts) and sokol_gl, once. Call it instead of
 // sdtx::setup / sgl::setup when the game draws text or shapes of its own as well.
 // Needs the GPU (call it from a frame, or after init_headless).
-fn void ui_setup()
+fn void setup()
 {
     if (ui.ready) return;
     sdtx::setup(&&{
@@ -302,8 +303,42 @@ fn bool Menu.handle_event(&self, Event* e)
     return true;
 }
 
-// Called by the renderer for every event before the listeners.
-fn bool menu_filter_event(Event* e)
+// The window's events go through here first (see three::add_event_filter): the touch controls
+// see touches and the mouse, then an open menu takes what it wants.
+fn bool filter_event(Event* e) @local
+{
+    switch (e.type)
+    {
+        case TOUCHES_BEGAN:
+        case TOUCHES_MOVED:
+        case TOUCHES_ENDED:
+        case TOUCHES_CANCELLED:
+            touch_event(e);
+        case MOUSE_DOWN:
+        case MOUSE_UP:
+        case MOUSE_MOVE:
+        case MOUSE_SCROLL:
+        case MOUSE_ENTER:
+        case MOUSE_LEAVE:
+            if (touch_from_mouse(e)) return true;
+        case UNFOCUSED:
+        case SUSPENDED:
+            touch_reset();
+        default:
+            break;
+    }
+    return menu_filter_event(e);
+}
+
+// The menus, the fade and the touch controls hook into the renderer's events and its picture
+// in the window as soon as the program starts.
+fn void register_ui() @init @local
+{
+    three::add_event_filter(&filter_event);
+    three::add_overlay(&draw);
+}
+
+fn bool menu_filter_event(Event* e) @local
 {
     // an open menu gets everything first
     foreach (m : ui.menus) if (m.is_open) return m.handle_event(e);
@@ -311,7 +346,7 @@ fn bool menu_filter_event(Event* e)
     return false;
 }
 
-fn bool any_menu_open()
+fn bool any_menu_open() @private
 {
     foreach (m : ui.menus) if (m.is_open) return true;
     return false;
@@ -323,7 +358,7 @@ fn bool any_menu_open()
 
 alias FadeCallback = fn void();
 
-// A fade to and from black. `level` 0 is the picture, 1 is black. draw_ui() draws it over
+// A fade to and from black. `level` 0 is the picture, 1 is black. draw() draws it over
 // everything (menus included) unless `custom` is set, for a game that applies `level`
 // itself (in its own post-processing, say). Advance it with update() every frame.
 struct Fade
@@ -453,19 +488,20 @@ fn void Menu.draw_default(&self, float cw, float ch)
 
 // Draws the overlay (open menus with `overlay`, the fade unless it is `custom`, the touch
 // controls once they are enabled) into the current pass, which must be a pass to the window.
-// render() to the window calls it; a game whose last pass to the window is its own calls it
+// It is one of the renderer's overlays: render() to the window and end_screen() draw it; a
+// game whose last pass to the window is its own calls three::draw_overlays() (or this)
 // before ending that pass.
-fn void draw_ui()
+fn void draw()
 {
     bool menus;
     foreach (m : ui.menus) if (m.is_open && m.overlay) menus = true;
     bool fade = !screen_fade.custom && screen_fade.level > 0;
     bool touch = touch_controls().enabled;
     if (!menus && !fade && !touch) return;
-    ui_setup();
+    setup();
     // in pixels (without a window: the renderer's size)
-    float w = sapp::isvalid() ? sapp::widthf() : window_width();
-    float h = sapp::isvalid() ? sapp::heightf() : window_height();
+    float w = sapp::isvalid() ? sapp::widthf() : three::window_width();
+    float h = sapp::isvalid() ? sapp::heightf() : three::window_height();
     // about 360 canvas units high: big enough to read on any window
     float scale = math::max(1.0f, math::round(h / 360));
     float cw = w / scale;

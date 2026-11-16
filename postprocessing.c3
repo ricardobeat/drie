@@ -1,0 +1,437 @@
+// Post-processing, after three.js's EffectComposer, RenderPass and ShaderPass.
+//
+// A ShaderPass is a fullscreen shader (a GLSL @vs/@fs pair compiled with sokol-shdc, like
+// the engine's own) drawn into a RenderTarget, over one, or into the window. It keeps its
+// textures, samplers and uniforms between frames, and makes a pipeline for each kind of
+// target it is drawn into, the first time, so one pass can draw into a half-float target and
+// the window alike. Each draw is a single triangle in a pass of its own: nothing is copied.
+//
+//   ShaderPass* blur = three::shader_pass(blur_shader_desc(sg::query_backend()), "blur");
+//   blur.set_texture(VIEW_SRC, scene_target.texture);
+//   blur.set_sampler(SMP_SMP, three::linear_sampler());
+//   blur.set_uniforms(UB_BLUR_PARAMS, &params);
+//   blur.render(blurred);              // into a RenderTarget (null: the window)
+//
+// The vertex shader makes the triangle from gl_VertexIndex (no vertex buffer):
+//   vec2 p = vec2((gl_VertexIndex << 1) & 2, gl_VertexIndex & 2);
+//   gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
+//
+// EffectComposer chains passes the way three's does, handing each the picture of the one
+// before (ShaderPass.input_view, three's 'tDiffuse'); the last one draws into the window.
+// A chain whose passes read several pictures, or keep some from frame to frame, can call the
+// passes itself in its own order instead, with render targets (any pixel format) and
+// PingPong pairs for what builds up over frames.
+module three::postprocessing;
+import std::collections::list;
+import sokol, three;
+
+// Blend states for ShaderPass (three's MultiplyBlending, AdditiveBlending, NormalBlending).
+// Multiply keeps the target's alpha.
+const SgBlendState NO_BLEND = {};
+const SgBlendState MULTIPLY_BLEND = {
+    .enabled = true, .src_factor_rgb = DST_COLOR, .dst_factor_rgb = ZERO,
+    .src_factor_alpha = ZERO, .dst_factor_alpha = ONE,
+};
+const SgBlendState ADDITIVE_BLEND = {
+    .enabled = true, .src_factor_rgb = ONE, .dst_factor_rgb = ONE,
+    .src_factor_alpha = ZERO, .dst_factor_alpha = ONE,
+};
+const SgBlendState ALPHA_BLEND = {
+    .enabled = true, .src_factor_rgb = SRC_ALPHA, .dst_factor_rgb = ONE_MINUS_SRC_ALPHA,
+    .src_factor_alpha = ONE, .dst_factor_alpha = ONE_MINUS_SRC_ALPHA,
+};
+
+// sokol has 8 uniform block slots; a pass keeps a copy of each block it was given.
+const int PASS_UNIFORM_SLOTS = 8;
+const int PASS_UNIFORM_BYTES = 512;
+
+// What the pass being drawn into is made of: a pipeline is made for each.
+struct PassFormat @local
+{
+    SgPixelFormat color;
+    SgPixelFormat depth;
+    int samples;
+    bool screen;
+}
+
+struct PassPipeline @local
+{
+    PassFormat format;
+    SgPipeline pipeline;
+}
+
+struct PostState @local
+{
+    SgSampler linear;
+    SgSampler nearest;
+    // the pass begun by begin_screen, RenderTarget.begin or ShaderPass.render
+    PassFormat current;
+}
+
+PostState post_state @local;
+
+// Shared samplers for passes: bilinear and nearest, both clamped to the edge.
+fn SgSampler linear_sampler()
+{
+    if (!post_state.linear.id)
+    {
+        post_state.linear = sg::make_sampler(&&{
+            .min_filter = LINEAR, .mag_filter = LINEAR, .wrap_u = CLAMP_TO_EDGE, .wrap_v = CLAMP_TO_EDGE,
+        });
+    }
+    return post_state.linear;
+}
+
+fn SgSampler nearest_sampler()
+{
+    if (!post_state.nearest.id)
+    {
+        post_state.nearest = sg::make_sampler(&&{
+            .min_filter = NEAREST, .mag_filter = NEAREST, .wrap_u = CLAMP_TO_EDGE, .wrap_v = CLAMP_TO_EDGE,
+        });
+    }
+    return post_state.nearest;
+}
+
+fn SgColor clear_color_of(Color c, float alpha) @local
+{
+    return { ((c >> 16) & 0xff) / 255.0f, ((c >> 8) & 0xff) / 255.0f, (c & 0xff) / 255.0f, alpha };
+}
+
+// Starts a pass into the target, for ShaderPass.draw and drawing of your own (sokol_gl,
+// sokol_debugtext). `clear` and `clear_alpha` are used with load: CLEAR. A target with a depth
+// buffer has it cleared. End with end().
+fn void RenderTarget.begin(&self, SgLoadAction load = CLEAR, Color clear = 0x000000, float clear_alpha = 1, ZString label = "three-target")
+{
+    SgPass pass = { .action.colors[0] = { .load_action = load, .clear_value = clear_color_of(clear, clear_alpha) }, .label = label };
+    pass.attachments = self.attachments();
+    if (self.depth_buffer) pass.action.depth = { .load_action = CLEAR, .store_action = STORE, .clear_value = 1 };
+    sg::begin_pass(&pass);
+    post_state.current = { self.pixel_format(), self.depth_buffer ? DEPTH : NONE, self.samples, false };
+}
+
+// Starts a pass over the target's resolved picture (its `texture`), as it is: for drawing on
+// top of a render, such as darkening it with MULTIPLY_BLEND. End with end().
+fn void RenderTarget.begin_over(&self, ZString label = "three-over")
+{
+    SgPass pass = { .action.colors[0] = { .load_action = LOAD }, .label = label };
+    pass.attachments.colors[0] = self.overlay_view;
+    sg::begin_pass(&pass);
+    post_state.current = { self.pixel_format(), NONE, 1, false };
+}
+
+fn void RenderTarget.end(&self) => sg::end_pass();
+
+// Starts a pass into the window, cleared to `clear`. With `aspect` (width / height) the
+// picture keeps that shape, with black bars in a window of any other. End with end_screen().
+fn void begin_screen(Color clear = 0x000000, float aspect = 0, ZString label = "three-screen")
+{
+    sg::begin_pass(&&{
+        .action.colors[0] = { .load_action = CLEAR, .clear_value = clear_color_of(clear, 1) },
+        .swapchain = sglue::swapchain(),
+        .label = label,
+    });
+    post_state.current = { .screen = true };
+    if (aspect > 0)
+    {
+        SlbxViewport vp = slbx::letterbox(sapp::width(), sapp::height(), &&{ .content_aspect_ratio = aspect });
+        sg::apply_viewport(vp.x, vp.y, vp.width, vp.height, true);
+    }
+}
+
+// Draws the overlays (three::add_overlay: menus, fades, touch controls) over the whole window
+// and ends the pass begun with begin_screen.
+fn void end_screen()
+{
+    sg::apply_viewport(0, 0, sapp::width(), sapp::height(), true);
+    three::draw_overlays();
+    sg::end_pass();
+}
+
+// The base of a pass in an EffectComposer, like three's Pass: a pass of your own is a struct
+// with `inline Pass pass;` first and its own `render_fn`.
+alias PassRenderFn = fn void(Pass* pass, EffectComposer* composer, RenderTarget* write, RenderTarget* read, float delta);
+
+struct Pass
+{
+    PassRenderFn render_fn;
+    bool enabled;
+    // the composer swaps its read and write buffers after this pass
+    bool needs_swap;
+    // set by the composer on its last enabled pass: draw into the window instead of `write`
+    bool render_to_screen;
+}
+
+struct ShaderPass
+{
+    inline Pass pass;
+    SgShader shader;
+    ZString label;
+    SgBlendState blend;
+    // What the shader reads, at the slots sokol-shdc generated (VIEW_X, SMP_X).
+    SgBindings bindings;
+    // In an EffectComposer: where the picture of the pass before goes (three's 'tDiffuse'),
+    // -1 for nowhere.
+    int input_view;
+    int input_sampler;
+    char[PASS_UNIFORM_BYTES][PASS_UNIFORM_SLOTS] uniforms;
+    usz[PASS_UNIFORM_SLOTS] uniform_size;
+    List{PassPipeline} pipelines;
+}
+
+// A fullscreen pass with this shader (`my_shader_desc(sg::query_backend())`). `blend` blends
+// it into what is in the target (NO_BLEND, MULTIPLY_BLEND, ADDITIVE_BLEND, ALPHA_BLEND).
+fn ShaderPass* shader_pass(SgShaderDesc desc, ZString label = "three-pass", SgBlendState blend = NO_BLEND,
+                           int input_view = -1, int input_sampler = -1)
+{
+    ShaderPass* p = mem::new(ShaderPass);
+    p.shader = sg::make_shader(&desc);
+    p.label = label;
+    p.blend = blend;
+    p.input_view = input_view;
+    p.input_sampler = input_sampler;
+    p.render_fn = &shader_pass_render;
+    p.enabled = true;
+    p.needs_swap = true;
+    return p;
+}
+
+fn void ShaderPass.set_texture(&self, int slot, SgView view) => self.bindings.views[slot] = view;
+fn void ShaderPass.set_sampler(&self, int slot, SgSampler sampler) => self.bindings.samplers[slot] = sampler;
+
+// Keeps a copy of a uniform block (the struct sokol-shdc generated), applied on every draw
+// until it is set again: pass.set_uniforms(UB_MY_PARAMS, &params).
+macro void ShaderPass.set_uniforms(&self, int slot, data)
+{
+    self.set_uniform_bytes(slot, (char*)data, $Typeof(*data)::size);
+}
+
+fn void ShaderPass.set_uniform_bytes(&self, int slot, char* data, usz size)
+{
+    assert(slot >= 0 && slot < PASS_UNIFORM_SLOTS && size <= PASS_UNIFORM_BYTES, "uniform block slot %d of %d bytes", slot, size);
+    mem::copy(&self.uniforms[slot], data, (sz)size);
+    self.uniform_size[slot] = size;
+}
+
+fn SgPipeline ShaderPass.pipeline_for(&self, PassFormat f) @local
+{
+    foreach (p : self.pipelines)
+    {
+        PassFormat g = p.format;
+        if (g.color == f.color && g.depth == f.depth && g.samples == f.samples && g.screen == f.screen) return p.pipeline;
+    }
+    SgPipelineDesc desc = { .shader = self.shader, .label = self.label };
+    desc.colors[0].blend = self.blend;
+    if (!f.screen)
+    {
+        desc.colors[0].pixel_format = f.color;
+        desc.depth.pixel_format = f.depth;
+        desc.sample_count = f.samples;
+    }
+    SgPipeline pip = sg::make_pipeline(&desc);
+    self.pipelines.push({ f, pip });
+    return pip;
+}
+
+// Draws into the pass that is going on (begin_screen, RenderTarget.begin or begin_over).
+fn void ShaderPass.draw(&self)
+{
+    sg::apply_pipeline(self.pipeline_for(post_state.current));
+    sg::apply_bindings(&self.bindings);
+    for (int i = 0; i < PASS_UNIFORM_SLOTS; i++)
+    {
+        if (self.uniform_size[i]) sg::apply_uniforms(i, &&{ .ptr = &self.uniforms[i], .size = self.uniform_size[i] });
+    }
+    sg::draw(0, 3, 1);
+}
+
+// Draws into `target` in a pass of its own; null draws into the whole window (with the
+// overlay, see end_screen). By default what was in the target is not kept (load: DONTCARE):
+// the pass covers all of it.
+fn void ShaderPass.render(&self, RenderTarget* target, SgLoadAction load = DONTCARE, Color clear = 0x000000, float clear_alpha = 1)
+{
+    if (!target)
+    {
+        begin_screen(clear, label: self.label);
+        self.draw();
+        end_screen();
+        return;
+    }
+    target.begin(load, clear, clear_alpha, self.label);
+    self.draw();
+    target.end();
+}
+
+// Draws over the target's resolved picture, keeping it (see RenderTarget.begin_over).
+fn void ShaderPass.render_over(&self, RenderTarget* target)
+{
+    target.begin_over(self.label);
+    self.draw();
+    target.end();
+}
+
+fn void ShaderPass.dispose(&self)
+{
+    foreach (p : self.pipelines) sg::destroy_pipeline(p.pipeline);
+    self.pipelines.free();
+    sg::destroy_shader(self.shader);
+}
+
+fn void shader_pass_render(Pass* pass, EffectComposer* composer, RenderTarget* write, RenderTarget* read, float delta) @local
+{
+    ShaderPass* self = (ShaderPass*)pass;
+    if (self.input_view >= 0) self.bindings.views[self.input_view] = read.texture;
+    if (self.input_sampler >= 0) self.bindings.samplers[self.input_sampler] = linear_sampler();
+    self.render(pass.render_to_screen ? null : write);
+}
+
+// Renders a scene, like three's RenderPass: into a target of its own (multisampled, with a
+// depth buffer, as big as the composer's), which the next pass then reads.
+struct RenderPass
+{
+    inline Pass pass;
+    Scene* scene;
+    Camera* camera;
+    int samples;
+    RenderTarget* target;
+}
+
+fn RenderPass* render_pass(Scene* scene, Camera* camera, int samples = 4)
+{
+    RenderPass* p = mem::new(RenderPass);
+    *p = { .render_fn = &render_pass_render, .enabled = true, .scene = scene, .camera = camera, .samples = samples };
+    return p;
+}
+
+fn void render_pass_render(Pass* pass, EffectComposer* composer, RenderTarget* write, RenderTarget* read, float delta) @local
+{
+    RenderPass* self = (RenderPass*)pass;
+    Renderer* r = composer.renderer;
+    RenderTarget* prev = r.render_target;
+    if (pass.render_to_screen)
+    {
+        r.set_render_target(null);
+        r.render(self.scene, self.camera);
+        r.set_render_target(prev);
+        return;
+    }
+    if (!self.target) self.target = three::render_target(composer.width, composer.height, self.samples);
+    self.target.set_size(composer.width, composer.height, self.samples);
+    r.set_render_target(self.target);
+    r.render(self.scene, self.camera);
+    r.set_render_target(prev);
+    // the next pass reads the render where it is
+    composer.read_buffer = self.target;
+}
+
+// Two render targets that take turns, for what builds up from frame to frame (a running
+// average, a meter): read() is the one written last, write() the other. swap() after writing.
+struct PingPong
+{
+    RenderTarget*[2] targets;
+    int cur;
+}
+
+fn PingPong ping_pong(int width, int height, SgPixelFormat format = RGBA8)
+{
+    return { .targets = { three::render_target(width, height, 1, format, false), three::render_target(width, height, 1, format, false) } };
+}
+
+fn RenderTarget* PingPong.read(&self) => self.targets[self.cur];
+fn RenderTarget* PingPong.write(&self) => self.targets[1 - self.cur];
+fn void PingPong.swap(&self) => self.cur = 1 - self.cur;
+
+fn void PingPong.set_size(&self, int width, int height)
+{
+    foreach (t : self.targets) t.set_size(width, height, 1);
+    self.cur = 0;
+}
+
+// Runs passes one after the other, like three's EffectComposer: each ShaderPass reads the
+// picture the pass before left in `read_buffer` and draws into `write_buffer`, then the two
+// are swapped. The last enabled pass draws into the window. The buffers are `format`, one
+// sample, no depth.
+struct EffectComposer
+{
+    Renderer* renderer;
+    int width;
+    int height;
+    SgPixelFormat format;
+    RenderTarget*[2] buffers;
+    RenderTarget* read_buffer;
+    RenderTarget* write_buffer;
+    List{Pass*} passes;
+    // the last enabled pass draws into the window (off: everything stays in the buffers)
+    bool render_to_screen;
+}
+
+// `width` and `height` 0: the window's size, followed as it changes.
+fn EffectComposer* effect_composer(Renderer* renderer, int width = 0, int height = 0, SgPixelFormat format = RGBA8)
+{
+    EffectComposer* c = mem::new(EffectComposer);
+    *c = { .renderer = renderer, .width = width, .height = height, .format = format, .render_to_screen = true };
+    return c;
+}
+
+fn void EffectComposer.add_pass(&self, Pass* pass) => self.passes.push(pass);
+
+fn void EffectComposer.remove_pass(&self, Pass* pass)
+{
+    foreach (i, p : self.passes)
+    {
+        if (p == pass)
+        {
+            self.passes.remove_at(i);
+            return;
+        }
+    }
+}
+
+fn void EffectComposer.swap_buffers(&self)
+{
+    self.read_buffer = self.write_buffer;
+    self.write_buffer = self.read_buffer == self.buffers[0] ? self.buffers[1] : self.buffers[0];
+}
+
+fn void EffectComposer.set_size(&self, int width, int height)
+{
+    self.width = width;
+    self.height = height;
+    foreach (b : self.buffers) if (b) b.set_size(width, height, 1);
+}
+
+// Runs the passes. Like render(), call once per frame; the frame is committed after it.
+fn void EffectComposer.render(&self, float delta = 0)
+{
+    int w = self.width ?: sapp::width();
+    int h = self.height ?: sapp::height();
+    if (!self.buffers[0])
+    {
+        for (int i = 0; i < 2; i++) self.buffers[i] = three::render_target(w, h, 1, self.format, false);
+    }
+    foreach (b : self.buffers) b.set_size(w, h, 1);
+    int tw = self.width;
+    int th = self.height;
+    self.width = w;
+    self.height = h;
+    self.read_buffer = self.buffers[0];
+    self.write_buffer = self.buffers[1];
+    sz last = -1;
+    foreach (i, p : self.passes) if (p.enabled) last = (sz)i;
+    foreach (i, p : self.passes)
+    {
+        if (!p.enabled) continue;
+        p.render_to_screen = self.render_to_screen && (sz)i == last;
+        p.render_fn(p, self, self.write_buffer, self.read_buffer, delta);
+        if (p.needs_swap) self.swap_buffers();
+    }
+    self.width = tw;
+    self.height = th;
+    sg::commit();
+}
+
+fn void EffectComposer.dispose(&self)
+{
+    foreach (b : self.buffers) if (b) b.dispose();
+    self.passes.free();
+}

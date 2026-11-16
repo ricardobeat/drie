@@ -1,16 +1,16 @@
-module three;
+module three::profile;
 import sokol, std::io;
 
 // CPU time per stage of a frame, for finding where it goes (`build/scene --bench --profile`).
-// Off unless `profiling` is set: then prof_start/prof_stop cost a clock read each.
+// Off unless `profile::enabled` is set: then start/stop cost a clock read each.
 //
-//     ulong t = three::prof_start();
+//     ulong t = profile::start();
 //     ...
-//     three::prof_stop("collect", t);
+//     profile::stop("collect", t);
 //
-// prof_report prints the totals divided by a frame count, in the order the stages first ran.
+// report prints the totals divided by a frame count, in the order the stages first ran.
 
-bool profiling;
+bool enabled;
 
 struct ProfSlot @local
 {
@@ -26,12 +26,12 @@ ulong prof_wait_base @local;
 // used under env::DARWIN)
 extern ulong sg_mtl_wait_ns @cname("sg_mtl_wait_ns");
 
-fn ulong prof_start() => profiling ? stm::now() : 0;
+fn ulong start() => enabled ? stm::now() : 0;
 
-fn void prof_stop(String name, ulong start)
+fn void stop(String name, ulong started)
 {
-    if (!profiling) return;
-    ulong dt = stm::since(start);
+    if (!enabled) return;
+    ulong dt = stm::since(started);
     for (int i = 0; i < prof_count; i++)
     {
         if (prof_slots[i].name == name)
@@ -44,8 +44,8 @@ fn void prof_stop(String name, ulong start)
     prof_slots[prof_count++] = { name, dt };
 }
 
-// Milliseconds the CPU has waited for the GPU since the last prof_reset (0 off Metal).
-fn double prof_gpu_wait_ms()
+// Milliseconds the CPU has waited for the GPU since the last reset (0 off Metal).
+fn double gpu_wait_ms()
 {
     $if env::DARWIN:
         return (double)(sg_mtl_wait_ns - prof_wait_base) / 1e6;
@@ -54,7 +54,7 @@ fn double prof_gpu_wait_ms()
     $endif
 }
 
-fn void prof_reset()
+fn void reset()
 {
     for (int i = 0; i < prof_count; i++) prof_slots[i].ticks = 0;
     $if env::DARWIN:
@@ -62,11 +62,11 @@ fn void prof_reset()
     $endif
 }
 
-fn void prof_report(int frames)
+fn void report(int frames)
 {
     for (int i = 0; i < prof_count; i++)
     {
         io::printfn("    %-22s %6.3f ms", prof_slots[i].name, stm::ms(prof_slots[i].ticks) / frames);
     }
-    io::printfn("    %-22s %6.3f ms", "(waiting for the GPU)", prof_gpu_wait_ms() / frames);
+    io::printfn("    %-22s %6.3f ms", "(waiting for the GPU)", gpu_wait_ms() / frames);
 }
