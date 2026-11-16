@@ -79,16 +79,6 @@ struct Material
     // was on screen around it, more at a glancing angle. 0 = off, 1 = as a varnished surface
     // would; roughness blurs it.
     float ssr;
-    // Dirt, stains, runs of water and flaking paint, as on the walls, floor and ceiling of a
-    // neglected room: 0 = clean, 1 = filthy. It is worked out from where the surface is, so
-    // it needs to know the height of the room's floor (grime_floor) and how high the room is
-    // (grime_height, 2.6 m when 0); grime_seed moves the pattern.
-    float grime;
-    float grime_floor;
-    float grime_height;
-    float grime_seed;
-    // Glass only: how dark the viewer's own silhouette shows in reflections (0 = not at all).
-    float reflect_viewer;
     // Vertex colors are light baked into the geometry (from lamps that don't need to be real
     // lights) instead of a tint: they light the surface with this strength. 0 = off.
     float vertex_light;
@@ -98,9 +88,9 @@ struct Material
     // Wind: sideways movement in meters per meter of height above the model's origin, and its speed.
     float sway;
     float sway_speed;
-    // How far the material's vertices give way to the renderer's pusher (0 = not at all, 1 =
-    // as a branch would). The part of a plant near its stem stays where it is.
-    float push;
+    // For the application's own shader hooks (Renderer.shaders, see shader.glsl), which read
+    // them as `material_custom[0]` and `[1]`. The engine's own shader ignores them.
+    Vec4[2] custom;
 }
 
 // A copy of the material to change on its own (like three's Material.clone). Textures are

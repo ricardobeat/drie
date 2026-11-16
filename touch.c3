@@ -1,13 +1,13 @@
 // Touch controls for phones and tablets: a virtual stick under the left thumb, dragging
 // anywhere else to look around, and round on-screen buttons that press gamepad buttons.
 //
-// The buttons go into three::gamepad()'s `held` bits, so they work wherever a controller's
+// The buttons go into input::gamepad()'s `held` bits, so they work wherever a controller's
 // buttons do, and with `keys` on they also send the same key events (menus work with them).
 // The stick and the look drag are read from here:
 //
-//   TouchControls* touch = three::touch_controls();
-//   touch.add_button(three::PAD_NORTH, "LAMP", 70, 150);             // from the bottom right
-//   touch.add_button(three::PAD_MENU, "MENU", 40, 40, 22, TOP_RIGHT);
+//   TouchControls* touch = ui::touch_controls();
+//   touch.add_button(input::PAD_NORTH, "LAMP", 70, 150);             // from the bottom right
+//   touch.add_button(input::PAD_MENU, "MENU", 40, 40, 22, TOP_RIGHT);
 //   ...
 //   walk(touch.stick_x, touch.stick_y);
 //   float dx, dy;
@@ -20,9 +20,9 @@
 // It is shown and read once `enabled`: from the start on iOS and Android, elsewhere from the
 // first touch. Positions are in points (pixels / sapp::dpi_scale()), like window_width().
 // `mouse_as_touch` lets a mouse stand in for one finger.
-module three;
+module three::ui;
 import std::collections::list, std::math;
-import sokol;
+import sokol, three, three::input;
 
 enum TouchAnchor
 {
@@ -110,22 +110,22 @@ fn uint TouchControls.held(&self)
     if (self.stick_down && any_menu_open())
     {
         // a flick of the stick moves through a menu
-        if (self.stick_y > 0.6f) bits |= PAD_UP;
-        if (self.stick_y < -0.6f) bits |= PAD_DOWN;
-        if (self.stick_x < -0.6f) bits |= PAD_LEFT;
-        if (self.stick_x > 0.6f) bits |= PAD_RIGHT;
+        if (self.stick_y > 0.6f) bits |= input::PAD_UP;
+        if (self.stick_y < -0.6f) bits |= input::PAD_DOWN;
+        if (self.stick_x < -0.6f) bits |= input::PAD_LEFT;
+        if (self.stick_x > 0.6f) bits |= input::PAD_RIGHT;
     }
     else if (self.running)
     {
-        bits |= PAD_L3;
+        bits |= input::PAD_L3;
     }
     return bits;
 }
 
 fn void TouchButton.center(&self, float* x, float* y)
 {
-    float w = window_width();
-    float h = window_height();
+    float w = three::window_width();
+    float h = three::window_height();
     switch (self.anchor)
     {
         case BOTTOM_RIGHT: *x = w - self.x; *y = h - self.y;
@@ -163,7 +163,7 @@ fn void TouchControls.release_stick(&self)
 }
 
 // Takes the touch events (the renderer passes them in before anything else sees them).
-fn void touch_event(SappEvent* e)
+fn void touch_event(SappEvent* e) @private
 {
     TouchControls* t = &touch_state;
     t.enabled = true;
@@ -193,7 +193,7 @@ fn void touch_event(SappEvent* e)
                     }
                 }
                 if (taken) break;
-                if (!t.stick_down && x < window_width() * 0.5f)
+                if (!t.stick_down && x < three::window_width() * 0.5f)
                 {
                     t.stick_down = true;
                     t.stick_finger = id;
@@ -238,7 +238,7 @@ fn void touch_event(SappEvent* e)
 
 // With mouse_as_touch, turns the left mouse button's presses and drags into a finger's
 // touches. Returns whether the event was taken.
-fn bool touch_from_mouse(SappEvent* e)
+fn bool touch_from_mouse(SappEvent* e) @private
 {
     if (!touch_state.mouse_as_touch) return false;
     SappEventType type;
@@ -257,7 +257,7 @@ fn bool touch_from_mouse(SappEvent* e)
 }
 
 // Lets go of everything (the app went to the background, say).
-fn void touch_reset()
+fn void touch_reset() @private
 {
     TouchControls* t = &touch_state;
     t.release_stick();
@@ -275,7 +275,7 @@ fn void ui_circle(float x, float y, float r, float width, float cr, float cg, fl
     sgl::c4f(cr, cg, cb, a);
     for (int i = 0; i <= SEGMENTS; i++)
     {
-        float ang = (float)i / SEGMENTS * 2 * PI;
+        float ang = (float)i / SEGMENTS * 2 * three::PI;
         float c = math::cos(ang);
         float s = math::sin(ang);
         sgl::v2f(x + c * r, y + s * r);
@@ -285,17 +285,17 @@ fn void ui_circle(float x, float y, float r, float width, float cr, float cg, fl
 }
 
 // Draws the stick and the buttons into the current sgl layer, and the labels into sdtx
-// (whose canvas has `canvas_scale` points to a unit; see draw_ui).
+// (whose canvas has `canvas_scale` points to a unit; see draw).
 fn void draw_touch_controls(float canvas_scale) @private
 {
     TouchControls* t = &touch_state;
     sgl::matrix_mode_projection();
     sgl::push_matrix();
     sgl::load_identity();
-    sgl::ortho(0, window_width(), window_height(), 0, -1, 1);
+    sgl::ortho(0, three::window_width(), three::window_height(), 0, -1, 1);
     float r = t.stick_radius;
     float x0 = t.stick_down ? t.stick_x0 : t.stick_home_x;
-    float y0 = t.stick_down ? t.stick_y0 : window_height() - t.stick_home_y;
+    float y0 = t.stick_down ? t.stick_y0 : three::window_height() - t.stick_home_y;
     float a = t.stick_down ? 0.5f : 0.22f;
     ui_circle(x0, y0, r, 3, 1, 1, 1, a);
     float kx = x0 + t.stick_x * r;

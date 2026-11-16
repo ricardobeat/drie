@@ -129,6 +129,12 @@ fn Vector3 BufferGeometry.get_position(&self, uint i)
     return { self.vertices[o], self.vertices[o + 1], self.vertices[o + 2] };
 }
 
+fn Vector3 BufferGeometry.get_normal(&self, uint i)
+{
+    sz o = (sz)i * FLOATS_PER_VERTEX + 3;
+    return { self.vertices[o], self.vertices[o + 1], self.vertices[o + 2] };
+}
+
 // Sets one vertex's colour (or whatever else a material reads from that attribute).
 fn void BufferGeometry.set_vertex_color(&self, uint i, Vector3 rgb)
 {

@@ -95,25 +95,58 @@ and parameter objects become named arguments.
   (see below).
 - **Fog:** `Fog` (linear) and `FogExp2`
 - **Controls:** `OrbitControls` (left drag rotates, right drag or shift+drag pans, scroll zooms, damping, auto-rotate)
-- **Menus** (`menu.c3`, not in three.js; `menu.locked = true` leaves the toggle key to the game
-  for a while): `three::menu(title, handler)` makes a game menu that
+- **Raycasting** (`raycaster.c3`), like three's `Raycaster`: `three::raycaster(origin,
+  direction)`, `set_from_camera({ x, y }, camera)` with x and y from -1 to 1, then
+  `intersect_object(object, &list)` / `intersect_objects(objects, &list)`, which add
+  `Intersection`s (`distance`, `point`, `object`, `face`, `face_index`, `uv`, `normal`,
+  `instance_id`) to a list of yours, nearest first. `intersect_first(object, &hit)` finds only
+  the nearest hit, without a list. Meshes, each instance of an instanced mesh and the level of a
+  `Lod` that the ray's origin would see are tested, after their bounding spheres, following the
+  material's `side`. `near`, `far` and `visible_only` limit what counts. As in three, every
+  triangle of a mesh the ray comes near is tested; there is no acceleration structure.
+- **Post-processing** (`three::postprocessing`, like three's addons of that name):
+  `EffectComposer`, `RenderPass` and `ShaderPass`. A `ShaderPass` is a fullscreen shader of
+  yours (a sokol-shdc `@vs`/`@fs` program whose vertex shader makes a triangle from
+  `gl_VertexIndex`), drawn with `pass.render(target)` (null: the window), over a target's picture
+  with `render_over` (with `MULTIPLY_BLEND`, say), or with `draw()` into a pass you began
+  (`target.begin()`, `begin_screen(aspect: ...)` / `end_screen()`). It keeps its textures,
+  samplers and uniforms (`set_texture`, `set_sampler`, `set_uniforms`) and makes a pipeline for
+  each kind of target it draws into. `ping_pong(w, h, format)` is a pair of targets for what
+  builds up from frame to frame. `effect_composer(renderer)` with `add_pass()` and `render()`
+  chains passes as three's does: a `ShaderPass` gets the picture of the pass before at its
+  `input_view`, and the last pass draws into the window. See `postprocessing.c3`.
+- **Menus** (`three::ui`, not in three.js; `menu.locked = true` leaves the toggle key to the
+  game for a while): `ui::menu(title, handler)` makes a game menu that
   opens with escape and takes the keyboard and mouse while open (key releases still reach the
   game). Items are actions or pages; the handler gets `OPEN`, `CLOSE`, `SELECT`, `CONFIRM` and
   `BACK`. With `overlay = true` it is drawn with a plain built-in look over the finished frame
-  (`render()` to the window does it; a game whose last pass is its own calls `three::draw_ui()`
-  in it). Otherwise draw it yourself from its fields, inside the picture if you like.
-  `three::screen_fade` fades to and from black with a callback at the end. `three::ui_setup()`
-  sets up sokol_debugtext and sokol_gl once, for games that draw text of their own too.
-- **Game controllers** (`gamepad.c3`, macOS GameController framework, needs `--lib gamectl`):
-  `three::gamepad()` has the sticks (dead zone removed), triggers and buttons (`PAD_*`, with
+  (`render()` to the window and `end_screen()` do it; a game whose last pass is its own calls
+  `three::draw_overlays()` in it). Otherwise draw it yourself from its fields, inside the
+  picture if you like. `ui::screen_fade` fades to and from black with a callback at the end.
+  `ui::setup()` sets up sokol_debugtext and sokol_gl once, for games that draw text of their
+  own too. `ui::touch_controls()` are on-screen sticks and buttons for phones and tablets.
+- **Game controllers** (`three::input`, macOS GameController framework, needs `--lib gamectl`):
+  `input::gamepad()` has the sticks (dead zone removed), triggers and buttons (`PAD_*`, with
   `pressed()` / `released()` for this frame). The renderer polls it before every frame, and
   by default the d-pad, cross / A, circle / B and options also send arrow, enter, backspace
   and escape key events, so menus and keyboard code work with a controller unchanged.
-- **Rewind** (`timeline.c3`): `Timeline{Input, State}` records each frame's input and snapshots
+- **Rewind** (`three::timeline`): `Timeline{Input, State}` records each frame's input and snapshots
   the state a few times a second; `seek()` goes back by loading a snapshot and replaying the
   input after it. Needs a deterministic step function.
 - **Renderer:** render targets, ACES tone mapping, frustum culling, and `renderer.info`
-  (draw calls and triangles of the last frame, shadow pass counted separately)
+  (draw calls and triangles of the last frame, shadow pass counted separately).
+  `three::render_target(w, h, samples, format, depth_buffer)` takes three's `type`/`format` and
+  `depthBuffer` options as a sokol pixel format and a flag; a scene is rendered into RGBA8 with
+  depth, passes can use any format.
+- **Profiling** (`three::profile`): `profile::enabled = true`, then `profile::start()` /
+  `profile::stop(name, t)` around stages and `profile::report(frames)`. The renderer times its
+  own stages this way.
+
+The parts that are not in three.js are submodules: `three::ui`, `three::input`,
+`three::profile`, `three::timeline`, plus `three::postprocessing` after three's addons.
+`import three` imports them too. `ui` and `input` hook into the renderer when the program
+starts (`three::add_frame_hook`, `add_event_filter`, `add_overlay`), which an application can
+use as well.
 
 ## Extensions
 
@@ -250,13 +283,23 @@ These aren't in three.js:
 - `renderer.init_headless()`: sets up rendering without a window, for tests and screenshots.
   Render to a `RenderTarget` and call `three::commit()` at the end of the frame.
 - `renderer.time` drives `sway`. It follows the clock unless `renderer.auto_time` is off.
+- Shader hooks, compiled in (three's `onBeforeCompile` works on shader text at run time; sokol
+  compiles shaders ahead). An application with surface effects of its own builds its own copy
+  of the material shader: a `.glsl` file with its own `@header` (its module), blocks
+  `vertex_hooks` and `surface_hooks`, and `@include` of `shader_core.glsl`; see `shader.glsl`
+  for what the hooks get. It hands the four programs to `renderer.shaders` before the renderer
+  starts. The hooks read `material.custom` and `renderer.custom` (two `Vec4`s each) as
+  `material_custom[]` and `frame_custom[]`. The engine's own build has empty hooks, which cost
+  nothing. The application's copy has to be regenerated whenever `shader_core.glsl` changes.
 
 ## Differences from three.js
 
 - Named arguments must be in declaration order (a C3 rule). For example, `color:` comes before `roughness:`.
 - Colors are plain sRGB hex `uint`s, not `Color` objects.
 - Rotations are XYZ Euler only (no quaternions or `rotation.order`).
-- No raycasting, animation or skinning. Point lights cast no shadows.
+- No animation clips. Point lights cast no shadows.
+- `Raycaster` collects hits into a list you pass in (three's `optionalTarget`) and gives
+  `normal` in world space.
 - `InstancedMesh` grows: `add_instance(matrix)` appends, `set_matrix_at(index, matrix)` changes one.
 - `Lod` (three.js `LOD`) levels are added with `lod.add_level(object, distance)`, in increasing
   distance. A `null` object shows nothing from that distance on.
@@ -269,5 +312,7 @@ These aren't in three.js:
 
 ## Editing the shader
 
-`three/shader.glsl` is the source. Run `./build.sh shaders` to regenerate `three/shader.c3`
-(and `three/kernels.c3` from `three/kernels.glsl`, the compute shaders).
+`shader_core.glsl` is the material shader; `shader.glsl` includes it with empty hooks. Run
+`./build.sh shaders` in the application (`house`) to regenerate `shader.c3` (and `kernels.c3`
+from `kernels.glsl`, the compute shaders), and any application shaders that include
+`shader_core.glsl`.

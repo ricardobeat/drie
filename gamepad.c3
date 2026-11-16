@@ -1,17 +1,17 @@
 // Game controller: DualSense, DualShock, Xbox and other controllers the system knows
 // (macOS GameController framework, through lib/gamectl.c3l). Needs `--lib gamectl`.
 //
-// The renderer polls it before every frame. Read it with three::gamepad():
+// The renderer polls it before every frame. Read it with input::gamepad():
 //
-//   Gamepad* pad = three::gamepad();
+//   Gamepad* pad = input::gamepad();
 //   if (pad.connected) walk(pad.left_x, pad.left_y);    // sticks: -1..1, up is +y, dead zone removed
-//   if (pad.pressed(three::PAD_SOUTH)) jump();          // went down this frame
+//   if (pad.pressed(input::PAD_SOUTH)) jump();          // went down this frame
 //
 // With `keys` on (the default) the pad also sends key events, so menus (menu.c3) and keyboard
 // code work with it unchanged: the d-pad sends the arrow keys, cross / A sends enter,
 // circle / B backspace, and options / menu escape.
-module three;
-import gamectl, sokol;
+module three::input;
+import gamectl, sokol, three, three::ui;
 import std::math;
 
 const uint PAD_SOUTH = 1 << 0;   // cross / A
@@ -80,11 +80,13 @@ fn void dead_zone(float* x, float* y) @local
 fn void pad_key(KeyCode key, bool down) @local
 {
     SappEvent e = { .type = down ? KEY_DOWN : KEY_UP, .key_code = key };
-    send_event(&e);
+    three::send_event(&e);
 }
 
-// Reads the controller. The renderer calls it before every frame.
-fn void poll_gamepad()
+// Reads the controller before every frame (see three::add_frame_hook).
+fn void register_input() @init @local => three::add_frame_hook(&poll_gamepad);
+
+fn void poll_gamepad() @local
 {
     Gamepad* p = &pad_state;
     GcState s;
@@ -92,7 +94,7 @@ fn void poll_gamepad()
     p.last = p.held;
     p.connected = s.connected;
     // and the touch screen's buttons (touch.c3)
-    p.held = s.buttons | touch_controls().held();
+    p.held = s.buttons | ui::touch_controls().held();
     p.left_x = s.left_x;
     p.left_y = s.left_y;
     p.right_x = s.right_x;
