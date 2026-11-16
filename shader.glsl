@@ -205,6 +205,7 @@ layout(binding=6) uniform texture3D tex_gi;
 layout(binding=7) uniform texture2D ssr_color;   // the last frame: tone mapped, sRGB, a = 0 at light sources
 layout(binding=8) uniform texture2D ssr_depth;   // g = its distance from the camera's plane (m)
 layout(binding=9) uniform texture2D sun_shadow;  // the directional light's map: 2x2 cascades, or one box
+layout(binding=19) uniform texture2D fog_volume; // volumetric fog: the froxel grid (fog.c3, fog_cs in kernels.glsl)
 layout(binding=0) uniform sampler tex_smp;
 layout(binding=1) uniform sampler shadow_smp;
 layout(binding=2) uniform sampler env_smp;
@@ -241,6 +242,10 @@ layout(binding=1) uniform fs_params {
     vec4 fog_height;   // x = base height, y = falloff per meter (0 = none), w = density away from the sun's side
     vec4 fog_sun_dir;  // towards the sun, w = sharpness (0 = no sun)
     vec4 fog_sun_color; // w = light shafts (0..1)
+    vec4 fog_grid;     // volumetric fog: x, y = cells across and up, z = slices, w = slices per row of
+                       //   tiles in fog_volume (0: no volumetric fog, the fog is worked out here)
+    vec4 fog_slices;   // x = where its slices start (m of view depth), y = slices per unit of
+                       //   log(depth / x)
     vec4 counts;       // x = directional lights, y = point lights, z = spot lights (all of them, in
                        //   dir_lights, point_lights and spot_lights)
     mat4 cluster_view_proj; // world -> the camera's clip space, for the fragment's cluster
@@ -452,6 +457,31 @@ float fog_glow(vec3 lp, float radius, vec3 ray, float depth, vec4 cone, float co
         sum += w;
     }
     return sum / 6.0 * (a1 - a0) / h;
+}
+
+// Volumetric fog in front of world position `p`: rgb = the light it scatters towards the
+// camera, a = how much of p gets through. Read from the froxel grid between the far ends of
+// the two slices around p (the first's near end is the camera: nothing yet).
+vec4 fog_volume_at(vec3 p) {
+    vec4 clip = cluster_view_proj * vec4(p, 1.0);
+    vec2 uv = clamp(clip.xy / max(abs(clip.w), 1e-6) * 0.5 + 0.5, vec2(0.0), vec2(1.0));
+    float depth = dot(p - camera_pos.xyz, dir_cascade_fwd.xyz);
+    float slices = fog_grid.z;
+    float s = depth <= fog_slices.x ? -1.0 : clamp(log(depth / fog_slices.x) * fog_slices.y - 1.0, -1.0, slices - 1.0);
+    float k = floor(s);
+    float f = s - k;
+    vec2 size = vec2(textureSize(sampler2D(fog_volume, ssr_smp), 0));
+    vec2 cell = clamp(uv * fog_grid.xy, vec2(0.5), fog_grid.xy - 0.5);
+    float per_row = fog_grid.w;
+    vec4 a = vec4(0.0, 0.0, 0.0, 1.0);
+    if (k >= 0.0) {
+        vec2 at = vec2(mod(k, per_row), floor(k / per_row)) * fog_grid.xy + cell;
+        a = textureLod(sampler2D(fog_volume, ssr_smp), at / size, 0.0);
+    }
+    float k1 = min(k + 1.0, slices - 1.0);
+    vec2 at1 = vec2(mod(k1, per_row), floor(k1 / per_row)) * fog_grid.xy + cell;
+    vec4 b = textureLod(sampler2D(fog_volume, ssr_smp), at1 / size, 0.0);
+    return mix(a, b, f);
 }
 
 // Distance from the light's plane of a depth in its shadow map, and back.
@@ -1092,7 +1122,10 @@ void main() {
     }
 
     int fog_mode = int(fog_params.w);
-    if (fog_mode != 0) {
+    if (fog_mode != 0 && fog_grid.w > 0.0) {
+        vec4 fv = fog_volume_at(v_world_pos);
+        outc = outc * fv.a + fv.rgb;
+    } else if (fog_mode != 0) {
         float fd = fog_distance(camera_pos.xyz, v_world_pos);
         vec3 fog_own = fog_color.rgb;
         if (fog_height.y > 0.0) {

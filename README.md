@@ -176,8 +176,8 @@ These aren't in three.js:
   only shades its own cluster's lights. `renderer.max_lights` (default 1024 per kind, 0 = no
   limit) caps a render, with a warning. The assignment runs in a compute shader
   (`cluster_lights_gpu`; `cluster_lights_cpu` gives the same result on the CPU), and
-  `renderer.assign_clusters` (a `ClusterAssignFn`) can replace it. Fog glow
-  (`light_scatter`) still loops over every light. Storage buffers need GL 4.3 for a GL
+  `renderer.assign_clusters` (a `ClusterAssignFn`) can replace it. Volumetric fog uses the
+  clusters too; the per-pixel fallback's glow loops over every light. Storage buffers need GL 4.3 for a GL
   backend (Metal and D3D11 have them).
 - Compute shaders (`compute.c3`), after three.js's WebGPU `renderer.compute()` and storage
   buffers. `three::storage_buffer(size)` makes a buffer that kernels read and write
@@ -212,6 +212,21 @@ These aren't in three.js:
 - `fog.light_scatter`: point and spot lights light up the fog around them, and are dimmed by it
   on their way to surfaces. The fog then has no single color, so the renderer draws a backdrop
   sphere just inside the camera's far plane to carry it where there is no geometry.
+- Volumetric fog (`VolumetricFog`, after three's `webgpu_volume_lighting`): every `Fog` has its
+  settings inline (`fog.light_scatter`, `height_*`, clear box, `sun_*`, `noise_*`,
+  `resolution`, `slices`, `volumetric`); `three::volumetric_fog(color, density)` makes one.
+  With `fog.volumetric` on (default) and something to scatter (`light_scatter`, `sun_shafts`
+  or `noise_amount` above 0), a compute pass (`fog.c3`, `fog_cs` in `kernels.glsl`) marches a
+  froxel grid before the main pass: `resolution` of the picture's pixels across and up
+  (default 0.125), `slices` of exponential view depth (default 96) out to the far plane,
+  jittered every frame. Each step is lit by the sun through its cascades, by spot lights
+  through their shadow maps (atlas and live map: beams stop at walls), and by point lights,
+  only those of the step's light cluster; the lamps' 1/d^2 glow is integrated exactly over
+  each slice. Density is the height fog, the clear box and optional 3D noise (`noise_amount`
+  0..1, `noise_scale` 1/m, `noise_wind` m/s). Surfaces read the fog in front of them from the
+  grid before tone mapping (see-through ones too). `sun_direction` zero takes the scene's
+  (shadow casting) directional light, `sun_color` 0 its color. `fog.volumetric = false`
+  keeps the older per-pixel fog (unshadowed glow summed over every light at every pixel).
 - `fog.set_clear_box(min, max)`: a box without fog, such as the inside of a building.
 - `geometry.box_project_uv(tiles_per_unit)`: texture coordinates from world-space position, for
   tiling a texture over walls and floors without stretching.

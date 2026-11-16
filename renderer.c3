@@ -310,6 +310,8 @@ struct RendererState @local
     Vector3 sun_forward;
     // Sphere around the camera that carries the fog where there is no geometry.
     Mesh* backdrop;
+    // the volumetric fog's grid for this render (fog.c3), or a white texture
+    SgView fog_view;
 }
 
 RendererState state @local;
@@ -1170,8 +1172,23 @@ fn FsParams build_light_params(Scene* scene, Camera* camera, SpotLight* caster) 
         p.fog_box_min = { ...f.clear_box_min, f.has_clear_box ? 1 : 0 };
         p.fog_box_max = { ...f.clear_box_max, 0 };
         p.fog_height = { f.height_base, f.height_falloff, 0, f.shade_density };
-        p.fog_sun_dir = { ...f.sun_direction, f.sun_sharpness };
-        p.fog_sun_color = { ...color_to_linear(f.sun_color), f.sun_shafts };
+        Vector3 sun_dir = f.sun_direction;
+        Color sun_color = f.sun_color;
+        if (sun_dir == (Vector3){ 0, 0, 0 } || !sun_color)
+        {
+            // the scene's sun: the directional light that casts a shadow, else the first one
+            Light* sun = state.sun_caster;
+            if (!sun) foreach (l : state.lights) if (l.light_type == DIRECTIONAL && l.visible) { sun = l; break; }
+            if (sun)
+            {
+                DirectionalLight* d = (DirectionalLight*)sun;
+                Vector3 target = d.target ? d.target.get_world_position() : (Vector3){ 0, 0, 0 };
+                if (sun_dir == (Vector3){ 0, 0, 0 }) sun_dir = (sun.matrix_world.get_position() - target).normalize();
+                if (!sun_color) sun_color = sun.color;
+            }
+        }
+        p.fog_sun_dir = { ...sun_dir, sun_dir == (Vector3){ 0, 0, 0 } ? 0 : f.sun_sharpness };
+        p.fog_sun_color = { ...color_to_linear(sun_color), f.sun_shafts };
     }
     return p;
 }
@@ -1228,6 +1245,7 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs) @local
     bind.views[VIEW_SHADOW_MAP] = state.shadow_view;
     bind.views[VIEW_SHADOW_ATLAS] = state.atlas_view;
     bind.views[VIEW_SUN_SHADOW] = state.sun_view;
+    bind.views[VIEW_FOG_VOLUME] = state.fog_view;
     bool ssr = r.ssr_color.id != 0 && r.ssr_depth.id != 0 && mat.ssr > 0;
     bind.views[VIEW_SSR_COLOR] = ssr ? r.ssr_color : ready(state.white).view;
     bind.views[VIEW_SSR_DEPTH] = ssr ? r.ssr_depth : ready(state.white).view;
@@ -1491,6 +1509,16 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera)
 
     FsParams fs = build_light_params(scene, camera, caster);
     prof_stop("render: lights/clusters", pt);
+    pt = prof_start();
+    state.fog_view = ready(state.white).view;
+    if (fog_volume_wanted(scene.fog, camera, self.prof_no_fog_scatter))
+    {
+        RenderTarget* rt = self.render_target;
+        FogShadowViews views = { state.shadow_view, state.atlas_view, state.sun_view, state.shadow_sampler };
+        state.fog_view = update_fog_volume(scene, camera, &fs, rt ? rt.width : sapp::width(), rt ? rt.height : sapp::height(),
+                                           views, self.time);
+    }
+    prof_stop("render: volumetric fog", pt);
     pt = prof_start();
 
     Vector3 clear = tone_mapped(self, scene.background ? scene.background : self.clear_color);
