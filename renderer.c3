@@ -164,6 +164,11 @@ struct Renderer
     bool auto_time;
     // Statistics of the last render() call, like three's renderer.info.render.
     RenderInfo info;
+    // For profiling (build/scene --bench --profile): what a frame costs without alpha testing
+    // (cut-outs drawn solid), without light in the fog, or without the transparent objects.
+    bool prof_no_alpha_test;
+    bool prof_no_fog_scatter;
+    bool prof_no_transparent;
     // Extension: how many lights of each kind (directional, point, spot) a render takes at
     // most; the buffers that hold them grow up to it. 0 = no limit.
     int max_lights;
@@ -696,6 +701,7 @@ fn void update_shadow_atlas(Scene* scene, Camera* camera) @local
     sg::begin_pass(&&{
         .action = { .depth = { .load_action = CLEAR, .store_action = STORE, .clear_value = 1 } },
         .attachments = { .depth_stencil = state.atlas_attachment },
+        .label = "three-spot-atlas",
     });
     sg::apply_pipeline(get_shadow_pipeline());
     for (int i = 0; i < count; i++)
@@ -961,6 +967,7 @@ fn void draw_sun_shadow(DirectionalLight* sun) @local
         // depth is not stored by default: ask for it, the main pass samples this map
         .action = { .depth = { .load_action = CLEAR, .store_action = STORE, .clear_value = 1 } },
         .attachments = { .depth_stencil = state.sun_attachment },
+        .label = "three-sun-cascades",
     });
     sg::apply_pipeline(get_shadow_pipeline());
     for (int i = 0; i < math::max(n, 1); i++)
@@ -1158,7 +1165,7 @@ fn FsParams build_light_params(Scene* scene, Camera* camera, SpotLight* caster) 
             case EXP2: mode = 2;
             case EXP: mode = 3;
         }
-        p.fog_color = { ...color_to_linear(f.color), f.light_scatter };
+        p.fog_color = { ...color_to_linear(f.color), state.renderer.prof_no_fog_scatter ? 0 : f.light_scatter };
         p.fog_params = { f.near, f.far, f.density, mode };
         p.fog_box_min = { ...f.clear_box_min, f.has_clear_box ? 1 : 0 };
         p.fog_box_max = { ...f.clear_box_max, 0 };
@@ -1207,7 +1214,8 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs) @local
 
     Texture* map = ready(mat.map);
     if (mat.screen_target) map = state.white;
-    sg::apply_pipeline(get_pipeline(mat.side, mat.transparent, mat.wireframe, r.render_target, mat.alpha_test > 0, mat.blending));
+    float alpha_test = r.prof_no_alpha_test ? 0 : mat.alpha_test;
+    sg::apply_pipeline(get_pipeline(mat.side, mat.transparent, mat.wireframe, r.render_target, alpha_test > 0, mat.blending));
     SgBindings bind = {
         .vertex_buffers[0] = g.vbuf,
         .index_buffer = mat.wireframe ? g.wire_ibuf : g.ibuf,
@@ -1270,7 +1278,7 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs) @local
     }
     fs.specular = { ...color_to_linear(mat.specular), (float)flags };
     fs.mat_params = { (float)mat.type, mat.roughness, mat.metalness, mat.shininess };
-    fs.tex_params = { mat.map ? 1 : 0, mat.normal_map ? mat.normal_scale : 0, mat.arm_map ? 1 : 0, mat.alpha_test };
+    fs.tex_params = { mat.map ? 1 : 0, mat.normal_map ? mat.normal_scale : 0, mat.arm_map ? 1 : 0, alpha_test };
     fs.env_params = { mat.env_map ? 1 : 0, mat.env_intensity > 0 ? mat.env_intensity : 1, mat.reflect_viewer,
                       mat.env_map ? mat.env_map.env_distance_range : 0 };
     bool boxed = mat.env_box_min != mat.env_box_max;
@@ -1312,7 +1320,7 @@ fn void draw_shadow_item(DrawItem* item, Mat4 light_vp) @local
         .s_inst_cull = inst_cull,
     };
     sg::apply_uniforms(UB_SHADOW_VS_PARAMS, &&{ .ptr = &vs, .size = ShadowVsParams::size });
-    ShadowFsParams fs = { .s_params = { mat.map ? mat.alpha_test : 0, mat.opacity, 0, 0 } };
+    ShadowFsParams fs = { .s_params = { mat.map && !state.renderer.prof_no_alpha_test ? mat.alpha_test : 0, mat.opacity, 0, 0 } };
     sg::apply_uniforms(UB_SHADOW_FS_PARAMS, &&{ .ptr = &fs, .size = ShadowFsParams::size });
     state.renderer.info.shadow_calls++;
     state.renderer.info.shadow_triangles += draw_geometry(item, false);
@@ -1371,6 +1379,7 @@ fn Vector3 tone_mapped(Renderer* r, Color color) @local
 fn void draw_backdrop(Scene* scene, Camera* camera, Mat4 view_proj, FsParams* fs) @local
 {
     if (!scene.fog || scene.fog.light_scatter <= 0 || camera.camera_type != PERSPECTIVE) return;
+    if (state.renderer.prof_no_fog_scatter) return;
     if (!state.backdrop)
     {
         MeshBasicMaterial* mat = mesh_basic_material();
@@ -1400,6 +1409,7 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera)
         RenderTarget* rt = self.render_target;
         pc.aspect = rt ? (float)rt.width / rt.height : sapp::widthf() / sapp::heightf();
     }
+    ulong pt = prof_start();
     camera.update_projection_matrix();
 
     if (!scene.no_matrix_world_update) scene.update_matrix_world();
@@ -1409,6 +1419,8 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera)
     Mat4 view_proj = camera.projection_matrix.mul(camera.matrix_world_inverse);
     Vector3 camera_pos = camera.matrix_world.get_position();
 
+    prof_stop("render: matrices", pt);
+    pt = prof_start();
     state.opaque.clear();
     state.transparent.clear();
     state.casters.clear();
@@ -1416,12 +1428,16 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera)
     cull_begin(self.gpu_culling, self.check_compute);
     Frustum frustum = frustum_from(view_proj);
     collect(scene, camera.matrix_world_inverse, &frustum, camera_pos, false);
+    prof_stop("render: collect", pt);
+    pt = prof_start();
     // front-to-back for opaque, back-to-front for transparent (view space looks down -Z)
     sort::quicksort(&state.opaque, &cmp_opaque);
     sort::quicksort(&state.transparent, &cmp_transparent);
     int view = cull_view(&frustum);
     foreach (&item : state.opaque) item.job = cull_job(item.mesh, view) + 1;
     foreach (&item : state.transparent) item.job = cull_job(item.mesh, view) + 1;
+    prof_stop("render: sort + jobs", pt);
+    pt = prof_start();
 
     // shadow map of the shadow casting spot light
     SpotLight* caster = shadow_light();
@@ -1437,11 +1453,17 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera)
         gather_casters(scene, camera, &light_frustum, caster.shadow.skip_instanced, &state.spot_casters);
     }
     // the directional light's map is its own, so a sun and a spot light can both have shadows
+    prof_stop("render: spot casters", pt);
+    pt = prof_start();
     DirectionalLight* sun = directional_shadow_light();
     state.sun_caster = sun;
     prepare_sun_shadow(scene, camera, sun);
+    prof_stop("render: sun casters", pt);
+    pt = prof_start();
     // every view's instances culled at once, before the passes that draw them
     cull_dispatch();
+    prof_stop("render: cull dispatch", pt);
+    pt = prof_start();
 
     if (caster)
     {
@@ -1449,18 +1471,27 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera)
             // depth is not stored by default: ask for it, the main pass samples this map
             .action = { .depth = { .load_action = CLEAR, .store_action = STORE, .clear_value = 1 } },
             .attachments = { .depth_stencil = state.shadow_attachment },
+            .label = "three-spot-shadow",
         });
         sg::apply_pipeline(get_shadow_pipeline());
         foreach (&item : state.spot_casters) draw_shadow_item(item, caster_vp);
         sg::end_pass();
     }
+    prof_stop("render: spot shadow", pt);
+    pt = prof_start();
     draw_sun_shadow(sun);
+    prof_stop("render: sun shadow", pt);
+    pt = prof_start();
     update_shadow_atlas(scene, camera);
+    prof_stop("render: spot atlas", pt);
+    pt = prof_start();
     if (!state.no_irradiance) state.no_irradiance = irradiance_volume({ 0, 0, 0 }, { 1, 1, 1 }, 1);
     state.irradiance = scene.irradiance ?: state.no_irradiance;
     state.irradiance.upload();
 
     FsParams fs = build_light_params(scene, camera, caster);
+    prof_stop("render: lights/clusters", pt);
+    pt = prof_start();
 
     Vector3 clear = tone_mapped(self, scene.background ? scene.background : self.clear_color);
     SgPass pass = {
@@ -1470,6 +1501,7 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera)
                 .clear_value = { clear.x, clear.y, clear.z, scene.background ? 1.0f : self.clear_alpha },
             },
         },
+        .label = "three-main",
     };
     if (self.render_target)
     {
@@ -1483,11 +1515,14 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera)
     }
     sg::begin_pass(&pass);
     foreach (&item : state.opaque) draw_item(item, view_proj, &fs);
+    prof_stop("render: main opaque", pt);
+    pt = prof_start();
     draw_backdrop(scene, camera, view_proj, &fs);
-    foreach (&item : state.transparent) draw_item(item, view_proj, &fs);
+    if (!self.prof_no_transparent) foreach (&item : state.transparent) draw_item(item, view_proj, &fs);
     // menus and fades on top (see menu.c3)
     if (!self.render_target) draw_ui();
     sg::end_pass();
+    prof_stop("render: main transparent", pt);
     // When rendering to the window, finish the frame. With a render target, the caller
     // usually runs more passes (post-processing) and must call three::commit() at the end.
     if (!self.render_target) sg::commit();
