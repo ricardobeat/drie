@@ -115,7 +115,7 @@ struct HitSink @local
     bool found;
 }
 
-fn void HitSink.add(&self, Intersection hit) @local
+fn void HitSink.add(&self, Intersection hit)
 {
     if (self.list)
     {
@@ -130,7 +130,7 @@ fn void HitSink.add(&self, Intersection hit) @local
 }
 
 // Whether the sink can still take a hit at this distance (for skipping a far-off object).
-fn bool HitSink.wants(&self, float distance) @local => self.list || !self.found || distance < self.nearest.distance;
+fn bool HitSink.wants(&self, float distance) => self.list || !self.found || distance < self.nearest.distance;
 
 fn int cmp_hits(Intersection a, Intersection b) @local => a.distance < b.distance ? -1 : (a.distance > b.distance ? 1 : 0);
 
@@ -162,7 +162,7 @@ fn bool Raycaster.intersect_first(&self, Object3D* object, Intersection* hit, bo
     return sink.found;
 }
 
-fn void Raycaster.visit(&self, Object3D* object, HitSink* sink, bool recursive) @local
+fn void Raycaster.visit(&self, Object3D* object, HitSink* sink, bool recursive)
 {
     if (self.visible_only && !object.visible) return;
     switch (object.kind)
@@ -194,7 +194,7 @@ fn float scale_of(Mat4 m) @local
 }
 
 // Whether the ray passes through the sphere within near..far (and the sink still wants it).
-fn bool Raycaster.near_sphere(&self, Vector3 center, float radius, HitSink* sink) @local
+fn bool Raycaster.near_sphere(&self, Vector3 center, float radius, HitSink* sink)
 {
     Vector3 to = center - self.ray.origin;
     float along = to.dot(self.ray.direction);
@@ -206,7 +206,7 @@ fn bool Raycaster.near_sphere(&self, Vector3 center, float radius, HitSink* sink
     return sink.wants(math::max(along - half, self.near));
 }
 
-fn void Raycaster.intersect_mesh(&self, Mesh* m, HitSink* sink) @local
+fn void Raycaster.intersect_mesh(&self, Mesh* m, HitSink* sink)
 {
     BufferGeometry* g = m.geometry;
     if (!g || g.indices.len() < 3) return;
@@ -228,7 +228,7 @@ fn void Raycaster.intersect_mesh(&self, Mesh* m, HitSink* sink) @local
 
 // The triangles of `m`'s geometry placed by `world` (Möller-Trumbore, in the geometry's own
 // space).
-fn void Raycaster.intersect_geometry(&self, Mesh* m, Mat4 world, int instance, Side side, HitSink* sink) @local
+fn void Raycaster.intersect_geometry(&self, Mesh* m, Mat4 world, int instance, Side side, HitSink* sink)
 {
     BufferGeometry* g = m.geometry;
     if (!self.near_sphere(world.transform_point(g.bounds_center), g.bounds_radius * scale_of(world), sink)) return;
