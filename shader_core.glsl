@@ -211,7 +211,10 @@ layout(binding=1) uniform fs_params {
                         //   w = 1 fading in, -1 fading out, 0 none
     vec4 cull_min;      // w = 1: fragments inside cull_min..cull_max are not drawn
     vec4 cull_max;
-    vec4 camera_pos;   // w = tone mapping exposure (0 = no tone mapping)
+    vec4 camera_pos;   // w = tone mapping exposure
+    vec4 output_params; // x = 1: linear light out (a half-float target: no tone mapping, no sRGB),
+                        //   y = 1: the reflection source (ssr_color) is linear light too,
+                        //   z = tone mapping (TONE_*)
     vec4 ambient;      // summed ambient light
     vec4 hemi_sky;
     vec4 hemi_ground;
@@ -302,32 +305,7 @@ out vec4 frag_color;
 const float PI = 3.14159265359;
 const float RECIPROCAL_PI = 0.31830988618;
 
-vec3 linear_to_srgb(vec3 c) {
-    return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(vec3(0.0031308), c));
-}
-
-// ACES filmic tone mapping, same fit as three.js's ACESFilmicToneMapping.
-vec3 rrt_odt_fit(vec3 v) {
-    vec3 a = v * (v + 0.0245786) - 0.000090537;
-    vec3 b = v * (0.983729 * v + 0.4329510) + 0.238081;
-    return a / b;
-}
-
-vec3 aces_filmic(vec3 c) {
-    const mat3 aces_in = mat3(
-        vec3(0.59719, 0.07600, 0.02840),
-        vec3(0.35458, 0.90834, 0.13383),
-        vec3(0.04823, 0.01566, 0.83777));
-    const mat3 aces_out = mat3(
-        vec3(1.60475, -0.10208, -0.00327),
-        vec3(-0.53108, 1.10813, -0.07276),
-        vec3(-0.07367, -0.00605, 1.07602));
-    c *= 1.0 / 0.6;
-    c = aces_in * c;
-    c = rrt_odt_fit(c);
-    c = aces_out * c;
-    return clamp(c, 0.0, 1.0);
-}
+@include_block tonemapping
 
 float distance_attenuation(float d, float cutoff, float decay) {
     float a = 1.0 / max(pow(d, decay), 0.01);
@@ -711,9 +689,6 @@ vec3 gi_irradiance(vec3 n, out float fade) {
     return e * gi_inv_size.w;
 }
 
-vec3 srgb_to_linear(vec3 c) {
-    return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(vec3(0.04045), c));
-}
 
 float ssr_noise(vec2 p) {
     return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715))));
@@ -780,12 +755,18 @@ vec3 screen_reflection(vec3 n, vec3 geo_n, vec3 v, float rough, out float found)
                 float a = turn + float(k) * 2.39996;
                 vec2 at = s.xy + vec2(cos(a), sin(a)) * radius * sqrt((float(k) + 0.5) / 8.0);
                 vec4 c = textureLod(sampler2D(ssr_color, ssr_smp), at, 0.0);
+                if (output_params.y > 0.5) {
+                    // as it was lit; kept within bounds so a few bright pixels don't feed
+                    // themselves frame after frame
+                    sum += min(c.rgb, vec3(64.0));
+                    continue;
+                }
                 // back from what the tone mapping made of it, roughly; light sources were far over white
                 vec3 lin = srgb_to_linear(c.rgb);
                 lin /= max(1.0 - 0.7 * max(lin.r, max(lin.g, lin.b)), 0.3);
-                sum += lin * (1.0 + 5.0 * (1.0 - c.a));
+                sum += lin * (1.0 + 5.0 * (1.0 - c.a)) / max(camera_pos.w, 0.05);
             }
-            return sum / 8.0 / max(camera_pos.w, 0.05);
+            return sum / 8.0;
         }
         t_prev = t;
         step_len *= 1.16;
@@ -1093,11 +1074,12 @@ void main() {
     }
 
     outc = max(outc, vec3(0.0));
-    if (camera_pos.w > 0.0) outc = aces_filmic(outc * camera_pos.w);
     // a light source (emissive far over white) leaves the target's alpha at 0, for
     // post-processing that has to tell a burnt-out lamp from a brightly lit wall
     alpha *= 1.0 - smoothstep(4.0, 16.0, max(emissive.r, max(emissive.g, emissive.b)));
-    frag_color = vec4(linear_to_srgb(outc), alpha);
+    // into a half-float target as it is (OutputPass tone maps it later), otherwise ready to show
+    if (output_params.x > 0.5) frag_color = vec4(min(outc, vec3(60000.0)), alpha);
+    else frag_color = vec4(linear_to_srgb(tone_map(outc, int(output_params.z), camera_pos.w)), alpha);
 }
 @end
 

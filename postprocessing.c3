@@ -18,6 +18,13 @@
 //
 // EffectComposer chains passes the way three's does, handing each the picture of the one
 // before (ShaderPass.input_view, three's 'tDiffuse'); the last one draws into the window.
+// Like three's, it works in linear light (RGBA16F) by default, and the chain ends with an
+// OutputPass, which tone maps the picture and encodes it as sRGB:
+//
+//   EffectComposer* composer = postprocessing::effect_composer(renderer);
+//   composer.add_pass(postprocessing::render_pass(scene, camera));
+//   composer.add_pass(my_effect);
+//   composer.add_pass(postprocessing::output_pass(renderer));
 // A chain whose passes read several pictures, or keep some from frame to frame, can call the
 // passes itself in its own order instead, with render targets (any pixel format) and
 // PingPong pairs for what builds up over frames.
@@ -185,15 +192,22 @@ fn ShaderPass* shader_pass(SgShaderDesc desc, ZString label = "three-pass", SgBl
                            int input_view = -1, int input_sampler = -1)
 {
     ShaderPass* p = mem::new(ShaderPass);
-    p.shader = sg::make_shader(&desc);
-    p.label = label;
-    p.blend = blend;
-    p.input_view = input_view;
-    p.input_sampler = input_sampler;
-    p.render_fn = &shader_pass_render;
-    p.enabled = true;
-    p.needs_swap = true;
+    p.init(desc, label, blend, input_view, input_sampler);
     return p;
+}
+
+// Sets up a ShaderPass in place (for a pass of your own that inlines one).
+fn void ShaderPass.init(&self, SgShaderDesc desc, ZString label = "three-pass", SgBlendState blend = NO_BLEND,
+                        int input_view = -1, int input_sampler = -1)
+{
+    self.shader = sg::make_shader(&desc);
+    self.label = label;
+    self.blend = blend;
+    self.input_view = input_view;
+    self.input_sampler = input_sampler;
+    self.render_fn = &shader_pass_render;
+    self.enabled = true;
+    self.needs_swap = true;
 }
 
 fn void ShaderPass.set_texture(&self, int slot, SgView view) => self.bindings.views[slot] = view;
@@ -315,7 +329,7 @@ fn void render_pass_render(Pass* pass, EffectComposer* composer, RenderTarget* w
         r.set_render_target(prev);
         return;
     }
-    if (!self.target) self.target = three::render_target(composer.width, composer.height, self.samples);
+    if (!self.target) self.target = three::render_target(composer.width, composer.height, self.samples, composer.format);
     self.target.set_size(composer.width, composer.height, self.samples);
     r.set_render_target(self.target);
     r.render(self.scene, self.camera);
@@ -350,7 +364,8 @@ fn void PingPong.set_size(&self, int width, int height)
 // Runs passes one after the other, like three's EffectComposer: each ShaderPass reads the
 // picture the pass before left in `read_buffer` and draws into `write_buffer`, then the two
 // are swapped. The last enabled pass draws into the window. The buffers are `format`, one
-// sample, no depth.
+// sample, no depth: RGBA16F (three's HalfFloatType) keeps the light as it is until an
+// OutputPass at the end; with RGBA8 the scene is tone mapped as it is rendered.
 struct EffectComposer
 {
     Renderer* renderer;
@@ -366,7 +381,7 @@ struct EffectComposer
 }
 
 // `width` and `height` 0: the window's size, followed as it changes.
-fn EffectComposer* effect_composer(Renderer* renderer, int width = 0, int height = 0, SgPixelFormat format = RGBA8)
+fn EffectComposer* effect_composer(Renderer* renderer, int width = 0, int height = 0, SgPixelFormat format = RGBA16F)
 {
     EffectComposer* c = mem::new(EffectComposer);
     *c = { .renderer = renderer, .width = width, .height = height, .format = format, .render_to_screen = true };
@@ -434,4 +449,65 @@ fn void EffectComposer.dispose(&self)
 {
     foreach (b : self.buffers) if (b) b.dispose();
     self.passes.free();
+}
+
+// The end of a chain in linear light, like three's OutputPass: tone maps the picture with the
+// renderer's tone_mapping and tone_mapping_exposure (read whenever it draws) and encodes it as
+// sRGB. Alpha is kept.
+//
+//   OutputPass* out = postprocessing::output_pass(renderer);
+//   out.set_source(hdr_target.texture);
+//   out.render(ldr_target);           // or null: the window
+struct OutputPass
+{
+    inline ShaderPass shader_pass;
+    Renderer* renderer;
+    // A 1x1 texture whose red channel multiplies the exposure (an auto exposure's meter, say),
+    // read on the GPU so the meter never has to come back to the CPU. None: {}.
+    SgView exposure_map;
+    // Leave the result linear (0..1) instead of encoding it as sRGB, for more passes after it
+    // that work in linear light.
+    bool keep_linear;
+}
+
+fn OutputPass* output_pass(Renderer* renderer)
+{
+    OutputPass* p = mem::new(OutputPass);
+    p.init(output_shader_desc(sg::query_backend()), "three-output", input_view: VIEW_OUTPUT_SRC, input_sampler: SMP_OUTPUT_SMP);
+    p.renderer = renderer;
+    p.render_fn = &output_pass_render;
+    p.set_sampler(SMP_OUTPUT_SMP, linear_sampler());
+    return p;
+}
+
+// The picture to tone map (linear light, any size: it is stretched over the target).
+fn void OutputPass.set_source(&self, SgView picture) => self.bindings.views[VIEW_OUTPUT_SRC] = picture;
+
+// Takes the renderer's tone mapping as it is now. render() and draw() call it.
+fn void OutputPass.update(&self)
+{
+    Renderer* r = self.renderer;
+    OutputParams p = { .params = { (float)r.tone_mapping.ordinal, r.tone_mapping_exposure, self.exposure_map.id ? 1 : 0, self.keep_linear ? 1 : 0 } };
+    self.set_uniforms(UB_OUTPUT_PARAMS, &p);
+    // (an unused slot still needs a texture)
+    self.bindings.views[VIEW_OUTPUT_EXPOSURE] = self.exposure_map.id ? self.exposure_map : self.bindings.views[VIEW_OUTPUT_SRC];
+}
+
+fn void OutputPass.render(&self, RenderTarget* target, SgLoadAction load = DONTCARE, Color clear = 0x000000, float clear_alpha = 1)
+{
+    self.update();
+    self.shader_pass.render(target, load, clear, clear_alpha);
+}
+
+fn void OutputPass.draw(&self)
+{
+    self.update();
+    self.shader_pass.draw();
+}
+
+fn void output_pass_render(Pass* pass, EffectComposer* composer, RenderTarget* write, RenderTarget* read, float delta) @local
+{
+    OutputPass* self = (OutputPass*)pass;
+    self.set_source(read.texture);
+    self.render(pass.render_to_screen ? null : write);
 }

@@ -20,7 +20,9 @@ struct RenderTarget
     int height;
     int samples;
     // its pixel format (like three's `type` and `format` options; 0 is RGBA8) and whether it
-    // has a depth buffer (`depthBuffer`). Rendering a scene into it needs RGBA8 with depth.
+    // has a depth buffer (`depthBuffer`). A scene can be rendered into RGBA8 (tone mapped and
+    // sRGB, ready to show) or RGBA16F (linear light, like three's HalfFloatType: tone map it
+    // with an OutputPass at the end), either with depth.
     SgPixelFormat format;
     bool depth_buffer;
     SgImage color;
@@ -71,6 +73,9 @@ fn Texture* RenderTarget.as_map(&self)
 // samples > 1 renders with MSAA and resolves into `texture`. A target for post-processing
 // passes takes a format of its own (RGBA16F, RG16F, R16F...) and no depth buffer:
 //   three::render_target(w, h, format: RGBA16F, depth_buffer: false)
+// A scene rendered into an RGBA16F target keeps its light as it is, brighter than white where
+// it is (see OutputPass in postprocessing.c3):
+//   three::render_target(w, h, 4, RGBA16F)
 // Must be called after the window opened.
 fn RenderTarget* render_target(int width, int height, int samples = 1, SgPixelFormat format = RGBA8, bool depth_buffer = true)
 {
@@ -82,6 +87,9 @@ fn RenderTarget* render_target(int width, int height, int samples = 1, SgPixelFo
 }
 
 fn SgPixelFormat RenderTarget.pixel_format(&self) => self.format == DEFAULT ? RGBA8 : self.format;
+
+// Whether a scene rendered into it is left in linear light (a half-float target).
+fn bool RenderTarget.is_linear(&self) => self.pixel_format() == RGBA16F;
 
 fn void RenderTarget.dispose(&self)
 {
@@ -220,17 +228,21 @@ struct Renderer
     SgView ssr_depth;
     Mat4 ssr_view_proj;
     float ssr_reach;
+    bool ssr_linear;
     int ssr_frame;
 }
 
 // Screen-space reflections read the frame before: `color` is that picture as the render
-// target held it (tone mapped; alpha 0 at light sources), `depth` has each pixel's distance from
+// target held it (alpha 0 at light sources): tone mapped, or with `linear` in linear light, as
+// an RGBA16F target holds it (better: what bright things reflect isn't cut off at white).
+// `depth` has each pixel's distance from
 // the camera's plane in its green channel, and `view_proj` is that frame's
 // projection_matrix * matrix_world_inverse. Both the same size, row for row as rendered.
 // `reach` is how far a reflected ray is followed (m). Call it every frame before render();
 // clear_reflection_source() switches reflections off (for a render from another viewpoint).
-fn void Renderer.set_reflection_source(&self, SgView color, SgView depth, Mat4 view_proj, float reach = 12)
+fn void Renderer.set_reflection_source(&self, SgView color, SgView depth, Mat4 view_proj, float reach = 12, bool linear = false)
 {
+    self.ssr_linear = linear;
     self.ssr_color = color;
     self.ssr_depth = depth;
     self.ssr_view_proj = view_proj;
@@ -254,10 +266,17 @@ struct RenderInfo
 
 alias WebGLRenderer = Renderer;
 
+// three's tone mappings (the order is TONE_* in tonemapping.glsl). The renderer applies it when
+// it draws into the window or an RGBA8 target, OutputPass after post-processing in linear light.
 enum ToneMapping
 {
     NO_TONE_MAPPING,
+    LINEAR_TONE_MAPPING,
+    REINHARD_TONE_MAPPING,
+    CINEON_TONE_MAPPING,
     ACES_FILMIC_TONE_MAPPING,
+    AGX_TONE_MAPPING,
+    NEUTRAL_TONE_MAPPING,
 }
 
 struct DrawItem @local
@@ -290,9 +309,9 @@ struct RendererState @local
     SgShader opaque_shader;
     SgShader depth_shader;
     SgShader shadow_shader;
-    // indexed [DrawKind][side][opaque, transparent, additive][wireframe][target: swapchain, offscreen 1x, offscreen 4x]
-    // [alpha to coverage] (C3 declares array dimensions innermost first)
-    SgPipeline[2][3][2][3][3][4] pipelines;
+    // indexed [DrawKind][side][opaque, transparent, additive][wireframe][target: swapchain, RGBA8 1x,
+    // RGBA8 4x, RGBA16F 1x, RGBA16F 4x][alpha to coverage] (C3 declares array dimensions innermost first)
+    SgPipeline[2][5][2][3][3][4] pipelines;
     SgPipeline shadow_pipeline;
     // writes the far depth wherever it draws: clears one tile of the shadow atlas
     SgPipeline tile_clear_pipeline;
@@ -596,8 +615,9 @@ enum DrawKind : char @local
 fn SgPipeline get_pipeline(Side side, bool transparent, bool wireframe, RenderTarget* rt, bool alpha_test,
                            Blending blending = NORMAL_BLENDING, DrawKind kind = CUT) @local
 {
-    int target = rt ? (rt.samples > 1 ? 2 : 1) : 0;
+    int target = rt ? (rt.samples > 1 ? 2 : 1) + (rt.is_linear() ? 2 : 0) : 0;
     if (rt && rt.samples != 1 && rt.samples != 4) abort("three: render targets support 1 or 4 samples");
+    if (rt && rt.pixel_format() != RGBA8 && !rt.is_linear()) abort("three: a scene renders into RGBA8 or RGBA16F");
     int samples = rt ? rt.samples : sapp::sample_count();
     // after the prepass, the coverage of the cut-out's edge is in the depth buffer's samples
     bool a2c = alpha_test && !transparent && samples > 1 && kind != PRETESTED;
@@ -638,7 +658,7 @@ fn SgPipeline get_pipeline(Side side, bool transparent, bool wireframe, RenderTa
     if (rt)
     {
         desc.sample_count = rt.samples;
-        desc.colors[0].pixel_format = RGBA8;
+        desc.colors[0].pixel_format = rt.pixel_format();
         desc.depth.pixel_format = DEPTH;
     }
     if (transparent)
@@ -1187,8 +1207,10 @@ fn FsParams build_light_params(Scene* scene, Camera* camera, SpotLight* caster) 
     Renderer* r = state.renderer;
     LightData* g = &lights_gpu;
     g.clear();
-    float exposure = r.tone_mapping == ACES_FILMIC_TONE_MAPPING ? math::max(r.tone_mapping_exposure, 1e-4f) : 0;
+    float exposure = r.tone_mapping == NO_TONE_MAPPING ? 1 : math::max(r.tone_mapping_exposure, 1e-4f);
     p.camera_pos = { ...camera.matrix_world.get_position(), exposure };
+    bool linear = r.render_target && r.render_target.is_linear();
+    p.output_params = { linear ? 1 : 0, r.ssr_linear ? 1 : 0, (float)r.tone_mapping.ordinal, 0 };
     p.cull_min = { ...r.cull_box_min, r.cull_box ? 1 : 0 };
     p.cull_max = { ...r.cull_box_max, 0 };
     Mat4 cw = camera.matrix_world;
@@ -1582,28 +1604,84 @@ fn int cmp_transparent(DrawItem a, DrawItem b) @local
 // The background color as it comes out of the lit shader, so that it matches fog of the same color.
 fn Vector3 tone_mapped(Renderer* r, Color color) @local
 {
-    if (r.tone_mapping != ACES_FILMIC_TONE_MAPPING) return color_to_rgb(color);
-    Vector3 c = color_to_linear(color) * (math::max(r.tone_mapping_exposure, 1e-4f) / 0.6f);
-    Vector3 v = {
-        0.59719f * c.x + 0.35458f * c.y + 0.04823f * c.z,
-        0.07600f * c.x + 0.90834f * c.y + 0.01566f * c.z,
-        0.02840f * c.x + 0.13383f * c.y + 0.83777f * c.z,
-    };
-    Vector3 a = v * (v + (Vector3){ 0.0245786f, 0.0245786f, 0.0245786f }) - (Vector3){ 0.000090537f, 0.000090537f, 0.000090537f };
-    Vector3 b = v * (v * 0.983729f + (Vector3){ 0.4329510f, 0.4329510f, 0.4329510f }) + (Vector3){ 0.238081f, 0.238081f, 0.238081f };
-    v = a / b;
-    Vector3 o = {
-        1.60475f * v.x - 0.53108f * v.y - 0.07367f * v.z,
-        -0.10208f * v.x + 1.10813f * v.y - 0.00605f * v.z,
-        -0.00327f * v.x - 0.07276f * v.y + 1.07602f * v.z,
-    };
+    Vector3 c = tone_map(color_to_linear(color), r.tone_mapping, r.tone_mapping_exposure);
     Vector3 result;
     for (int i = 0; i < 3; i++)
     {
-        float x = clamp(o[i], 0, 1);
+        float x = clamp(c[i], 0, 1);
         result[i] = x <= 0.0031308f ? x * 12.92f : 1.055f * math::pow(x, 1.0f / 2.4f) - 0.055f;
     }
     return result;
+}
+
+fn Vector3 mat3_mul(float[9] m, Vector3 v) @local
+{
+    return { m[0] * v.x + m[1] * v.y + m[2] * v.z, m[3] * v.x + m[4] * v.y + m[5] * v.z, m[6] * v.x + m[7] * v.y + m[8] * v.z };
+}
+
+// Linear light through a tone mapping, as the shaders do it (tonemapping.glsl): 0..1, still
+// linear. For matching a color of your own to the picture.
+fn Vector3 tone_map(Vector3 c, ToneMapping mode, float exposure)
+{
+    if (mode == NO_TONE_MAPPING) return c;
+    c = (Vector3){ math::max(c.x, 0.0f), math::max(c.y, 0.0f), math::max(c.z, 0.0f) } * math::max(exposure, 1e-4f);
+    Vector3 out;
+    switch (mode)
+    {
+        case LINEAR_TONE_MAPPING:
+            out = c;
+        case REINHARD_TONE_MAPPING:
+            out = { c.x / (1 + c.x), c.y / (1 + c.y), c.z / (1 + c.z) };
+        case CINEON_TONE_MAPPING:
+            for (int i = 0; i < 3; i++)
+            {
+                float x = math::max(0.0f, c[i] - 0.004f);
+                out[i] = math::pow((x * (6.2f * x + 0.5f)) / (x * (6.2f * x + 1.7f) + 0.06f), 2.2f);
+            }
+        case ACES_FILMIC_TONE_MAPPING:
+            Vector3 v = mat3_mul({ 0.59719f, 0.35458f, 0.04823f, 0.07600f, 0.90834f, 0.01566f, 0.02840f, 0.13383f, 0.83777f }, c / 0.6f);
+            for (int i = 0; i < 3; i++)
+            {
+                float x = v[i];
+                v[i] = (x * (x + 0.0245786f) - 0.000090537f) / (x * (0.983729f * x + 0.4329510f) + 0.238081f);
+            }
+            out = mat3_mul({ 1.60475f, -0.53108f, -0.07367f, -0.10208f, 1.10813f, -0.00605f, -0.00327f, -0.07276f, 1.07602f }, v);
+        case AGX_TONE_MAPPING:
+            // (rows of the shader's column-major matrices)
+            Vector3 v = mat3_mul({ 0.6274f, 0.3293f, 0.0433f, 0.0691f, 0.9195f, 0.0113f, 0.0164f, 0.0880f, 0.8956f }, c);
+            v = mat3_mul({ 0.856627153315983f, 0.0951212405381588f, 0.0482516061458583f,
+                           0.137318972929847f, 0.761241990602591f, 0.101439036467562f,
+                           0.11189821299995f, 0.0767994186031903f, 0.811302368396859f }, v);
+            for (int i = 0; i < 3; i++)
+            {
+                float x = clamp((math::log2(math::max(v[i], 1e-10f)) + 12.47393f) / (4.026069f + 12.47393f), 0, 1);
+                float x2 = x * x;
+                float x4 = x2 * x2;
+                v[i] = 15.5f * x4 * x2 - 40.14f * x4 * x + 31.96f * x4 - 6.868f * x2 * x + 0.4298f * x2 + 0.1191f * x - 0.00232f;
+            }
+            v = mat3_mul({ 1.1271005818144368f, -0.11060664309660323f, -0.016493938717834573f,
+                           -0.1413297634984383f, 1.157823702216272f, -0.016493938717834257f,
+                           -0.14132976349843826f, -0.11060664309660294f, 1.2519364065950405f }, v);
+            for (int i = 0; i < 3; i++) v[i] = math::pow(math::max(v[i], 0.0f), 2.2f);
+            out = mat3_mul({ 1.6605f, -0.5876f, -0.0728f, -0.1246f, 1.1329f, -0.0083f, -0.0182f, -0.1006f, 1.1187f }, v);
+        case NEUTRAL_TONE_MAPPING:
+            float start = 0.8f - 0.04f;
+            float x = math::min(c.x, math::min(c.y, c.z));
+            float offset = x < 0.08f ? x - 6.25f * x * x : 0.04f;
+            out = c - (Vector3){ offset, offset, offset };
+            float peak = math::max(out.x, math::max(out.y, out.z));
+            if (peak >= start)
+            {
+                float d = 1 - start;
+                float new_peak = 1 - d * d / (peak + d - start);
+                out *= new_peak / peak;
+                float g = 1 - 1 / (0.15f * (peak - new_peak) + 1);
+                out = out + ((Vector3){ new_peak, new_peak, new_peak } - out) * g;
+            }
+        default:
+            out = c;
+    }
+    return { clamp(out.x, 0, 1), clamp(out.y, 0, 1), clamp(out.z, 0, 1) };
 }
 
 // Fog that is lit by lights isn't one color: where the view ends in empty space, a sphere
@@ -1735,7 +1813,8 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera)
     profile::stop("render: volumetric fog", pt);
     pt = profile::start();
 
-    Vector3 clear = tone_mapped(self, scene.background ? scene.background : self.clear_color);
+    Color background = scene.background ? scene.background : self.clear_color;
+    Vector3 clear = self.render_target && self.render_target.is_linear() ? color_to_linear(background) : tone_mapped(self, background);
     SgPass pass = {
         .action = {
             .colors[0] = {
