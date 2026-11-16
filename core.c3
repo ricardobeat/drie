@@ -366,6 +366,12 @@ struct Mesh
     // Bounding sphere of all instances in local space, for culling.
     Vector3 instance_center;
     float instance_radius;
+    // where the instances are on the GPU: in the shared arena (culling.c3) from instance
+    // arena_base, or in instance_buf; and how often they were uploaded
+    bool in_arena;
+    int arena_base;
+    int arena_size;
+    int instance_uploads;
 }
 
 // Draws the same geometry many times with one draw call, like THREE.InstancedMesh.

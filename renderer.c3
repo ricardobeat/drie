@@ -170,8 +170,15 @@ struct Renderer
     // Extension: how many spot lights with shadow.auto_update off get a tile in the shadow
     // atlas (the atlas has max(4, sqrt(n)) columns of tiles).
     int shadow_atlas_capacity;
-    // Extension: sorts the lights into clusters (see clusters.c3). null: on the CPU.
+    // Extension: sorts the lights into clusters (see clusters.c3). null: in a compute shader
+    // (cluster_lights_gpu), or on the CPU without them.
     ClusterAssignFn assign_clusters;
+    // Extension: culls the instances of instanced meshes one by one on the GPU, for the
+    // camera and the shadow maps drawn every frame (see culling.c3). On by default.
+    bool gpu_culling;
+    // Extension: also does on the CPU what compute shaders do (light clusters, instance
+    // culling) and reports where the results differ, on stderr.
+    bool check_compute;
     // Extension: tint what each cascade of the directional light's shadow covers (red, green,
     // blue, yellow, nearest first), to see where they fall.
     bool debug_cascades;
@@ -228,9 +235,11 @@ struct DrawItem @local
     // the one fading out (0: drawn whole)
     float fade;
     float fade_dir;
+    // its instances culled on the GPU: the job (culling.c3) + 1; 0: drawn whole
+    int job;
 }
 
-struct Frustum @local
+struct Frustum @private
 {
     Vec4[5] planes;
 }
@@ -248,6 +257,9 @@ struct RendererState @local
     List{DrawItem} opaque;
     List{DrawItem} transparent;
     List{DrawItem} casters;
+    // what the shadow maps drawn every frame show: the spot light's, and each cascade's
+    List{DrawItem} spot_casters;
+    List{DrawItem}[4] sun_casters;
     List{Light*} lights;
     List{EventListener} listeners;
     List{OrbitControls*} controls;
@@ -311,6 +323,7 @@ fn Renderer* webgl_renderer(bool antialias = true, int width = 800, int height =
         .tone_mapping_exposure = 1,
         .lod_scale = 1,
         .auto_time = true,
+        .gpu_culling = true,
         .max_lights = DEFAULT_MAX_LIGHTS,
         .shadow_atlas_capacity = DEFAULT_SHADOW_ATLAS_CAPACITY,
     };
@@ -318,6 +331,8 @@ fn Renderer* webgl_renderer(bool antialias = true, int width = 800, int height =
     state.opaque.allocator = mem;
     state.transparent.allocator = mem;
     state.casters.allocator = mem;
+    state.spot_casters.allocator = mem;
+    foreach (&l : state.sun_casters) l.allocator = mem;
     state.lights.allocator = mem;
     state.atlas_lights.allocator = mem;
     state.atlas_pending.allocator = mem;
@@ -390,12 +405,14 @@ fn void setup_gfx(SgEnvironment environment) @local
     sg::setup(&&{
         .environment = environment,
         .logger.func = &slog::func,
-        .buffer_pool_size = 16384,
+        // a buffer per geometry (two, indexed), and per instanced mesh whose instances change
+        // often: a farm of scattered plants has tens of thousands. sokol's maximum.
+        .buffer_pool_size = 65535,
         // room for the uniforms of some thousands of draws a frame (sokol's default, 4 MB,
         // is too little for a scene of many scattered plants seen from afar)
         .uniform_buffer_size = 16 * 1024 * 1024,
         .image_pool_size = 1024,
-        .view_pool_size = 1024,
+        .view_pool_size = 4096,
         .sampler_pool_size = 1024,
     });
     stm::setup();
@@ -736,38 +753,6 @@ fn float max_scale(Mat4 m) @local
     return math::max(sx, math::max(sy, sc));
 }
 
-// Uploads the instance transforms and computes the sphere around all instances.
-fn void upload_instances(Mesh* m) @local
-{
-    if (m.instances_uploaded) return;
-    if (m.instance_buf.id) sg::destroy_buffer(m.instance_buf);
-    m.instance_buf = sg::make_buffer(&&{
-        .data = { .ptr = m.instance_data.entries, .size = (usz)m.instance_data.len() * float::size },
-    });
-    BufferGeometry* g = m.geometry;
-    Vector3 lo = { 1e30f, 1e30f, 1e30f };
-    Vector3 hi = -lo;
-    for (int i = 0; i < m.instance_count; i++)
-    {
-        float* d = &m.instance_data[(sz)i * 12];
-        Vector3 gc = g.bounds_center;
-        Vector3 c = {
-            d[0] * gc.x + d[1] * gc.y + d[2] * gc.z + d[3],
-            d[4] * gc.x + d[5] * gc.y + d[6] * gc.z + d[7],
-            d[8] * gc.x + d[9] * gc.y + d[10] * gc.z + d[11],
-        };
-        float s = math::max(((Vector3){ d[0], d[4], d[8] }).length(),
-            math::max(((Vector3){ d[1], d[5], d[9] }).length(), ((Vector3){ d[2], d[6], d[10] }).length()));
-        Vector3 r = { s, s, s };
-        r *= g.bounds_radius;
-        lo = math::min(lo, c - r);
-        hi = math::max(hi, c + r);
-    }
-    m.instance_center = (lo + hi) * 0.5f;
-    m.instance_radius = (hi - lo).length() * 0.5f;
-    m.instances_uploaded = true;
-}
-
 // Gathers what to draw. `lod_from` is the position LOD levels are measured from.
 fn void collect(Object3D* obj, Mat4 view, Frustum* frustum, Vector3 lod_from, bool shadow_pass, float fade = 0, float fade_dir = 0) @local
 {
@@ -786,7 +771,7 @@ fn void collect(Object3D* obj, Mat4 view, Frustum* frustum, Vector3 lod_from, bo
             float radius = g.bounds_radius;
             if (m.instance_data.len() > 0)
             {
-                upload_instances(m);
+                upload_instances_gpu(m);
                 center = m.instance_center;
                 radius = m.instance_radius;
             }
@@ -796,7 +781,7 @@ fn void collect(Object3D* obj, Mat4 view, Frustum* frustum, Vector3 lod_from, bo
                 float r = radius * max_scale(m.matrix_world) + m.material.sway * 2;
                 if (!frustum.contains_sphere(wc, r)) break;
             }
-            DrawItem item = { m, view.transform_point(wc).z, fade, fade_dir };
+            DrawItem item = { m, view.transform_point(wc).z, fade, fade_dir, 0 };
             if (shadow_pass)
             {
                 state.casters.push(item);
@@ -936,10 +921,11 @@ fn int fit_sun_cascades(DirectionalLight* d, Camera* camera, Vector3 dir) @local
     return n;
 }
 
-// Draws the directional light's shadow map: its cascades, each into a tile of a 2x2 atlas with
-// the casters inside its own box, or one box.
-fn void draw_sun_shadow(Scene* scene, Camera* camera, DirectionalLight* sun) @local
+// Gathers what to draw into the directional light's shadow map: its cascades, each into a tile
+// of a 2x2 atlas with the casters inside its own box (state.sun_casters), or one box.
+fn void prepare_sun_shadow(Scene* scene, Camera* camera, DirectionalLight* sun) @local
 {
+    foreach (&l : state.sun_casters) l.clear();
     if (!sun)
     {
         ensure_sun_map(state.sun_size ?: 4);
@@ -957,7 +943,19 @@ fn void draw_sun_shadow(Scene* scene, Camera* camera, DirectionalLight* sun) @lo
         state.sun_info[0] = { 1e9f, 2 * math::max(sun.shadow_extent, 0.1f) / (float)tile, 0, 0 };
     }
     ensure_sun_map(n ? tile * 2 : tile);
-    Vector3 camera_pos = camera.matrix_world.get_position();
+    for (int i = 0; i < math::max(n, 1); i++)
+    {
+        Frustum light_frustum = frustum_from(state.sun_view_proj[i]);
+        gather_casters(scene, camera, &light_frustum, sun.shadow.skip_instanced, &state.sun_casters[i]);
+    }
+}
+
+// Draws what prepare_sun_shadow gathered.
+fn void draw_sun_shadow(DirectionalLight* sun) @local
+{
+    if (!sun) return;
+    int n = state.sun_cascades;
+    int tile = math::max(sun.shadow.map_size, 4);
     bool top_left = depth_zero_to_one();
     sg::begin_pass(&&{
         // depth is not stored by default: ask for it, the main pass samples this map
@@ -967,20 +965,31 @@ fn void draw_sun_shadow(Scene* scene, Camera* camera, DirectionalLight* sun) @lo
     sg::apply_pipeline(get_shadow_pipeline());
     for (int i = 0; i < math::max(n, 1); i++)
     {
-        Mat4 light_vp = state.sun_view_proj[i];
-        Frustum light_frustum = frustum_from(light_vp);
-        state.casters.clear();
-        state.skip_instanced = sun.shadow.skip_instanced;
-        collect(scene, camera.matrix_world_inverse, &light_frustum, camera_pos, true);
-        state.skip_instanced = false;
         if (n)
         {
             sg::apply_viewport((i % 2) * tile, (i / 2) * tile, tile, tile, top_left);
             sg::apply_scissor_rect((i % 2) * tile, (i / 2) * tile, tile, tile, top_left);
         }
-        foreach (&item : state.casters) draw_shadow_item(item, light_vp);
+        foreach (&item : state.sun_casters[i]) draw_shadow_item(item, state.sun_view_proj[i]);
     }
     sg::end_pass();
+}
+
+// Gathers the shadow casters inside `frustum` into `out`, their instances culled on the GPU
+// for it.
+fn void gather_casters(Scene* scene, Camera* camera, Frustum* frustum, bool skip_instanced, List{DrawItem}* out) @local
+{
+    state.casters.clear();
+    state.skip_instanced = skip_instanced;
+    collect(scene, camera.matrix_world_inverse, frustum, camera.matrix_world.get_position(), true);
+    state.skip_instanced = false;
+    out.clear();
+    int view = cull_view(frustum);
+    foreach (item : state.casters)
+    {
+        item.job = cull_job(item.mesh, view) + 1;
+        out.push(item);
+    }
     state.casters.clear();
 }
 
@@ -1129,7 +1138,7 @@ fn FsParams build_light_params(Scene* scene, Camera* camera, SpotLight* caster) 
     p.cluster_view_proj = camera.projection_matrix.mul(camera.matrix_world_inverse);
     p.cluster_grid = { CLUSTER_X, CLUSTER_Y, CLUSTER_Z, 0 };
     p.cluster_depth = { grid.near, grid.log_scale, grid.far, 0 };
-    g.upload(&grid, r.assign_clusters);
+    g.upload(&grid, r.assign_clusters, r.check_compute);
     p.counts = { ndir, npoint, nspot, 0 };
     if (scene.irradiance)
     {
@@ -1176,10 +1185,13 @@ fn Vec4 uv_transform(Material* mat) @local
 fn Vec4 sway_params(Material* mat) @local => { state.renderer.time, mat.sway, mat.sway_speed, mat.push };
 fn Vec4 pusher_params() @local => { ...state.renderer.pusher, state.renderer.pusher_reach };
 
-fn int draw_geometry(Mesh* m, bool wireframe) @local
+// Draws `m`'s geometry; with item.job, as many instances as its cull asks for.
+fn int draw_geometry(DrawItem* item, bool wireframe) @local
 {
+    Mesh* m = item.mesh;
     BufferGeometry* g = m.geometry;
     int instances = m.instance_data.len() > 0 ? m.instance_count : 1;
+    if (item.job) instances = cull_draw_count(item.job - 1);
     int elements = wireframe ? (int)g.wire_count : (int)g.index_count;
     sg::draw(0, elements, instances);
     return elements / 3 * instances;
@@ -1198,9 +1210,10 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs) @local
     sg::apply_pipeline(get_pipeline(mat.side, mat.transparent, mat.wireframe, r.render_target, mat.alpha_test > 0, mat.blending));
     SgBindings bind = {
         .vertex_buffers[0] = g.vbuf,
-        .vertex_buffers[1] = m.instance_data.len() > 0 ? m.instance_buf : state.identity_instance,
         .index_buffer = mat.wireframe ? g.wire_ibuf : g.ibuf,
     };
+    bind_instances(&bind, item);
+    Vec4 inst_cull = cull_bind(&bind, item.job - 1);
     bind.views[VIEW_TEX_MAP] = map.view;
     bind.views[VIEW_TEX_NORMAL] = ready(mat.normal_map).view;
     bind.views[VIEW_TEX_ARM] = ready(mat.arm_map).view;
@@ -1239,6 +1252,7 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs) @local
         .uv_transform = uv_transform(mat),
         .sway = sway_params(mat),
         .pusher = pusher_params(),
+        .inst_cull = inst_cull,
     };
     sg::apply_uniforms(UB_VS_PARAMS, &&{ .ptr = &vs, .size = VsParams::size });
 
@@ -1272,7 +1286,7 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs) @local
     fs.fog_params.w = fog_mode;
 
     r.info.calls++;
-    r.info.triangles += draw_geometry(m, mat.wireframe);
+    r.info.triangles += draw_geometry(item, mat.wireframe);
 }
 
 fn void draw_shadow_item(DrawItem* item, Mat4 light_vp) @local
@@ -1282,9 +1296,10 @@ fn void draw_shadow_item(DrawItem* item, Mat4 light_vp) @local
     Texture* map = ready(mat.map);
     SgBindings bind = {
         .vertex_buffers[0] = m.geometry.vbuf,
-        .vertex_buffers[1] = m.instance_data.len() > 0 ? m.instance_buf : state.identity_instance,
         .index_buffer = m.geometry.ibuf,
     };
+    bind_instances(&bind, item);
+    Vec4 inst_cull = cull_bind(&bind, item.job - 1);
     bind.views[VIEW_S_MAP] = map.view;
     bind.samplers[SMP_S_SMP] = map.sampler;
     sg::apply_bindings(&bind);
@@ -1294,12 +1309,27 @@ fn void draw_shadow_item(DrawItem* item, Mat4 light_vp) @local
         .s_uv_transform = uv_transform(mat),
         .s_sway = sway_params(mat),
         .s_pusher = pusher_params(),
+        .s_inst_cull = inst_cull,
     };
     sg::apply_uniforms(UB_SHADOW_VS_PARAMS, &&{ .ptr = &vs, .size = ShadowVsParams::size });
     ShadowFsParams fs = { .s_params = { mat.map ? mat.alpha_test : 0, mat.opacity, 0, 0 } };
     sg::apply_uniforms(UB_SHADOW_FS_PARAMS, &&{ .ptr = &fs, .size = ShadowFsParams::size });
     state.renderer.info.shadow_calls++;
-    state.renderer.info.shadow_triangles += draw_geometry(m, false);
+    state.renderer.info.shadow_triangles += draw_geometry(item, false);
+}
+
+// The instance attributes of a draw (one identity instance for a plain mesh).
+fn void bind_instances(SgBindings* bind, DrawItem* item) @local
+{
+    Mesh* m = item.mesh;
+    if (!m.instance_data.len())
+    {
+        bind.vertex_buffers[1] = state.identity_instance;
+        return;
+    }
+    int offset;
+    bind.vertex_buffers[1] = instance_vertex_buffer(m, &offset);
+    bind.vertex_buffer_offsets[1] = offset;
 }
 
 fn int cmp_opaque(DrawItem a, DrawItem b) @local => a.depth < b.depth ? 1 : (a.depth > b.depth ? -1 : 0);
@@ -1353,7 +1383,7 @@ fn void draw_backdrop(Scene* scene, Camera* camera, Mat4 view_proj, FsParams* fs
     float r = ((PerspectiveCamera*)camera).far * 0.9f;
     m.matrix_world = mat4_compose(camera.matrix_world.get_position(), { 0, 0, 0 }, { r, r, r });
     m.geometry.upload();
-    DrawItem item = { m, 0, 0, 0 };
+    DrawItem item = { m, 0, 0, 0, 0 };
     draw_item(&item, view_proj, fs);
 }
 
@@ -1383,38 +1413,48 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera)
     state.transparent.clear();
     state.casters.clear();
     state.lights.clear();
+    cull_begin(self.gpu_culling, self.check_compute);
     Frustum frustum = frustum_from(view_proj);
     collect(scene, camera.matrix_world_inverse, &frustum, camera_pos, false);
     // front-to-back for opaque, back-to-front for transparent (view space looks down -Z)
     sort::quicksort(&state.opaque, &cmp_opaque);
     sort::quicksort(&state.transparent, &cmp_transparent);
+    int view = cull_view(&frustum);
+    foreach (&item : state.opaque) item.job = cull_job(item.mesh, view) + 1;
+    foreach (&item : state.transparent) item.job = cull_job(item.mesh, view) + 1;
 
     // shadow map of the shadow casting spot light
     SpotLight* caster = shadow_light();
     // without a caster keep whatever map there is: renders that switch shadows off (a portal
     // view, say) must not reallocate it every frame
     ensure_shadow_map(caster ? caster.shadow.map_size : (state.shadow_size ?: 4));
+    Mat4 caster_vp;
+    state.spot_casters.clear();
     if (caster)
     {
-        Mat4 light_vp = shadow_view_proj(caster);
-        state.skip_instanced = caster.shadow.skip_instanced;
-        Frustum light_frustum = frustum_from(light_vp);
-        collect(scene, camera.matrix_world_inverse, &light_frustum, camera_pos, true);
-        state.skip_instanced = false;
+        caster_vp = shadow_view_proj(caster);
+        Frustum light_frustum = frustum_from(caster_vp);
+        gather_casters(scene, camera, &light_frustum, caster.shadow.skip_instanced, &state.spot_casters);
+    }
+    // the directional light's map is its own, so a sun and a spot light can both have shadows
+    DirectionalLight* sun = directional_shadow_light();
+    state.sun_caster = sun;
+    prepare_sun_shadow(scene, camera, sun);
+    // every view's instances culled at once, before the passes that draw them
+    cull_dispatch();
+
+    if (caster)
+    {
         sg::begin_pass(&&{
             // depth is not stored by default: ask for it, the main pass samples this map
             .action = { .depth = { .load_action = CLEAR, .store_action = STORE, .clear_value = 1 } },
             .attachments = { .depth_stencil = state.shadow_attachment },
         });
         sg::apply_pipeline(get_shadow_pipeline());
-        foreach (&item : state.casters) draw_shadow_item(item, light_vp);
+        foreach (&item : state.spot_casters) draw_shadow_item(item, caster_vp);
         sg::end_pass();
     }
-
-    // the directional light's map is its own, so a sun and a spot light can both have shadows
-    DirectionalLight* sun = directional_shadow_light();
-    state.sun_caster = sun;
-    draw_sun_shadow(scene, camera, sun);
+    draw_sun_shadow(sun);
     update_shadow_atlas(scene, camera);
     if (!state.no_irradiance) state.no_irradiance = irradiance_volume({ 0, 0, 0 }, { 1, 1, 1 }, 1);
     state.irradiance = scene.irradiance ?: state.no_irradiance;

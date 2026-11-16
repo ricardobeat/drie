@@ -4,9 +4,10 @@
 // that can reach it, and a fragment only looks at its own cluster's lights, so there is no
 // limit on the number of lights in a scene, only on how many light one spot.
 //
-// The assignment runs on the CPU (cluster_lights_cpu) behind ClusterAssignFn, which a compute
-// shader is meant to replace: it takes the grid and the lights' bounding spheres and fills the
-// clusters and the index list, the two buffers the fragment shader reads.
+// The assignment runs behind ClusterAssignFn: it takes the grid and the lights' bounding
+// spheres and fills the clusters and the index list, the two buffers the fragment shader
+// reads. cluster_lights_gpu (the default where there are compute shaders) does it in a compute
+// shader (cluster_cs in kernels.glsl), cluster_lights_cpu on the CPU, with the same result.
 module three;
 import std::collections::list, std::math, std::io;
 import sokol;
@@ -40,11 +41,21 @@ struct LightBounds
     float radius;
 }
 
+// Where an assignment puts the clusters (CLUSTER_COUNT of them) and the index list: per
+// cluster its point lights, then its spot lights. On the CPU in the lists, on the GPU in the
+// buffers (`gpu_ranges` is there for the assignment's own input).
+struct ClusterOutput
+{
+    List{GpuLightCluster}* clusters;
+    List{GpuLightIndex}* indices;
+    StorageBuffer* gpu_clusters;
+    StorageBuffer* gpu_indices;
+    StorageBuffer* gpu_ranges;
+}
+
 // Sorts lights into clusters. `points` and `spots` are indices into the lights' storage
-// buffers by position. Fills `clusters` (CLUSTER_COUNT of them) and `indices`: per cluster its
-// point lights, then its spot lights.
-alias ClusterAssignFn = fn void(ClusterGrid* grid, LightBounds[] points, LightBounds[] spots,
-                                List{GpuLightCluster}* clusters, List{GpuLightIndex}* indices);
+// buffers by position. Returns true if it filled out.gpu_*, false if it filled the lists.
+alias ClusterAssignFn = fn bool(ClusterGrid* grid, LightBounds[] points, LightBounds[] spots, ClusterOutput* out);
 
 fn ClusterGrid cluster_grid(Camera* camera) @private
 {
@@ -128,9 +139,64 @@ fn bool cluster_range(ClusterGrid* grid, LightBounds b, int[<3>]* lo, int[<3>]* 
     return true;
 }
 
-// The CPU version of ClusterAssignFn: two passes over the lights, counting and then filling.
-fn void cluster_lights_cpu(ClusterGrid* grid, LightBounds[] points, LightBounds[] spots,
-                           List{GpuLightCluster}* clusters, List{GpuLightIndex}* indices)
+// The CPU version of ClusterAssignFn.
+fn bool cluster_lights_cpu(ClusterGrid* grid, LightBounds[] points, LightBounds[] spots, ClusterOutput* out)
+{
+    fill_clusters(grid, points, spots, out.clusters, out.indices);
+    return false;
+}
+
+ComputePass* cluster_kernel @local;
+List{LightRange} cluster_ranges @local;
+
+// The compute version of ClusterAssignFn (falls back on the CPU without compute shaders). The
+// clusters each light reaches are found here, as for the CPU (cluster_range); the lists are
+// filled on the GPU, one thread per run of clusters.
+fn bool cluster_lights_gpu(ClusterGrid* grid, LightBounds[] points, LightBounds[] spots, ClusterOutput* out)
+{
+    if (!compute_supported() || !out.gpu_clusters) return cluster_lights_cpu(grid, points, spots, out);
+    if (!cluster_kernel) cluster_kernel = compute_pass(cluster_shader_desc(sg::query_backend()), "three-clusters");
+    cluster_ranges.allocator = mem;
+    cluster_ranges.clear();
+    sz total;
+    for (int kind = 0; kind < 2; kind++)
+    {
+        foreach (b : kind == 0 ? points : spots)
+        {
+            int[<3>] lo;
+            int[<3>] hi;
+            LightRange r;
+            if (cluster_range(grid, b, &lo, &hi))
+            {
+                r = { { lo.x, lo.y, lo.z, 1 }, { hi.x, hi.y, hi.z, 0 } };
+                total += (sz)(hi.x - lo.x + 1) * (sz)(hi.y - lo.y + 1) * (sz)(hi.z - lo.z + 1);
+            }
+            cluster_ranges.push(r);
+        }
+    }
+    // the kernel's input can't be empty
+    if (!cluster_ranges.len()) cluster_ranges.push({});
+    out.gpu_ranges.write(cluster_ranges.entries, cluster_ranges.len() * LightRange::size);
+    out.gpu_clusters.ensure((sz)CLUSTER_COUNT * (sz)GpuLightCluster::size);
+    out.gpu_indices.ensure(math::max(total, (sz)1) * (sz)GpuLightIndex::size);
+    ClusterParams p = {
+        .cl_lights = { (int)points.len, (int)spots.len, 0, 0 },
+        .cl_grid = { CLUSTER_X, CLUSTER_Y, CLUSTER_Z, CLUSTER_COUNT },
+    };
+    ComputePass* k = cluster_kernel;
+    k.set_buffer(VIEW_CLUSTER_RANGES, out.gpu_ranges);
+    k.set_buffer(VIEW_CLUSTER_LIST, out.gpu_clusters);
+    k.set_buffer(VIEW_CLUSTER_LIGHT_LIST, out.gpu_indices);
+    k.set_uniforms(UB_CLUSTER_PARAMS, &p, ClusterParams::size);
+    begin_compute("three-clusters");
+    k.dispatch(1);
+    end_compute();
+    return true;
+}
+
+// Sorts on the CPU: two passes over the lights, counting and then filling.
+fn void fill_clusters(ClusterGrid* grid, LightBounds[] points, LightBounds[] spots,
+                      List{GpuLightCluster}* clusters, List{GpuLightIndex}* indices) @private
 {
     clusters.clear();
     for (int i = 0; i < CLUSTER_COUNT; i++) clusters.push({});
@@ -257,6 +323,17 @@ struct LightBufferSet @private
     LightBuffer shadows;
     LightBuffer clusters;
     LightBuffer indices;
+    // filled by a compute shader instead (when `on_gpu`)
+    StorageBuffer gpu_clusters;
+    StorageBuffer gpu_indices;
+    StorageBuffer gpu_ranges;
+    bool on_gpu;
+    // Renderer.check_compute: the CPU's result of the last frame, to compare with the GPU's
+    List{GpuLightCluster} check_clusters;
+    List{GpuLightIndex} check_indices;
+    int check_slot;
+    int check_slot2;
+    bool check_pending;
 }
 
 // The lights of one render(), as the shader gets them.
@@ -276,6 +353,9 @@ struct LightData @private
     uint frame;
     bool warned;
     LightBufferSet* current;
+    // Renderer.check_compute: comparisons made, and how many differed
+    int checks;
+    int check_failures;
 }
 
 LightData lights_gpu @private;
@@ -304,25 +384,87 @@ fn void LightData.clear(&self)
 }
 
 // Sorts the lights into clusters and writes them all to a set of buffers of their own.
-fn void LightData.upload(&self, ClusterGrid* grid, ClusterAssignFn assign)
+// `check`: also sorts them on the CPU and compares (a frame later) with the GPU's result.
+fn void LightData.upload(&self, ClusterGrid* grid, ClusterAssignFn assign, bool check = false)
 {
-    if (!assign) assign = &cluster_lights_cpu;
-    assign(grid, self.point_bounds.array_view(), self.spot_bounds.array_view(), &self.clusters, &self.indices);
+    if (!assign) assign = &cluster_lights_gpu;
     uint frame = sg::query_stats().prev_frame.frame_index;
     if (frame != self.frame || !self.sets.len())
     {
         self.frame = frame;
         self.used = 0;
     }
-    if (self.used >= self.sets.len()) self.sets.push(mem::new(LightBufferSet));
+    if (self.used >= self.sets.len())
+    {
+        LightBufferSet* n = mem::new(LightBufferSet);
+        n.gpu_clusters = { .label = "three-clusters" };
+        n.gpu_indices = { .label = "three-cluster-lights" };
+        n.gpu_ranges = { .cpu_write = true, .label = "three-cluster-ranges" };
+        n.check_clusters.allocator = mem;
+        n.check_indices.allocator = mem;
+        n.check_slot = -1;
+        n.check_slot2 = -1;
+        self.sets.push(n);
+    }
     LightBufferSet* s = self.sets[self.used++];
+    if (s.check_pending) s.compare_with_gpu();
+    ClusterOutput out = { &self.clusters, &self.indices, &s.gpu_clusters, &s.gpu_indices, &s.gpu_ranges };
+    s.on_gpu = assign(grid, self.point_bounds.array_view(), self.spot_bounds.array_view(), &out);
     s.dirs.write(self.dirs.entries, self.dirs.len() * GpuDirLight::size);
     s.points.write(self.points.entries, self.points.len() * GpuPointLight::size);
     s.spots.write(self.spots.entries, self.spots.len() * GpuSpotLight::size);
     s.shadows.write(self.shadows.entries, self.shadows.len() * GpuSpotShadow::size);
-    s.clusters.write(self.clusters.entries, self.clusters.len() * GpuLightCluster::size);
-    s.indices.write(self.indices.entries, self.indices.len() * GpuLightIndex::size);
+    if (!s.on_gpu)
+    {
+        s.clusters.write(self.clusters.entries, self.clusters.len() * GpuLightCluster::size);
+        s.indices.write(self.indices.entries, self.indices.len() * GpuLightIndex::size);
+    }
+    else if (check)
+    {
+        fill_clusters(grid, self.point_bounds.array_view(), self.spot_bounds.array_view(), &s.check_clusters, &s.check_indices);
+        if (s.check_slot < 0) s.check_slot = readback_slot();
+        if (s.check_slot2 < 0) s.check_slot2 = readback_slot();
+        // (an empty compute pass, just to track the buffers in)
+        begin_compute("three-clusters-check");
+        s.check_pending = s.gpu_clusters.track(s.check_slot) && s.gpu_indices.track(s.check_slot2);
+        end_compute();
+    }
     self.current = s;
+}
+
+// Renderer.check_compute: compares the GPU's clusters of the last frame with the CPU's.
+fn void LightBufferSet.compare_with_gpu(&self)
+{
+    self.check_pending = false;
+    sz nc = self.check_clusters.len();
+    sz ni = self.check_indices.len();
+    GpuLightCluster[] c = mem::new_array(GpuLightCluster, nc);
+    GpuLightIndex[] ix = mem::new_array(GpuLightIndex, ni);
+    defer { mem::free(c); mem::free(ix); }
+    if (!read_back(self.check_slot, c.ptr, nc * (sz)GpuLightCluster::size, true)
+        || !read_back(self.check_slot2, ix.ptr, ni * (sz)GpuLightIndex::size, true))
+    {
+        io::eprintn("three: check_compute: could not read the clusters back");
+        return;
+    }
+    int bad_clusters;
+    int bad_entries;
+    for (sz i = 0; i < nc; i++)
+    {
+        if (c[i].range != self.check_clusters[i].range) bad_clusters++;
+    }
+    // (only where the CPU's index list has entries: the GPU's may be longer)
+    for (sz i = 0; i < ni; i++)
+    {
+        if (ix[i].index != self.check_indices[i].index) bad_entries++;
+    }
+    lights_gpu.checks++;
+    if (bad_clusters || bad_entries)
+    {
+        lights_gpu.check_failures++;
+        io::eprintfn("three: check_compute: GPU clusters differ from the CPU's: %d of %d clusters, %d of %d entries",
+                     bad_clusters, nc, bad_entries, ni);
+    }
 }
 
 fn void LightData.bind(&self, SgBindings* bind)
@@ -332,8 +474,8 @@ fn void LightData.bind(&self, SgBindings* bind)
     bind.views[VIEW_POINT_LIGHTS] = s.points.view;
     bind.views[VIEW_SPOT_LIGHTS] = s.spots.view;
     bind.views[VIEW_SPOT_SHADOWS] = s.shadows.view;
-    bind.views[VIEW_LIGHT_CLUSTERS] = s.clusters.view;
-    bind.views[VIEW_LIGHT_INDICES] = s.indices.view;
+    bind.views[VIEW_LIGHT_CLUSTERS] = s.on_gpu ? s.gpu_clusters.view : s.clusters.view;
+    bind.views[VIEW_LIGHT_INDICES] = s.on_gpu ? s.gpu_indices.view : s.indices.view;
 }
 
 // Room for one more light of a kind, up to Renderer.max_lights (a one-time warning past it).
