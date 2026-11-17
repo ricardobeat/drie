@@ -631,6 +631,16 @@ fn void h_mesh(JsCtx ctx, void* udata)
     ctx.ret_number(reg_object((Object3D*)drie::mesh(g, get_material(num_arg(ctx, 1, -1)))));
 }
 
+// lineDash(material, dashSize, gapSize, scale): LineDashedMaterial's dashes (0, 0: solid)
+fn void h_line_dash(JsCtx ctx, void* udata)
+{
+    Material* m = get_material(num_arg(ctx, 0, -1));
+    if (m == null) return;
+    m.dash_size = (float)num_arg(ctx, 1, 0);
+    m.gap_size = (float)num_arg(ctx, 2, 0);
+    m.dash_scale = (float)num_arg(ctx, 3, 1);
+}
+
 // line(geometry, material, mode): a drie Line; mode 1 LineSegments, 2 Line, 3 LineLoop
 fn void h_line(JsCtx ctx, void* udata)
 {
@@ -1159,6 +1169,7 @@ fn int main(String[] args)
     reg(natives, "materialUpdate", &h_material_update, 9);
     reg(natives, "mesh", &h_mesh, 2);
     reg(natives, "line", &h_line, 3);
+    reg(natives, "lineDash", &h_line_dash, 4);
     reg(natives, "add", &h_add, 2);
     reg(natives, "sync", &h_sync, 2);
     reg(natives, "background", &h_background, 2);

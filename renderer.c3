@@ -1932,6 +1932,12 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
         mat.parallax_shadow,
         0
     };
+    // a dashed line: its gaps are cut out by the distances along it (see Line.compute_line_distances)
+    if (m.is_line() && mat.dash_size > 0 && mat.gap_size > 0) {
+        fs.line_dash = { mat.dash_size, mat.dash_size + mat.gap_size, mat.dash_scale > 0 ? mat.dash_scale : 1, 1 };
+    } else {
+        fs.line_dash = { };
+    }
     fs.env_params = { env_map ? 1 : 0, env_intensity, env_diffuse ? 1 : 0, env_map ? env_map.env_distance_range : 0 };
     // each point of it: the probe of the box it is in
     if (probes) fs.env_params = { 2, mat.env_intensity > 0 ? mat.env_intensity : 1, 0, 0 };

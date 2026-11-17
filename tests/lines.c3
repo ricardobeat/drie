@@ -1,8 +1,8 @@
 // Lines: a grid of LineSegments with vertex colors (as three's GridHelper makes it), a red
-// Line (a sine wave), a see-through green LineLoop (a circle), and a box on a floor in the
-// sun's shadow, seen through fog. Checks what the renderer counts, that lines cast no
-// shadow and that a Raycaster passes through them, then renders the scene with and without
-// its lines and saves both side by side.
+// Line (a sine wave), a see-through green LineLoop (a circle), a yellow dashed Line, and a box
+// on a floor in the sun's shadow, seen through fog. Checks what the renderer counts, that
+// lines cast no shadow, that a Raycaster passes through them and that dashes leave gaps, then
+// renders the scene with and without its lines and saves both side by side.
 //
 //   just test lines [out.ppm]
 module lines_test;
@@ -21,6 +21,7 @@ PerspectiveCamera* camera;
 LineSegments* grid;
 Line* wave;
 LineLoop* circle;
+Line* dashed;
 int failures;
 
 fn void expect(bool ok, String what)
@@ -97,6 +98,23 @@ fn void build_scene()
     );
     circle.position = { 2, 0, 1 };
     scene.add(circle);
+
+    // dashes and gaps of 0.25 along a line of 6, in front: about half of it drawn
+    dashed = drie::line(
+        drie::buffer_geometry({ -3, 0.3f, 2.5f, 0, 0.3f, 2.5f, 3, 0.3f, 2.5f }),
+        drie::line_dashed_material(color: 0xffff00, dash_size: 0.25f, gap_size: 0.25f)
+    );
+    dashed.compute_line_distances();
+    scene.add(dashed);
+}
+
+fn bool is_yellow(char[] px, usz i) => px[i] > 170 && px[i + 1] > 170 && px[i + 2] < 90;
+
+fn int count_yellow(char[] px)
+{
+    int n;
+    for (usz i = 0; i < (usz)W * H * 4; i += 4) if (is_yellow(px, i)) n++;
+    return n;
 }
 
 fn void render_into(RenderTarget* target, char[] px)
@@ -125,7 +143,7 @@ fn int main(String[] args)
     char[] with_lines = mem::new_array(char, (usz)W * H * 4);
     char[] without = mem::new_array(char, (usz)W * H * 4);
     render_into(target, with_lines);
-    int segments = (GRID + 1) * 2 + (WAVE - 1) + CIRCLE;
+    int segments = (GRID + 1) * 2 + (WAVE - 1) + CIRCLE + 2;
     expect(renderer.info.lines == segments, string::tformat("info.lines: %d segments (want %d)", renderer.info.lines, segments));
     expect(renderer.info.shadow_calls > 0, "the box casts a shadow");
 
@@ -138,12 +156,24 @@ fn int main(String[] args)
     foreach (h : hits) if (((Mesh*)h.object).is_line()) through = false;
     expect(through, "a ray passes through the lines to the floor");
 
+    // the same line solid: twice the pixels, about
+    char[] solid = mem::new_array(char, (usz)W * H * 4);
+    dashed.material.gap_size = 0;
+    render_into(target, solid);
+    dashed.material.gap_size = 0.25f;
+    int dashes = count_yellow(with_lines);
+    int whole = count_yellow(solid);
+    float part = (float)dashes / math::max(whole, 1);
+    expect(whole > 150 && part > 0.35f && part < 0.65f,
+        string::tformat("the dashed line covers %d of its %d pixels (%.2f)", dashes, whole, part));
+
     Object3D* copy = grid.clone();
     expect(((Mesh*)copy).draw_mode == LINE_SEGMENTS, "a clone of a LineSegments is one too");
 
     grid.visible = false;
     wave.visible = false;
     circle.visible = false;
+    dashed.visible = false;
     render_into(target, without);
     expect(renderer.info.lines == 0, "hidden lines are not drawn");
 

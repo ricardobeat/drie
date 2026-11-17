@@ -103,8 +103,12 @@ out vec3 v_color;
 out float v_alpha;
 out vec4 v_clip;
 out vec4 v_prev_clip;
+// lines: the distance along the line, for dashes (a line's vertex normal x holds it; lines
+// have no normals)
+out float v_line_distance;
 
 void main() {
+    v_line_distance = normal.x;
     if (!fetch_instance(inst_cull)) {
         // outside the clip volume: nothing drawn
         v_world_pos = vec3(0.0);
@@ -292,6 +296,7 @@ layout(binding=1) uniform fs_params {
     vec4 frame_custom[2];      //   and Renderer.custom
     vec4 parallax_params;      // Material.parallax_map: x = depth (m; 0: none), y = distance (m) where
                                //   it has faded out, z = self-shadowing toward the sun (0..1)
+    vec4 line_dash;            // dashed lines: x = dash length, y = dash + gap, z = scale, w = 1: dashed
 };
 
 // Lights live in storage buffers, as many as there are. Point and spot lights are sorted into
@@ -348,6 +353,7 @@ in vec3 v_color;
 in float v_alpha;
 in vec4 v_clip;
 in vec4 v_prev_clip;
+in float v_line_distance;
 
 layout(location=0) out vec4 frag_color;
 #ifdef MRT
@@ -1203,6 +1209,8 @@ void main() {
 
 #ifndef NO_DISCARD
     if (cull_min.w > 0.5 && all(greaterThan(v_world_pos, cull_min.xyz)) && all(lessThan(v_world_pos, cull_max.xyz))) discard;
+    // a dashed line's gaps (as three's LineDashedMaterial)
+    if (line_dash.w > 0.5 && mod(v_line_distance * line_dash.z, line_dash.y) > line_dash.x) discard;
     // LOD cross-fade: a screen-door dither, the incoming level where it is below the fade and
     // the outgoing one where it is not (interleaved gradient noise: no visible pattern)
     if (screen_params.w != 0.0) {
@@ -1559,6 +1567,7 @@ in vec3 v_color;
 in float v_alpha;
 in vec4 v_clip;
 in vec4 v_prev_clip;
+in float v_line_distance;
 
 out vec4 frag_color;
 
@@ -1586,7 +1595,8 @@ void main() {
     }
     // for alpha to coverage (the depth prepass writes no color); r = the distance from the
     // camera's plane, for Renderer.render_back_faces
-    frag_color = vec4(v_clip.w + (v_normal + v_color + v_world_pos + v_clip.xyz + v_prev_clip.xyz).x * 0.0, 0.0, 0.0, alpha);
+    frag_color = vec4(v_clip.w + (v_normal + v_color + v_world_pos + v_clip.xyz + v_prev_clip.xyz).x * 0.0
+        + v_line_distance * 0.0, 0.0, 0.0, alpha);
 }
 @end
 
