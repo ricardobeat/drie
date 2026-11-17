@@ -524,6 +524,11 @@ struct RendererState @local
     // the scene's radiance cascades' probes, or a buffer of one dark probe
     StorageBuffer* no_radiance;
     SgView radiance_view;
+    // the scene's reflection probes' array texture (none: id 0), and a 1x1 one to bind then
+    SgView probes_view;
+    SgSampler probes_sampler;
+    SgImage no_probes_image;
+    SgView no_probes;
     // One identity instance, bound for meshes that aren't instanced.
     SgBuffer identity_instance;
     SgImage shadow_image;
@@ -1571,6 +1576,25 @@ fn FsParams build_light_params(Scene* scene, Camera* camera, SpotLight* caster) 
         p.gi_inv_size = { 1 / size.x, 1 / size.y, 1 / size.z, v.intensity };
         p.gi_dims = { v.nx, v.ny, v.nz, v.normal_offset };
     }
+    if (scene.reflection_probes && scene.reflection_probes.count)
+    {
+        ReflectionProbes* rp = scene.reflection_probes;
+        rp.upload();
+        p.probe_info = { (float)rp.count, 0, 0, 0 };
+        for (int i = 0; i < rp.count; i++)
+        {
+            ReflectionProbe* pr = &rp.probes[i];
+            p.probe_pos[i] = { ...pr.position, pr.distance_range };
+            p.probe_min[i] = { ...pr.box_min, pr.blend };
+            p.probe_max[i] = { ...pr.box_max, pr.intensity };
+        }
+        state.probes_view = rp.view;
+        state.probes_sampler = rp.sampler;
+    }
+    else
+    {
+        state.probes_view = {};
+    }
     if (scene.radiance)
     {
         RadianceCascades* rc = scene.radiance;
@@ -1793,6 +1817,17 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
         bind.views[VIEW_TEX_MAP] = mat.screen_target.texture;
         bind.samplers[SMP_TEX_SMP] = state.white.sampler;
     }
+    if (!state.no_probes.id)
+    {
+        char[4] white = { 255, 255, 255, 255 };
+        state.no_probes_image = sg::make_image(&&{ .type = ARRAY, .width = 1, .height = 1, .num_slices = 1,
+                                                    .data = { .ptr = &white, .size = 4 } });
+        state.no_probes = sg::make_view(&&{ .texture = { .image = state.no_probes_image } });
+    }
+    // the scene's reflection probes, for a material that mirrors them
+    bool probes = !mat.env_map && mat.env_probes && state.probes_view.id;
+    bind.views[VIEW_TEX_PROBES] = state.probes_view.id ? state.probes_view : state.no_probes;
+    if (probes) bind.samplers[SMP_ENV_SMP] = state.probes_sampler;
     bind.samplers[SMP_SHADOW_SMP] = state.shadow_sampler;
     lights_gpu.bind(&bind);
     sg::apply_bindings(&bind);
@@ -1816,8 +1851,9 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     fs.specular = { ...color_to_linear(mat.specular), (float)flags };
     fs.mat_params = { (float)mat.type, mat.roughness, mat.metalness, mat.shininess };
     fs.tex_params = { mat.map ? 1 : 0, mat.normal_map ? mat.normal_scale : 0, mat.arm_map ? 1 : 0, alpha_test };
-    fs.env_params = { mat.env_map ? 1 : 0, mat.env_intensity > 0 ? mat.env_intensity : 1, 0,
-                      mat.env_map ? mat.env_map.env_distance_range : 0 };
+    fs.env_params = { env_map ? 1 : 0, env_intensity, env_diffuse_lod, env_map ? env_map.env_distance_range : 0 };
+    // each point of it: the probe of the box it is in
+    if (probes) fs.env_params = { 2, mat.env_intensity > 0 ? mat.env_intensity : 1, 0, 0 };
     bool boxed = mat.env_box_min != mat.env_box_max;
     fs.env_pos = { ...mat.env_position, boxed ? 1 : 0 };
     fs.env_box_min = { ...mat.env_box_min, 0 };

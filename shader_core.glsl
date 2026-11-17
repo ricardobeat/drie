@@ -213,6 +213,7 @@ layout(binding=8) uniform texture2D ssr_depth;   // g = its distance from the ca
 layout(binding=9) uniform texture2D sun_shadow;  // the directional light's map: 2x2 cascades, or one box
 layout(binding=21) uniform texture2D reflector_map; // a Reflector's mirrored render, linear
 layout(binding=20) uniform texture2D ssr_back;    // r = the nearest back face's distance from the camera's plane (m), 0: none
+layout(binding=23) uniform texture2DArray tex_probes; // the scene's reflection probes (reflection_probes.c3)
 layout(binding=19) uniform texture2D fog_volume; // volumetric fog: the froxel grid (fog.c3, fog_cs in kernels.glsl)
 layout(binding=0) uniform sampler tex_smp;
 layout(binding=1) uniform sampler shadow_smp;
@@ -278,6 +279,10 @@ layout(binding=1) uniform fs_params {
     vec4 ssr_thickness;    // x = 1: ssr_back has the last frame's back faces, y = this material's reach (m)
     mat4 reflector_view_proj;  // world -> the Reflector's picture's clip space (reflector.c3)
     vec4 reflector_params;     // x = strength (0: no reflector), y = distortion (m), z = blur
+    vec4 probe_info;           // x = the scene's reflection probes (0: none; env_params.x = 2: this material uses them)
+    vec4 probe_pos[4];         // where each was captured, w = meters its map's alpha 1 stands for
+    vec4 probe_min[4];         // its box (min == max: everywhere else), w = blend width (m)
+    vec4 probe_max[4];         // w = intensity
     vec4 rc_min;               // radiance cascades (radiance.c3): the box's corner, w = probe spacing (m)
     vec4 rc_size;              // xyz = probes, w = intensity (0: none)
     vec4 material_custom[2];   // for the application's hooks: Material.custom
@@ -947,20 +952,32 @@ vec2 env_uv(vec3 d) {
     return vec2(atan(d.z, d.x) * (0.5 * RECIPROCAL_PI) + 0.5, acos(clamp(d.y, -1.0, 1.0)) * RECIPROCAL_PI);
 }
 
+// The map being read: the material's own (g_env_layer < 0), or a layer of the scene's probes.
+float g_env_layer;
+vec4 g_env_pos;      // as env_pos
+vec3 g_env_min;
+vec3 g_env_max;
+float g_env_range;   // as env_params.w
+
+vec4 env_texel(vec2 uv, float lod) {
+    if (g_env_layer < 0.0) return textureLod(sampler2D(tex_env, env_smp), uv, lod);
+    return textureLod(sampler2DArray(tex_probes, env_smp), vec3(uv, g_env_layer), lod);
+}
+
 // How far the point `q` (relative to where the map was captured) lies behind what the map saw
 // in its direction.
 float env_behind(vec3 q) {
     float len = length(q);
-    return len - textureLod(sampler2D(tex_env, env_smp), env_uv(q / len), 0.0).a * env_params.w;
+    return len - env_texel(env_uv(q / len), 0.0).a * g_env_range;
 }
 
 vec3 env_sample(vec3 d, float rough) {
-    if (env_pos.w > 0.5) {
+    if (g_env_pos.w > 0.5) {
         vec3 inv = 1.0 / d;
-        vec3 t_far = max((env_box_max.xyz - v_world_pos) * inv, (env_box_min.xyz - v_world_pos) * inv);
+        vec3 t_far = max((g_env_max - v_world_pos) * inv, (g_env_min - v_world_pos) * inv);
         float t = max(min(min(t_far.x, t_far.y), t_far.z), 0.0);
-        vec3 o = v_world_pos - env_pos.xyz;
-        if (env_params.w > 0.0 && rough < 0.3) {
+        vec3 o = v_world_pos - g_env_pos.xyz;
+        if (g_env_range > 0.0 && rough < 0.3) {
             // A map with distances: walk the ray through the room as the map saw it, and stop
             // where it goes behind something (not far behind: then it only passes at the back
             // of it, out of the map's sight).
@@ -969,7 +986,7 @@ vec3 env_sample(vec3 d, float rough) {
             // the distances come in steps of 1/255 of their range: nearer than that to a
             // surface, a ray is not yet behind it (or a wall seen at a glancing angle breaks
             // up into rings, one per step)
-            float slack = env_params.w / 255.0 * 1.5;
+            float slack = g_env_range / 255.0 * 1.5;
             float prev = 0.0;
             float at = dt * (0.3 + 0.7 * ssr_noise(gl_FragCoord.xy + ssr_params.z * vec2(47.0, 17.0)));
             for (int i = 0; i < STEPS; i++) {
@@ -990,10 +1007,69 @@ vec3 env_sample(vec3 d, float rough) {
         }
         d = normalize(o + d * t);
     }
-    return textureLod(sampler2D(tex_env, env_smp), env_uv(d), rough * 7.0).rgb * env_params.y;
+    return env_texel(env_uv(d), rough * 7.0).rgb * env_params.y;
 }
 
 @include_block surface_hooks
+
+// What a surface facing `facing` mirrors of its surroundings in direction d: from the material's own
+// map, or from the scene's reflection probes: the one whose box the point is in (or just
+// outside of, facing in: a window pane in the room's wall), cross-faded with its neighbour
+// over the blend width outside the box, and with the probe for everywhere else beyond that.
+vec3 env_reflection(vec3 d, float rough, vec3 facing) {
+    g_env_layer = -1.0;
+    g_env_pos = env_pos;
+    g_env_min = env_box_min.xyz;
+    g_env_max = env_box_max.xyz;
+    g_env_range = env_params.w;
+    if (env_params.x < 1.5) return env_sample(d, rough);
+    int n = int(probe_info.x);
+    int first = -1;
+    int second = -1;
+    int outer = -1;
+    float w1 = 0.0;
+    float w2 = 0.0;
+    for (int i = 0; i < n; i++) {
+        if (probe_min[i].xyz == probe_max[i].xyz) {
+            outer = i;
+            continue;
+        }
+        vec3 lo = v_world_pos - probe_min[i].xyz;
+        vec3 hi = probe_max[i].xyz - v_world_pos;
+        float inside = min(min(lo.x, min(lo.y, lo.z)), min(hi.x, min(hi.y, hi.z)));
+        float blend = max(probe_min[i].w, 1e-3);
+        float w = clamp(1.0 + inside / blend, 0.0, 1.0);
+        // the outer side of the room's own wall shows what is outside
+        if (dot(facing, probe_pos[i].xyz - v_world_pos) <= 0.0) w = 0.0;
+        if (w > w1) {
+            second = first;
+            w2 = w1;
+            first = i;
+            w1 = w;
+        } else if (w > w2) {
+            second = i;
+            w2 = w;
+        }
+    }
+    float sum = w1 + w2;
+    float rest = outer >= 0 ? max(1.0 - sum, 0.0) : 0.0;
+    // with a probe for everywhere else the boxes' shares stay as they are (it takes the
+    // rest); without one they are made to add up to all of it
+    float norm = 1.0 / max(outer >= 0 ? max(sum, 1.0) : sum, 1e-4);
+    vec3 result = vec3(0.0);
+    for (int k = 0; k < 3; k++) {
+        int i = k == 0 ? first : (k == 1 ? second : outer);
+        float w = k == 0 ? w1 * norm : (k == 1 ? w2 * norm : rest);
+        if (i < 0 || w <= 0.0) continue;
+        g_env_layer = float(i);
+        g_env_pos = vec4(probe_pos[i].xyz, k == 2 ? 0.0 : 1.0);
+        g_env_min = probe_min[i].xyz;
+        g_env_max = probe_max[i].xyz;
+        g_env_range = probe_pos[i].w;
+        result += env_sample(d, rough) * (w * probe_max[i].w);
+    }
+    return result;
+}
 
 void main() {
     int mode = int(mat_params.x);
@@ -1173,7 +1249,7 @@ void main() {
         // glass: reflections stay visible however clear the pane is
         float fresnel = 0.04 + 0.96 * pow(1.0 - clamp(dot(n, v), 0.0, 1.0), 5.0);
         vec3 sky = mix(hemi_ground.rgb, hemi_sky.rgb, 0.5 * reflect(-v, n).y + 0.5) + ambient.rgb;
-        if (env_params.x > 0.5) sky = env_sample(reflect(-v, n), g_rough);
+        if (env_params.x > 0.5) sky = env_reflection(reflect(-v, n), g_rough, n);
         reflection_hook(reflect(-v, n), sky);
         spec += sky * fresnel;
         float spec_a = max(spec.r, max(spec.g, spec.b));
@@ -1189,7 +1265,7 @@ void main() {
             vec3 f0 = mix(vec3(0.04), g_base.rgb, g_metal);
             vec3 fr = f0 + (max(vec3(1.0 - g_rough), f0) - f0) * pow(1.0 - nov, 5.0);
             vec3 r = reflect(-v, n);
-            vec3 env = env_sample(r, g_rough);
+            vec3 env = env_reflection(r, g_rough, n);
             reflection_hook(r, env);
             env_term = env * fr;
         }

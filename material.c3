@@ -68,6 +68,9 @@ struct Material
     // Reflections of the surroundings: an equirectangular map, for example from
     // Renderer.capture_environment (like three's envMap). Rougher surfaces blur it.
     Texture* env_map;
+    // Without an env_map: mirrors the scene's reflection probes (Scene.reflection_probes),
+    // each point the probe of the box it is in.
+    bool env_probes;
     float env_intensity;
     // Box projection for env_map (like Unity's reflection probes): the map was captured at
     // env_position inside the box env_box_min..max, usually a room. Reflections of its walls

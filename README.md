@@ -224,6 +224,11 @@ These aren't in three.js:
 - `scene.irradiance`: an `IrradianceVolume`, a grid of probes holding light that has bounced
   around a room. Lit materials inside its box receive it on top of the scene's lights. The
   engine stores and samples the probes; what goes into them is up to you (see `irradiance.c3`).
+- `scene.reflection_probes`: `ReflectionProbes` (`three::reflection_probes()`, `probes.add(map,
+  position, box_min, box_max)`), like three's scene-level reflection probes: an environment map
+  per room, kept as the layers of one array texture. A material with `env_probes` set mirrors,
+  at each of its points, the map of the box that point is in (box-projected, cross-faded where
+  boxes meet, with a probe without a box for everywhere else), whichever room the camera is in.
 - `scene.radiance`: `RadianceCascades` (`three::radiance_cascades(min, max)`, `radiance.c3`):
   bounced light and the glow of emissive things inside a box, traced anew on the GPU every
   frame (`rc.update(scene)` before `render`). Radiance cascades on a grid of probes, their

@@ -400,6 +400,8 @@ struct Scene
     // Extension: light bouncing around a box, traced every frame (see radiance.c3). Inside
     // the box it takes the place of the ambient and hemisphere lights and of `irradiance`.
     RadianceCascades* radiance;
+    // Extension: environment maps by room, for materials with env_probes (reflection_probes.c3).
+    ReflectionProbes* reflection_probes;
     // Like three's scene.environment: an equirectangular map (capture_environment, best with
     // hdr) that lights every standard material without an env_map of its own, both the light
     // falling on it from all around and its reflections, times environment_intensity.
