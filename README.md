@@ -335,5 +335,5 @@ These aren't in three.js:
 
 `shader_core.glsl` is the material shader; `shader.glsl` includes it with empty hooks. Run
 `./build.sh shaders` in the application (`house`) to regenerate `shader.c3` (and `kernels.c3`
-from `kernels.glsl`, the compute shaders), and any application shaders that include
-`shader_core.glsl`.
+from `kernels.glsl`, the compute shaders, `output.c3` and `gtao.c3` for the post-processing
+passes), and any application shaders that include `shader_core.glsl`.
