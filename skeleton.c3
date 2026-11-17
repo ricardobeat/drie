@@ -232,8 +232,6 @@ fn void SkinnedMesh.update(&self)
 {
     Skeleton* sk = self.skeleton;
     if (!sk) return;
-    BufferGeometry* src = self.bind_geometry;
-    BufferGeometry* dst = self.geometry;
     sk.update();
     // bind pose (mesh space) -> world at bind time -> with the bone -> back into mesh space
     self.update_world_matrix_from_parents();
@@ -241,7 +239,16 @@ fn void SkinnedMesh.update(&self)
     Mat4[] skin = mem::new_array(Mat4, sk.bones.len);
     defer free(skin);
     foreach (i, m : sk.bone_matrices) skin[i] = to_local.mul(m).mul(self.bind_matrix);
+    self.skin_with(skin);
+}
 
+// Moves the vertices with one matrix per bone, from the bind pose in mesh space to the posed
+// mesh in mesh space (three's bindMatrixInverse * boneMatrix * bindMatrix), for bones posed
+// elsewhere (a skeleton that isn't drie's own).
+fn void SkinnedMesh.skin_with(&self, Mat4[] skin)
+{
+    BufferGeometry* src = self.bind_geometry;
+    BufferGeometry* dst = self.geometry;
     uint count = src.vertex_count();
     sz skinned = math::min((sz)count, src.skin_weights.len() / BONES_PER_VERTEX);
     for (sz v = 0; v < skinned; v++)
@@ -258,7 +265,7 @@ fn void SkinnedMesh.update(&self)
             float w = src.skin_weights[s + k];
             if (w <= 0) continue;
             int b = src.skin_indices[s + k];
-            if (b >= sk.bones.len) continue;
+            if (b >= skin.len) continue;
             Mat4* m = &skin[b];
             sp += m.transform_point(p) * w;
             // rotation only: bones are not scaled unevenly

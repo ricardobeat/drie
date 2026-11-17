@@ -229,7 +229,8 @@ layout(binding=1) uniform fs_params {
                        //   16: vertex colors are baked light (emissive.w = strength), 32: screen-space map)
     vec4 mat_params;   // x = mode, y = roughness, z = metalness, w = shininess
     vec4 tex_params;   // x = has map, y = normal map scale (0 = none), z = has arm map, w = alpha test
-    vec4 env_params;   // x = has environment map, y = intensity, z = unused,
+    vec4 env_params;   // x = has environment map, y = intensity, z = the scene's environment
+                       // lights the diffuse part too, from this mip level (0: it doesn't),
                        // w = meters that alpha 1 of the map stands for (0: it holds no distances)
     vec4 env_pos;      // where the map was captured, w = 1 for box projection
     vec4 env_box_min;  // the room the map shows, for box projection
@@ -1208,6 +1209,7 @@ void main() {
     g_base = vec4(color.rgb, color.a);
     bool baked = (fl & 16) != 0;
     if ((fl & 1) != 0 && !baked) g_base.rgb *= v_color;
+    vec3 map_rgb = vec3(1.0);
     // parallax_map: where the view ray meets the height map, for all of the material's maps
     g_uv = v_uv;
     g_duvdx = dFdx(v_uv);
@@ -1220,7 +1222,11 @@ void main() {
         float pd = length(pv);
         parallax_offset(pn, pv / max(pd, 1e-5), pd);
     }
-    if (tex_params.x > 0.5) g_base *= textureGrad(sampler2D(tex_map, tex_smp), g_uv, g_duvdx, g_duvdy);  // (parallax: g_uv)
+    if (tex_params.x > 0.5) {
+        vec4 texel = textureGrad(sampler2D(tex_map, tex_smp), g_uv, g_duvdx, g_duvdy);  // (parallax: g_uv)
+        g_base *= texel;
+        map_rgb = texel.rgb;
+    }
     float alpha = g_base.a;
     if ((fl & 1) != 0) alpha *= v_alpha;
 #ifdef NO_DISCARD
@@ -1353,7 +1359,8 @@ void main() {
             outc += direct(mode, n, v, l, d, radiance, diffuse_color, spec);
         }
         spec *= ao;
-        outc += emissive.rgb;
+        // Material.map_emissive: the color map glows too
+        outc += (fl & 64) != 0 ? emissive.rgb * map_rgb : emissive.rgb;
         // light baked into the vertex colors, as if from fixed lamps
         if (baked) {
             vec3 b = diffuse_color * v_color * emissive.w * ao;

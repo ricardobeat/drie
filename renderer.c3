@@ -1839,8 +1839,8 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     sg::apply_uniforms(UB_VS_PARAMS, &&{ .ptr = &vs, .size = VsParams::size });
 
     int flags = (mat.vertex_colors ? 1 : 0) | (mat.foliage ? 2 : 0) | (m.receive_shadow ? 4 : 0) | (mat.glass ? 8 : 0)
-              | (mat.vertex_light > 0 ? 16 : 0) | (mat.screen_target ? 32 : 0);
-    fs.color = { ...color_to_linear(mat.color), mat.opacity };
+              | (mat.vertex_light > 0 ? 16 : 0) | (mat.screen_target ? 32 : 0) | (mat.map_emissive ? 64 : 0);
+    fs.color = { ...color_to_linear(mat.color) * (mat.color_scale > 0 ? mat.color_scale : 1), mat.opacity };
     fs.emissive = { ...color_to_linear(mat.emissive) * mat.emissive_intensity, mat.vertex_light };
     if (r.render_target)
     {
@@ -2058,6 +2058,7 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera)
     if (!camera.custom_projection) camera.update_projection_matrix();
 
     if (!scene.no_matrix_world_update) scene.update_matrix_world();
+    state.scene = scene;
     // cameras don't have to be part of the scene
     if (!camera.parent) camera.update_matrix_world();
     camera.matrix_world_inverse = camera.matrix_world.invert();
@@ -2256,7 +2257,9 @@ alias EnvFaceFn = fn void(Camera* camera);
 alias EnvDistanceFn = fn float(Vector3 origin, Vector3 dir);
 
 // Renders the scene in every direction from `position`, like a light probe, into an
-// equirectangular texture for Material.env_map. Needs the GPU (call it from a frame, or after
+// equirectangular texture for Material.env_map or Scene.environment. With `hdr` the scene is
+// rendered in linear light, without tone mapping, into a half-float texture: light brighter
+// than white keeps its brightness (three's PMREMGenerator.fromScene). Needs the GPU (call it from a frame, or after
 // init_headless) and reads the result back, so do it once at load, not every frame.
 // With `distance` (the application's own ray caster) the map also holds how far away each
 // direction's surface is, up to `distance_range` meters. A box-projected material then follows
@@ -2265,17 +2268,18 @@ alias EnvDistanceFn = fn float(Vector3 origin, Vector3 dir);
 fn Texture* Renderer.capture_environment(&self, Scene* scene, Vector3 position, int face_size = 256,
                                          int width = 1024, float near = 0.05, float far = 100,
                                          EnvFaceFn on_face = null, EnvDistanceFn distance = null,
-                                         float distance_range = 16)
+                                         float distance_range = 16, bool hdr = false)
 {
     Vector3[6] fwd = { { 1, 0, 0 }, { -1, 0, 0 }, { 0, 1, 0 }, { 0, -1, 0 }, { 0, 0, 1 }, { 0, 0, -1 } };
     Vector3[6] ups = { { 0, 1, 0 }, { 0, 1, 0 }, { 0, 0, -1 }, { 0, 0, 1 }, { 0, 1, 0 }, { 0, 1, 0 } };
     Vector3[6] rights;
-    RenderTarget* rt = render_target(face_size, face_size, 1);
+    RenderTarget* rt = render_target(face_size, face_size, 1, hdr ? SgPixelFormat.RGBA16F : SgPixelFormat.RGBA8);
+    int pixel_bytes = hdr ? 8 : 4;
     PerspectiveCamera* cam = perspective_camera(90, 1, near, far);
     RenderTarget* prev_target = self.render_target;
     bool prev_auto = self.auto_aspect;
     self.auto_aspect = false;
-    usz face_bytes = (usz)face_size * (usz)face_size * 4;
+    usz face_bytes = (usz)face_size * (usz)face_size * (usz)pixel_bytes;
     char[] faces = mem::new_array(char, (sz)face_bytes * 6);
     defer free(faces);
     for (int i = 0; i < 6; i++)
@@ -2291,7 +2295,7 @@ fn Texture* Renderer.capture_environment(&self, Scene* scene, Vector3 position, 
         self.render(scene, cam);
         commit();
         readback::read_image(rt.texture_image, face_size, face_size,
-                               &faces[face_bytes * (usz)i]);
+                               &faces[face_bytes * (usz)i], pixel_bytes);
     }
     self.set_render_target(prev_target);
     self.auto_aspect = prev_auto;
@@ -2301,8 +2305,21 @@ fn Texture* Renderer.capture_environment(&self, Scene* scene, Vector3 position, 
 
     // resample the six faces into longitude/latitude
     int height = width / 2;
-    char[] px = mem::new_array(char, (sz)width * height * 4);
-    defer free(px);
+    char[] px;
+    float[] fpx;
+    if (hdr)
+    {
+        fpx = mem::new_array(float, (sz)width * height * 4);
+    }
+    else
+    {
+        px = mem::new_array(char, (sz)width * height * 4);
+    }
+    defer
+    {
+        free(px);
+        free(fpx);
+    }
     for (int y = 0; y < height; y++)
     {
         float phi = ((float)y + 0.5f) / height * PI;
@@ -2325,14 +2342,23 @@ fn Texture* Renderer.capture_environment(&self, Scene* scene, Vector3 position, 
             float fy = d.dot(ups[best]) / best_dot;
             int sx = math::clamp((int)((fx * 0.5f + 0.5f) * face_size), 0, face_size - 1);
             int sy = math::clamp((int)((0.5f - fy * 0.5f) * face_size), 0, face_size - 1);
-            usz src = face_bytes * (usz)best + ((usz)sy * (usz)face_size + (usz)sx) * 4;
+            usz src = face_bytes * (usz)best + ((usz)sy * (usz)face_size + (usz)sx) * (usz)pixel_bytes;
             usz dst = ((usz)y * (usz)width + (usz)x) * 4;
-            px[dst:3] = faces[src:3];
-            px[dst + 3] = 255;
-            if (distance) px[dst + 3] = (char)(math::clamp(distance(position, d) / distance_range, 0.0f, 1.0f) * 255 + 0.5f);
+            float far_part = distance ? math::clamp(distance(position, d) / distance_range, 0.0f, 1.0f) : 1;
+            if (hdr)
+            {
+                ushort* h = (ushort*)&faces[src];
+                for (usz c = 0; c < 3; c++) fpx[dst + c] = half_to_float(h[c]);
+                fpx[dst + 3] = far_part;
+            }
+            else
+            {
+                px[dst:3] = faces[src:3];
+                px[dst + 3] = (char)(far_part * 255 + 0.5f);
+            }
         }
     }
-    Texture* map = data_texture(px, width, height);
+    Texture* map = hdr ? float_texture(fpx, width, height) : data_texture(px, width, height);
     if (distance) map.env_distance_range = distance_range;
     return map;
 }

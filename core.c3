@@ -417,6 +417,7 @@ fn Scene* scene()
 {
     Scene* s = mem::new(Scene);
     s.init(SCENE);
+    s.environment_intensity = 1;
     return s;
 }
 
