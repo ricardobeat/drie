@@ -65,7 +65,11 @@ struct RadianceCascades
     // two numbers per voxel: rgb8 color and bit 24 = solid; the glow as rgb8 with an exponent
     uint[] voxels;
     bool voxels_changed;
+    // one ray in this many is traced each frame (1: all of them; more is cheaper and slower
+    // to follow a change)
+    int update_every;
     StorageBuffer* voxel_buf;
+    StorageBuffer* brick_buf;
     StorageBuffer* cascade_buf;
     StorageBuffer* irradiance_buf;
     StorageBuffer* light_buf;
@@ -91,6 +95,7 @@ fn RadianceCascades* radiance_cascades(Vector3 min, Vector3 max, float spacing =
         .interval = spacing,
         .voxel_size = spacing / 4,
         .blend = 0.1,
+        .update_every = 1,
         .intensity = 1,
         .bounce = 1,
         .sky_from_scene = true,
@@ -115,6 +120,7 @@ fn RadianceCascades* radiance_cascades(Vector3 min, Vector3 max, float spacing =
     r.irradiance_buf = storage_buffer((sz)r.nx * r.ny * r.nz * 6 * 16, label: "three-rc-irradiance");
     r.light_buf = storage_buffer(RC_MAX_LIGHTS * RcLight::size, cpu_write: true, label: "three-rc-lights");
     r.voxel_buf = storage_buffer(16, label: "three-rc-voxels");
+    r.brick_buf = storage_buffer(16, label: "three-rc-bricks");
     SgBackend backend = sg::query_backend();
     r.trace = compute_pass(rc_trace_shader_desc(backend), "three-rc-trace");
     r.gather = compute_pass(rc_gather_shader_desc(backend), "three-rc-gather");
@@ -195,15 +201,27 @@ fn void RadianceCascades.add_triangle(&self, Vector3 a, Vector3 b, Vector3 c, Ve
     }
 }
 
-// Adds a mesh as it stands now (its world matrix must be up to date). See-through and hidden
-// materials are left out; an unlit one (MeshBasicMaterial) glows with its color. `albedo`
-// scales the material's color (for a texture much darker than white, say).
+// Whether a sphere of the mesh's geometry under `m` touches the box.
+fn bool RadianceCascades.touches(&self, BufferGeometry* g, Mat4 m)
+{
+    Vector3 c = m.transform_point(g.bounds_center);
+    float scale = math::max(((Vector3){ m[0][0], m[0][1], m[0][2] }).length(),
+                            math::max(((Vector3){ m[1][0], m[1][1], m[1][2] }).length(), ((Vector3){ m[2][0], m[2][1], m[2][2] }).length()));
+    return self.reaches(c, g.bounds_radius * scale + 1e-3f);
+}
+
+// Adds a mesh as it stands now (its world matrix must be up to date). See-through, cut-out
+// and hidden materials are left out; an unlit one (MeshBasicMaterial) glows with its color.
+// The color is the material's times its map's average. `albedo_scale` scales it.
 fn void RadianceCascades.add_mesh(&self, Mesh* mesh, Vector3 albedo_scale = { 1, 1, 1 })
 {
     Material* mat = mesh.material;
     BufferGeometry* g = mesh.geometry;
-    if (!mat || !g || !mat.visible || mat.transparent || mat.opacity < 1) return;
+    if (!mat || !g || !mat.visible || mat.transparent || mat.opacity < 1 || mat.alpha_test > 0 || mat.glass) return;
+    if (g.bounds_radius <= 0) g.compute_bounding_sphere();
+    if (mesh.instance_count <= 0 && !self.touches(g, mesh.matrix_world)) return;
     Vector3 albedo = color_to_linear(mat.color) * albedo_scale;
+    if (mat.map) albedo = albedo * mat.map.average_color();
     Vector3 glow = color_to_linear(mat.emissive) * mat.emissive_intensity;
     if (mat.type == BASIC)
     {
@@ -225,6 +243,7 @@ fn void RadianceCascades.add_mesh(&self, Mesh* mesh, Vector3 albedo_scale = { 1,
                 for (int col = 0; col < 4; col++) im[col][r] = row[r * 4 + col];
             }
             m = m.mul(im);
+            if (!self.touches(g, m)) continue;
         }
         for (sz i = 0; i + 2 < count; i += 3)
         {
@@ -325,6 +344,20 @@ fn void RadianceCascades.update(&self, Scene* scene)
     if (self.voxels_changed)
     {
         self.voxel_buf.write(self.voxels.ptr, (sz)self.voxels.len * uint::size);
+        // the solid voxels in each block of 4 x 4 x 4, for the rays to skip the empty ones
+        uint[] bricks = mem::new_array(uint, (sz)self.nx * self.ny * self.nz);
+        defer free(bricks);
+        for (int z = 0; z < self.vz; z++)
+        {
+            for (int y = 0; y < self.vy; y++)
+            {
+                for (int x = 0; x < self.vx; x++)
+                {
+                    if (self.voxels[(((sz)z * self.vy + y) * self.vx + x) * 2]) bricks[((sz)(z / 4) * self.ny + y / 4) * self.nx + x / 4]++;
+                }
+            }
+        }
+        self.brick_buf.write(bricks.ptr, (sz)bricks.len * uint::size);
         self.voxels_changed = false;
     }
     RcLightList* list = mem::new(RcLightList);
@@ -339,15 +372,17 @@ fn void RadianceCascades.update(&self, Scene* scene)
     }
     self.light_buf.write(&list.lights, (sz)math::max(list.count, 1) * RcLight::size);
 
+    int every = math::max(self.update_every, 1);
+    int turn = self.frame / every;
     RcParams p = {
         .rc_min = { ...self.min, self.spacing },
         .rc_dims = { self.nx, self.ny, self.nz, 0 },
         // the first frames take all of what they find, so that it doesn't start from black
-        .rc_tune = { self.interval, math::max(self.blend, 1.0f / (float)(self.frame + 1)), (float)(self.frame % 4096), self.voxel_size },
+        .rc_tune = { self.interval, math::max(self.blend, 1.0f / (float)(turn + 1)), (float)(self.frame % 4096), self.voxel_size },
         .rc_info = { self.base_directions, self.levels, list.count, 0 },
         .rc_sky = { ...self.sky_color, self.bounce },
         .rc_ground = { ...self.ground_color, 0 },
-        .rc_vox = { self.vx, self.vy, self.vz, 0 },
+        .rc_vox = { self.vx, self.vy, self.vz, every },
     };
     for (int l = 0; l < self.levels; l++)
     {
@@ -365,8 +400,10 @@ fn void RadianceCascades.update(&self, Scene* scene)
     t.set_buffer(VIEW_RC_CASCADES, self.cascade_buf);
     t.set_buffer(VIEW_RC_IRRADIANCE, self.irradiance_buf);
     t.set_buffer(VIEW_RC_LIGHTS, self.light_buf);
+    t.set_buffer(VIEW_RC_BRICKS, self.brick_buf);
     ComputePass* g = self.gather;
     g.set_buffer(VIEW_RC_VOXELS, self.voxel_buf);
+    g.set_buffer(VIEW_RC_BRICKS, self.brick_buf);
     g.set_buffer(VIEW_RC_GATHER_CASCADES, self.cascade_buf);
     g.set_buffer(VIEW_RC_GATHER_IRRADIANCE, self.irradiance_buf);
     // each cascade in a pass of its own: it reads what the one above just wrote
@@ -376,7 +413,7 @@ fn void RadianceCascades.update(&self, Scene* scene)
         p.rc_info[3] = self.counts[l];
         t.set_uniforms(UB_RC_PARAMS, &p, RcParams::size);
         begin_compute("three-rc-trace");
-        t.dispatch((self.counts[l] + 63) / 64);
+        t.dispatch(((self.counts[l] + every - 1) / every + 63) / 64);
         end_compute();
     }
     g.set_uniforms(UB_RC_PARAMS, &p, RcParams::size);
@@ -395,6 +432,7 @@ fn void RadianceCascades.reset(&self)
 fn void RadianceCascades.dispose(&self)
 {
     self.voxel_buf.dispose();
+    self.brick_buf.dispose();
     self.cascade_buf.dispose();
     self.irradiance_buf.dispose();
     self.light_buf.dispose();

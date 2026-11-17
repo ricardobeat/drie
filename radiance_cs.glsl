@@ -23,7 +23,7 @@ layout(binding=0) uniform rc_params {
     ivec4 rc_info;    // x = directions across cascade 0's square, y = cascades, z = lights, w = rays of this cascade
     vec4 rc_sky;      // rgb = the sky's radiance overhead, w = the bounce's strength
     vec4 rc_ground;   // rgb = the sky's radiance from below
-    ivec4 rc_vox;     // xyz = voxels
+    ivec4 rc_vox;     // xyz = voxels, w = one ray in this many is traced each frame
     ivec4 rc_off0;    // where cascades 0..3 start in rc_rad
     ivec4 rc_off1;    // 4..7
 };
@@ -34,7 +34,11 @@ struct rc_voxel {
 struct rc_texel {
     vec4 v;
 };
+struct rc_brick {
+    uint solid;       // the solid voxels in a block of 4 x 4 x 4 (a cell of cascade 0)
+};
 layout(binding=0) readonly buffer rc_voxels { rc_voxel rc_vox_data[]; };
+layout(binding=4) readonly buffer rc_bricks { rc_brick rc_brick_data[]; };
 
 const float RC_PI = 3.14159265;
 
@@ -83,9 +87,11 @@ layout(local_size_x=64) in;
 
 // Follows the ray through the voxels for up to `reach` meters. 0: nothing in the way, 1: hit
 // (t, the voxel and the face it came in through), 2: left the box, 3: started inside something.
+// Blocks of 4 x 4 x 4 voxels with nothing in them are crossed in one step.
 int rc_march(vec3 ro, vec3 rd, float reach, out float t_hit, out ivec3 cell, out vec3 face) {
     float vs = rc_tune.w;
     vec3 g = (ro - rc_min.xyz) / vs;
+    float reach_v = reach / vs;
     ivec3 c = ivec3(floor(g));
     t_hit = 0.0;
     cell = c;
@@ -94,22 +100,36 @@ int rc_march(vec3 ro, vec3 rd, float reach, out float t_hit, out ivec3 cell, out
     if (rc_solid(c)) return 3;
     vec3 inv = 1.0 / max(abs(rd), vec3(1e-6));
     ivec3 stp = ivec3(rd.x >= 0.0 ? 1 : -1, rd.y >= 0.0 ? 1 : -1, rd.z >= 0.0 ? 1 : -1);
-    vec3 delta = vs * inv;
-    vec3 next = abs(vec3(c) + vec3(greaterThan(stp, ivec3(0))) - g) * vs * inv;
-    for (int i = 0; i < 640; i++) {
-        int axis = next.x < next.y ? (next.x < next.z ? 0 : 2) : (next.y < next.z ? 1 : 2);
-        float t = next[axis];
-        if (t > reach) return 0;
-        c[axis] += stp[axis];
-        if (!rc_in_grid(c)) return 2;
+    vec3 ahead = vec3(greaterThan(stp, ivec3(0)));
+    // how far along the ray (in voxels) the next voxel starts, on each axis
+    vec3 next = abs(vec3(c) + ahead - g) * inv;
+    for (int i = 0; i < 400; i++) {
+        ivec3 bc = c >> 2;
+        int axis;
+        float t;
+        if (rc_brick_data[(bc.z * rc_dims.y + bc.y) * rc_dims.x + bc.x].solid == 0u) {
+            vec3 leave = abs(vec3(bc * 4) + ahead * 4.0 - g) * inv;
+            axis = leave.x < leave.y ? (leave.x < leave.z ? 0 : 2) : (leave.y < leave.z ? 1 : 2);
+            t = leave[axis];
+            if (t > reach_v) return 0;
+            c = clamp(ivec3(floor(g + rd * t)), bc * 4, bc * 4 + 3);
+            c[axis] = bc[axis] * 4 + (stp[axis] > 0 ? 4 : -1);
+            if (!rc_in_grid(c)) return 2;
+            next = abs(vec3(c) + ahead - g) * inv;
+        } else {
+            axis = next.x < next.y ? (next.x < next.z ? 0 : 2) : (next.y < next.z ? 1 : 2);
+            t = next[axis];
+            if (t > reach_v) return 0;
+            c[axis] += stp[axis];
+            if (!rc_in_grid(c)) return 2;
+            next[axis] += inv[axis];
+        }
         if (rc_solid(c)) {
-            t_hit = t;
+            t_hit = t * vs;
             cell = c;
-            face = vec3(0.0);
             face[axis] = -float(stp[axis]);
             return 1;
         }
-        next[axis] += delta[axis];
     }
     return 0;
 }
@@ -158,7 +178,9 @@ uint rc_hash(uint x) {
 }
 
 void main() {
-    int i = int(gl_GlobalInvocationID.x);
+    // a different ray of each run of rc_vox.w every frame
+    int turn = int(gl_GlobalInvocationID.x);
+    int i = turn * rc_vox.w + (turn + int(rc_tune.z)) % rc_vox.w;
     if (i >= rc_info.w) return;
     int level = rc_dims.w;
     int d = rc_info.x << level;
@@ -198,7 +220,15 @@ void main() {
         // just outside the face the ray came in through
         vec3 hp = pos + rd * (t0 + t_hit) + face * (0.5 * rc_tune.w);
         vec3 arriving = rc_bounce(hp, face) * rc_sky.w;
+        // one of the lights that reach it, picked by how much each would give (a shadow ray
+        // to every one costs too much); over the frames it comes to the same
         int nl = rc_info.z;
+        float total = 0.0;
+        vec3 picked = vec3(0.0);
+        float picked_w = 0.0;
+        vec3 picked_dir = vec3(0.0);
+        float picked_dist = 0.0;
+        uint seed = h;
         for (int l = 0; l < nl; l++) {
             rc_light lt = rc_light_data[l];
             vec3 lv = lt.pos.xyz - hp;
@@ -212,11 +242,23 @@ void main() {
                 cone = smoothstep(lt.dir.w, lt.params.x, dot(-ld, lt.dir.xyz));
                 if (cone <= 0.0) continue;
             }
+            vec3 gives = lt.color.rgb * (ndl * cone * rc_attenuation(dist, lt.pos.w, lt.color.w));
+            float w = max(gives.r, max(gives.g, gives.b));
+            if (w <= 0.0) continue;
+            total += w;
+            seed = rc_hash(seed + uint(l) * 747796405u + 1u);
+            if (float(seed >> 8) / 16777216.0 * total < w) {
+                picked = gives;
+                picked_w = w;
+                picked_dir = ld;
+                picked_dist = dist;
+            }
+        }
+        if (picked_w > 0.0) {
             float st;
             ivec3 sc;
             vec3 sf;
-            if (rc_march(hp, ld, dist - rc_tune.w, st, sc, sf) == 1) continue;
-            arriving += lt.color.rgb * (ndl * cone * rc_attenuation(dist, lt.pos.w, lt.color.w));
+            if (rc_march(hp, picked_dir, picked_dist - rc_tune.w, st, sc, sf) != 1) arriving += picked * (total / picked_w);
         }
         light += albedo * arriving / RC_PI;
         result = vec4(light, 0.0);
