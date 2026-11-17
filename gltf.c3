@@ -124,7 +124,7 @@ fn Texture*? GltfReader.texture(&self, Object* info, ColorSpace space)
     {
         @pool()
         {
-            t = load_texture(string::tformat("%s%s", self.dir, image.get_string("uri")!), space);
+            t = load_texture(string::tformat("%s%s", self.dir, image.get_string("uri")!), space, flip_y: false);
         };
     }
     else
@@ -133,7 +133,7 @@ fn Texture*? GltfReader.texture(&self, Object* info, ColorSpace space)
         sz offset = (sz)num(view, "byteOffset", 0);
         sz len = view.get_int("byteLength")!;
         if (offset + len > self.bin.len) return GLTF_INVALID~;
-        t = decode_texture(self.bin[offset:len], space)!;
+        t = decode_texture(self.bin[offset:len], space, flip_y: false)!;
     }
     self.textures[image_index][slot] = t;
     return t;
