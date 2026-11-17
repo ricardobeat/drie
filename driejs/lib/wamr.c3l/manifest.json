@@ -10,6 +10,61 @@
             "link-args": [
                 "third_party/wamr-build/libiwasm.a"
             ]
+        },
+        "macos-x64": {
+            "cflags-override": "-O2 -DNDEBUG -mmacos-version-min=14.0 -Ithird_party/wamr/core/iwasm/include",
+            "c-sources-override": [
+                "wamr_glue.c"
+            ],
+            "link-args": [
+                "third_party/wamr-build/libiwasm.a"
+            ]
+        },
+        "linux-x64": {
+            "cflags-override": "-O2 -DNDEBUG -Ithird_party/wamr/core/iwasm/include",
+            "c-sources-override": [
+                "wamr_glue.c"
+            ],
+            "link-args": [
+                "third_party/wamr-build/libiwasm.a"
+            ],
+            "linked-libraries": [
+                "pthread",
+                "m",
+                "dl"
+            ]
+        },
+        "linux-aarch64": {
+            "cflags-override": "-O2 -DNDEBUG -Ithird_party/wamr/core/iwasm/include",
+            "c-sources-override": [
+                "wamr_glue.c"
+            ],
+            "link-args": [
+                "third_party/wamr-build/libiwasm.a"
+            ],
+            "linked-libraries": [
+                "pthread",
+                "m",
+                "dl"
+            ]
+        },
+        "windows-x64": {
+            "cflags-override": "-O2 -DNDEBUG -Ithird_party/wamr/core/iwasm/include",
+            "c-sources-override": [
+                "wamr_glue.c"
+            ],
+            "link-args": [
+                "third_party/wamr-build/iwasm.lib"
+            ]
+        },
+        "windows-aarch64": {
+            "cflags-override": "-O2 -DNDEBUG -Ithird_party/wamr/core/iwasm/include",
+            "c-sources-override": [
+                "wamr_glue.c"
+            ],
+            "link-args": [
+                "third_party/wamr-build/iwasm.lib"
+            ]
         }
     }
 }

@@ -60,21 +60,28 @@ deps: boomkat wamr three assets
 boomkat:
     [ -d lib/boomkat.c3l ] || c3c project fetch ricardobeat/boomkat
 
-# WAMR 2.4.5 (WebAssembly for js/wasm.js): its fast interpreter, as a static library
+# WAMR 2.4.5 (WebAssembly for js/wasm.js): its fast interpreter, as a static library in
+# third_party/wamr-build (libiwasm.a, or iwasm.lib on Windows)
 [private]
 wamr:
-    #!/bin/sh
+    #!/usr/bin/env bash
     set -e
-    [ -f third_party/wamr-build/libiwasm.a ] && exit 0
+    case "{{os()}}" in macos) platform=darwin ;; windows) platform=windows ;; *) platform=linux ;; esac
+    case "{{arch()}}" in aarch64) target=AARCH64 ;; *) target=X86_64 ;; esac
+    lib=third_party/wamr-build/libiwasm.a; [ $platform = windows ] && lib=third_party/wamr-build/iwasm.lib
+    [ -f $lib ] && exit 0
     [ -d third_party/wamr ] || git clone -q --depth 1 --branch WAMR-2.4.5 \
         https://github.com/bytecodealliance/wasm-micro-runtime.git third_party/wamr
-    cmake -S third_party/wamr/product-mini/platforms/darwin -B third_party/wamr-build \
-        -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0 -DWAMR_BUILD_TARGET=AARCH64 \
+    cmake -S third_party/wamr/product-mini/platforms/$platform -B third_party/wamr-build \
+        -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0 -DWAMR_BUILD_TARGET=$target \
         -DWAMR_BUILD_INTERP=1 -DWAMR_BUILD_FAST_INTERP=1 -DWAMR_BUILD_AOT=0 -DWAMR_BUILD_JIT=0 \
         -DWAMR_BUILD_FAST_JIT=0 -DWAMR_BUILD_LIBC_BUILTIN=0 -DWAMR_BUILD_LIBC_WASI=0 \
         -DWAMR_BUILD_SIMD=0 -DWAMR_BUILD_BULK_MEMORY=1 -DWAMR_BUILD_REF_TYPES=1 \
         -DWAMR_BUILD_MULTI_MODULE=0 > /dev/null
-    cmake --build third_party/wamr-build --target vmlib -j8 > /dev/null
+    cmake --build third_party/wamr-build --config Release --target vmlib -j8 > /dev/null
+    # the library's name and folder differ by generator: copy it where wamr.c3l links it
+    built=$(find third_party/wamr-build -name libiwasm.a -o -name iwasm.lib -o -name vmlib.lib -o -name libvmlib.a | head -1)
+    [ "$built" = "$lib" ] || cp "$built" $lib
 
 # three.js into vendor/: three.core.js, three.module.js, and examples/jsm as jsm/ (three/addons/...)
 [private]
