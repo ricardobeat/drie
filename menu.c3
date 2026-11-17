@@ -382,6 +382,10 @@ fn void Fade.update(&self, float dt) {
 // Overlay
 // ----------------------------------------------------------------------------
 
+// The alpha-blending sgl pipeline the menus draw with (after setup()), for overlays of the
+// application's that draw translucent shapes.
+fn SglPipeline blend_pipeline() => ui.blend;
+
 fn void ui_rect(float x, float y, float w, float h, float r, float g, float b, float a) @local {
     sgl::begin_quads();
     sgl::c4f(r, g, b, a);

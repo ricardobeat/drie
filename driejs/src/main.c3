@@ -853,21 +853,43 @@ fn void draw_stats()
 {
     ui::setup();
     float h = sapp::heightf();
-    float scale = math::max(1.0f, math::round(h / 360));
+    // about 720 canvas units high: half the size of the menu text
+    float scale = math::max(1.0f, math::round(h / 720));
     sdtx::set_context(sdtx::default_context());
     sdtx::canvas(sapp::widthf() / scale, h / scale);
-    sdtx::origin(0.5f, 0.5f);
-    sdtx::font(ui::FONT_KC853);
+    sdtx::font(ui::FONT_ORIC);
+    // before the first second (FPS) or frame (MS) there is no value yet: 0 until then
     double[6] v = stats_values;
-    if (v[0] >= 0)
-    {
-        sdtx::color3b(0, 255, 255);
-        sdtx::puts(string::tformat_zstr("%d FPS (%d-%d)\n", (int)math::round(v[0]), (int)math::round(v[1]),
-                                        (int)math::round(v[2])));
-    }
-    sdtx::color3b(0, 255, 0);
-    sdtx::puts(string::tformat_zstr("%d MS (%d-%d)", (int)math::round(v[3]), (int)math::round(v[4]),
-                                    (int)math::round(v[5])));
+    foreach (&x : v) if (*x < 0) *x = 0;
+    ZString fps = string::tformat_zstr("%d FPS (%d-%d)", (int)math::round(v[0]), (int)math::round(v[1]),
+                                       (int)math::round(v[2]));
+    ZString ms = string::tformat_zstr("%d MS (%d-%d)", (int)math::round(v[3]), (int)math::round(v[4]),
+                                      (int)math::round(v[5]));
+    // a 50% black box behind the text, with a glyph's half-width of padding
+    float cw = sapp::widthf() / scale;
+    float ch = h / scale;
+    float bw = (float)(math::max(fps.len(), ms.len()) + 1) * 8;
+    sgl::set_context(sgl::default_context());
+    sgl::defaults();
+    sgl::load_pipeline(ui::blend_pipeline());
+    sgl::matrix_mode_projection();
+    sgl::ortho(0, cw, ch, 0, -1, 1);
+    sgl::begin_quads();
+    sgl::c4f(0, 0, 0, 0.5f);
+    sgl::v2f(0, 0);
+    sgl::v2f(bw, 0);
+    sgl::v2f(bw, 3.25f * 8);
+    sgl::v2f(0, 3.25f * 8);
+    sgl::end();
+    sgl::draw();
+
+    sdtx::origin(0.5f, 0.5f);
+    sdtx::color3b(255, 216, 102);
+    sdtx::puts(fps);
+    // the second line a quarter of a glyph lower than the next row
+    sdtx::pos(0, 1.25f);
+    sdtx::color3b(120, 220, 232);
+    sdtx::puts(ms);
     sdtx::draw();
 }
 
