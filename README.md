@@ -43,7 +43,7 @@ Add `drie` to your `project.json`:
 
 <img width="506" height="344" alt="drie" src="https://github.com/user-attachments/assets/48b1cb90-3be4-40dd-8bb0-26cfa9bc8113" />
 
-## driejs: Running three.js code natively
+## three.js compatibility / JS bridge
 
 [driejs](driejs/README.md) can run unmodified three.js code (`three.core.js`) using an embedded [boomkat](https://github.com/ricardobeat/boomkat) JS engine, with `drie` as the rendered backend. Scripts can import `three` and `three/addons/...` as they would in a browser.
 
