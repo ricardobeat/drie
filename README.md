@@ -2,21 +2,6 @@
 
 A small three.js-style scene graph on top of [`sokol_gfx`](https://github.com/floooh/sokol-c3), written in [C3](https://c3-lang.org).
 
-## Three.js compatibility
-
-[driejs](driejs/README.md) runs unmodified three.js code (`three.core.js`) using the [boomkat](https://github.com/ricardobeat/boomkat) JS engine, with `drie` as the rendered backend. Scripts can import `three` and `three/addons/...` as they would in a browser.
-
-It is a standalone project inside `driejs/` and is not compiled into applications that use `drie` as a library.
-
-```sh
-just driejs::build
-just driejs::run demos/webgl_geometries.js
-```
-
-See [driejs/README.md](driejs/README.md) for setup, offscreen rendering, and benchmarks.
-
-## Using with C3
-
 ```c3
 import drie;
 
@@ -56,17 +41,24 @@ Add `drie` to your `project.json`:
 ]
 ```
 
-## Translating from three.js
+<img width="506" height="344" alt="drie" src="https://github.com/user-attachments/assets/48b1cb90-3be4-40dd-8bb0-26cfa9bc8113" />
 
-| three.js | three.c3 |
-| --- | --- |
-| `new THREE.Mesh(geo, mat)` | `drie::mesh(geo, mat)` |
-| `new THREE.BoxGeometry(1, 2, 3)` | `drie::box_geometry(1, 2, 3)` |
-| `new THREE.MeshStandardMaterial({ color: 0xff0000, roughness: 0.5 })` | `drie::mesh_standard_material(color: 0xff0000, roughness: 0.5)` |
-| `THREE.DoubleSide` | `DOUBLE_SIDE` |
+## driejs: Running three.js code natively
 
-And so on. Rules of thumb: `camelCase` becomes `snake_case`, `new THREE.X(...)` becomes `drie::x(...)`,
-and parameter objects become named arguments.
+[driejs](driejs/README.md) can run unmodified three.js code (`three.core.js`) using an embedded [boomkat](https://github.com/ricardobeat/boomkat) JS engine, with `drie` as the rendered backend. Scripts can import `three` and `three/addons/...` as they would in a browser.
+
+It is a standalone project inside `driejs/` and is not compiled into applications that use `drie` as a library.
+
+```sh
+just driejs::build
+just driejs::run demos/webgl_geometries.js
+```
+
+Here is three.js "Littlest Tokyo" example running unaltered (`demos/webgl_animation_keyframes.js`):
+
+<img width="1392" height="860" alt="Screenshot 2026-11-17 at 19 13 26" src="https://github.com/user-attachments/assets/dacd8f64-0c9a-480a-a1e6-66f06517b23d" />
+
+See [driejs/README.md](driejs/README.md) for more.
 
 ## Features
 
@@ -109,7 +101,15 @@ three.js API coverage:
 - Shaders are built for Metal, GL 4.3 and D3D11, but the library has only been tested on macOS/Metal. `./build.sh windows` cross-compiles a
   D3D11 build for Windows.
 
-## Extensions
+### Extensions
+
+When used directly via C3, more advanced lighting features are available (see full list below).
+
+A lot of these are in-development for three.js, see [Building the AAA Lighting Pipeline in Three.js](https://ben3d.ca/blog/building-the-aaa-lighting-pipeline-in-threejs).
+
+*left: three.js, right: drie*
+
+<img width="986" height="870" alt="image" src="https://github.com/user-attachments/assets/cae64b53-40e1-4fb5-97b2-e05e57f51ec5" />
 
 Features not in three.js:
 
@@ -243,6 +243,10 @@ Features not in three.js:
 | Profiling | `profile::enabled = true`, `profile::start()`, `profile::stop(name, t)`, `profile::report(frames)` | — |
 
 </details>
+
+## Performance
+
+TBD. Currently the demo, with all advanced features on, runs at 40-60FPS on a Macbook Air M3.
 
 ## Editing the shader
 
