@@ -48,18 +48,25 @@ struct RenderTarget
     //                     drawn with MRT, in texture coordinates (uv now - uv then), with the
     //                     camera's motion and each mesh's; instances and skinned vertices are
     //                     taken to stand still
-    // Set it before the first set_size. See-through materials write neither.
+    //   indirect_texture  RG8: the share of the pixel's light that is indirect, r = diffuse
+    //                     (ambient, hemisphere, irradiance volume, baked vertex light), g =
+    //                     specular (environment map and screen-space reflections): what ambient
+    //                     occlusion darkens (GTAOPass in postprocessing.c3)
+    // Set it before the first set_size. See-through materials write none of them.
     bool mrt;
-    SgImage[2] mrt_color;
-    SgImage[2] mrt_resolve;
-    SgView[2] mrt_color_view;
-    SgView[2] mrt_resolve_view;
+    SgImage[MRT_COUNT] mrt_color;
+    SgImage[MRT_COUNT] mrt_resolve;
+    SgView[MRT_COUNT] mrt_color_view;
+    SgView[MRT_COUNT] mrt_resolve_view;
     SgView normal_texture;
     SgView velocity_texture;
+    SgView indirect_texture;
 }
 
-// The pixel formats of RenderTarget.mrt's extra pictures: normal, velocity.
-const SgPixelFormat[2] MRT_FORMATS = { RGBA16F, RG16F };
+// RenderTarget.mrt's extra pictures (after the color, at attachments 1, 2, 3) and their pixel
+// formats: normal, velocity, indirect.
+const int MRT_COUNT = 3;
+const SgPixelFormat[MRT_COUNT] MRT_FORMATS = { RGBA16F, RG16F, RG8 };
 
 // The picture as a Texture, for any material's map, like three's `renderTarget.texture`: a
 // screen in the scene showing what another camera sees, say. It follows set_size. Call it
@@ -126,7 +133,8 @@ fn void RenderTarget.dispose(&self)
     if (self.depth.id) sg::destroy_image(self.depth);
     if (self.normal_texture.id) sg::destroy_view(self.normal_texture);
     if (self.velocity_texture.id) sg::destroy_view(self.velocity_texture);
-    for (int i = 0; i < 2; i++)
+    if (self.indirect_texture.id) sg::destroy_view(self.indirect_texture);
+    for (int i = 0; i < MRT_COUNT; i++)
     {
         if (self.mrt_color_view[i].id) sg::destroy_view(self.mrt_color_view[i]);
         if (self.mrt_resolve_view[i].id) sg::destroy_view(self.mrt_resolve_view[i]);
@@ -177,7 +185,7 @@ fn void RenderTarget.set_size(&self, int width, int height, int samples = 1)
     if (self.mrt)
     {
         if (!self.is_linear()) abort("three: a render target with MRT must be RGBA16F");
-        for (int i = 0; i < 2; i++)
+        for (int i = 0; i < MRT_COUNT; i++)
         {
             self.mrt_color[i] = sg::make_image(&&{
                 .usage = { .color_attachment = true },
@@ -195,13 +203,11 @@ fn void RenderTarget.set_size(&self, int width, int height, int samples = 1)
                 shown = self.mrt_resolve[i];
             }
             SgView view = sg::make_view(&&{ .texture = { .image = shown } });
-            if (i == 0)
+            switch (i)
             {
-                self.normal_texture = view;
-            }
-            else
-            {
-                self.velocity_texture = view;
+                case 0: self.normal_texture = view;
+                case 1: self.velocity_texture = view;
+                default: self.indirect_texture = view;
             }
         }
     }
@@ -216,7 +222,7 @@ fn SgAttachments RenderTarget.attachments(&self)
     if (self.samples > 1) a.resolves[0] = self.resolve_view;
     if (self.mrt)
     {
-        for (int i = 0; i < 2; i++)
+        for (int i = 0; i < MRT_COUNT; i++)
         {
             a.colors[i + 1] = self.mrt_color_view[i];
             if (self.samples > 1) a.resolves[i + 1] = self.mrt_resolve_view[i];
@@ -750,11 +756,11 @@ fn SgPipeline get_pipeline(Side side, bool transparent, bool wireframe, RenderTa
     }
     if (mrt)
     {
-        desc.color_count = 3;
-        for (int i = 0; i < 2; i++)
+        desc.color_count = 1 + MRT_COUNT;
+        for (int i = 0; i < MRT_COUNT; i++)
         {
             desc.colors[i + 1].pixel_format = MRT_FORMATS[i];
-            // what can be seen through leaves the normal and the motion of what is behind it
+            // what can be seen through leaves the normal, motion and light of what is behind it
             if (kind == DEPTH || transparent) desc.colors[i + 1].write_mask = NONE;
         }
     }
@@ -1954,8 +1960,11 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera)
         // kept for RenderTarget.depth_texture
         pass.action.depth = { .load_action = CLEAR, .store_action = STORE, .clear_value = 1 };
         pass.attachments = self.render_target.attachments();
-        // no normal, no motion where nothing is drawn
-        if (self.render_target.mrt) pass.action.colors[1] = pass.action.colors[2] = { .load_action = CLEAR };
+        // no normal, no motion, no indirect light where nothing is drawn
+        if (self.render_target.mrt)
+        {
+            for (int i = 1; i <= MRT_COUNT; i++) pass.action.colors[i] = { .load_action = CLEAR };
+        }
     }
     else
     {
