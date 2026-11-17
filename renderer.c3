@@ -678,6 +678,11 @@ fn void setup_gfx(SgEnvironment environment) @local
         .image_pool_size = 1024,
         .view_pool_size = 4096,
         .sampler_pool_size = 1024,
+        // a pipeline per variant of the material shader that is drawn (get_pipeline: kind,
+        // side, blending, wireframe, target, alpha to coverage; up to 1008), and the passes'.
+        // sokol's default (64) runs out once a scene is drawn into a few kinds of target
+        .pipeline_pool_size = 2048,
+        .shader_pool_size = 256,
     });
     stm::setup();
     state.start_ticks = stm::now();
@@ -886,6 +891,7 @@ fn SgPipeline get_pipeline(Side side, bool transparent, bool wireframe, RenderTa
         };
     }
     *pip = sg::make_pipeline(&desc);
+    if (!pip.id) abort("three: sokol's pipeline pool is full (pipeline_pool_size in setup_gfx)");
     return *pip;
 }
 
