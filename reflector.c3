@@ -12,7 +12,7 @@
 //   renderer.render_reflector(mirror, scene, camera);
 //   renderer.render(scene, camera);
 module three;
-import std::math, std::collections::list, sokol;
+import std::math, sokol;
 
 struct Reflector
 {
@@ -31,6 +31,10 @@ struct Reflector
     float strength;
     // what is this far behind the plane is still drawn (m): a thing standing on it keeps its foot
     float clip_bias;
+    // only what is (partly) inside this box is mirrored (a room's floor need not mirror the
+    // woods outside its windows: they cost as much to draw as in the main view); none when equal
+    Vector3 box_min;
+    Vector3 box_max;
     // draws with the shadow maps the last render left (as they were the frame before) instead of
     // drawing them again from its own viewpoint: much cheaper. On by default
     bool reuse_shadows;
@@ -130,10 +134,6 @@ fn void Renderer.render_reflector(&self, Reflector* reflector, Scene* scene, Per
     mc.projection_matrix = p;
     r.view_proj = p.mul(mc.matrix_world_inverse);
 
-    // the surfaces that show it don't take part (they are on the plane)
-    hiding = r;
-    hidden.clear();
-    scene.traverse(&hide_reflecting);
 
     SgView ssr_color = self.ssr_color;
     SgView ssr_depth = self.ssr_depth;
@@ -143,26 +143,16 @@ fn void Renderer.render_reflector(&self, Reflector* reflector, Scene* scene, Per
     bool shadows = self.shadow_map_auto_update;
     // (the shadow maps as the last frame left them: a frame late in the mirror image)
     self.shadow_map_auto_update = !r.reuse_shadows;
+    // the surfaces that show it don't take part (they are on the plane)
+    self.reflecting = r;
     self.render(scene, mc);
+    self.reflecting = null;
     self.shadow_map_auto_update = shadows;
     self.render_target = main_rt;
     self.ssr_color = ssr_color;
     self.ssr_depth = ssr_depth;
     self.ssr_back = ssr_back;
-    foreach (o : hidden) o.visible = true;
     r.rendered = true;
 }
 
-Reflector* hiding @local;
-List{Object3D*} hidden @local;
 
-fn void hide_reflecting(Object3D* o) @local
-{
-    if (o.kind != MESH || !o.visible) return;
-    Mesh* m = (Mesh*)o;
-    if (m.material && m.material.reflector == hiding)
-    {
-        o.visible = false;
-        hidden.push(o);
-    }
-}
