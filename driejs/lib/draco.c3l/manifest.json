@@ -3,15 +3,69 @@
     "c-sources": [],
     "targets": {
         "macos-aarch64": {
-            "cflags-override": "-x c++ -std=c++17 -O2 -DNDEBUG -mmacos-version-min=14.0 -I/opt/homebrew/opt/draco/include",
+            "cflags-override": "-x c++ -std=c++17 -O2 -DNDEBUG -mmacos-version-min=14.0 -Ithird_party/draco/include",
             "c-sources-override": [
                 "draco_cpp.c"
             ],
             "link-args": [
-                "/opt/homebrew/opt/draco/lib/libdraco.a"
+                "third_party/draco/lib/libdraco.a"
             ],
             "linked-libraries": [
                 "c++"
+            ]
+        },
+        "macos-x64": {
+            "cflags-override": "-x c++ -std=c++17 -O2 -DNDEBUG -mmacos-version-min=14.0 -Ithird_party/draco/include",
+            "c-sources-override": [
+                "draco_cpp.c"
+            ],
+            "link-args": [
+                "third_party/draco/lib/libdraco.a"
+            ],
+            "linked-libraries": [
+                "c++"
+            ]
+        },
+        "linux-x64": {
+            "cflags-override": "-x c++ -std=c++17 -O2 -DNDEBUG -Ithird_party/draco/include",
+            "c-sources-override": [
+                "draco_cpp.c"
+            ],
+            "link-args": [
+                "third_party/draco/lib/libdraco.a"
+            ],
+            "linked-libraries": [
+                "stdc++"
+            ]
+        },
+        "linux-aarch64": {
+            "cflags-override": "-x c++ -std=c++17 -O2 -DNDEBUG -Ithird_party/draco/include",
+            "c-sources-override": [
+                "draco_cpp.c"
+            ],
+            "link-args": [
+                "third_party/draco/lib/libdraco.a"
+            ],
+            "linked-libraries": [
+                "stdc++"
+            ]
+        },
+        "windows-x64": {
+            "cflags-override": "-x c++ -std=c++17 -O2 -DNDEBUG -Ithird_party/draco/include",
+            "c-sources-override": [
+                "draco_cpp.c"
+            ],
+            "link-args": [
+                "third_party/draco/lib/draco.lib"
+            ]
+        },
+        "windows-aarch64": {
+            "cflags-override": "-x c++ -std=c++17 -O2 -DNDEBUG -Ithird_party/draco/include",
+            "c-sources-override": [
+                "draco_cpp.c"
+            ],
+            "link-args": [
+                "third_party/draco/lib/draco.lib"
             ]
         }
     }
