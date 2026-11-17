@@ -392,6 +392,8 @@ struct RendererState @local
     // which frame of them this is
     bool motion;
     Mat4 motion_view_proj;
+    // the camera's jitter in clip space (per unit of w), left out of the motion vectors
+    Vector2 motion_jitter;
     int motion_frame;
     float motion_time;
     float motion_prev_time;
@@ -1543,7 +1545,7 @@ fn VsParams vs_params_of(DrawItem* item, Mat4 view_proj, bool normals = true) @l
         vs.prev_view_proj = state.motion_view_proj;
         vs.prev_model = m.motion_prev;
         bool moved = m.motion_prev != m.motion_cur || (mat.sway > 0 && state.motion_prev_time != state.motion_time);
-        vs.motion = { moved ? 2 : 1, state.motion_prev_time, 0, 0 };
+        vs.motion = { moved ? 2 : 1, state.motion_prev_time, state.motion_jitter.x, state.motion_jitter.y };
     }
     return vs;
 }
@@ -1846,6 +1848,21 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera)
     if (!camera.parent) camera.update_matrix_world();
     camera.matrix_world_inverse = camera.matrix_world.invert();
     Mat4 view_proj = camera.projection_matrix.mul(camera.matrix_world_inverse);
+    Mat4 steady_view_proj = view_proj;
+    state.motion_jitter = {};
+    if (camera.jitter != {})
+    {
+        // shifted across the picture after the projection: x' = x + s * w
+        RenderTarget* rt = self.render_target;
+        Vector2 s = { 2 * camera.jitter.x / (rt ? (float)rt.width : sapp::widthf()),
+                      2 * camera.jitter.y / (rt ? (float)rt.height : sapp::heightf()) };
+        for (int c = 0; c < 4; c++)
+        {
+            view_proj[c][0] += s.x * view_proj[c][3];
+            view_proj[c][1] += s.y * view_proj[c][3];
+        }
+        state.motion_jitter = s;
+    }
     Vector3 camera_pos = camera.matrix_world.get_position();
     // motion vectors: every render with MRT is the next frame of them
     state.motion = self.render_target && self.render_target.mrt;
@@ -1854,8 +1871,8 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera)
         state.motion_frame++;
         state.motion_prev_time = state.motion_frame > 1 ? state.motion_time : self.time;
         state.motion_time = self.time;
-        camera.motion_prev = camera.motion_frame == state.motion_frame - 1 ? camera.motion_cur : view_proj;
-        camera.motion_cur = view_proj;
+        camera.motion_prev = camera.motion_frame == state.motion_frame - 1 ? camera.motion_cur : steady_view_proj;
+        camera.motion_cur = steady_view_proj;
         camera.motion_frame = state.motion_frame;
         state.motion_view_proj = camera.motion_prev;
     }

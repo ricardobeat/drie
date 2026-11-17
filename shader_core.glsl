@@ -90,7 +90,8 @@ layout(binding=0) uniform vs_params {
     mat4 prev_view_proj;
     mat4 prev_model;
     vec4 motion;        // x = 0: as if nothing moved, 1: only the camera moved, 2: the mesh may have
-                        //   moved or sways too; y = the last frame's sway time
+                        //   moved or sways too; y = the last frame's sway time; zw = the camera's
+                        //   jitter (in clip space, per unit of w), left out of the motion
 };
 
 @include_block vertex_common
@@ -132,7 +133,8 @@ void main() {
     v_alpha = color0.a;
     gl_Position = view_proj * wp;
     v_clip = gl_Position;
-    v_prev_clip = gl_Position;
+    v_clip.xy -= motion.zw * v_clip.w;
+    v_prev_clip = v_clip;
     if (motion.x > 1.5) {
         // the same vertex, placed and swayed as it was a frame ago (instances are taken to
         // stand still, and the hook to have moved it as far as it does now)
