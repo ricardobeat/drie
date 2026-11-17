@@ -1,10 +1,31 @@
 {
     "provides": "drie",
-    "dependencies": ["sokol", "readback", "imageio", "gamectl"],
-    "c-sources": [],
+    "dependencies": [
+        "sokol",
+        "readback",
+        "imageio",
+        "gamectl"
+    ],
+    "c-sources": [
+        "display.c"
+    ],
     "targets": {
-        "macos-aarch64": {},
-        "macos-x64": {},
+        "macos-aarch64": {
+            "cflags-override": "-O2 -DNDEBUG -x objective-c -fobjc-arc -mmacos-version-min=14.0",
+            "linked-libraries": [
+                "AppKit.framework",
+                "QuartzCore.framework",
+                "CoreGraphics.framework"
+            ]
+        },
+        "macos-x64": {
+            "cflags-override": "-O2 -DNDEBUG -x objective-c -fobjc-arc -mmacos-version-min=14.0",
+            "linked-libraries": [
+                "AppKit.framework",
+                "QuartzCore.framework",
+                "CoreGraphics.framework"
+            ]
+        },
         "linux-x64": {},
         "windows-x64": {},
         "mingw-x64": {},

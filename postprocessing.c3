@@ -470,6 +470,14 @@ struct OutputPass
     // Leave the result linear (0..1) instead of encoding it as sRGB, for more passes after it
     // that work in linear light.
     bool keep_linear;
+    // The colors of the result: SRGB_COLOR_SPACE, or DISPLAY_P3_COLOR_SPACE (tone mapping clips
+    // to P3's colors instead of sRGB's). Set from renderer.output_color_space when it draws into
+    // the window.
+    ColorSpace color_space;
+    // For an HDR screen (renderer.hdr_output): the result is linear, in Display P3, with the
+    // highlights going up to the screen's headroom instead of to white. Set from the renderer
+    // when it draws into the window.
+    bool hdr;
 }
 
 fn OutputPass* output_pass(Renderer* renderer)
@@ -489,7 +497,10 @@ fn void OutputPass.set_source(&self, SgView picture) => self.bindings.views[VIEW
 fn void OutputPass.update(&self)
 {
     Renderer* r = self.renderer;
-    OutputParams p = { .params = { (float)r.tone_mapping.ordinal, r.tone_mapping_exposure, self.exposure_map.id ? 1 : 0, self.keep_linear ? 1 : 0 } };
+    OutputParams p = {
+        .params = { (float)r.tone_mapping.ordinal, r.tone_mapping_exposure, self.exposure_map.id ? 1 : 0, self.keep_linear ? 1 : 0 },
+        .params2 = { self.hdr || self.color_space == DISPLAY_P3_COLOR_SPACE ? 1 : 0, self.hdr ? r.output_headroom() : 0, 0, 0 },
+    };
     self.set_uniforms(UB_OUTPUT_PARAMS, &p);
     // (an unused slot still needs a texture)
     self.bindings.views[VIEW_OUTPUT_EXPOSURE] = self.exposure_map.id ? self.exposure_map : self.bindings.views[VIEW_OUTPUT_SRC];
@@ -497,12 +508,21 @@ fn void OutputPass.update(&self)
 
 fn void OutputPass.render(&self, RenderTarget* target, SgLoadAction load = DONTCARE, Color clear = 0x000000, float clear_alpha = 1)
 {
+    if (!target) self.match_window();
     self.update();
     self.shader_pass.render(target, load, clear, clear_alpha);
 }
 
+// Takes the window's colors and range from the renderer (output_color_space, hdr_output).
+fn void OutputPass.match_window(&self)
+{
+    self.color_space = self.renderer.output_color_space;
+    self.hdr = self.renderer.hdr_on();
+}
+
 fn void OutputPass.draw(&self)
 {
+    if (post_state.current.screen) self.match_window();
     self.update();
     self.shader_pass.draw();
 }

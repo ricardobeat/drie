@@ -1,6 +1,6 @@
 // OutputPass (postprocessing.c3): the last step of a chain that works in linear light. Tone
 // maps the picture with the renderer's tone mapping and exposure and encodes it as sRGB, as
-// three.js's OutputPass does. Alpha is kept. Regenerate output.c3 with: ./build.sh shaders
+// three.js's OutputPass does, or into Display P3's colors, or for an HDR screen. Alpha is kept. Regenerate output.c3 with: ./build.sh shaders
 @header module three::postprocessing;
 @header import three;
 
@@ -26,6 +26,8 @@ layout(binding=0) uniform sampler output_smp;
 layout(binding=0) uniform output_params {
     vec4 params;   // x = tone mapping (TONE_*), y = exposure, z = 1: multiply it by output_exposure's r,
                    //   w = 1: no sRGB encoding (for a target that is sRGB itself, or more passes in linear)
+    vec4 params2;  // x = 1: into Display P3's colors, y = HDR: the screen's peak (times SDR white;
+                   //   0: SDR), the result left linear
 };
 
 in vec2 uv;
@@ -35,7 +37,11 @@ void main() {
     vec4 c = texture(sampler2D(output_src, output_smp), uv);
     float exposure = params.y;
     if (params.z > 0.5) exposure *= texelFetch(sampler2D(output_exposure, output_smp), ivec2(0), 0).r;
-    vec3 col = tone_map(c.rgb, int(params.x), exposure);
+    vec3 col = tone_map_gamut(c.rgb, int(params.x), exposure, params2.x > 0.5);
+    if (params2.y > 0.0) {
+        frag_color = vec4(col * hdr_boost(c.rgb, exposure, params2.y, col), c.a);
+        return;
+    }
     frag_color = vec4(params.w > 0.5 ? col : linear_to_srgb(col), c.a);
 }
 @end

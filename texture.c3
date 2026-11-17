@@ -18,6 +18,9 @@ enum ColorSpace
     SRGB_COLOR_SPACE,
     // For data textures (normal maps, roughness, ...): values are used as stored.
     NO_COLOR_SPACE,
+    // Display P3's wider gamut (sRGB's transfer curve): Renderer.output_color_space, for a
+    // screen that shows more saturated colors than sRGB has (three's DisplayP3ColorSpace)
+    DISPLAY_P3_COLOR_SPACE,
 }
 
 struct Texture

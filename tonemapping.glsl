@@ -29,7 +29,8 @@ vec3 rrt_odt_fit(vec3 v) {
     return a / b;
 }
 
-vec3 aces_filmic(vec3 c) {
+// Unclamped: colors more saturated than sRGB come out below 0 in a channel (see tone_map_gamut).
+vec3 aces_filmic_wide(vec3 c) {
     const mat3 aces_in = mat3(
         vec3(0.59719, 0.07600, 0.02840),
         vec3(0.35458, 0.90834, 0.13383),
@@ -41,8 +42,11 @@ vec3 aces_filmic(vec3 c) {
     c *= 1.0 / 0.6;
     c = aces_in * c;
     c = rrt_odt_fit(c);
-    c = aces_out * c;
-    return clamp(c, 0.0, 1.0);
+    return aces_out * c;
+}
+
+vec3 aces_filmic(vec3 c) {
+    return clamp(aces_filmic_wide(c), 0.0, 1.0);
 }
 
 // AgX (Troy Sobotka), as three.js's AgXToneMapping: bright light desaturates towards white
@@ -53,15 +57,12 @@ vec3 agx_contrast(vec3 x) {
     return 15.5 * x4 * x2 - 40.14 * x4 * x + 31.96 * x4 - 6.868 * x2 * x + 0.4298 * x2 + 0.1191 * x - 0.00232;
 }
 
-vec3 agx(vec3 c) {
+// In Rec. 2020 (see tone_map_gamut).
+vec3 agx_rec2020(vec3 c) {
     const mat3 srgb_to_rec2020 = mat3(
         vec3(0.6274, 0.0691, 0.0164),
         vec3(0.3293, 0.9195, 0.0880),
         vec3(0.0433, 0.0113, 0.8956));
-    const mat3 rec2020_to_srgb = mat3(
-        vec3(1.6605, -0.1246, -0.0182),
-        vec3(-0.5876, 1.1329, -0.1006),
-        vec3(-0.0728, -0.0083, 1.1187));
     const mat3 inset = mat3(
         vec3(0.856627153315983, 0.137318972929847, 0.11189821299995),
         vec3(0.0951212405381588, 0.761241990602591, 0.0767994186031903),
@@ -75,8 +76,16 @@ vec3 agx(vec3 c) {
     c = inset * (srgb_to_rec2020 * c);
     c = clamp((log2(max(c, 1e-10)) - min_ev) / (max_ev - min_ev), 0.0, 1.0);
     c = outset * agx_contrast(c);
-    c = pow(max(c, vec3(0.0)), vec3(2.2));
-    return clamp(rec2020_to_srgb * c, 0.0, 1.0);
+    return pow(max(c, vec3(0.0)), vec3(2.2));
+}
+
+const mat3 REC2020_TO_SRGB = mat3(
+    vec3(1.6605, -0.1246, -0.0182),
+    vec3(-0.5876, 1.1329, -0.1006),
+    vec3(-0.0728, -0.0083, 1.1187));
+
+vec3 agx(vec3 c) {
+    return clamp(REC2020_TO_SRGB * agx_rec2020(c), 0.0, 1.0);
 }
 
 // Khronos PBR Neutral, as three.js's NeutralToneMapping: base colors stay as they are up to
@@ -112,5 +121,54 @@ vec3 tone_map(vec3 c, int mode, float exposure) {
     if (mode == TONE_AGX) return agx(c);
     if (mode == TONE_NEUTRAL) return neutral(c);
     return c;
+}
+
+// Linear sRGB (Rec. 709) to linear Display P3, and back.
+const mat3 SRGB_TO_P3 = mat3(
+    vec3(0.8225, 0.0332, 0.0171),
+    vec3(0.1774, 0.9669, 0.0724),
+    vec3(0.0000, 0.0000, 0.9108));
+const mat3 P3_TO_SRGB = mat3(
+    vec3(1.2249, -0.0420, -0.0196),
+    vec3(-0.2247, 1.0419, -0.0786),
+    vec3(0.0000, 0.0000, 1.0979));
+
+// tone_map into Display P3 (p3 = true; linear) instead of sRGB: the ACES and AgX curves clip
+// to P3's colors at the end instead of sRGB's, so a saturated light keeps more of its color.
+vec3 tone_map_gamut(vec3 c, int mode, float exposure, bool p3) {
+    if (!p3) return tone_map(c, mode, exposure);
+    if (mode == TONE_NONE) return SRGB_TO_P3 * c;
+    vec3 e = max(c, vec3(0.0)) * exposure;
+    if (mode == TONE_ACES_FILMIC) return clamp(SRGB_TO_P3 * aces_filmic_wide(e), 0.0, 1.0);
+    if (mode == TONE_AGX) return clamp(SRGB_TO_P3 * (REC2020_TO_SRGB * agx_rec2020(e)), 0.0, 1.0);
+    return SRGB_TO_P3 * tone_map(c, mode, exposure);
+}
+
+// HDR output: how much brighter than `shown` (its SDR tone mapping, linear, 0..1) a pixel of
+// linear light `c` (times `exposure`) shows on a screen that goes up to `peak` times SDR white.
+// The picture stays as in SDR up to its upper midtones (so a grade's shadows and contrast are
+// kept); from there its brightest channel goes over to following the light, rolling off into
+// the peak (peak * (1 - e^(-1.5 x / peak))), with the hue of the SDR picture.
+float hdr_boost(vec3 c, float exposure, float peak, vec3 shown) {
+    if (peak <= 1.0) return 1.0;
+    vec3 e = max(c, vec3(0.0)) * exposure;
+    float x = max(e.r, max(e.g, e.b));
+    float target = peak * (1.0 - exp(-1.5 * x / peak));
+    float now = max(shown.r, max(shown.g, shown.b));
+    float boost = max(1.0, target / max(now, 1e-4));
+    return mix(1.0, boost, smoothstep(0.45, 0.9, now));
+}
+
+#define DISPLAY_SRGB 0
+#define DISPLAY_P3 1
+#define DISPLAY_HDR 2
+
+// A picture ready to show on an sRGB screen (sRGB-encoded, 0..1) as `display` takes it:
+// DISPLAY_SRGB as it is, DISPLAY_P3 encoded in Display P3 (the same colors), DISPLAY_HDR in
+// extended linear Display P3 (1 = SDR white).
+vec3 encode_for_display(vec3 srgb, int display) {
+    if (display == DISPLAY_SRGB) return srgb;
+    vec3 p3 = SRGB_TO_P3 * srgb_to_linear(srgb);
+    return display == DISPLAY_HDR ? p3 : linear_to_srgb(max(p3, vec3(0.0)));
 }
 @end
