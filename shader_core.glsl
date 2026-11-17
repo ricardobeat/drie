@@ -278,6 +278,8 @@ layout(binding=1) uniform fs_params {
     vec4 ssr_thickness;    // x = 1: ssr_back has the last frame's back faces, y = this material's reach (m)
     mat4 reflector_view_proj;  // world -> the Reflector's picture's clip space (reflector.c3)
     vec4 reflector_params;     // x = strength (0: no reflector), y = distortion (m), z = blur
+    vec4 rc_min;               // radiance cascades (radiance.c3): the box's corner, w = probe spacing (m)
+    vec4 rc_size;              // xyz = probes, w = intensity (0: none)
     vec4 material_custom[2];   // for the application's hooks: Material.custom
     vec4 frame_custom[2];      //   and Renderer.custom
 };
@@ -322,6 +324,12 @@ layout(binding=12) readonly buffer spot_lights { gpu_spot_light spots[]; };
 layout(binding=13) readonly buffer spot_shadows { gpu_spot_shadow spot_shadow_data[]; };
 layout(binding=14) readonly buffer light_clusters { gpu_light_cluster clusters[]; };
 layout(binding=15) readonly buffer light_indices { gpu_light_index cluster_lights[]; };
+// RadianceCascades (radiance.c3): per probe of cascade 0, the light arriving on surfaces
+// facing +x -x +y -y +z -z (w = 0: the probe is inside something)
+struct rc_probe {
+    vec4 e;
+};
+layout(binding=22) readonly buffer rc_probes { rc_probe rc_probe_data[]; };
 
 in vec3 v_world_pos;
 in vec3 v_normal;
@@ -737,6 +745,45 @@ vec3 gi_irradiance(vec3 n, out float fade) {
     return e * gi_inv_size.w;
 }
 
+// Light from the scene's radiance cascades for a surface facing `n`; `fade` as gi_irradiance's.
+// Blended between the 8 probes around, leaving out those inside things and those behind the
+// surface's own plane: a wall takes none of the light of the room behind it.
+vec3 rc_irradiance(vec3 n, out float fade) {
+    fade = 0.0;
+    if (rc_size.w <= 0.0) return vec3(0.0);
+    float spacing = rc_min.w;
+    vec3 g = (v_world_pos + n * (0.25 * spacing) - rc_min.xyz) / spacing;
+    vec3 edge = min(g, rc_size.xyz - g);
+    fade = clamp(min(edge.x, min(edge.y, edge.z)) * 2.0, 0.0, 1.0);
+    if (fade <= 0.0) return vec3(0.0);
+    g -= 0.5;
+    ivec3 b = ivec3(floor(g));
+    vec3 f = g - vec3(b);
+    ivec3 dims = ivec3(rc_size.xyz);
+    ivec3 side = ivec3(n.x >= 0.0 ? 0 : 1, n.y >= 0.0 ? 2 : 3, n.z >= 0.0 ? 4 : 5);
+    vec3 nn = n * n;
+    vec3 sum = vec3(0.0);
+    float wsum = 0.0;
+    vec3 sum_any = vec3(0.0);
+    float wsum_any = 0.0;
+    for (int k = 0; k < 8; k++) {
+        ivec3 o = ivec3(k & 1, (k >> 1) & 1, (k >> 2) & 1);
+        ivec3 c = clamp(b + o, ivec3(0), dims - 1);
+        int at = ((c.z * dims.y + c.y) * dims.x + c.x) * 6;
+        vec4 ex = rc_probe_data[at + side.x].e;
+        vec3 e = ex.rgb * nn.x + rc_probe_data[at + side.y].e.rgb * nn.y + rc_probe_data[at + side.z].e.rgb * nn.z;
+        vec3 w3 = mix(1.0 - f, f, vec3(o));
+        float w = (w3.x * w3.y * w3.z + 0.002) * ex.w;
+        vec3 probe_pos = rc_min.xyz + (vec3(c) + 0.5) * spacing;
+        float front = clamp((dot(probe_pos - v_world_pos, n) + 0.04) / 0.06, 0.0, 1.0);
+        sum += e * (w * front);
+        wsum += w * front;
+        sum_any += e * w;
+        wsum_any += w;
+    }
+    if (wsum > 1e-4) return sum / wsum * rc_size.w;
+    return wsum_any > 1e-5 ? sum_any / wsum_any * rc_size.w : vec3(0.0);
+}
 
 float ssr_noise(vec2 p) {
     return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715))));
@@ -1052,9 +1099,18 @@ void main() {
         if (mode == 3) diffuse_color *= (1.0 - g_metal);
 
         vec3 sky_light = ambient.rgb + mix(hemi_ground.rgb, hemi_sky.rgb, 0.5 * n.y + 0.5);
+        // the scene's environment (Scene.environment): the light from all around n, from a
+        // level of the map blurry enough to stand for it
+        if (env_params.z > 0.0) sky_light += PI * env_params.y * textureLod(sampler2D(tex_env, env_smp), env_uv(n), env_params.z).rgb;
         float gi_fade;
         vec3 gi = gi_irradiance(n, gi_fade);
         vec3 irradiance = gi_min.w > 1.5 ? mix(sky_light, gi, gi_fade) : sky_light + gi * gi_fade;
+        if (rc_size.w > 0.0) {
+            // radiance cascades: all the indirect light inside their box
+            float rc_fade;
+            vec3 rc = rc_irradiance(n, rc_fade);
+            irradiance = mix(irradiance, rc, rc_fade);
+        }
         outc = irradiance * diffuse_color * RECIPROCAL_PI * ao;
         ind_d = outc;
 

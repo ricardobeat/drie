@@ -516,9 +516,14 @@ struct RendererState @local
     ulong start_ticks;
     // Bound where a material has no texture.
     Texture* white;
+    // The scene being rendered (for its environment).
+    Scene* scene;
     // Bound where a scene has no irradiance volume.
     IrradianceVolume* no_irradiance;
     IrradianceVolume* irradiance;
+    // the scene's radiance cascades' probes, or a buffer of one dark probe
+    StorageBuffer* no_radiance;
+    SgView radiance_view;
     // One identity instance, bound for meshes that aren't instanced.
     SgBuffer identity_instance;
     SgImage shadow_image;
@@ -1566,6 +1571,12 @@ fn FsParams build_light_params(Scene* scene, Camera* camera, SpotLight* caster) 
         p.gi_inv_size = { 1 / size.x, 1 / size.y, 1 / size.z, v.intensity };
         p.gi_dims = { v.nx, v.ny, v.nz, v.normal_offset };
     }
+    if (scene.radiance)
+    {
+        RadianceCascades* rc = scene.radiance;
+        p.rc_min = { ...rc.min, rc.spacing };
+        p.rc_size = { rc.nx, rc.ny, rc.nz, rc.intensity };
+    }
     if (scene.fog)
     {
         Fog* f = scene.fog;
@@ -1759,8 +1770,21 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     }
     bind.samplers[SMP_SSR_SMP] = state.clamp_sampler;
     bind.views[VIEW_TEX_GI] = state.irradiance.view;
+    bind.views[VIEW_RC_PROBES] = state.radiance_view;
     bind.samplers[SMP_GI_SMP] = state.irradiance.sampler;
-    Texture* env = ready(mat.env_map);
+    // the scene's environment lights the standard materials without a map of their own
+    Texture* env_map = mat.env_map;
+    float env_intensity = mat.env_intensity > 0 ? mat.env_intensity : 1;
+    float env_diffuse_lod = 0;
+    Scene* scene = state.scene;
+    if (!env_map && scene && scene.environment && mat.type == STANDARD)
+    {
+        env_map = scene.environment;
+        env_intensity *= scene.environment_intensity;
+        // its light from all around a normal: the mip level about 8 texels wide
+        env_diffuse_lod = math::max(math::log2((float)env_map.width) - 3, 1.0f);
+    }
+    Texture* env = ready(env_map);
     bind.views[VIEW_TEX_ENV] = env.view;
     bind.samplers[SMP_ENV_SMP] = env.sampler;
     bind.samplers[SMP_TEX_SMP] = (mat.map ?: (mat.normal_map ?: (mat.arm_map ?: state.white))).sampler;
@@ -2101,6 +2125,8 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera)
     pt = profile::start();
     if (!state.no_irradiance) state.no_irradiance = irradiance_volume({ 0, 0, 0 }, { 1, 1, 1 }, 1);
     state.irradiance = scene.irradiance ?: state.no_irradiance;
+    if (!state.no_radiance) state.no_radiance = storage_buffer(6 * 16, label: "three-rc-none");
+    state.radiance_view = scene.radiance ? scene.radiance.irradiance_buf.view : state.no_radiance.view;
     state.irradiance.upload();
 
     FsParams fs = build_light_params(scene, camera, caster);
