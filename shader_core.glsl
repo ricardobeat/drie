@@ -211,6 +211,8 @@ layout(binding=6) uniform texture3D tex_gi;
 layout(binding=7) uniform texture2D ssr_color;   // the last frame: tone mapped, sRGB, a = 0 at light sources
 layout(binding=8) uniform texture2D ssr_depth;   // g = its distance from the camera's plane (m)
 layout(binding=9) uniform texture2D sun_shadow;  // the directional light's map: 2x2 cascades, or one box
+layout(binding=21) uniform texture2D reflector_map; // a Reflector's mirrored render, linear
+layout(binding=20) uniform texture2D ssr_back;    // r = the nearest back face's distance from the camera's plane (m), 0: none
 layout(binding=19) uniform texture2D fog_volume; // volumetric fog: the froxel grid (fog.c3, fog_cs in kernels.glsl)
 layout(binding=0) uniform sampler tex_smp;
 layout(binding=1) uniform sampler shadow_smp;
@@ -273,6 +275,9 @@ layout(binding=1) uniform fs_params {
     mat4 ssr_view_proj;    // world -> the last frame's clip space
     vec4 ssr_params;       // x = this material's screen-space reflections (0: none), y = reach (m),
                            //   z = noise seed, w = 1: the last frame's row 0 is its top
+    vec4 ssr_thickness;    // x = 1: ssr_back has the last frame's back faces, y = this material's reach (m)
+    mat4 reflector_view_proj;  // world -> the Reflector's picture's clip space (reflector.c3)
+    vec4 reflector_params;     // x = strength (0: no reflector), y = distortion (m), z = blur
     vec4 material_custom[2];   // for the application's hooks: Material.custom
     vec4 frame_custom[2];      //   and Renderer.custom
 };
@@ -736,6 +741,11 @@ vec3 ssr_project(vec3 p) {
     return vec3(ndc * 0.5 + 0.5, clip.w);
 }
 
+float ssr_back_at(vec2 uv) {
+    ivec2 size = textureSize(sampler2D(ssr_back, ssr_smp), 0);
+    return texelFetch(sampler2D(ssr_back, ssr_smp), clamp(ivec2(uv * vec2(size)), ivec2(0), size - 1), 0).r;
+}
+
 float ssr_depth_at(vec2 uv) {
     ivec2 size = textureSize(sampler2D(ssr_depth, ssr_smp), 0);
     return texelFetch(sampler2D(ssr_depth, ssr_smp), clamp(ivec2(uv * vec2(size)), ivec2(0), size - 1), 0).g;
@@ -745,6 +755,35 @@ float ssr_depth_at(vec2 uv) {
 // returns what it runs into there (linear, as the camera saw it); `found` is 0 when it leaves
 // the picture or hits nothing. A rough surface sends its one ray somewhere in a wider cone,
 // which shows as noise until something downstream (a temporal filter, a tape) evens it out.
+// A Reflector's picture (reflector.c3) where the ray from here along the normal's reflection
+// would be seen: exact for a flat surface, and for a bumpy one as if what it mirrors were
+// reflector_params.y away. Blurred by roughness; `found` fades out at the picture's edges.
+vec3 planar_reflection(vec3 n, vec3 v, float rough, out float found) {
+    vec3 r = reflect(-v, n);
+    vec4 clip = reflector_view_proj * vec4(v_world_pos + r * reflector_params.y, 1.0);
+    vec2 ndc = clip.xy / max(clip.w, 1e-4);
+    if (ssr_params.w > 0.5) ndc.y = -ndc.y;
+    vec2 uv = ndc * 0.5 + 0.5;
+    vec2 edge = min(uv, 1.0 - uv);
+    found = clip.w > 0.0 ? smoothstep(-0.02, 0.03, min(edge.x, edge.y)) : 0.0;
+    vec2 size = vec2(textureSize(sampler2D(reflector_map, ssr_smp), 0));
+    float spread = rough * rough * reflector_params.z;
+    vec2 radius = vec2(spread * size.y / size.x, spread);
+    float turn = ssr_noise(gl_FragCoord.xy + ssr_params.z * vec2(47.0, 17.0)) * 2.0 * PI;
+    vec3 sum = vec3(0.0);
+    for (int k = 0; k < 8; k++) {
+        float a = turn + float(k) * 2.39996;
+        vec2 at = uv + vec2(cos(a), sin(a)) * radius * sqrt((float(k) + 0.5) / 8.0);
+        sum += min(textureLod(sampler2D(reflector_map, ssr_smp), at, 0.0).rgb, vec3(64.0));
+    }
+    return sum / 8.0;
+}
+
+// how many steps a reflected ray takes at most, and how far one goes on the screen at most (in
+// pixels of the reflection source)
+const int SSR_STEPS = 40;
+const float SSR_MAX_STEP_PX = 6.0;
+
 vec3 screen_reflection(vec3 n, vec3 geo_n, vec3 v, float rough, out float found) {
     found = 0.0;
     vec2 seed = gl_FragCoord.xy + ssr_params.z * vec2(47.0, 17.0);
@@ -760,25 +799,38 @@ vec3 screen_reflection(vec3 n, vec3 geo_n, vec3 v, float rough, out float found)
     if (dot(r, geo_n) < 0.02) return vec3(0.0);
 
     vec3 origin = v_world_pos + geo_n * 0.02;
+    vec2 screen_px = vec2(textureSize(sampler2D(ssr_depth, ssr_smp), 0));
     float step_len = 0.06;
     float t = step_len * (0.4 + n2);
     float t_prev = 0.0;
-    for (int i = 0; i < 28; i++) {
+    for (int i = 0; i < SSR_STEPS; i++) {
         vec3 s = ssr_project(origin + r * t);
         if (s.z < 0.05 || s.x < 0.0 || s.y < 0.0 || s.x > 1.0 || s.y > 1.0) break;
-        float behind = s.z - ssr_depth_at(s.xy);
-        // behind what the camera saw there, and not by more than something of that size is thick
-        if (behind > 0.02 && behind < step_len * 1.5 + 0.15) {
+        // behind what the camera saw there: where the ray went in lies between the step before
+        // and this one (steps get longer than thin things are thick, so this is found first)
+        if (s.z - ssr_depth_at(s.xy) > 0.02) {
             float lo = t_prev;
             float hi = t;
-            for (int k = 0; k < 4; k++) {
+            for (int k = 0; k < 6; k++) {
                 float mid = 0.5 * (lo + hi);
                 vec3 m = ssr_project(origin + r * mid);
                 if (m.z - ssr_depth_at(m.xy) > 0.02) hi = mid; else lo = mid;
             }
+            // and there it has to be inside the thing, not past it: as thick as its back faces
+            // say, or else about as thick as a thing is, fading out past that
+            vec3 p_in = ssr_project(origin + r * hi);
+            float front = ssr_depth_at(p_in.xy);
+            float back = ssr_thickness.x > 0.5 ? ssr_back_at(p_in.xy) : 0.0;
+            float hit;
+            if (back > front + 0.005 && back < front + 2.0) {
+                hit = 1.0 - smoothstep(0.0, 0.03, p_in.z - back);
+            } else {
+                hit = 1.0 - smoothstep(0.15, 0.3, p_in.z - front);
+            }
+            if (hit > 0.0) {
             s = ssr_project(origin + r * hi);
             vec2 edge = min(s.xy, 1.0 - s.xy);
-            found = smoothstep(0.0, 0.07, min(edge.x, edge.y)) * (1.0 - smoothstep(0.6, 1.0, hi / ssr_params.y));
+            found = hit * smoothstep(0.0, 0.07, min(edge.x, edge.y)) * (1.0 - smoothstep(0.6, 1.0, hi / ssr_thickness.y));
             // what a rough surface mirrors is spread over a disc that grows with the way the
             // ray went: a few taps over it, turned differently at every pixel
             vec2 size = vec2(textureSize(sampler2D(ssr_color, ssr_smp), 0));
@@ -801,11 +853,17 @@ vec3 screen_reflection(vec3 n, vec3 geo_n, vec3 v, float rough, out float found)
                 sum += lin * (1.0 + 5.0 * (1.0 - c.a)) / max(camera_pos.w, 0.05);
             }
             return sum / 8.0;
+            }
         }
+        // longer steps further out, but never more than a few pixels on the screen: a step
+        // longer than something is thick would go through it without seeing it
         t_prev = t;
-        step_len *= 1.16;
+        step_len *= 1.2;
+        vec3 next = ssr_project(origin + r * (t + step_len));
+        float px = length((next.xy - s.xy) * screen_px);
+        if (next.z > 0.05 && px > SSR_MAX_STEP_PX) step_len *= SSR_MAX_STEP_PX / px;
         t += step_len;
-        if (t > ssr_params.y) break;
+        if (t > ssr_thickness.y) break;
     }
     return vec3(0.0);
 }
@@ -1059,6 +1117,7 @@ void main() {
         outc = (outc * alpha + spec) / max(a, 1e-4);
         alpha = a;
     } else {
+        vec3 env_term = vec3(0.0);
         if (env_params.x > 0.5 && mode != 1) {
             // reflections of the surroundings, fading as the surface gets rougher
             float nov = clamp(dot(n, v), 0.0, 1.0);
@@ -1067,21 +1126,40 @@ void main() {
             vec3 r = reflect(-v, n);
             vec3 env = env_sample(r, g_rough);
             reflection_hook(r, env);
-            outc += env * fr;
-            ind_s += env * fr;
+            env_term = env * fr;
         }
-        if (ssr_params.x > 0.0) {
+        if (ssr_params.x > 0.0 || reflector_params.x > 0.0) {
             // the surface's sheen: a mirror image, strongest at a glancing angle
-            float found;
             // (far off, where a pixel covers many bumps of the normal map, each would throw
             // the image somewhere else: blotches. There the surface mirrors as if flat)
             float bumps = 0.5 * (1.0 - smoothstep(1.5, 5.0, length(camera_pos.xyz - v_world_pos)));
             vec3 rn = normalize(mix(geo_n, n, bumps));
-            vec3 mirrored = screen_reflection(rn, geo_n, v, g_rough, found);
             float fresnel = 0.04 + 0.96 * pow(1.0 - clamp(dot(rn, v), 0.0, 1.0), 5.0);
-            outc += mirrored * (found * fresnel * ssr_params.x * ao);
-            ind_s += mirrored * (found * fresnel * ssr_params.x * ao);
+            vec3 mirrored = vec3(0.0);
+            float found = 0.0;
+            float strength = 0.0;
+            if (reflector_params.x > 0.0) {
+                // the planar reflection: the picture of the mirrored scene where the ray points
+                mirrored = planar_reflection(rn, v, g_rough, found);
+                found *= reflector_params.x;
+                strength = 1.0;
+            }
+            if (ssr_params.x > 0.0) {
+                // what is on screen near it, where a ray finds that: sharper, at full size
+                float near_found;
+                vec3 near_mirrored = screen_reflection(rn, geo_n, v, g_rough, near_found);
+                mirrored = found > 0.0 ? mix(mirrored, near_mirrored, near_found) : near_mirrored;
+                found = max(found, near_found);
+                strength = max(strength, ssr_params.x);
+            }
+            // where something was found, it takes the place of the surroundings' map
+            vec3 mirror_term = mirrored * (found * fresnel * strength * ao);
+            env_term *= 1.0 - clamp(found * strength, 0.0, 1.0);
+            outc += mirror_term;
+            ind_s += mirror_term;
         }
+        outc += env_term;
+        ind_s += env_term;
         outc += spec;
     }
 
@@ -1232,8 +1310,9 @@ void main() {
         if (alpha <= 0.0) discard;
         alpha = min(alpha, 1.0);
     }
-    // for alpha to coverage; nothing is written
-    frag_color = vec4(v_normal * 0.0 + v_color * 0.0 + v_world_pos * 0.0 + (v_clip.xyz + v_prev_clip.xyz) * 0.0, alpha);
+    // for alpha to coverage (the depth prepass writes no color); r = the distance from the
+    // camera's plane, for Renderer.render_back_faces
+    frag_color = vec4(v_clip.w + (v_normal + v_color + v_world_pos + v_clip.xyz + v_prev_clip.xyz).x * 0.0, 0.0, 0.0, alpha);
 }
 @end
 
