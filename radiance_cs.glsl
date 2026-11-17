@@ -74,9 +74,9 @@ int rc_level_offset(int level) {
 @cs rc_trace_cs
 @include_block rc_common
 struct rc_light {
-    vec4 pos;     // w = distance cutoff
+    vec4 pos;     // w = distance cutoff; a directional light: xyz = towards it
     vec4 color;   // w = decay
-    vec4 dir;     // where a spot light points, w = cos(angle); w = -2: a point light
+    vec4 dir;     // where a spot light points, w = cos(angle); w = -2: a point light, -3: directional
     vec4 params;  // x = cos(inner angle)
 };
 layout(binding=1) buffer rc_cascades { rc_texel rc_rad[]; };
@@ -231,10 +231,16 @@ void main() {
         uint seed = h;
         for (int l = 0; l < nl; l++) {
             rc_light lt = rc_light_data[l];
+            bool sun = lt.dir.w < -2.5;
             vec3 lv = lt.pos.xyz - hp;
             float dist = length(lv);
-            if (lt.pos.w > 0.0 && dist > lt.pos.w) continue;
+            if (!sun && lt.pos.w > 0.0 && dist > lt.pos.w) continue;
             vec3 ld = lv / max(dist, 1e-4);
+            // (a directional light: its shadow ray goes on out of the box)
+            if (sun) {
+                ld = lt.pos.xyz;
+                dist = 1e4;
+            }
             float ndl = dot(face, ld);
             if (ndl <= 0.0) continue;
             float cone = 1.0;
@@ -242,7 +248,7 @@ void main() {
                 cone = smoothstep(lt.dir.w, lt.params.x, dot(-ld, lt.dir.xyz));
                 if (cone <= 0.0) continue;
             }
-            vec3 gives = lt.color.rgb * (ndl * cone * rc_attenuation(dist, lt.pos.w, lt.color.w));
+            vec3 gives = lt.color.rgb * (ndl * cone * (sun ? 1.0 : rc_attenuation(dist, lt.pos.w, lt.color.w)));
             float w = max(gives.r, max(gives.g, gives.b));
             if (w <= 0.0) continue;
             total += w;
