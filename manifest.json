@@ -13,7 +13,7 @@
     ],
     "targets": {
         "macos-aarch64": {
-            "cflags-override": "-O2 -DNDEBUG -x objective-c -fobjc-arc -mmacos-version-min=14.0",
+            "cflags-override": "-O2 -DNDEBUG -x objective-c -fobjc-arc -mmacos-version-min=15.0",
             "c-sources": [
                 "platform/readback.c",
                 "platform/imageio.c",
@@ -31,7 +31,7 @@
             ]
         },
         "macos-x64": {
-            "cflags-override": "-O2 -DNDEBUG -x objective-c -fobjc-arc -mmacos-version-min=14.0",
+            "cflags-override": "-O2 -DNDEBUG -x objective-c -fobjc-arc -mmacos-version-min=15.0",
             "c-sources": [
                 "platform/readback.c",
                 "platform/imageio.c",
@@ -104,6 +104,7 @@
                 "CoreFoundation.framework",
                 "GameController.framework"
             ]
-        }
+        },
+        "linux-aarch64": {}
     }
 }

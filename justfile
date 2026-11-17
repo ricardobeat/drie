@@ -8,7 +8,7 @@ mod driejs
 # Another: `just libdir=path test radiance`.
 libdir := "lib"
 libs := "--libdir " + libdir + " --lib sokol"
-macos := if os() == "macos" { "--macos-min-version 14.0" } else { "" }
+macos := if os() == "macos" { "--macos-min-version 15.0" } else { "" }
 
 # the sources c3fmt formats: the hand written ones at the top. The sokol-shdc generated
 # files are in generated/ (manifest.json's "sources" adds it to the library).
