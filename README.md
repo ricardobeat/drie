@@ -114,6 +114,11 @@ and parameter objects become named arguments.
   each kind of target it draws into. `output_pass(renderer)` is three's `OutputPass`: the end of a
   chain in linear light, tone mapped with the renderer's settings when it draws (an
   `exposure_map`, a 1x1 texture, can scale the exposure from the GPU, for auto exposure).
+  `gtao_pass(camera)` is three's `GTAOPass` (ground-truth AO, after Intel's XeGTAO): from the
+  depth and normals of a target rendered with `mrt`, it darkens only the light that came in
+  indirectly (the target's `indirect_texture`), as three's WebGPU renderer does with an `ao`
+  context, with specular occlusion on reflections; `ao.render(scene_target)` after the scene,
+  or after a `RenderPass` with `mrt` set in a composer.
   The composer's buffers are RGBA16F by default, as three's are. `ping_pong(w, h, format)` is a pair of targets for what
   builds up from frame to frame. `effect_composer(renderer)` with `add_pass()` and `render()`
   chains passes as three's does: a `ShaderPass` gets the picture of the pass before at its
@@ -151,7 +156,9 @@ and parameter objects become named arguments.
   `scenePass.setMRT(mrt({ output, normal, velocity }))`) the main pass also writes
   `normal_texture` (world-space normals after normal maps, roughness in alpha) and
   `velocity_texture` (motion vectors: uv now minus uv a frame ago, from the camera, each mesh's
-  matrix and wind sway), for temporal filters, motion blur and screen-space effects.
+  matrix and wind sway) and `indirect_texture` (the shares of each pixel's light that are
+  indirect diffuse and indirect specular), for temporal filters, motion blur, ambient
+  occlusion and other screen-space effects.
 - **Profiling** (`three::profile`): `profile::enabled = true`, then `profile::start()` /
   `profile::stop(name, t)` around stages and `profile::report(frames)`. The renderer times its
   own stages this way.

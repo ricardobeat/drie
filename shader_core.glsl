@@ -329,6 +329,8 @@ layout(location=0) out vec4 frag_color;
 // space (a = roughness), and how far it moved across the picture since the last frame.
 layout(location=1) out vec4 frag_normal;
 layout(location=2) out vec4 frag_velocity;
+// the shares of the light that are indirect: r = diffuse, g = specular (what AO darkens)
+layout(location=3) out vec4 frag_indirect;
 #endif
 
 const float PI = 3.14159265359;
@@ -888,6 +890,7 @@ void main() {
         vec2 d = (now - was) * 0.5;
         if (ssr_params.w > 0.5) d.y = -d.y;
         frag_velocity = vec4(d, 0.0, 1.0);
+        frag_indirect = vec4(0.0, 0.0, 0.0, 1.0);
         frag_normal = vec4(normalize(v_normal), mat_params.y);
     }
 #endif
@@ -961,6 +964,9 @@ void main() {
 
     vec3 outc;
     vec3 spec = vec3(0.0);
+    // the indirect light in outc, diffuse and specular (for frag_indirect)
+    vec3 ind_d = vec3(0.0);
+    vec3 ind_s = vec3(0.0);
     vec3 to_cam = camera_pos.xyz - v_world_pos;
     float depth = length(to_cam);
     vec3 v = to_cam / max(depth, 1e-5);
@@ -980,6 +986,7 @@ void main() {
         vec3 gi = gi_irradiance(n, gi_fade);
         vec3 irradiance = gi_min.w > 1.5 ? mix(sky_light, gi, gi_fade) : sky_light + gi * gi_fade;
         outc = irradiance * diffuse_color * RECIPROCAL_PI * ao;
+        ind_d = outc;
 
         int ndir = int(counts.x);
         for (int i = 0; i < ndir; i++) {
@@ -1029,7 +1036,11 @@ void main() {
         spec *= ao;
         outc += emissive.rgb;
         // light baked into the vertex colors, as if from fixed lamps
-        if (baked) outc += diffuse_color * v_color * emissive.w * ao;
+        if (baked) {
+            vec3 b = diffuse_color * v_color * emissive.w * ao;
+            outc += b;
+            ind_d += b;
+        }
     }
 
     if ((fl & 8) != 0) {
@@ -1054,6 +1065,7 @@ void main() {
             vec3 env = env_sample(r, g_rough);
             reflection_hook(r, env);
             outc += env * fr;
+            ind_s += env * fr;
         }
         if (ssr_params.x > 0.0) {
             // the surface's sheen: a mirror image, strongest at a glancing angle
@@ -1065,6 +1077,7 @@ void main() {
             vec3 mirrored = screen_reflection(rn, geo_n, v, g_rough, found);
             float fresnel = 0.04 + 0.96 * pow(1.0 - clamp(dot(rn, v), 0.0, 1.0), 5.0);
             outc += mirrored * (found * fresnel * ssr_params.x * ao);
+            ind_s += mirrored * (found * fresnel * ssr_params.x * ao);
         }
         outc += spec;
     }
@@ -1073,6 +1086,8 @@ void main() {
     if (fog_mode != 0 && fog_grid.w > 0.0) {
         vec4 fv = fog_volume_at(v_world_pos);
         outc = outc * fv.a + fv.rgb;
+        ind_d *= fv.a;
+        ind_s *= fv.a;
     } else if (fog_mode != 0) {
         float fd = fog_distance(camera_pos.xyz, v_world_pos);
         vec3 fog_own = fog_color.rgb;
@@ -1117,9 +1132,18 @@ void main() {
             fog_lit += glow * fog_color.w * in_fog;
         }
         outc = outc * t + fog_lit;
+        ind_d *= t;
+        ind_s *= t;
     }
 
     outc = max(outc, vec3(0.0));
+#ifdef MRT
+    {
+        const vec3 lw = vec3(0.2126, 0.7152, 0.0722);
+        float total = max(dot(outc, lw), 1e-6);
+        frag_indirect = vec4(clamp(vec2(dot(max(ind_d, 0.0), lw), dot(max(ind_s, 0.0), lw)) / total, 0.0, 1.0), 0.0, 1.0);
+    }
+#endif
     // a light source (emissive far over white) leaves the target's alpha at 0, for
     // post-processing that has to tell a burnt-out lamp from a brightly lit wall
     alpha *= 1.0 - smoothstep(4.0, 16.0, max(emissive.r, max(emissive.g, emissive.b)));
