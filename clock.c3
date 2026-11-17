@@ -3,8 +3,7 @@ module drie;
 import std::math;
 import sokol;
 
-struct Clock
-{
+struct Clock {
     ulong start_time;
     ulong old_time;
     double elapsed_time;
@@ -13,10 +12,8 @@ struct Clock
 
 bool stm_ready @local;
 
-fn Clock clock()
-{
-    if (!stm_ready)
-    {
+fn Clock clock() {
+    if (!stm_ready) {
         stm::setup();
         stm_ready = true;
     }
@@ -25,10 +22,9 @@ fn Clock clock()
 }
 
 // Seconds since the last call to get_delta (or since the clock was created).
-fn double Clock.get_delta(&self)
-{
+fn double Clock.get_delta(&self) {
     if (!self.running) return 0;
-    ulong now = stm::now();
+    ulong now   = stm::now();
     double diff = stm::sec(stm::diff(now, self.old_time));
     self.old_time = now;
     self.elapsed_time += diff;
@@ -36,8 +32,7 @@ fn double Clock.get_delta(&self)
 }
 
 // Total seconds the clock has been running.
-fn double Clock.get_elapsed_time(&self)
-{
+fn double Clock.get_elapsed_time(&self) {
     self.get_delta();
     return self.elapsed_time;
 }

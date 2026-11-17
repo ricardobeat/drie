@@ -14,8 +14,7 @@
 module drie;
 import std::math, sokol;
 
-struct Reflector
-{
+struct Reflector {
     // the plane: the points p with dot(normal, p) == constant; the side the normal points to is
     // the one mirrored
     Vector3 normal;
@@ -46,12 +45,18 @@ struct Reflector
     bool rendered;
 }
 
-fn Reflector* reflector(Vector3 normal = { 0, 1, 0 }, float constant = 0, float resolution = 0.5)
-{
+fn Reflector* reflector(Vector3 normal = { 0, 1, 0 }, float constant = 0, float resolution = 0.5) {
     Reflector* r = mem::new(Reflector);
-    *r = { .normal = normal.normalize(), .constant = constant, .resolution = resolution, .distortion = 0.6,
-           .blur = 0.05, .strength = 1, .clip_bias = 0.003,
-           .reuse_shadows = true };
+    *r = {
+        .normal = normal.normalize(),
+        .constant = constant,
+        .resolution = resolution,
+        .distortion = 0.6,
+        .blur = 0.05,
+        .strength = 1,
+        .clip_bias = 0.003,
+        .reuse_shadows = true
+    };
     r.camera = perspective_camera();
     r.camera.custom_projection = true;
     r.camera.matrix_auto_update = false;
@@ -59,11 +64,10 @@ fn Reflector* reflector(Vector3 normal = { 0, 1, 0 }, float constant = 0, float 
 }
 
 // The mirror image across the plane: p -> p - 2 (n.p - c) n.
-fn Mat4 Reflector.mirror(&self)
-{
+fn Mat4 Reflector.mirror(&self) {
     Vector3 n = self.normal;
-    float c = self.constant;
-    Mat4 m = mat4_identity();
+    float c   = self.constant;
+    Mat4 m    = mat4_identity();
     m[0][0] = 1 - 2 * n.x * n.x;
     m[0][1] = -2 * n.y * n.x;
     m[0][2] = -2 * n.z * n.x;
@@ -82,8 +86,7 @@ fn Mat4 Reflector.mirror(&self)
 // Renders what `reflector`'s plane mirrors, as `camera` sees it. Call it before render() for
 // the frame, with the render target set as it will be for that (its picture is a part of that
 // size). Leaves the target and the reflection source as they were.
-fn void Renderer.render_reflector(&self, Reflector* reflector, Scene* scene, PerspectiveCamera* camera)
-{
+fn void Renderer.render_reflector(&self, Reflector* reflector, Scene* scene, PerspectiveCamera* camera) {
     Reflector* r = reflector;
     r.rendered = false;
     if (!camera.parent) camera.update_matrix_world();
@@ -91,8 +94,8 @@ fn void Renderer.render_reflector(&self, Reflector* reflector, Scene* scene, Per
     if (r.normal.dot(eye) - r.constant <= 0) return;
 
     RenderTarget* main_rt = self.render_target;
-    int w = math::max((int)((main_rt ? main_rt.width : sapp::width()) * r.resolution), 1);
-    int h = math::max((int)((main_rt ? main_rt.height : sapp::height()) * r.resolution), 1);
+    int w                 = math::max((int)((main_rt ? main_rt.width : sapp::width()) * r.resolution), 1);
+    int h                 = math::max((int)((main_rt ? main_rt.height : sapp::height()) * r.resolution), 1);
     if (!r.target) r.target = render_target(w, h, 1, RGBA16F);
     r.target.set_size(w, h, 1);
 
@@ -114,20 +117,19 @@ fn void Renderer.render_reflector(&self, Reflector* reflector, Scene* scene, Per
 
     // the near plane laid onto the mirror's plane (Lengyel's oblique projection): nothing
     // behind it is drawn. The plane in the mirrored camera's view space: (M^T) (n, -c).
-    Mat4 mw = mc.matrix_world;
+    Mat4 mw       = mc.matrix_world;
     float[<4>] pw = { r.normal.x, r.normal.y, r.normal.z, -r.constant + r.clip_bias };
     float[<4>] cv;
     for (int i = 0; i < 4; i++) cv[i] = mw[i][0] * pw[0] + mw[i][1] * pw[1] + mw[i][2] * pw[2] + mw[i][3] * pw[3];
-    Mat4 p = mc.projection_matrix;
-    Mat4 pinv = p.invert();
+    Mat4 p            = mc.projection_matrix;
+    Mat4 pinv         = p.invert();
     float[<4>] corner = { cv[0] > 0 ? 1 : (cv[0] < 0 ? -1 : 0), cv[1] > 0 ? 1 : (cv[1] < 0 ? -1 : 0), 1, 1 };
     float[<4>] q;
-    for (int i = 0; i < 4; i++)
-    {
+    for (int i = 0; i < 4; i++) {
         q[i] = pinv[0][i] * corner[0] + pinv[1][i] * corner[1] + pinv[2][i] * corner[2] + pinv[3][i] * corner[3];
     }
-    float dq = cv[0] * q[0] + cv[1] * q[1] + cv[2] * q[2] + cv[3] * q[3];
-    bool z01 = depth_zero_to_one();
+    float dq     = cv[0] * q[0] + cv[1] * q[1] + cv[2] * q[2] + cv[3] * q[3];
+    bool z01     = depth_zero_to_one();
     float[<4>] c = cv * ((z01 ? 1.0f : 2.0f) / dq);
     // the third row: z' = c . p (0..1), or c . p - w (-1..1)
     for (int i = 0; i < 4; i++) p[i][2] = z01 ? c[i] : c[i] - p[i][3];
@@ -137,7 +139,7 @@ fn void Renderer.render_reflector(&self, Reflector* reflector, Scene* scene, Per
 
     SgView ssr_color = self.ssr_color;
     SgView ssr_depth = self.ssr_depth;
-    SgView ssr_back = self.ssr_back;
+    SgView ssr_back  = self.ssr_back;
     self.clear_reflection_source();
     self.render_target = r.target;
     bool shadows = self.shadow_map_auto_update;
@@ -154,5 +156,3 @@ fn void Renderer.render_reflector(&self, Reflector* reflector, Scene* scene, Per
     self.ssr_back = ssr_back;
     r.rendered = true;
 }
-
-

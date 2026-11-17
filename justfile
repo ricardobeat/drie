@@ -10,6 +10,12 @@ libdir := "../house/lib"
 libs := "--libdir " + libdir + " --lib sokol --lib readback --lib imageio --lib gamectl"
 macos := if os() == "macos" { "--macos-min-version 14.0" } else { "" }
 
+# the sources c3fmt formats: the hand written ones. The sokol-shdc generated
+# files (gtao.c3, kernels.c3, output.c3, radiance_cs.c3, shader.c3, taa.c3) are
+# left out: they are machine made, and c3fmt is very slow on them.
+c3fmt_files := "audio.c3 clock.c3 clusters.c3 compute.c3 controls.c3 core.c3 culling.c3 display.c3 fog.c3 gamepad.c3 geometry.c3 gltf.c3 irradiance.c3 material.c3 math.c3 menu.c3 postprocessing.c3 profile.c3 radiance.c3 raycaster.c3 reflection_probes.c3 reflector.c3 renderer.c3 skeleton.c3 sky.c3 texture.c3 timeline.c3 touch.c3"
+
+
 [private]
 default:
     @just --list
@@ -27,3 +33,11 @@ test name out=("tests/build/" + name + ".ppm"):
 # docs.html: the API of drie's modules, with their comments (docgen.py)
 docs:
     c3c docgen *.c3 --emit-stdlib=no {{libs}} --json | python3 docgen.py -o docs.html
+
+# format drie's sources with c3fmt (see .c3fmt)
+fmt:
+    c3fmt --in-place {{c3fmt_files}}
+
+# check that drie's sources are formatted (same files as `just fmt`)
+fmt-check:
+    c3fmt --check {{c3fmt_files}}

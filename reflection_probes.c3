@@ -21,8 +21,7 @@ import sokol;
 
 const int MAX_REFLECTION_PROBES = 4;
 
-struct ReflectionProbe
-{
+struct ReflectionProbe {
     Vector3 position;
     Vector3 box_min;
     Vector3 box_max;
@@ -34,8 +33,7 @@ struct ReflectionProbe
     char[] pixels;
 }
 
-struct ReflectionProbes
-{
+struct ReflectionProbes {
     ReflectionProbe[MAX_REFLECTION_PROBES] probes;
     int count;
     int width;
@@ -47,25 +45,39 @@ struct ReflectionProbes
     bool uploaded;
 }
 
-fn ReflectionProbes* reflection_probes()
-{
+fn ReflectionProbes* reflection_probes() {
     return mem::new(ReflectionProbes);
 }
 
 // Adds a probe: `map` as seen from `position`, for the points inside box_min..box_max (none:
 // for everywhere outside the other probes' boxes). Returns it, for its blend and intensity.
-fn ReflectionProbe* ReflectionProbes.add(&self, Texture* map, Vector3 position, Vector3 box_min = {}, Vector3 box_max = {},
-                                         float blend = 0.4)
-{
+fn ReflectionProbe* ReflectionProbes.add(
+    &self,
+    Texture* map,
+    Vector3 position,
+    Vector3 box_min = { },
+    Vector3 box_max = { },
+    float blend = 0.4
+) {
     if (self.count >= MAX_REFLECTION_PROBES) abort("drie: too many reflection probes (MAX_REFLECTION_PROBES)");
-    if (!map.pixels.len) abort("drie: a reflection probe's map must still have its pixels (add it before it is drawn with)");
-    if (self.count && (map.width != self.width || map.height != self.height)) abort("drie: reflection probes' maps must be of one size");
+    if (!map.pixels.len) abort(
+        "drie: a reflection probe's map must still have its pixels (add it before it is drawn with)"
+    );
+    if (self.count && (map.width != self.width || map.height != self.height)) abort(
+        "drie: reflection probes' maps must be of one size"
+    );
     self.width = map.width;
     self.height = map.height;
     self.color_space = map.color_space;
     ReflectionProbe* p = &self.probes[self.count++];
-    *p = { .position = position, .box_min = box_min, .box_max = box_max, .blend = blend, .intensity = 1,
-           .distance_range = map.env_distance_range };
+    *p = {
+        .position = position,
+        .box_min = box_min,
+        .box_max = box_max,
+        .blend = blend,
+        .intensity = 1,
+        .distance_range = map.env_distance_range
+    };
     p.pixels = mem::new_array(char, map.pixels.len);
     p.pixels[..] = map.pixels[..];
     self.uploaded = false;
@@ -73,20 +85,14 @@ fn ReflectionProbe* ReflectionProbes.add(&self, Texture* map, Vector3 position, 
 }
 
 // Halves an RGBA8 image with a box filter.
-fn char[] probe_downsample(char[] src, int w, int h, int nw, int nh) @local
-{
+fn char[] probe_downsample(char[] src, int w, int h, int nw, int nh) @local {
     char[] dst = mem::new_array(char, (sz)nw * nh * 4);
-    for (int y = 0; y < nh; y++)
-    {
-        for (int x = 0; x < nw; x++)
-        {
-            for (int c = 0; c < 4; c++)
-            {
+    for (int y = 0; y < nh; y++) {
+        for (int x = 0; x < nw; x++) {
+            for (int c = 0; c < 4; c++) {
                 int sum = 0;
-                for (int j = 0; j < 2; j++)
-                {
-                    for (int i = 0; i < 2; i++)
-                    {
+                for (int j = 0; j < 2; j++) {
+                    for (int i = 0; i < 2; i++) {
                         sum += src[((sz)math::min(y * 2 + j, h - 1) * w + math::min(x * 2 + i, w - 1)) * 4 + c];
                     }
                 }
@@ -99,21 +105,18 @@ fn char[] probe_downsample(char[] src, int w, int h, int nw, int nh) @local
 
 // Makes the array texture (a layer per probe, with its mip levels: roughness blurs through
 // them). Called by the renderer.
-fn void ReflectionProbes.upload(&self)
-{
+fn void ReflectionProbes.upload(&self) {
     if (self.uploaded || !self.count) return;
-    if (self.image.id)
-    {
+    if (self.image.id) {
         sg::destroy_view(self.view);
         sg::destroy_image(self.image);
     }
     int levels = 1;
-    int lw = self.width;
-    int lh = self.height;
+    int lw     = self.width;
+    int lh     = self.height;
     // sokol takes the levels one after the other, each with all its layers
-    sz total = (sz)lw * lh * 4 * self.count;
-    while ((lw > 1 || lh > 1) && levels < 12)
-    {
+    sz total   = (sz)lw * lh * 4 * self.count;
+    while ((lw > 1 || lh > 1) && levels < 12) {
         lw = math::max(lw / 2, 1);
         lh = math::max(lh / 2, 1);
         total += (sz)lw * lh * 4 * self.count;
@@ -126,41 +129,44 @@ fn void ReflectionProbes.upload(&self)
     sz at;
     int w = self.width;
     int h = self.height;
-    for (int l = 0; l < levels; l++)
-    {
-        for (int i = 0; i < self.count; i++)
-        {
+    for (int l = 0; l < levels; l++) {
+        for (int i = 0; i < self.count; i++) {
             all[at:level[i].len] = level[i][..];
             at += level[i].len;
         }
         int nw = math::max(w / 2, 1);
         int nh = math::max(h / 2, 1);
-        for (int i = 0; i < self.count; i++)
-        {
-            char[] next = l + 1 < levels ? probe_downsample(level[i], w, h, nw, nh) : {};
+        for (int i = 0; i < self.count; i++) {
+            char[] next = l + 1 < levels ? probe_downsample(level[i], w, h, nw, nh) : { };
             if (l > 0) free(level[i]);
             level[i] = next;
         }
         w = nw;
         h = nh;
     }
-    self.image = sg::make_image(&&{
-        .type = ARRAY,
-        .width = self.width,
-        .height = self.height,
-        .num_slices = self.count,
-        .num_mipmaps = levels,
-        .pixel_format = self.color_space == SRGB_COLOR_SPACE ? SgPixelFormat.SRGB8A8 : SgPixelFormat.RGBA8,
-        .data = { .ptr = all.ptr, .size = (usz)total },
-        .label = "drie-reflection-probes",
-    });
+    self.image = sg::make_image(
+        &&{
+            .type = ARRAY,
+            .width = self.width,
+            .height = self.height,
+            .num_slices = self.count,
+            .num_mipmaps = levels,
+            .pixel_format = self.color_space == SRGB_COLOR_SPACE ? SgPixelFormat.SRGB8A8 : SgPixelFormat.RGBA8,
+            .data = { .ptr = all.ptr, .size = (usz)total },
+            .label = "drie-reflection-probes",
+        }
+    );
     self.view = sg::make_view(&&{ .texture = { .image = self.image } });
-    if (!self.sampler.id)
-    {
-        self.sampler = sg::make_sampler(&&{
-            .min_filter = LINEAR, .mag_filter = LINEAR, .mipmap_filter = LINEAR,
-            .wrap_u = REPEAT, .wrap_v = CLAMP_TO_EDGE,
-        });
+    if (!self.sampler.id) {
+        self.sampler = sg::make_sampler(
+            &&{
+                .min_filter = LINEAR,
+                .mag_filter = LINEAR,
+                .mipmap_filter = LINEAR,
+                .wrap_u = REPEAT,
+                .wrap_v = CLAMP_TO_EDGE,
+            }
+        );
     }
     self.uploaded = true;
 }

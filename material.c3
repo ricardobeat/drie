@@ -2,8 +2,7 @@
 //   drie::mesh_standard_material(color: 0x44aa88, roughness: 0.4)
 module drie;
 
-enum Side
-{
+enum Side {
     FRONT_SIDE,
     BACK_SIDE,
     DOUBLE_SIDE,
@@ -11,24 +10,21 @@ enum Side
 
 // How a see-through material's pixels are put over what is behind them (like three's
 // `blending`): mixed in by their opacity, or added to it, as light is.
-enum Blending
-{
+enum Blending {
     NORMAL_BLENDING,
     ADDITIVE_BLENDING,
 }
 
 // Values match the shader's `mode`.
-constdef MaterialType : int
-{
-    BASIC = 0,
-    LAMBERT = 1,
-    PHONG = 2,
+constdef MaterialType : int {
+    BASIC    = 0,
+    LAMBERT  = 1,
+    PHONG    = 2,
     STANDARD = 3,
-    NORMAL = 4,
+    NORMAL   = 4,
 }
 
-struct Material
-{
+struct Material {
     MaterialType type;
     Color color;
     float opacity;
@@ -121,22 +117,38 @@ struct Material
 
 // A copy of the material to change on its own (like three's Material.clone). Textures are
 // shared.
-fn Material* Material.clone(&self)
-{
+fn Material* Material.clone(&self) {
     Material* m = mem::new(Material);
     *m = *self;
     return m;
 }
 
-struct MeshBasicMaterial { inline Material material; }
-struct MeshLambertMaterial { inline Material material; }
-struct MeshPhongMaterial { inline Material material; }
-struct MeshStandardMaterial { inline Material material; }
-struct MeshNormalMaterial { inline Material material; }
+struct MeshBasicMaterial {
+    inline Material material;
+}
+struct MeshLambertMaterial {
+    inline Material material;
+}
+struct MeshPhongMaterial {
+    inline Material material;
+}
+struct MeshStandardMaterial {
+    inline Material material;
+}
+struct MeshNormalMaterial {
+    inline Material material;
+}
 
-fn void Material.init_base(&self, MaterialType type, Color color, float opacity, bool transparent, Side side,
-                           bool wireframe, bool fog)
-{
+fn void Material.init_base(
+    &self,
+    MaterialType type,
+    Color color,
+    float opacity,
+    bool transparent,
+    Side side,
+    bool wireframe,
+    bool fog
+) {
     self.type = type;
     self.color = color;
     self.opacity = opacity;
@@ -156,10 +168,16 @@ fn void Material.init_base(&self, MaterialType type, Color color, float opacity,
 }
 
 // Unlit, flat color.
-fn MeshBasicMaterial* mesh_basic_material(Color color = 0xffffff, float opacity = 1, bool transparent = false,
-                                          Side side = FRONT_SIDE, bool wireframe = false, bool fog = true, bool vertex_colors = false,
-        Texture* map = null)
-{
+fn MeshBasicMaterial* mesh_basic_material(
+    Color color = 0xffffff,
+    float opacity = 1,
+    bool transparent = false,
+    Side side = FRONT_SIDE,
+    bool wireframe = false,
+    bool fog = true,
+    bool vertex_colors = false,
+    Texture* map = null
+) {
     MeshBasicMaterial* m = mem::new(MeshBasicMaterial);
     m.init_base(BASIC, color, opacity, transparent, side, wireframe, fog);
     m.vertex_colors = vertex_colors;
@@ -168,11 +186,18 @@ fn MeshBasicMaterial* mesh_basic_material(Color color = 0xffffff, float opacity 
 }
 
 // Diffuse-only lighting.
-fn MeshLambertMaterial* mesh_lambert_material(Color color = 0xffffff, Color emissive = 0x000000,
-                                              float emissive_intensity = 1, float opacity = 1, bool transparent = false,
-                                              Side side = FRONT_SIDE, bool wireframe = false, bool fog = true, bool vertex_colors = false,
-        Texture* map = null)
-{
+fn MeshLambertMaterial* mesh_lambert_material(
+    Color color = 0xffffff,
+    Color emissive = 0x000000,
+    float emissive_intensity = 1,
+    float opacity = 1,
+    bool transparent = false,
+    Side side = FRONT_SIDE,
+    bool wireframe = false,
+    bool fog = true,
+    bool vertex_colors = false,
+    Texture* map = null
+) {
     MeshLambertMaterial* m = mem::new(MeshLambertMaterial);
     m.init_base(LAMBERT, color, opacity, transparent, side, wireframe, fog);
     m.vertex_colors = vertex_colors;
@@ -183,12 +208,20 @@ fn MeshLambertMaterial* mesh_lambert_material(Color color = 0xffffff, Color emis
 }
 
 // Blinn-Phong with specular highlights.
-fn MeshPhongMaterial* mesh_phong_material(Color color = 0xffffff, Color specular = 0x111111, float shininess = 30,
-                                          Color emissive = 0x000000, float emissive_intensity = 1, float opacity = 1,
-                                          bool transparent = false, Side side = FRONT_SIDE, bool wireframe = false,
-                                          bool fog = true, bool vertex_colors = false,
-        Texture* map = null)
-{
+fn MeshPhongMaterial* mesh_phong_material(
+    Color color = 0xffffff,
+    Color specular = 0x111111,
+    float shininess = 30,
+    Color emissive = 0x000000,
+    float emissive_intensity = 1,
+    float opacity = 1,
+    bool transparent = false,
+    Side side = FRONT_SIDE,
+    bool wireframe = false,
+    bool fog = true,
+    bool vertex_colors = false,
+    Texture* map = null
+) {
     MeshPhongMaterial* m = mem::new(MeshPhongMaterial);
     m.init_base(PHONG, color, opacity, transparent, side, wireframe, fog);
     m.vertex_colors = vertex_colors;
@@ -201,12 +234,20 @@ fn MeshPhongMaterial* mesh_phong_material(Color color = 0xffffff, Color specular
 }
 
 // Physically based (metalness / roughness).
-fn MeshStandardMaterial* mesh_standard_material(Color color = 0xffffff, float roughness = 1, float metalness = 0,
-                                                Color emissive = 0x000000, float emissive_intensity = 1,
-                                                float opacity = 1, bool transparent = false, Side side = FRONT_SIDE,
-                                                bool wireframe = false, bool fog = true, bool vertex_colors = false,
-        Texture* map = null)
-{
+fn MeshStandardMaterial* mesh_standard_material(
+    Color color = 0xffffff,
+    float roughness = 1,
+    float metalness = 0,
+    Color emissive = 0x000000,
+    float emissive_intensity = 1,
+    float opacity = 1,
+    bool transparent = false,
+    Side side = FRONT_SIDE,
+    bool wireframe = false,
+    bool fog = true,
+    bool vertex_colors = false,
+    Texture* map = null
+) {
     MeshStandardMaterial* m = mem::new(MeshStandardMaterial);
     m.init_base(STANDARD, color, opacity, transparent, side, wireframe, fog);
     m.vertex_colors = vertex_colors;
@@ -219,9 +260,12 @@ fn MeshStandardMaterial* mesh_standard_material(Color color = 0xffffff, float ro
 }
 
 // Colors surfaces by their normal direction.
-fn MeshNormalMaterial* mesh_normal_material(float opacity = 1, bool transparent = false, Side side = FRONT_SIDE,
-                                            bool wireframe = false)
-{
+fn MeshNormalMaterial* mesh_normal_material(
+    float opacity = 1,
+    bool transparent = false,
+    Side side = FRONT_SIDE,
+    bool wireframe = false
+) {
     MeshNormalMaterial* m = mem::new(MeshNormalMaterial);
     m.init_base(NORMAL, 0xffffff, opacity, transparent, side, wireframe, false);
     return m;
