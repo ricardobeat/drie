@@ -137,7 +137,7 @@ fn void CanvasTexture.begin(&self, Color clear = 0x000000) {
     self.texture.upload();
     if (!self.attachment.id) self.attachment = sg::make_view(&&{ .color_attachment = { .image = self.texture.image } });
     pass.attachments.colors[0] = self.attachment;
-    sg::begin_pass(&pass);
+    profile::begin_pass(&pass);
 }
 
 fn void CanvasTexture.end(&self) => sg::end_pass();

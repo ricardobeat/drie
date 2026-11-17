@@ -157,7 +157,7 @@ fn SgView update_fog_volume(
     bind.views[shaders::VIEW_VF_LIGHT_CLUSTERS] = s.on_gpu ? s.gpu_clusters.view : s.clusters.view;
     bind.views[shaders::VIEW_VF_LIGHT_INDICES] = s.on_gpu ? s.gpu_indices.view : s.indices.view;
 
-    sg::begin_pass(&&{ .compute = true, .label = "drie-fog" });
+    profile::begin_pass(&&{ .compute = true, .label = "drie-fog" });
     sg::apply_pipeline(fog_pass.pipeline);
     sg::apply_bindings(&bind);
     sg::apply_uniforms(shaders::UB_FOG_CS_PARAMS, &&{ .ptr = &c, .size = FogCsParams::size });
