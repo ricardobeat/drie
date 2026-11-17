@@ -69,14 +69,16 @@ three.js API coverage:
 | Scene & Cameras | ✅ | `Object3D`, `Group`, `Scene`, `PerspectiveCamera`, `OrthographicCamera` |
 | Meshes & LOD | ✅ | `Mesh`, `InstancedMesh`, `Lod` |
 | Geometry | ✅ | `box`, `plane`, `sphere`, `cylinder`, `cone`, `torus`, `lathe`, `buffer_geometry`, `merge` |
-| Materials | ✅ | `MeshBasic`, `MeshLambert`, `MeshPhong`, `MeshStandard`, `MeshNormal` |
+| Materials | ✅ | `MeshBasic`, `MeshLambert`, `MeshPhong`, `MeshStandard`, `MeshNormal`, parallax mapping (`parallaxUV`), shader hooks (`onBeforeCompile`) |
 | Textures | ✅ | `load_texture` (PNG/JPEG), `data_texture`, `canvas_texture`, mipmaps, anisotropy |
 | Lights | ✅ | `AmbientLight`, `HemisphereLight`, `DirectionalLight`, `PointLight`, `SpotLight` |
+| Lighting addons | ✅ | Clustered forward lighting (`ClusteredLighting`), irradiance volume (`LightProbeGrid`) |
+| Reflections | ✅ | Box-projected env maps, `CubeCamera` capture, SSR (`SSRNode`), planar `Reflector` |
 | Fog | ✅ | `Fog`, `FogExp2` |
 | Controls | ✅ | `OrbitControls` (`drie::controls`) |
 | Raycasting | ✅ | `Raycaster` against `Mesh`, `InstancedMesh`, `Lod` (per-triangle) |
 | Post-processing | ✅ | `EffectComposer`, `RenderPass`, `ShaderPass`, `output_pass`, `gtao_pass`, `taa_pass` |
-| Renderer | ✅ | `render_target`, tone mapping, frustum culling, `renderer.info`, MRT |
+| Renderer | ✅ | `render_target`, tone mapping, frustum culling, `renderer.info`, MRT, compute passes |
 | Shadows | ⚠️ | `DirectionalLight` (CSM) and `SpotLight` (1 live + cached atlas); `PointLight` ❌ |
 | Skeletons | ⚠️ | `Bone`, `Skeleton`, `SkinnedMesh` (CPU skinning); animation clips ❌ |
 | glTF (`drie::loaders`) | ⚠️ | `.glb` meshes, materials, textures; skins & animations ❌ |
@@ -116,15 +118,12 @@ Features not in three.js:
 | Feature | Summary |
 | --- | --- |
 | **Radiance Cascades GI** | Real-time GPU global illumination and emissive bounce (`scene.radiance`) |
-| **Irradiance Volume** | Probe grid for user-populated indirect bounce light (`scene.irradiance`) |
-| **Cascaded Shadow Maps** | 1–4 texel-snapped directional cascades with blending and debug view |
 | **Cached Shadow Atlas** | Static spot-light shadow caching in a shared atlas |
-| **Clustered Forward Lighting** | `16x9x24` compute-assigned light clusters (up to 1024 per kind or unlimited) |
 | **Volumetric Fog** | Compute-marched froxel fog with light scatter, sun shafts, 3D noise, and clear boxes |
-| **Reflections** | Environment maps, load-time probe capture, room probes, SSR, and planar reflectors |
-| **Material Extensions** | Packed ARM maps, parallax occlusion mapping, foliage wind sway, glass, additive blending |
-| **Compute & GPU Culling** | `@cs` compute passes, async readback, depth pre-pass, and GPU instanced culling |
-| **Shader Hooks** | Custom `vertex_hooks` / `surface_hooks` around `shader_core.glsl` |
+| **Room Reflection Probes** | Box-projected, cross-faded room probes |
+| **GPU Culling** | Depth pre-pass and GPU instanced culling |
+| **Light Radius** | Softer close-range falloff on point and spot lights |
+| **Material Extensions** | Foliage wind sway, glass viewer silhouette |
 | **UI, Input & Tooling** | Menus, macOS GameController support, deterministic timeline rewind, profiling |
 
 ### Materials & Geometry
@@ -133,7 +132,7 @@ Features not in three.js:
 - **Parallax occlusion mapping:** `material.parallax_map` with shadowing from the first directional light.
 - **Foliage & wind sway:** `material.foliage` enables two-sided wrapped lighting for alpha-tested foliage, animated with `sway`, `sway_speed`, and `renderer.time`.
 - **Glass & viewer silhouette:** `material.glass` preserves reflections regardless of opacity; `material.reflect_viewer` darkens glass reflections with a soft silhouette at the camera.
-- **Additive blending & draw order:** `material.blending = ADDITIVE_BLENDING` for transparent materials and `object.render_order` for explicit draw order.
+- **Additive blending & draw order:** `material.blending = ADDITIVE_BLENDING` for transparent materials and `object.render_order` for explicit draw order, as in three.js.
 - **World-space box UVs:** `geometry.box_project_uv(tiles_per_unit)` generates box-projected UVs.
 
 <details>
@@ -149,7 +148,7 @@ Features not in three.js:
 ### Lighting, Shadows & Global Illumination
 
 - **Light source radius:** `light.radius` softens close-range falloff on point and spot lights; `spot_light.specular_radius` controls reflection highlight size.
-- **Cached static shadows:** `light.shadow.auto_update = false` caches static shadow maps in the shared atlas (`renderer.shadow_atlas_capacity`).
+- **Cached static shadows:** `light.shadow.auto_update = false` (three.js `shadow.autoUpdate`) caches static shadow maps in the shared atlas (`renderer.shadow_atlas_capacity`).
 - **Cascaded shadow maps:** `DirectionalLight` supports 1–4 texel-snapped cascades with blending and debug visualization.
 - **Irradiance volume** (`irradiance.c3`): `scene.irradiance` (`IrradianceVolume`) probe grid for user-populated indirect bounce light.
 - **Radiance Cascades GI** (`radiance.c3`): `scene.radiance` (`RadianceCascades`) computes real-time GPU GI and emissive bounce, replacing ambient/hemisphere lights and `scene.irradiance` inside its box.
@@ -169,7 +168,7 @@ Features not in three.js:
 ### Reflections
 
 - **Environment maps:** Equirectangular reflections with mip-based roughness blur and optional box projection.
-- **Environment capture:** `renderer.capture_environment(...)` renders a 6-face light probe into an equirectangular `env_map` (reads back from the GPU; intended for load time).
+- **Environment capture:** `renderer.capture_environment(...)` renders a 6-face light probe into an equirectangular `env_map` (reads back from the GPU; intended for load time). This is three.js's `CubeCamera` + `PMREMGenerator`.
 - **Room reflection probes:** `scene.reflection_probes` (`ReflectionProbes`) array texture of box-projected, cross-faded room probes for materials with `env_probes`.
 - **Screen-space reflections (SSR):** Previous-frame color/depth reflections with optional back-face thickness.
 - **Planar reflections:** `reflector(normal, constant)` renders planar reflections using an oblique near plane.
@@ -189,7 +188,7 @@ Features not in three.js:
 
 ### Fog
 
-- **Exponential fog:** `drie::fog_exp(color, density)`.
+- **Exponential fog:** `drie::fog_exp(color, density)` (three.js `FogExp2`).
 - **Volumetric fog** (`fog.c3`): Compute-marched froxel grid supporting light scatter (`spot_light.fog_glow`), height falloff, sun shafts, 3D animated noise, and clear boxes.
 
 <details>
