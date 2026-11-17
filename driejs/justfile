@@ -53,7 +53,7 @@ bench which="all":
     fi
 
 # fetch and build what the build needs (only what is missing)
-deps: boomkat wamr three assets
+deps: boomkat draco wamr three assets
 
 # boomkat's jit branch, from the registry (project.json); `rm -rf lib/boomkat.c3l` to update it
 [private]
@@ -82,6 +82,28 @@ wamr:
     # the library's name and folder differ by generator: copy it where wamr.c3l links it
     built=$(find third_party/wamr-build -name libiwasm.a -o -name iwasm.lib -o -name vmlib.lib -o -name libvmlib.a | head -1)
     [ "$built" = "$lib" ] || cp "$built" $lib
+
+# libdraco (DRACOLoader's decoder) in third_party/draco/{include,lib}, where draco.c3l looks:
+# from Homebrew (brew install draco), apt (libdraco-dev) or vcpkg (draco, DRACO_TRIPLET)
+[private]
+draco:
+    #!/usr/bin/env bash
+    set -e
+    [ -e third_party/draco/include/draco ] && exit 0
+    mkdir -p third_party/draco
+    case "{{os()}}" in
+    macos)
+        prefix=$(brew --prefix draco)
+        ln -sfn "$prefix/include" third_party/draco/include
+        ln -sfn "$prefix/lib" third_party/draco/lib ;;
+    windows)
+        prefix="$VCPKG_INSTALLATION_ROOT/installed/${DRACO_TRIPLET:-x64-windows-static}"
+        cp -r "$prefix/include" third_party/draco/include
+        cp -r "$prefix/lib" third_party/draco/lib ;;
+    *)
+        ln -sfn /usr/include third_party/draco/include
+        ln -sfn "$(dirname "$(find /usr/lib /usr/local/lib -name libdraco.a 2>/dev/null | head -1)")" third_party/draco/lib ;;
+    esac
 
 # three.js into vendor/: three.core.js, three.module.js, and examples/jsm as jsm/ (three/addons/...)
 [private]
