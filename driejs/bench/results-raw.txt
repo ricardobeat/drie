@@ -1,0 +1,72 @@
+== node
+transforms: all moving               1000      0.073 ms
+transforms: nothing moving           1000      0.036 ms
+transforms: frozen (no autoupdate)   1000      0.035 ms
+render list: cull + sort             1000      0.161 ms
+                                   (1000 of 1000 in view)
+sync: copy matrixWorld out           1000      0.024 ms
+transforms: all moving               5000      0.424 ms
+transforms: nothing moving           5000      0.191 ms
+transforms: frozen (no autoupdate)   5000      0.187 ms
+render list: cull + sort             5000      0.772 ms
+                                   (5000 of 5000 in view)
+sync: copy matrixWorld out           5000      0.131 ms
+transforms: all moving              20000      3.012 ms
+transforms: nothing moving          20000      0.942 ms
+transforms: frozen (no autoupdate)  20000      0.950 ms
+render list: cull + sort            20000      4.405 ms
+                                   (20000 of 20000 in view)
+sync: copy matrixWorld out          20000      0.580 ms
+animation: 60-bone characters          10      0.141 ms
+animation: 60-bone characters          50      0.757 ms
+raycast: 8k-triangle sphere             1      0.255 ms
+real 18.21
+== node --jitless
+time: node --jitless: No such file or directory
+real 0.00
+== bun
+transforms: all moving               1000      0.061 ms
+transforms: nothing moving           1000      0.039 ms
+transforms: frozen (no autoupdate)   1000      0.036 ms
+render list: cull + sort             1000      0.120 ms
+                                   (1000 of 1000 in view)
+sync: copy matrixWorld out           1000      0.016 ms
+transforms: all moving               5000      0.315 ms
+transforms: nothing moving           5000      0.195 ms
+transforms: frozen (no autoupdate)   5000      0.186 ms
+render list: cull + sort             5000      0.626 ms
+                                   (5000 of 5000 in view)
+sync: copy matrixWorld out           5000      0.083 ms
+transforms: all moving              20000      2.514 ms
+transforms: nothing moving          20000      1.639 ms
+transforms: frozen (no autoupdate)  20000      1.740 ms
+render list: cull + sort            20000      4.488 ms
+                                   (20000 of 20000 in view)
+sync: copy matrixWorld out          20000      0.674 ms
+animation: 60-bone characters          10      0.127 ms
+animation: 60-bone characters          50      0.685 ms
+raycast: 8k-triangle sphere             1      0.220 ms
+real 18.68
+== /Users/rtomasi/cousas/boomkat/out/boomkat
+transforms: all moving               1000      1.451 ms
+transforms: nothing moving           1000      0.979 ms
+transforms: frozen (no autoupdate)   1000      0.914 ms
+render list: cull + sort             1000      2.753 ms
+                                   (1000 of 1000 in view)
+sync: copy matrixWorld out           1000      0.375 ms
+transforms: all moving               5000      8.350 ms
+transforms: nothing moving           5000      5.112 ms
+transforms: frozen (no autoupdate)   5000      4.869 ms
+render list: cull + sort             5000     15.119 ms
+                                   (5000 of 5000 in view)
+sync: copy matrixWorld out           5000      1.929 ms
+transforms: all moving              20000     40.080 ms
+transforms: nothing moving          20000     24.024 ms
+transforms: frozen (no autoupdate)  20000     22.667 ms
+render list: cull + sort            20000     65.688 ms
+                                   (20000 of 20000 in view)
+sync: copy matrixWorld out          20000     10.500 ms
+animation: 60-bone characters          10      4.348 ms
+animation: 60-bone characters          50     23.605 ms
+Uncaught ReferenceError: Must call super constructor in derived class before accessing 'this' or returning from derived constructor
+real 18.53

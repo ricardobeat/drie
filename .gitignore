@@ -1,1 +1,7 @@
 tests/build/
+driejs/build/
+driejs/out/
+driejs/third_party/
+driejs/vendor/
+driejs/demos/models/
+driejs/demos/textures/
