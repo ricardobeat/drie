@@ -5,7 +5,7 @@
 // render_back_faces, and with a Reflector for the floor (screen-space reflections only for what
 // stands on it), side by side into one picture.
 //
-//   tests/run.sh reflections <libdir> [out.ppm]
+//   just test reflections [out.ppm]
 //
 // <libdir> holds drie.c3l and what it needs (the game's lib/).
 module reflections_test;

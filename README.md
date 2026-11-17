@@ -380,7 +380,16 @@ passes, and `taa.c3`), and any application shaders that include `shader_core.gls
 
 `tests/reflections.c3` renders a scene made for reflections (a glossy floor, cubes floating
 over it, a thin panel, a wall) headless from a few low angles, with each kind of reflection side
-by side: `tests/run.sh reflections <the application's lib/> out.ppm`.
+by side: `just test reflections` (`just libdir=<the application's lib/> test reflections` for another).
 
 `tests/radiance.c3` renders the same scene lit by its hemisphere light, by `RadianceCascades`,
-and by them with only the glowing cubes for light: `tests/run.sh radiance <lib/> out.ppm`.
+and by them with only the glowing cubes for light: `just test radiance`.
+
+The tests write `tests/build/<name>.ppm`. They build against the game's `lib/`
+(`../house/lib`), which holds drie and its dependencies.
+
+## Recipes
+
+`just` lists them: `just check` type-checks drie, `just test <name>` runs a test, `just docs`
+writes `docs.html` (the API of drie's modules with their comments, by `docgen.py`), and
+`just driejs::<recipe>` builds and runs [driejs](driejs/README.md), three.js code on drie.
