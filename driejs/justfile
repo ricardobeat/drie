@@ -17,7 +17,7 @@ default:
 
 # build out/driejs
 build: deps
-    c3c build driejs {{libs}} --lib draco --lib wamr {{macos}}
+    c3c build driejs
 
 # build, then run: `just run demos/webgl_geometries.js`, `just run --frames 3 --png shot.png demos/x.js`
 run +args: build
