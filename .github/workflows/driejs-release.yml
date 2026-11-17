@@ -1,0 +1,127 @@
+# Builds driejs for macOS (arm64), Linux (arm64 and x64) and Windows (x64; WAMR has no MSVC arm64 build) and makes a GitHub release of
+# whatever built. Run it from the Actions tab (or `gh workflow run driejs-release.yml -f tag=...`).
+# A platform that fails to build is left out of the release instead of failing the run.
+name: driejs release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (e.g. driejs-v0.1.0)"
+        required: true
+      prerelease:
+        description: "Mark as a pre-release"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+env:
+  C3C_VERSION: v0.8.6
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: macos-arm64, runner: macos-15, c3c: c3-macos.zip }
+          - { name: linux-x64, runner: ubuntu-24.04, c3c: c3-linux.tar.gz }
+          - { name: linux-arm64, runner: ubuntu-24.04-arm, c3c: source }
+          - { name: windows-x64, runner: windows-2025, c3c: c3-windows.zip, draco_triplet: x64-windows-static }
+    defaults:
+      run:
+        shell: bash
+    env:
+      DRACO_TRIPLET: ${{ matrix.draco_triplet }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: extractions/setup-just@v3
+
+      - name: Install c3c (release)
+        if: matrix.c3c != 'source'
+        run: |
+          mkdir -p "$RUNNER_TEMP/c3c"
+          gh release download "$C3C_VERSION" -R c3lang/c3c -p "${{ matrix.c3c }}" -D "$RUNNER_TEMP"
+          case "${{ matrix.c3c }}" in
+            *.zip) unzip -q "$RUNNER_TEMP/${{ matrix.c3c }}" -d "$RUNNER_TEMP/c3c" ;;
+            *) tar -xzf "$RUNNER_TEMP/${{ matrix.c3c }}" -C "$RUNNER_TEMP/c3c" ;;
+          esac
+          dir=$(dirname "$(find "$RUNNER_TEMP/c3c" -type f \( -name c3c -o -name c3c.exe \) | head -1)")
+          echo "$dir" >> "$GITHUB_PATH"
+
+      - name: Install c3c (from source; no release for linux-arm64)
+        if: matrix.c3c == 'source'
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -yq cmake ninja-build llvm-19-dev liblld-19-dev libpolly-19-dev clang-19 lld-19 libcurl4-openssl-dev zlib1g-dev
+          git clone -q --depth 1 --branch "$C3C_VERSION" https://github.com/c3lang/c3c.git "$RUNNER_TEMP/c3c-src"
+          cmake -S "$RUNNER_TEMP/c3c-src" -B "$RUNNER_TEMP/c3c-build" -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DC3_LLVM_VERSION=19 -DCMAKE_C_COMPILER=clang-19 -DCMAKE_CXX_COMPILER=clang++-19
+          cmake --build "$RUNNER_TEMP/c3c-build"
+          echo "$RUNNER_TEMP/c3c-build" >> "$GITHUB_PATH"
+
+      - name: Install libraries (macOS)
+        if: runner.os == 'macOS'
+        run: brew install draco cmake
+
+      - name: Install libraries (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -yq cmake libdraco-dev libx11-dev libxi-dev libxcursor-dev libgl-dev libpulse-dev
+
+      - name: Install libraries (Windows)
+        if: runner.os == 'Windows'
+        run: vcpkg install "draco:$DRACO_TRIPLET"
+
+      - name: Build
+        run: just driejs::build
+
+      - name: Package
+        run: |
+          cd driejs
+          exe=out/driejs; [ -f out/driejs.exe ] && exe=out/driejs.exe
+          dist="driejs-${{ matrix.name }}"
+          mkdir -p "$dist"
+          cp "$exe" "$dist/"
+          cp -r js vendor demos README.md "$dist/"
+          if [ "$RUNNER_OS" = Windows ]; then 7z a -bso0 "../$dist.zip" "$dist"; else tar -czf "../$dist.tar.gz" "$dist"; fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: driejs-${{ matrix.name }}
+          path: driejs-${{ matrix.name }}.*
+          if-no-files-found: error
+
+  release:
+    needs: build
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-24.04
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ inputs.tag }}
+      PRERELEASE: ${{ inputs.prerelease }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: driejs-*
+          merge-multiple: true
+          path: dist
+
+      - name: Create the release
+        run: |
+          ls -la dist || true
+          files=$(find dist -type f \( -name '*.tar.gz' -o -name '*.zip' \) 2>/dev/null)
+          if [ -z "$files" ]; then echo "::error::no platform built"; exit 1; fi
+          built=$(for f in $files; do basename "$f" | sed -E 's/^driejs-//; s/\.(tar\.gz|zip)$//'; done | sort | tr '\n' ' ')
+          gh release create "$TAG" $files -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --title "driejs $TAG" \
+            --notes "driejs (three.js on drie, in boomkat) built from ${GITHUB_SHA:0:8}. Platforms: $built" \
+            $([ "$PRERELEASE" = true ] && echo --prerelease)
