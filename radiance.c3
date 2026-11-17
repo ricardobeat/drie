@@ -16,7 +16,8 @@
 //
 // The rays are marched through a voxel copy of the scene (voxelize: each solid mesh's color
 // and glow; see-through materials leave no voxels). A voxel that a ray hits gives off its
-// glow, plus what the scene's point and spot lights put on it (shadowed through the voxels)
+// glow, plus what the scene's point, spot and directional lights put on it (shadowed through
+// the voxels: a directional light's shadow ray goes to the edge of the box)
 // and what the probes found the frame before: bounce after bounce over the frames. Rays that
 // leave the box see the sky (the scene's hemisphere and ambient lights, or sky_color and
 // ground_color).
@@ -297,6 +298,16 @@ fn void rc_collect_lights(RadianceCascades* self, Object3D* o, RcLightList* out)
             case HEMISPHERE:
                 out.sky += c;
                 out.ground += color_to_linear(((HemisphereLight*)l).ground_color) * l.intensity;
+            case DIRECTIONAL:
+                // (towards the light; w = -3 marks it)
+                DirectionalLight* dl = (DirectionalLight*)l;
+                Vector3 from = l.matrix_world.get_position();
+                Vector3 to = dl.target ? dl.target.matrix_world.get_position() : (Vector3){};
+                Vector3 d = from - to;
+                if (out.count < RC_MAX_LIGHTS && l.intensity > 0 && d.length() > 1e-6f)
+                {
+                    out.lights[out.count++] = { .pos = { ...d.normalize(), 0 }, .color = { ...c, 0 }, .dir = { 0, 0, 0, -3 } };
+                }
             case POINT:
                 PointLight* pl = (PointLight*)l;
                 Vector3 p = l.matrix_world.get_position();
