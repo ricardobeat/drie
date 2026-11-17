@@ -214,6 +214,7 @@ layout(binding=9) uniform texture2D sun_shadow;  // the directional light's map:
 layout(binding=21) uniform texture2D reflector_map; // a Reflector's mirrored render, linear
 layout(binding=20) uniform texture2D ssr_back;    // r = the nearest back face's distance from the camera's plane (m), 0: none
 layout(binding=23) uniform texture2DArray tex_probes; // the scene's reflection probes (reflection_probes.c3)
+layout(binding=24) uniform texture2D tex_parallax; // Material.parallax_map: the surface's height, 1 = top
 layout(binding=19) uniform texture2D fog_volume; // volumetric fog: the froxel grid (fog.c3, fog_cs in kernels.glsl)
 layout(binding=0) uniform sampler tex_smp;
 layout(binding=1) uniform sampler shadow_smp;
@@ -287,6 +288,8 @@ layout(binding=1) uniform fs_params {
     vec4 rc_size;              // xyz = probes, w = intensity (0: none)
     vec4 material_custom[2];   // for the application's hooks: Material.custom
     vec4 frame_custom[2];      //   and Renderer.custom
+    vec4 parallax_params;      // Material.parallax_map: x = depth (m; 0: none), y = distance (m) where
+                               //   it has faded out, z = self-shadowing toward the sun (0..1)
 };
 
 // Lights live in storage buffers, as many as there are. Point and spot lights are sorted into
@@ -404,6 +407,17 @@ float g_metal;
 float g_radius;   // source radius of the light being evaluated
 vec3 g_dpdx;      // how the world position changes from one pixel to the next (taken where
 vec3 g_dpdy;      // the flow is uniform, for the shadows' tap counts)
+// Parallax occlusion mapping (Material.parallax_map). The material's maps are read at g_uv,
+// with the derivatives of v_uv (the offset jumps where the height map steps: its own
+// derivatives would pick a blurry mip level there).
+vec2 g_uv;
+vec2 g_duvdx;
+vec2 g_duvdy;
+// how the uv changes per meter, along the surface (the cotangent frame, as in perturb_normal)
+vec3 g_parallax_gu;
+vec3 g_parallax_gv;
+float g_parallax_h;     // the height map where g_uv lands (0..1)
+float g_parallax_depth; // the depth after the distance fade (m)
 
 // Direct light contribution, following three.js's (r155+) physically based light units.
 // Returns diffuse in rgb; adds specular to `spec`.
@@ -956,18 +970,81 @@ vec3 screen_reflection(vec3 n, vec3 geo_n, vec3 v, float rough, out float found)
 
 // Tangent-space normal mapping without vertex tangents (cotangent frame from screen derivatives).
 vec3 perturb_normal(vec3 n, float scale) {
-    vec3 t = texture(sampler2D(tex_normal, tex_smp), v_uv).xyz * 2.0 - 1.0;
+    vec3 t = textureGrad(sampler2D(tex_normal, tex_smp), g_uv, g_duvdx, g_duvdy).xyz * 2.0 - 1.0;  // (parallax: g_uv)
     t.xy *= scale;
     vec3 dp1 = dFdx(v_world_pos);
     vec3 dp2 = dFdy(v_world_pos);
-    vec2 duv1 = dFdx(v_uv);
-    vec2 duv2 = dFdy(v_uv);
+    vec2 duv1 = g_duvdx;
+    vec2 duv2 = g_duvdy;
     vec3 dp2perp = cross(dp2, n);
     vec3 dp1perp = cross(n, dp1);
     vec3 tangent = dp2perp * duv1.x + dp1perp * duv2.x;
     vec3 bitangent = dp2perp * duv1.y + dp1perp * duv2.y;
     float invmax = inversesqrt(max(max(dot(tangent, tangent), dot(bitangent, bitangent)), 1e-12));
     return normalize(tangent * invmax * t.x + bitangent * invmax * t.y + n * t.z);
+}
+
+// The parallax map at uv.
+vec4 parallax_height(vec2 uv) { return textureGrad(sampler2D(tex_parallax, tex_smp), uv, g_duvdx, g_duvdy); }
+
+// Marches the view ray down into the height field (1 = the surface, 0 = depth meters under it)
+// and moves g_uv to where it meets it.
+void parallax_offset(vec3 n, vec3 v, float dist) {
+    g_parallax_depth = parallax_params.x * (1.0 - smoothstep(parallax_params.y * 0.6, parallax_params.y, dist));
+    g_parallax_h = 1.0;
+    if (g_parallax_depth <= 0.0) return;
+    vec3 dp1 = dFdx(v_world_pos);
+    vec3 dp2 = dFdy(v_world_pos);
+    vec3 dp2perp = cross(dp2, n);
+    vec3 dp1perp = cross(n, dp1);
+    float det = dot(dp1, dp2perp);
+    if (abs(det) < 1e-14) return;
+    g_parallax_gu = (dp2perp * g_duvdx.x + dp1perp * g_duvdy.x) / det;
+    g_parallax_gv = (dp2perp * g_duvdx.y + dp1perp * g_duvdy.y) / det;
+    // the uv a step of 1 m down the view ray moves by (flattened at a glancing angle, where
+    // the march would smear the texture out)
+    float nv = max(dot(n, v), 0.2);
+    vec2 per_m = -vec2(dot(g_parallax_gu, v), dot(g_parallax_gv, v)) / nv;
+    vec2 total = per_m * g_parallax_depth;
+    float steps = mix(24.0, 8.0, nv);
+    float dh = 1.0 / steps;
+    float ray = 1.0;
+    float h = parallax_height(g_uv).r;
+    float prev_h = h;
+    vec2 uv = g_uv;
+    for (int i = 0; i < 24; i++) {
+        if (h >= ray || float(i) >= steps) break;
+        prev_h = h;
+        ray -= dh;
+        uv += total * dh;
+        h = parallax_height(uv).r;
+    }
+    // between the last step above the surface and the first below it
+    float after = h - ray;
+    float before = prev_h - (ray + dh);
+    float t = after / min(after - before, -1e-5);
+    t = clamp(t, 0.0, 1.0);
+    g_uv = uv - total * dh * t;
+    g_parallax_h = mix(h, prev_h, t);
+}
+
+// How much of the light from l reaches g_uv past the bumps of the height map around it (soft:
+// the more a bump stands above the ray to the light, the darker).
+float parallax_shadow(vec3 n, vec3 l) {
+    if (g_parallax_depth <= 0.0 || parallax_params.z <= 0.0) return 1.0;
+    float nl = dot(n, l);
+    if (nl <= 0.0) return 1.0;
+    vec2 per_m = vec2(dot(g_parallax_gu, l), dot(g_parallax_gv, l)) / max(nl, 0.1);
+    float rise = 1.0 - g_parallax_h;
+    if (rise <= 0.01) return 1.0;
+    vec2 total = per_m * g_parallax_depth * rise;
+    float block = 0.0;
+    for (int i = 1; i <= 8; i++) {
+        float f = float(i) / 8.0;
+        float above = parallax_height(g_uv + total * f).r - (g_parallax_h + rise * f);
+        block = max(block, above * (1.0 - f) * 8.0);
+    }
+    return 1.0 - parallax_params.z * clamp(block, 0.0, 1.0);
 }
 
 // Equirectangular environment map lookup, blurred with roughness through its mip levels.
@@ -1131,7 +1208,19 @@ void main() {
     g_base = vec4(color.rgb, color.a);
     bool baked = (fl & 16) != 0;
     if ((fl & 1) != 0 && !baked) g_base.rgb *= v_color;
-    if (tex_params.x > 0.5) g_base *= texture(sampler2D(tex_map, tex_smp), v_uv);
+    // parallax_map: where the view ray meets the height map, for all of the material's maps
+    g_uv = v_uv;
+    g_duvdx = dFdx(v_uv);
+    g_duvdy = dFdy(v_uv);
+    g_parallax_depth = 0.0;
+    if (parallax_params.x > 0.0 && mode != 0) {
+        vec3 pn = normalize(v_normal);
+        if (!gl_FrontFacing && !foliage) pn = -pn;
+        vec3 pv = camera_pos.xyz - v_world_pos;
+        float pd = length(pv);
+        parallax_offset(pn, pv / max(pd, 1e-5), pd);
+    }
+    if (tex_params.x > 0.5) g_base *= textureGrad(sampler2D(tex_map, tex_smp), g_uv, g_duvdx, g_duvdy);  // (parallax: g_uv)
     float alpha = g_base.a;
     if ((fl & 1) != 0) alpha *= v_alpha;
 #ifdef NO_DISCARD
@@ -1170,7 +1259,7 @@ void main() {
     g_metal = mat_params.z;
     float ao = 1.0;
     if (tex_params.z > 0.5) {
-        vec3 arm = texture(sampler2D(tex_arm, tex_smp), v_uv).rgb;
+        vec3 arm = textureGrad(sampler2D(tex_arm, tex_smp), g_uv, g_duvdx, g_duvdy).rgb;  // (parallax: g_uv)
         ao = arm.r;
         g_rough *= arm.g;
         g_metal *= arm.b;
@@ -1221,6 +1310,8 @@ void main() {
             g_radius = 0.0;
             vec3 l = normalize(dirs[i].dir.xyz);
             float lit = int(dir_shadow_params.x) == i + 1 ? dir_shadow(n, l) : 1.0;
+            // parallax_map: the bumps' own shadows, toward the first directional light
+            if (i == 0) lit *= parallax_shadow(geo_n, l);
             if (lit > 0.0) outc += direct(mode, n, v, l, 1e6, dirs[i].color.rgb * lit, diffuse_color, spec);
         }
         if (dir_cascade_params.z > 0.5 && dir_shadow_params.x > 0.5) {
