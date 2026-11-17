@@ -5,8 +5,8 @@
 // that went off) is clipped to the neighbourhood's spread of colors (variance clipping, in
 // YCoCg), and the history is read with a Catmull-Rom filter so it stays sharp.
 // Regenerate taa.c3 with: ./build.sh shaders
-@header module three::postprocessing;
-@header import three;
+@header module drie::postprocessing;
+@header import drie;
 
 @ctype vec4 Vec4
 

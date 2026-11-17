@@ -1,7 +1,7 @@
 // Raycasting, like three's Raycaster: what a ray from a point, or from the camera through a
 // point of the picture, runs into.
 //
-//   Raycaster ray = three::raycaster();
+//   Raycaster ray = drie::raycaster();
 //   ray.set_from_camera({ x, y }, camera);           // x, y: -1..1 across and up the view
 //   List{Intersection} hits;
 //   ray.intersect_objects(scene.children.array_view(), &hits);
@@ -16,7 +16,7 @@
 // `side`. Of a Lod, only the level the ray's origin would see is tested. Like three, it looks
 // at every triangle of the meshes the ray comes near: for big meshes that is linear in their
 // size. World matrices are used as they are: update_matrix_world() (or a render) first.
-module three;
+module drie;
 import std::collections::list, std::math, std::sort;
 
 // A ray: `origin` and a `direction` of length 1, like three's Ray.

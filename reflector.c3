@@ -6,12 +6,12 @@
 // environment map's. Unlike screen-space reflections it shows what the camera can't see (the
 // underside of a thing over the floor); it costs a second render of the scene.
 //
-//   Reflector* mirror = three::reflector({ 0, 1, 0 }, FLOOR_Y);
+//   Reflector* mirror = drie::reflector({ 0, 1, 0 }, FLOOR_Y);
 //   floor_material.reflector = mirror;
 //   // each frame, with the renderer's target set as for the main render:
 //   renderer.render_reflector(mirror, scene, camera);
 //   renderer.render(scene, camera);
-module three;
+module drie;
 import std::math, sokol;
 
 struct Reflector

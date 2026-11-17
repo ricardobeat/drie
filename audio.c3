@@ -9,7 +9,7 @@
 //   left  = p.left  * sample(now - p.delay_left);         // + a low-pass by p.shadow_left
 //   right = p.right * sample(now - p.delay_right);
 //   surround = p.behind * ...                             // see StereoPan.behind
-module three;
+module drie;
 import std::math;
 
 struct AudioListener

@@ -1,6 +1,7 @@
 // Compute shaders of the renderer (see compute.c3): light clustering and instance culling.
 // ./build.sh shaders turns this into kernels.c3.
-@header module three;
+@header module drie::shaders;
+@header import drie;
 
 @ctype mat4 Mat4
 @ctype vec4 Vec4

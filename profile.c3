@@ -1,4 +1,4 @@
-module three::profile;
+module drie::profile;
 import sokol, std::io;
 
 // CPU time per stage of a frame, for finding where it goes (`build/scene --bench --profile`).

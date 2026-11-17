@@ -3,15 +3,15 @@
 // attributes). The renderer uses it for light clustering (clusters.c3) and for culling
 // instanced meshes (culling.c3); an application can run its own kernels the same way.
 //
-//     StorageBuffer* particles = three::storage_buffer(count * Particle::size);
-//     ComputePass* step = three::compute_pass(my_step_shader_desc(sg::query_backend()));
+//     StorageBuffer* particles = drie::storage_buffer(count * Particle::size);
+//     ComputePass* step = drie::compute_pass(my_step_shader_desc(sg::query_backend()));
 //     step.set_buffer(VIEW_PARTICLES, particles);
 //     step.set_uniforms(UB_STEP_PARAMS, &params, StepParams::size);
 //     renderer.compute(step, (count + 63) / 64);
 //
 // Kernels are written in GLSL with sokol-shdc's `@cs` (see kernels.glsl) and need storage
 // buffers, which every backend the engine targets has (Metal, D3D11, GL 4.3).
-module three;
+module drie;
 import std::math, std::io;
 import sokol, readback;
 
@@ -29,7 +29,7 @@ struct StorageBuffer
     ZString label;
 }
 
-fn StorageBuffer* storage_buffer(sz size, bool cpu_write = false, bool vertex = false, ZString label = "three-storage")
+fn StorageBuffer* storage_buffer(sz size, bool cpu_write = false, bool vertex = false, ZString label = "drie-storage")
 {
     StorageBuffer* b = mem::new(StorageBuffer);
     b.cpu_write = cpu_write;
@@ -135,7 +135,7 @@ struct ComputePass
     usz[4] uniform_size;
 }
 
-fn ComputePass* compute_pass(SgShaderDesc desc, ZString label = "three-compute")
+fn ComputePass* compute_pass(SgShaderDesc desc, ZString label = "drie-compute")
 {
     ComputePass* p = mem::new(ComputePass);
     p.shader = sg::make_shader(&desc);
@@ -155,7 +155,7 @@ fn void ComputePass.set_view(&self, int slot, SgView view)
 
 fn void ComputePass.set_uniforms(&self, int slot, void* data, usz size)
 {
-    if (slot < 0 || slot >= 4 || size > 256) abort("three: compute uniforms: slots 0..3, up to 256 bytes");
+    if (slot < 0 || slot >= 4 || size > 256) abort("drie: compute uniforms: slots 0..3, up to 256 bytes");
     mem::copy(&self.uniforms[slot], data, (sz)size);
     self.uniform_size[slot] = size;
 }
@@ -176,7 +176,7 @@ fn void ComputePass.dispatch(&self, int x, int y = 1, int z = 1)
 // Whether the GPU runs compute shaders (always, on the backends the engine targets).
 fn bool compute_supported() => sg::isvalid() && sg::query_features().compute;
 
-fn void begin_compute(ZString label = "three-compute")
+fn void begin_compute(ZString label = "drie-compute")
 {
     sg::begin_pass(&&{ .compute = true, .label = label });
 }

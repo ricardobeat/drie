@@ -20,9 +20,9 @@
 // It is shown and read once `enabled`: from the start on iOS and Android, elsewhere from the
 // first touch. Positions are in points (pixels / sapp::dpi_scale()), like window_width().
 // `mouse_as_touch` lets a mouse stand in for one finger.
-module three::ui;
+module drie::ui;
 import std::collections::list, std::math;
-import sokol, three, three::input;
+import sokol, drie, drie::input;
 
 enum TouchAnchor
 {
@@ -124,8 +124,8 @@ fn uint TouchControls.held(&self)
 
 fn void TouchButton.center(&self, float* x, float* y)
 {
-    float w = three::window_width();
-    float h = three::window_height();
+    float w = drie::window_width();
+    float h = drie::window_height();
     switch (self.anchor)
     {
         case BOTTOM_RIGHT: *x = w - self.x; *y = h - self.y;
@@ -193,7 +193,7 @@ fn void touch_event(SappEvent* e) @private
                     }
                 }
                 if (taken) break;
-                if (!t.stick_down && x < three::window_width() * 0.5f)
+                if (!t.stick_down && x < drie::window_width() * 0.5f)
                 {
                     t.stick_down = true;
                     t.stick_finger = id;
@@ -275,7 +275,7 @@ fn void ui_circle(float x, float y, float r, float width, float cr, float cg, fl
     sgl::c4f(cr, cg, cb, a);
     for (int i = 0; i <= SEGMENTS; i++)
     {
-        float ang = (float)i / SEGMENTS * 2 * three::PI;
+        float ang = (float)i / SEGMENTS * 2 * drie::PI;
         float c = math::cos(ang);
         float s = math::sin(ang);
         sgl::v2f(x + c * r, y + s * r);
@@ -292,10 +292,10 @@ fn void draw_touch_controls(float canvas_scale) @private
     sgl::matrix_mode_projection();
     sgl::push_matrix();
     sgl::load_identity();
-    sgl::ortho(0, three::window_width(), three::window_height(), 0, -1, 1);
+    sgl::ortho(0, drie::window_width(), drie::window_height(), 0, -1, 1);
     float r = t.stick_radius;
     float x0 = t.stick_down ? t.stick_x0 : t.stick_home_x;
-    float y0 = t.stick_down ? t.stick_y0 : three::window_height() - t.stick_home_y;
+    float y0 = t.stick_down ? t.stick_y0 : drie::window_height() - t.stick_home_y;
     float a = t.stick_down ? 0.5f : 0.22f;
     ui_circle(x0, y0, r, 3, 1, 1, 1, a);
     float kx = x0 + t.stick_x * r;

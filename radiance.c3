@@ -1,7 +1,7 @@
 // Radiance cascades (Sannikov 2023) in world space: light that bounces around, and the glow
 // of emissive things, worked out anew every frame on the GPU. (Not in three.js.)
 //
-//   RadianceCascades* rc = three::radiance_cascades(room_min, room_max);
+//   RadianceCascades* rc = drie::radiance_cascades(room_min, room_max);
 //   rc.voxelize(scene);              // once, and again when the solid things in the box change
 //   scene.radiance = rc;
 //   // each frame, before render():
@@ -25,7 +25,7 @@
 // Lit materials inside the box take their indirect light from the probes instead of the
 // scene's ambient, hemisphere and irradiance volume. Directions are jittered and blended over
 // frames (`blend`), so the result takes some frames to settle after a change.
-module three;
+module drie;
 import std::math, std::collections::list;
 import sokol;
 
@@ -117,14 +117,14 @@ fn RadianceCascades* radiance_cascades(Vector3 min, Vector3 max, float spacing =
         r.counts[l] = n.x * n.y * n.z * d * d;
         at += r.counts[l];
     }
-    r.cascade_buf = storage_buffer((sz)at * 16, label: "three-rc-cascades");
-    r.irradiance_buf = storage_buffer((sz)r.nx * r.ny * r.nz * 6 * 16, label: "three-rc-irradiance");
-    r.light_buf = storage_buffer(RC_MAX_LIGHTS * RcLight::size, cpu_write: true, label: "three-rc-lights");
-    r.voxel_buf = storage_buffer(16, label: "three-rc-voxels");
-    r.brick_buf = storage_buffer(16, label: "three-rc-bricks");
+    r.cascade_buf = storage_buffer((sz)at * 16, label: "drie-rc-cascades");
+    r.irradiance_buf = storage_buffer((sz)r.nx * r.ny * r.nz * 6 * 16, label: "drie-rc-irradiance");
+    r.light_buf = storage_buffer(RC_MAX_LIGHTS * RcLight::size, cpu_write: true, label: "drie-rc-lights");
+    r.voxel_buf = storage_buffer(16, label: "drie-rc-voxels");
+    r.brick_buf = storage_buffer(16, label: "drie-rc-bricks");
     SgBackend backend = sg::query_backend();
-    r.trace = compute_pass(rc_trace_shader_desc(backend), "three-rc-trace");
-    r.gather = compute_pass(rc_gather_shader_desc(backend), "three-rc-gather");
+    r.trace = compute_pass(shaders::rc_trace_shader_desc(backend), "drie-rc-trace");
+    r.gather = compute_pass(shaders::rc_gather_shader_desc(backend), "drie-rc-gather");
     return r;
 }
 
@@ -407,28 +407,28 @@ fn void RadianceCascades.update(&self, Scene* scene)
         }
     }
     ComputePass* t = self.trace;
-    t.set_buffer(VIEW_RC_VOXELS, self.voxel_buf);
-    t.set_buffer(VIEW_RC_CASCADES, self.cascade_buf);
-    t.set_buffer(VIEW_RC_IRRADIANCE, self.irradiance_buf);
-    t.set_buffer(VIEW_RC_LIGHTS, self.light_buf);
-    t.set_buffer(VIEW_RC_BRICKS, self.brick_buf);
+    t.set_buffer(shaders::VIEW_RC_VOXELS, self.voxel_buf);
+    t.set_buffer(shaders::VIEW_RC_CASCADES, self.cascade_buf);
+    t.set_buffer(shaders::VIEW_RC_IRRADIANCE, self.irradiance_buf);
+    t.set_buffer(shaders::VIEW_RC_LIGHTS, self.light_buf);
+    t.set_buffer(shaders::VIEW_RC_BRICKS, self.brick_buf);
     ComputePass* g = self.gather;
-    g.set_buffer(VIEW_RC_VOXELS, self.voxel_buf);
-    g.set_buffer(VIEW_RC_BRICKS, self.brick_buf);
-    g.set_buffer(VIEW_RC_GATHER_CASCADES, self.cascade_buf);
-    g.set_buffer(VIEW_RC_GATHER_IRRADIANCE, self.irradiance_buf);
+    g.set_buffer(shaders::VIEW_RC_VOXELS, self.voxel_buf);
+    g.set_buffer(shaders::VIEW_RC_BRICKS, self.brick_buf);
+    g.set_buffer(shaders::VIEW_RC_GATHER_CASCADES, self.cascade_buf);
+    g.set_buffer(shaders::VIEW_RC_GATHER_IRRADIANCE, self.irradiance_buf);
     // each cascade in a pass of its own: it reads what the one above just wrote
     for (int l = self.levels - 1; l >= 0; l--)
     {
         p.rc_dims[3] = l;
         p.rc_info[3] = self.counts[l];
-        t.set_uniforms(UB_RC_PARAMS, &p, RcParams::size);
-        begin_compute("three-rc-trace");
+        t.set_uniforms(shaders::UB_RC_PARAMS, &p, RcParams::size);
+        begin_compute("drie-rc-trace");
         t.dispatch(((self.counts[l] + every - 1) / every + 63) / 64);
         end_compute();
     }
-    g.set_uniforms(UB_RC_PARAMS, &p, RcParams::size);
-    begin_compute("three-rc-gather");
+    g.set_uniforms(shaders::UB_RC_PARAMS, &p, RcParams::size);
+    begin_compute("drie-rc-gather");
     g.dispatch((self.nx * self.ny * self.nz + 63) / 64);
     end_compute();
     self.frame++;

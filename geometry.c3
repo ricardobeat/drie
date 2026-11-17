@@ -1,5 +1,5 @@
 // Geometries. Vertices are interleaved: position (3), normal (3), uv (2), color (3).
-module three;
+module drie;
 import std::collections::list, std::math;
 import sokol;
 

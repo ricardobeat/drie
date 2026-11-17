@@ -1,7 +1,7 @@
 // Irradiance volumes: light that has bounced around a room, stored in a grid of probes.
 // (Not in three.js itself; its LightProbe is a single probe.)
 //
-//   IrradianceVolume* v = three::irradiance_volume(room_min, room_max, 0.5f);
+//   IrradianceVolume* v = drie::irradiance_volume(room_min, room_max, 0.5f);
 //   for every probe (x, y, z) and each of the six axis directions `dir` (+x -x +y -y +z -z):
 //       v.set(x, y, z, dir, light arriving at v.probe_position(x, y, z) on a surface facing dir);
 //   scene.irradiance = v;
@@ -10,7 +10,7 @@
 // between the probes around them and between the directions by their normal. What goes into
 // the probes is up to the application (see IrradianceVolume.sample for bounce after bounce).
 // Values are irradiance: a white surface facing `dir` shows `value / PI`.
-module three;
+module drie;
 import std::math;
 import sokol;
 

@@ -1,7 +1,7 @@
 // Skeletons: Bone, Skeleton and SkinnedMesh, like three's.
 //
-//   Bone* hip = three::bone("hip");
-//   Bone* knee = three::bone("knee");
+//   Bone* hip = drie::bone("hip");
+//   Bone* knee = drie::bone("knee");
 //   hip.add(knee);
 //   knee.position.y = -0.4f;
 //
@@ -9,9 +9,9 @@
 //   leg.skin_range(0, leg.vertex_count(), 0);               // everything follows bone 0 ...
 //   leg.set_skin(7, { 0, 1, 0, 0 }, { 0.5f, 0.5f, 0, 0 });  // ... but vertex 7 bends with the knee
 //
-//   SkinnedMesh* mesh = three::skinned_mesh(leg, material);
+//   SkinnedMesh* mesh = drie::skinned_mesh(leg, material);
 //   mesh.add(hip);                                          // bones are ordinary scene objects
-//   mesh.bind(three::skeleton({ hip, knee }));
+//   mesh.bind(drie::skeleton({ hip, knee }));
 //   scene.add(mesh);
 //
 //   knee.rotation.x = 0.8f;                                 // each frame: pose the bones, then
@@ -24,7 +24,7 @@
 // shaders (shadows, fog and every material work unchanged) and is plenty for a few characters
 // of some thousand vertices; a crowd would want the bone matrices in the vertex shader.
 // Not here either: glTF skins, and three's animation system (AnimationClip, AnimationMixer).
-module three;
+module drie;
 import std::collections::list, std::math;
 import sokol;
 

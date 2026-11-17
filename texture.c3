@@ -1,8 +1,8 @@
 // Textures: images that materials sample (color maps, normal maps, ...).
-//   Texture* t = three::load_texture("assets/textures/bark_diff.jpg");
+//   Texture* t = drie::load_texture("assets/textures/bark_diff.jpg");
 //   t.repeat = { 4, 4 };
 //   material.map = t;
-module three;
+module drie;
 import std::io, std::math;
 import sokol, imageio;
 
@@ -102,7 +102,7 @@ fn Texture* float_texture(float[] rgba, int width, int height)
 // A texture that is drawn into instead of loaded, like THREE.WebGLRenderTarget's `.texture`:
 // for a screen in the scene, say. Draw with sokol between begin_canvas and end_canvas (not
 // inside another pass), and use `canvas.texture` as any material's map.
-//   CanvasTexture* screen = three::canvas_texture(256, 144);
+//   CanvasTexture* screen = drie::canvas_texture(256, 144);
 //   material.map = screen.texture;
 //   screen.begin(0x001000); sdtx::draw(); screen.end();
 struct CanvasTexture
@@ -125,7 +125,7 @@ fn CanvasTexture* canvas_texture(int width, int height)
 fn void CanvasTexture.begin(&self, Color clear = 0x000000)
 {
     SgPass pass = { .action.colors[0] = { .load_action = CLEAR,
-        .clear_value = { ((clear >> 16) & 0xff) / 255.0f, ((clear >> 8) & 0xff) / 255.0f, (clear & 0xff) / 255.0f, 1 } }, .label = "three-canvas" };
+        .clear_value = { ((clear >> 16) & 0xff) / 255.0f, ((clear >> 8) & 0xff) / 255.0f, (clear & 0xff) / 255.0f, 1 } }, .label = "drie-canvas" };
     self.texture.upload();
     if (!self.attachment.id) self.attachment = sg::make_view(&&{ .color_attachment = { .image = self.texture.image } });
     pass.attachments.colors[0] = self.attachment;
@@ -154,14 +154,14 @@ fn Texture* load_texture(String path, ColorSpace color_space = SRGB_COLOR_SPACE,
     char[]? data = file::load(mem, path);
     if (catch err = data)
     {
-        io::eprintfn("three: cannot read texture '%s'", path);
+        io::eprintfn("drie: cannot read texture '%s'", path);
         return data_texture({ 255, 0, 255, 255 }, 1, 1, color_space);
     }
     defer mem::free(data.ptr);
     Texture*? t = decode_texture(data, color_space, flip_y);
     if (catch err = t)
     {
-        io::eprintfn("three: cannot decode texture '%s'", path);
+        io::eprintfn("drie: cannot decode texture '%s'", path);
         return data_texture({ 255, 0, 255, 255 }, 1, 1, color_space);
     }
     return t;

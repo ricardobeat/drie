@@ -1,4 +1,5 @@
-module three;
+module drie::shaders;
+import drie;
 import sokol;
 /*
     #version:1# (machine generated, don't edit!)

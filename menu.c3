@@ -28,9 +28,9 @@
 // the built-in look shows their `text`; a game can draw anything there and read the held
 // arrow keys with axis_x() / axis_y(), to scrub or adjust something. Other keys pressed on a
 // page come to the handler as KEY events, with the key in `key`.
-module three::ui;
+module drie::ui;
 import std::collections::list, std::math, std::time::clock;
-import sokol, three, three::input;
+import sokol, drie, drie::input;
 
 enum MenuEvent
 {
@@ -303,7 +303,7 @@ fn bool Menu.handle_event(&self, Event* e)
     return true;
 }
 
-// The window's events go through here first (see three::add_event_filter): the touch controls
+// The window's events go through here first (see drie::add_event_filter): the touch controls
 // see touches and the mouse, then an open menu takes what it wants.
 fn bool filter_event(Event* e) @local
 {
@@ -334,8 +334,8 @@ fn bool filter_event(Event* e) @local
 // in the window as soon as the program starts.
 fn void register_ui() @init @local
 {
-    three::add_event_filter(&filter_event);
-    three::add_overlay(&draw);
+    drie::add_event_filter(&filter_event);
+    drie::add_overlay(&draw);
 }
 
 fn bool menu_filter_event(Event* e) @local
@@ -489,7 +489,7 @@ fn void Menu.draw_default(&self, float cw, float ch)
 // Draws the overlay (open menus with `overlay`, the fade unless it is `custom`, the touch
 // controls once they are enabled) into the current pass, which must be a pass to the window.
 // It is one of the renderer's overlays: render() to the window and end_screen() draw it; a
-// game whose last pass to the window is its own calls three::draw_overlays() (or this)
+// game whose last pass to the window is its own calls drie::draw_overlays() (or this)
 // before ending that pass.
 fn void draw()
 {
@@ -500,8 +500,8 @@ fn void draw()
     if (!menus && !fade && !touch) return;
     setup();
     // in pixels (without a window: the renderer's size)
-    float w = sapp::isvalid() ? sapp::widthf() : three::window_width();
-    float h = sapp::isvalid() ? sapp::heightf() : three::window_height();
+    float w = sapp::isvalid() ? sapp::widthf() : drie::window_width();
+    float h = sapp::isvalid() ? sapp::heightf() : drie::window_height();
     // about 360 canvas units high: big enough to read on any window
     float scale = math::max(1.0f, math::round(h / 360));
     float cw = w / scale;

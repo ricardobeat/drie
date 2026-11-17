@@ -6,9 +6,9 @@
 // target it is drawn into, the first time, so one pass can draw into a half-float target and
 // the window alike. Each draw is a single triangle in a pass of its own: nothing is copied.
 //
-//   ShaderPass* blur = three::shader_pass(blur_shader_desc(sg::query_backend()), "blur");
+//   ShaderPass* blur = drie::shader_pass(blur_shader_desc(sg::query_backend()), "blur");
 //   blur.set_texture(VIEW_SRC, scene_target.texture);
-//   blur.set_sampler(SMP_SMP, three::linear_sampler());
+//   blur.set_sampler(SMP_SMP, drie::linear_sampler());
 //   blur.set_uniforms(UB_BLUR_PARAMS, &params);
 //   blur.render(blurred);              // into a RenderTarget (null: the window)
 //
@@ -28,9 +28,9 @@
 // A chain whose passes read several pictures, or keep some from frame to frame, can call the
 // passes itself in its own order instead, with render targets (any pixel format) and
 // PingPong pairs for what builds up over frames.
-module three::postprocessing;
+module drie::postprocessing;
 import std::collections::list;
-import sokol, three;
+import sokol, drie;
 
 // Blend states for ShaderPass (three's MultiplyBlending, AdditiveBlending, NormalBlending).
 // Multiply keeps the target's alpha.
@@ -108,7 +108,7 @@ fn SgColor clear_color_of(Color c, float alpha) @local
 // Starts a pass into the target, for ShaderPass.draw and drawing of your own (sokol_gl,
 // sokol_debugtext). `clear` and `clear_alpha` are used with load: CLEAR. A target with a depth
 // buffer has it cleared. End with end().
-fn void RenderTarget.begin(&self, SgLoadAction load = CLEAR, Color clear = 0x000000, float clear_alpha = 1, ZString label = "three-target")
+fn void RenderTarget.begin(&self, SgLoadAction load = CLEAR, Color clear = 0x000000, float clear_alpha = 1, ZString label = "drie-target")
 {
     SgPass pass = { .action.colors[0] = { .load_action = load, .clear_value = clear_color_of(clear, clear_alpha) }, .label = label };
     pass.attachments = self.attachments();
@@ -119,7 +119,7 @@ fn void RenderTarget.begin(&self, SgLoadAction load = CLEAR, Color clear = 0x000
 
 // Starts a pass over the target's resolved picture (its `texture`), as it is: for drawing on
 // top of a render, such as darkening it with MULTIPLY_BLEND. End with end().
-fn void RenderTarget.begin_over(&self, ZString label = "three-over")
+fn void RenderTarget.begin_over(&self, ZString label = "drie-over")
 {
     SgPass pass = { .action.colors[0] = { .load_action = LOAD }, .label = label };
     pass.attachments.colors[0] = self.overlay_view;
@@ -131,7 +131,7 @@ fn void RenderTarget.end(&self) => sg::end_pass();
 
 // Starts a pass into the window, cleared to `clear`. With `aspect` (width / height) the
 // picture keeps that shape, with black bars in a window of any other. End with end_screen().
-fn void begin_screen(Color clear = 0x000000, float aspect = 0, ZString label = "three-screen")
+fn void begin_screen(Color clear = 0x000000, float aspect = 0, ZString label = "drie-screen")
 {
     sg::begin_pass(&&{
         .action.colors[0] = { .load_action = CLEAR, .clear_value = clear_color_of(clear, 1) },
@@ -146,12 +146,12 @@ fn void begin_screen(Color clear = 0x000000, float aspect = 0, ZString label = "
     }
 }
 
-// Draws the overlays (three::add_overlay: menus, fades, touch controls) over the whole window
+// Draws the overlays (drie::add_overlay: menus, fades, touch controls) over the whole window
 // and ends the pass begun with begin_screen.
 fn void end_screen()
 {
     sg::apply_viewport(0, 0, sapp::width(), sapp::height(), true);
-    three::draw_overlays();
+    drie::draw_overlays();
     sg::end_pass();
 }
 
@@ -188,7 +188,7 @@ struct ShaderPass
 
 // A fullscreen pass with this shader (`my_shader_desc(sg::query_backend())`). `blend` blends
 // it into what is in the target (NO_BLEND, MULTIPLY_BLEND, ADDITIVE_BLEND, ALPHA_BLEND).
-fn ShaderPass* shader_pass(SgShaderDesc desc, ZString label = "three-pass", SgBlendState blend = NO_BLEND,
+fn ShaderPass* shader_pass(SgShaderDesc desc, ZString label = "drie-pass", SgBlendState blend = NO_BLEND,
                            int input_view = -1, int input_sampler = -1)
 {
     ShaderPass* p = mem::new(ShaderPass);
@@ -197,7 +197,7 @@ fn ShaderPass* shader_pass(SgShaderDesc desc, ZString label = "three-pass", SgBl
 }
 
 // Sets up a ShaderPass in place (for a pass of your own that inlines one).
-fn void ShaderPass.init(&self, SgShaderDesc desc, ZString label = "three-pass", SgBlendState blend = NO_BLEND,
+fn void ShaderPass.init(&self, SgShaderDesc desc, ZString label = "drie-pass", SgBlendState blend = NO_BLEND,
                         int input_view = -1, int input_sampler = -1)
 {
     self.shader = sg::make_shader(&desc);
@@ -331,7 +331,7 @@ fn void render_pass_render(Pass* pass, EffectComposer* composer, RenderTarget* w
         r.set_render_target(prev);
         return;
     }
-    if (!self.target) self.target = three::render_target(composer.width, composer.height, self.samples, composer.format, mrt: self.mrt);
+    if (!self.target) self.target = drie::render_target(composer.width, composer.height, self.samples, composer.format, mrt: self.mrt);
     self.target.set_size(composer.width, composer.height, self.samples);
     r.set_render_target(self.target);
     r.render(self.scene, self.camera);
@@ -350,7 +350,7 @@ struct PingPong
 
 fn PingPong ping_pong(int width, int height, SgPixelFormat format = RGBA8)
 {
-    return { .targets = { three::render_target(width, height, 1, format, false), three::render_target(width, height, 1, format, false) } };
+    return { .targets = { drie::render_target(width, height, 1, format, false), drie::render_target(width, height, 1, format, false) } };
 }
 
 fn RenderTarget* PingPong.read(&self) => self.targets[self.cur];
@@ -424,7 +424,7 @@ fn void EffectComposer.render(&self, float delta = 0)
     int h = self.height ?: sapp::height();
     if (!self.buffers[0])
     {
-        for (int i = 0; i < 2; i++) self.buffers[i] = three::render_target(w, h, 1, self.format, false);
+        for (int i = 0; i < 2; i++) self.buffers[i] = drie::render_target(w, h, 1, self.format, false);
     }
     foreach (b : self.buffers) b.set_size(w, h, 1);
     int tw = self.width;
@@ -483,7 +483,7 @@ struct OutputPass
 fn OutputPass* output_pass(Renderer* renderer)
 {
     OutputPass* p = mem::new(OutputPass);
-    p.init(output_shader_desc(sg::query_backend()), "three-output", input_view: VIEW_OUTPUT_SRC, input_sampler: SMP_OUTPUT_SMP);
+    p.init(output_shader_desc(sg::query_backend()), "drie-output", input_view: VIEW_OUTPUT_SRC, input_sampler: SMP_OUTPUT_SMP);
     p.renderer = renderer;
     p.render_fn = &output_pass_render;
     p.set_sampler(SMP_OUTPUT_SMP, linear_sampler());
@@ -577,9 +577,9 @@ fn GTAOPass* gtao_pass(Camera* camera)
     *p = { .render_fn = &gtao_pass_render, .enabled = true, .camera = camera, .radius = 0.5, .intensity = 1,
            .specular_occlusion = true };
     SgBackend backend = sg::query_backend();
-    p.gtao.init(gtao_shader_desc(backend), "three-gtao");
-    p.gtao_ms.init(gtao_ms_shader_desc(backend), "three-gtao");
-    p.apply.init(gtao_apply_shader_desc(backend), "three-gtao-apply", MULTIPLY_BLEND);
+    p.gtao.init(gtao_shader_desc(backend), "drie-gtao");
+    p.gtao_ms.init(gtao_ms_shader_desc(backend), "drie-gtao");
+    p.apply.init(gtao_apply_shader_desc(backend), "drie-gtao-apply", MULTIPLY_BLEND);
     p.gtao.set_sampler(SMP_GTAO_SMP, nearest_sampler());
     p.gtao_ms.set_sampler(SMP_GTAO_SMP, nearest_sampler());
     p.apply.set_sampler(SMP_GTAO_APPLY_SMP, nearest_sampler());
@@ -601,13 +601,13 @@ fn void GTAOPass.render(&self, RenderTarget* target)
 // Only the occlusion, into ao_target, leaving the picture as it is.
 fn void GTAOPass.render_occlusion(&self, RenderTarget* target)
 {
-    if (!target.mrt || !target.depth_buffer) abort("three: GTAOPass needs a target with MRT and a depth buffer");
-    if (!self.ao_target) self.ao_target = three::render_target(target.width, target.height, 1, RGBA16F, false);
+    if (!target.mrt || !target.depth_buffer) abort("drie: GTAOPass needs a target with MRT and a depth buffer");
+    if (!self.ao_target) self.ao_target = drie::render_target(target.width, target.height, 1, RGBA16F, false);
     self.ao_target.set_size(target.width, target.height, 1);
     Camera* cam = self.camera;
     Mat4 m = cam.matrix_world;
     GtaoParams p = {
-        .clip = { cam.near, cam.far, three::depth_zero_to_one() ? 1 : 0, three::depth_zero_to_one() ? 1 : 0 },
+        .clip = { cam.near, cam.far, drie::depth_zero_to_one() ? 1 : 0, drie::depth_zero_to_one() ? 1 : 0 },
         .view = { 1 / cam.projection_matrix[0][0], 1 / cam.projection_matrix[1][1], target.width, target.height },
         .tune = { self.radius, self.intensity, self.fade_start, self.fade_end },
         .cam_right = { m[0][0], m[0][1], m[0][2], (float)(self.frame % 64) },
@@ -669,7 +669,7 @@ fn TAAPass* taa_pass()
     TAAPass* p = mem::new(TAAPass);
     *p = { .render_fn = &taa_pass_render, .enabled = true, .needs_swap = false, .blend = 0.1, .clip_width = 1.25,
            .jitter_samples = 8, .reset = true };
-    p.resolve.init(taa_shader_desc(sg::query_backend()), "three-taa");
+    p.resolve.init(taa_shader_desc(sg::query_backend()), "drie-taa");
     p.resolve.set_sampler(SMP_TAA_SMP, linear_sampler());
     p.resolve.set_sampler(SMP_TAA_POINT_SMP, nearest_sampler());
     return p;
@@ -699,7 +699,7 @@ fn void TAAPass.jitter(&self, Camera* camera)
 // Blends what `target` (rendered with MRT, with the jittered camera) shows now into the history.
 fn void TAAPass.render(&self, RenderTarget* target)
 {
-    if (!target.mrt) abort("three: TAAPass needs a target with MRT (for its motion vectors)");
+    if (!target.mrt) abort("drie: TAAPass needs a target with MRT (for its motion vectors)");
     if (!self.history.targets[0]) self.history = ping_pong(target.width, target.height, RGBA16F);
     RenderTarget* h = self.history.read();
     if (h.width != target.width || h.height != target.height)

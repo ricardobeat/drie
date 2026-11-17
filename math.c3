@@ -1,5 +1,5 @@
 // Vector / matrix / color math for three.
-module three;
+module drie;
 import std::math;
 
 const float PI = 3.14159265358979323846;

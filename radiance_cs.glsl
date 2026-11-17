@@ -11,7 +11,8 @@
 //   rc_gather_cs      one thread per probe of cascade 0: the light arriving on surfaces facing
 //                     each of the six axes (what the material shader and the next frame's
 //                     bounce read).
-@header module three;
+@header module drie::shaders;
+@header import drie;
 
 @ctype vec4 Vec4
 

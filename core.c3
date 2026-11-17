@@ -1,5 +1,5 @@
 // Scene graph: Object3D, Group, Scene, Mesh, cameras, lights, fog.
-module three;
+module drie;
 import std::collections::list, libc;
 import sokol;
 
@@ -283,7 +283,7 @@ enum FogType
 
 // Extension: the settings of fog that is lit (by the sun, its shadows and the lamps), after
 // three.js's volumetric lighting example (webgpu_volume_lighting, VolumeNodeMaterial). Part of
-// every Fog (`fog.light_scatter`, `fog.volumetric`...), and made whole by `three::volumetric_fog`.
+// every Fog (`fog.light_scatter`, `fog.volumetric`...), and made whole by `drie::volumetric_fog`.
 //
 // With `volumetric` on (the default) and something for the fog to scatter (light_scatter,
 // sun_shafts or noise_amount above 0), the renderer marches the fog in a pass of its own

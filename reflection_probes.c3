@@ -5,7 +5,7 @@
 // (a doorway) the two maps cross-fade over `blend` meters; a probe without a box (box_min ==
 // box_max) is the one for everywhere else, the sky's.
 //
-//   ReflectionProbes* probes = three::reflection_probes();
+//   ReflectionProbes* probes = drie::reflection_probes();
 //   probes.add(renderer.capture_environment(scene, room_center), room_center, room_min, room_max);
 //   probes.add(renderer.capture_environment(scene, outside), outside);
 //   scene.reflection_probes = probes;
@@ -15,7 +15,7 @@
 // they are first drawn with (their pixels are copied; a texture gives its pixels up when it
 // goes to the GPU). A map with distances (capture_environment's `distance`) is followed
 // through the room as a material's own boxed env_map is.
-module three;
+module drie;
 import std::math;
 import sokol;
 
@@ -57,9 +57,9 @@ fn ReflectionProbes* reflection_probes()
 fn ReflectionProbe* ReflectionProbes.add(&self, Texture* map, Vector3 position, Vector3 box_min = {}, Vector3 box_max = {},
                                          float blend = 0.4)
 {
-    if (self.count >= MAX_REFLECTION_PROBES) abort("three: too many reflection probes (MAX_REFLECTION_PROBES)");
-    if (!map.pixels.len) abort("three: a reflection probe's map must still have its pixels (add it before it is drawn with)");
-    if (self.count && (map.width != self.width || map.height != self.height)) abort("three: reflection probes' maps must be of one size");
+    if (self.count >= MAX_REFLECTION_PROBES) abort("drie: too many reflection probes (MAX_REFLECTION_PROBES)");
+    if (!map.pixels.len) abort("drie: a reflection probe's map must still have its pixels (add it before it is drawn with)");
+    if (self.count && (map.width != self.width || map.height != self.height)) abort("drie: reflection probes' maps must be of one size");
     self.width = map.width;
     self.height = map.height;
     self.color_space = map.color_space;
@@ -152,7 +152,7 @@ fn void ReflectionProbes.upload(&self)
         .num_mipmaps = levels,
         .pixel_format = self.color_space == SRGB_COLOR_SPACE ? SgPixelFormat.SRGB8A8 : SgPixelFormat.RGBA8,
         .data = { .ptr = all.ptr, .size = (usz)total },
-        .label = "three-reflection-probes",
+        .label = "drie-reflection-probes",
     });
     self.view = sg::make_view(&&{ .texture = { .image = self.image } });
     if (!self.sampler.id)

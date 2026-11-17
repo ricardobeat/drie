@@ -1,8 +1,8 @@
 // OutputPass (postprocessing.c3): the last step of a chain that works in linear light. Tone
 // maps the picture with the renderer's tone mapping and exposure and encodes it as sRGB, as
 // three.js's OutputPass does, or into Display P3's colors, or for an HDR screen. Alpha is kept. Regenerate output.c3 with: ./build.sh shaders
-@header module three::postprocessing;
-@header import three;
+@header module drie::postprocessing;
+@header import drie;
 
 @ctype vec4 Vec4
 
