@@ -79,6 +79,20 @@
                 "AudioToolbox.framework",
                 "AVFoundation.framework"
             ]
+        },
+        "linux-aarch64": {
+            "cflags-override": "-O2 -DNDEBUG -DIMPL -DSOKOL_GLCORE",
+            "linked-libraries": [
+                "X11",
+                "Xi",
+                "Xcursor",
+                "GL",
+                "pulse-simple",
+                "pulse",
+                "dl",
+                "pthread",
+                "m"
+            ]
         }
     }
 }
