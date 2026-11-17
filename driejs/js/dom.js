@@ -2,8 +2,8 @@
 // renderer's default size, a document of elements that take listeners and children, the
 // window's mouse and keyboard as DOM events (bubbling up from the canvas, or from the
 // element holding the pointer lock), images and files that drie and the host read, and
-// fetch, TextDecoder, Blob and object URLs as GLTFLoader uses them. Imported by the
-// "three" module before three.js itself.
+// fetch, TextDecoder, Blob and object URLs as GLTFLoader uses them, and DOMParser for XML.
+// Imported by the "three" module before three.js itself.
 const N = globalThis.__drie;
 
 // ----------------------------------------------------------------------------
@@ -642,3 +642,398 @@ globalThis.TextEncoder ??= class TextEncoder {
 		return new Uint8Array(out);
 	}
 };
+
+// ----------------------------------------------------------------------------
+// XML: DOMParser, for three's loaders of XML formats (Collada, 3MF, AMF, VTK, ...)
+// ----------------------------------------------------------------------------
+
+// The host parses (N.xmlParse, std::encoding::xml in src/xml.c3) and hands back the
+// document's events; the nodes are made here. XML only: a "text/html" string is parsed as
+// XML too. Comments are left out, CDATA sections are text, and a document that fails to
+// parse has a <parsererror> element holding a <div> with the message, as in Chrome.
+
+const XML_NS = "http://www.w3.org/XML/1998/namespace";
+const XMLNS_NS = "http://www.w3.org/2000/xmlns/";
+
+class Node {
+	constructor(nodeType, nodeName) {
+		this.nodeType = nodeType;
+		this.nodeName = nodeName;
+		this.parentNode = null;
+		this.childNodes = [];
+		this.ownerDocument = null;
+	}
+	get parentElement() {
+		const p = this.parentNode;
+		return p !== null && p.nodeType === 1 ? p : null;
+	}
+	get firstChild() {
+		return this.childNodes[0] ?? null;
+	}
+	get lastChild() {
+		return this.childNodes[this.childNodes.length - 1] ?? null;
+	}
+	_sibling(step, elements) {
+		const siblings = this.parentNode?.childNodes;
+		if (!siblings) return null;
+		for (let i = siblings.indexOf(this) + step; i >= 0 && i < siblings.length; i += step) {
+			if (!elements || siblings[i].nodeType === 1) return siblings[i];
+		}
+		return null;
+	}
+	get nextSibling() {
+		return this._sibling(1, false);
+	}
+	get previousSibling() {
+		return this._sibling(-1, false);
+	}
+	get nextElementSibling() {
+		return this._sibling(1, true);
+	}
+	get previousElementSibling() {
+		return this._sibling(-1, true);
+	}
+	get children() {
+		return this.childNodes.filter((n) => n.nodeType === 1);
+	}
+	get childElementCount() {
+		return this.children.length;
+	}
+	get firstElementChild() {
+		return this.childNodes.find((n) => n.nodeType === 1) ?? null;
+	}
+	get lastElementChild() {
+		const nodes = this.childNodes;
+		for (let i = nodes.length - 1; i >= 0; i--) if (nodes[i].nodeType === 1) return nodes[i];
+		return null;
+	}
+	hasChildNodes() {
+		return this.childNodes.length !== 0;
+	}
+	get nodeValue() {
+		return null;
+	}
+	get textContent() {
+		const nodes = this.childNodes;
+		if (nodes.length === 1) return nodes[0].textContent;
+		let s = "";
+		for (let i = 0; i < nodes.length; i++) if (nodes[i].nodeType !== 7) s += nodes[i].textContent;
+		return s;
+	}
+	// The elements under this node, in document order, for which `test` is true (or the
+	// first of them, with `first`).
+	_descendants(test, first) {
+		const out = [];
+		const stack = [];
+		for (let i = this.childNodes.length - 1; i >= 0; i--) stack.push(this.childNodes[i]);
+		while (stack.length) {
+			const n = stack.pop();
+			if (n.nodeType !== 1) continue;
+			if (test(n)) {
+				if (first) return n;
+				out.push(n);
+			}
+			for (let i = n.childNodes.length - 1; i >= 0; i--) stack.push(n.childNodes[i]);
+		}
+		return first ? null : out;
+	}
+	getElementsByTagName(name) {
+		return this._descendants((e) => name === "*" || e.nodeName === name, false);
+	}
+	getElementsByTagNameNS(ns, localName) {
+		return this._descendants((e) => (ns === "*" || e.namespaceURI === ns) && (localName === "*" || e.localName === localName),
+			false);
+	}
+	querySelector(selectors) {
+		const groups = parseSelectors(selectors);
+		return this._descendants((e) => matchesSelectors(e, groups), true);
+	}
+	querySelectorAll(selectors) {
+		const groups = parseSelectors(selectors);
+		return this._descendants((e) => matchesSelectors(e, groups), false);
+	}
+	getElementById(id) {
+		return this._descendants((e) => e.getAttribute("id") === id, true);
+	}
+}
+for (const [name, value] of Object.entries({
+	ELEMENT_NODE: 1, ATTRIBUTE_NODE: 2, TEXT_NODE: 3, CDATA_SECTION_NODE: 4, PROCESSING_INSTRUCTION_NODE: 7,
+	COMMENT_NODE: 8, DOCUMENT_NODE: 9,
+})) {
+	Node[name] = value;
+	Node.prototype[name] = value;
+}
+
+class Text extends Node {
+	constructor(data) {
+		super(3, "#text");
+		this.data = data;
+	}
+	get nodeValue() {
+		return this.data;
+	}
+	get textContent() {
+		return this.data;
+	}
+	get wholeText() {
+		return this.data;
+	}
+}
+
+class ProcessingInstruction extends Node {
+	constructor(target, data) {
+		super(7, target);
+		this.target = target;
+		this.data = data;
+	}
+	get nodeValue() {
+		return this.data;
+	}
+	get textContent() {
+		return this.data;
+	}
+}
+
+// "prefix:local" as [prefix or null, local]
+function qualified(name) {
+	const colon = name.indexOf(":");
+	return colon < 0 ? [null, name] : [name.slice(0, colon), name.slice(colon + 1)];
+}
+
+// The namespace a prefix (null: the default one) stands for at `element`.
+function lookupNamespace(element, prefix) {
+	if (prefix === "xml") return XML_NS;
+	if (prefix === "xmlns") return XMLNS_NS;
+	const name = prefix === null ? "xmlns" : `xmlns:${prefix}`;
+	for (let e = element; e !== null && e.nodeType === 1; e = e.parentNode) {
+		const value = e.getAttribute(name);
+		if (value !== null) return value || null;
+	}
+	return null;
+}
+
+class Attr {
+	constructor(name, value, ownerElement) {
+		this.name = name;
+		this.value = value;
+		this.ownerElement = ownerElement;
+		[this.prefix, this.localName] = qualified(name);
+	}
+	get nodeType() {
+		return 2;
+	}
+	get nodeName() {
+		return this.name;
+	}
+	get nodeValue() {
+		return this.value;
+	}
+	get textContent() {
+		return this.value;
+	}
+	get namespaceURI() {
+		if (this.name === "xmlns") return XMLNS_NS;
+		return this.prefix === null ? null : lookupNamespace(this.ownerElement, this.prefix);
+	}
+}
+
+// An element's attributes, by index and by name (a NamedNodeMap).
+class Attributes extends Array {
+	getNamedItem(name) {
+		return this.find((a) => a.name === name) ?? null;
+	}
+	getNamedItemNS(ns, localName) {
+		return this.find((a) => a.localName === localName && a.namespaceURI === ns) ?? null;
+	}
+	item(i) {
+		return this[i] ?? null;
+	}
+}
+
+class XMLElement extends Node {
+	constructor(name) {
+		super(1, name);
+		this.tagName = name;
+		[this.prefix, this.localName] = qualified(name);
+		this.attributes = new Attributes();
+		this._values = Object.create(null);
+	}
+	_setAttribute(name, value) {
+		const attr = new Attr(name, value, this);
+		this.attributes.push(attr);
+		if (!(name in this.attributes)) this.attributes[name] = attr;
+		this._values[name] = value;
+	}
+	getAttribute(name) {
+		return this._values[name] ?? null;
+	}
+	hasAttribute(name) {
+		return name in this._values;
+	}
+	hasAttributes() {
+		return this.attributes.length !== 0;
+	}
+	getAttributeNames() {
+		return this.attributes.map((a) => a.name);
+	}
+	getAttributeNS(ns, localName) {
+		return this.attributes.getNamedItemNS(ns || null, localName)?.value ?? null;
+	}
+	hasAttributeNS(ns, localName) {
+		return this.attributes.getNamedItemNS(ns || null, localName) !== null;
+	}
+	get id() {
+		return this._values.id ?? "";
+	}
+	get namespaceURI() {
+		return lookupNamespace(this, this.prefix);
+	}
+	matches(selectors) {
+		return matchesSelectors(this, parseSelectors(selectors));
+	}
+	closest(selectors) {
+		const groups = parseSelectors(selectors);
+		for (let e = this; e !== null && e.nodeType === 1; e = e.parentNode) if (matchesSelectors(e, groups)) return e;
+		return null;
+	}
+}
+
+class XMLDocument extends Node {
+	constructor(contentType = "application/xml") {
+		super(9, "#document");
+		this.contentType = contentType;
+	}
+	get documentElement() {
+		return this.firstElementChild;
+	}
+}
+
+// Selectors: lists (a, b) of compounds joined by descendant combinators (a b), each a type
+// (or *) followed by any of #id, [attr], [attr=value] (quoted or not). That is all three's
+// loaders use; anything else throws, as a selector a browser can't parse would.
+const selectorCache = new Map();
+const COMPOUND = /([\w-]+|\*)?((?:#[\w-]+|\[\s*[\w:-]+\s*(?:=\s*(?:"[^"]*"|'[^']*'|[\w-]+)\s*)?\])*)\s*/y;
+const SELECTOR_PART = /#[\w-]+|\[(?:[^\]"']|"[^"]*"|'[^']*')*\]/g;
+const ATTRIBUTE_SELECTOR = /^\[\s*([\w:-]+)\s*(?:=\s*(?:"([^"]*)"|'([^']*)'|([\w-]+))\s*)?\]$/;
+
+// "a, b" as ["a", " b"], minding commas inside quotes
+function splitSelectorList(source) {
+	const out = [];
+	let quote = null;
+	let start = 0;
+	for (let i = 0; i < source.length; i++) {
+		const c = source[i];
+		if (quote !== null) {
+			if (c === quote) quote = null;
+		} else if (c === '"' || c === "'") {
+			quote = c;
+		} else if (c === ",") {
+			out.push(source.slice(start, i));
+			start = i + 1;
+		}
+	}
+	out.push(source.slice(start));
+	return out;
+}
+
+function parseSelectors(source) {
+	let groups = selectorCache.get(source);
+	if (groups) return groups;
+	const invalid = () => new DOMException(`'${source}' is not a valid selector`, "SyntaxError");
+	groups = [];
+	for (const group of splitSelectorList(source)) {
+		const text = group.trim();
+		const compounds = [];
+		COMPOUND.lastIndex = 0;
+		while (COMPOUND.lastIndex < text.length) {
+			const m = COMPOUND.exec(text);
+			if (!m || (m[1] === undefined && m[2] === "")) throw invalid();
+			const compound = { tag: m[1] && m[1] !== "*" ? m[1] : null, attrs: [] };
+			for (const part of m[2].match(SELECTOR_PART) ?? []) {
+				if (part[0] === "#") {
+					compound.attrs.push(["id", part.slice(1)]);
+				} else {
+					const a = ATTRIBUTE_SELECTOR.exec(part);
+					compound.attrs.push([a[1], a[2] ?? a[3] ?? a[4]]);
+				}
+			}
+			compounds.push(compound);
+		}
+		if (compounds.length === 0) throw invalid();
+		groups.push(compounds);
+	}
+	selectorCache.set(source, groups);
+	return groups;
+}
+
+function matchesCompound(e, compound) {
+	if (compound.tag !== null && e.nodeName !== compound.tag) return false;
+	for (const [name, value] of compound.attrs) {
+		const v = e.getAttribute(name);
+		if (v === null || (value !== undefined && v !== value)) return false;
+	}
+	return true;
+}
+
+// The last compound matches `e`, and each one before it an ancestor of the next.
+function matchesSelectors(e, groups) {
+	for (const compounds of groups) {
+		let i = compounds.length - 1;
+		if (!matchesCompound(e, compounds[i])) continue;
+		for (let a = e.parentNode; i > 0 && a !== null && a.nodeType === 1; a = a.parentNode) {
+			if (matchesCompound(a, compounds[i - 1])) i--;
+		}
+		if (i === 0) return true;
+	}
+	return false;
+}
+
+function appendNode(doc, parent, child) {
+	child.parentNode = parent;
+	child.ownerDocument = doc;
+	parent.childNodes.push(child);
+	return child;
+}
+
+globalThis.DOMParser = class DOMParser {
+	// The fields of N.xmlParse's events (see src/xml.c3), into nodes.
+	parseFromString(string, type = "application/xml") {
+		const doc = new XMLDocument(type);
+		const fields = N.xmlParse(String(string)).split("\0");
+		let node = doc;
+		for (let i = 0; i + 1 < fields.length; i += 2) {
+			const head = fields[i];
+			const value = fields[i + 1];
+			switch (head[0]) {
+				case "<":
+					node = appendNode(doc, node, new XMLElement(head.slice(1)));
+					break;
+				case "=":
+					node._setAttribute(head.slice(1), value);
+					break;
+				case ">":
+					node = node.parentNode;
+					break;
+				case "#": {
+					if (node === doc) break;
+					const last = node.childNodes[node.childNodes.length - 1];
+					if (last !== undefined && last.nodeType === 3) last.data += value;
+					else appendNode(doc, node, new Text(value));
+					break;
+				}
+				case "?":
+					appendNode(doc, node, new ProcessingInstruction(head.slice(1), value));
+					break;
+				case "!": {
+					const error = new XMLDocument(type);
+					const div = appendNode(error, appendNode(error, error, new XMLElement("parsererror")), new XMLElement("div"));
+					appendNode(error, div, new Text(head.slice(1)));
+					return error;
+				}
+			}
+		}
+		return doc;
+	}
+};
+globalThis.Node ??= Node;
+globalThis.XMLDocument ??= XMLDocument;
