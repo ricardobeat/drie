@@ -319,6 +319,8 @@ struct Renderer
     SgView ssr_color;
     SgView ssr_depth;
     SgView ssr_back;
+    // the Reflector being rendered (render_reflector), whose own surfaces are left out
+    Reflector* reflecting;
     Mat4 ssr_view_proj;
     float ssr_reach;
     bool ssr_linear;
@@ -1148,6 +1150,8 @@ fn void collect(Object3D* obj, Mat4 view, Frustum* frustum, Vector3 lod_from, bo
         case MESH:
             Mesh* m = (Mesh*)obj;
             if (!m.geometry || !m.material || !m.material.visible) break;
+            // a Reflector's own surfaces are not in its picture
+            if (state.renderer.reflecting && m.material.reflector == state.renderer.reflecting) break;
             if (shadow_pass && (!m.cast_shadow || m.material.transparent)) break;
             if (shadow_pass && state.skip_instanced && m.instance_data.len() > 0) break;
             BufferGeometry* g = m.geometry;
@@ -1164,6 +1168,14 @@ fn void collect(Object3D* obj, Mat4 view, Frustum* frustum, Vector3 lod_from, bo
             Vector3 wc = m.matrix_world.transform_point(center);
             float r = radius * max_scale(m.matrix_world) + m.material.sway * 2;
             if (m.frustum_culled && !frustum.contains_sphere(wc, r)) break;
+            // a Reflector's picture holds only what is in its box
+            Reflector* refl = state.renderer.reflecting;
+            if (refl && refl.box_min != refl.box_max)
+            {
+                Vector3 nearest = { clamp(wc.x, refl.box_min.x, refl.box_max.x), clamp(wc.y, refl.box_min.y, refl.box_max.y),
+                                    clamp(wc.z, refl.box_min.z, refl.box_max.z) };
+                if ((nearest - wc).length() > r) break;
+            }
             Vector3 vc = view.transform_point(wc);
             float dist = math::max(vc.length(), r);
             DrawItem item = { m, vc.z, fade, fade_dir, 0, r * r / (dist * dist) };

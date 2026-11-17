@@ -243,6 +243,8 @@ These aren't in three.js:
   and the material mirrors that picture, moved by its normal map and blurred by its roughness.
   It shows what the camera can't (the underside of a thing over the floor); it costs a second
   render. With `ssr` on too, screen-space reflections add what they find close by.
+  `reflector.box_min`/`box_max` limit it to what is in a box (a room's floor need not mirror
+  the woods outside its windows, which cost as much to draw as in the main view).
   `renderer.shadow_map_auto_update = false` (three's `shadowMap.autoUpdate`) renders with the
   shadow maps as they are, as the reflector does.
 - `capture_environment(..., distance: &fn)`: with a ray caster of the application's, the map
