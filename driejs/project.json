@@ -5,35 +5,16 @@
 		"../lib"
 	],
 	"dependencies": [
+		"https://c3.ricar.do/github.com:ricardobeat/boomkat@jit",
 		"sokol",
 		"drie",
 		"draco",
 		"wamr"
 	],
-	"c-sources": [
-		"../../boomkat/vendor/libregexp/libregexp.c",
-		"../../boomkat/vendor/libunicode/libunicode.c",
-		"../../boomkat/src/re_wrapper.c",
-		"../../boomkat/src/unicode_wrapper.c",
-		"../../boomkat/vendor/dtoa/cutils.c",
-		"../../boomkat/vendor/dtoa/dtoa.c",
-		"../../boomkat/src/dtoa_wrapper.c",
-		"../../boomkat/src/date_math.c",
-		"../../boomkat/src/native_stack.c",
-		"../../boomkat/src/sysmem.c"
-	],
-	"cflags": "-O2",
-	"c-include-dirs": [
-		"../../boomkat/vendor/dtoa",
-		"../../boomkat/vendor/libregexp",
-		"../../boomkat/vendor/libunicode",
-		"../../boomkat/src"
-	],
 	"targets": {
 		"driejs": {
 			"type": "executable",
 			"sources": [
-				"../../boomkat/.worktrees/jit/src",
 				"src"
 			],
 			"opt": "O3",
@@ -45,30 +26,7 @@
 				"PRINT",
 				"CONSOLE",
 				"SLJIT"
-			],
-			"c-sources-override": [
-				"../../boomkat/.worktrees/jit/vendor/libregexp/libregexp.c",
-				"../../boomkat/.worktrees/jit/vendor/libunicode/libunicode.c",
-				"../../boomkat/.worktrees/jit/src/re_wrapper.c",
-				"../../boomkat/.worktrees/jit/src/unicode_wrapper.c",
-				"../../boomkat/.worktrees/jit/vendor/dtoa/cutils.c",
-				"../../boomkat/.worktrees/jit/vendor/dtoa/dtoa.c",
-				"../../boomkat/.worktrees/jit/src/dtoa_wrapper.c",
-				"../../boomkat/.worktrees/jit/src/date_math.c",
-				"../../boomkat/.worktrees/jit/src/native_stack.c",
-				"../../boomkat/.worktrees/jit/src/sysmem.c",
-				"../../boomkat/.worktrees/jit/vendor/sljit/sljit_src/sljitLir.c",
-				"../../boomkat/.worktrees/jit/src/jit/sljit_shim.c",
-				"../../boomkat/.worktrees/jit/src/jit/pc_sampler.c"
-			],
-			"c-include-dirs-override": [
-				"../../boomkat/.worktrees/jit/vendor/dtoa",
-				"../../boomkat/.worktrees/jit/vendor/libregexp",
-				"../../boomkat/.worktrees/jit/vendor/libunicode",
-				"../../boomkat/.worktrees/jit/src",
-				"../../boomkat/.worktrees/jit/vendor/sljit/sljit_src"
-			],
-			"cflags-override": "-O2 -DSLJIT_DEBUG=0 -DSLJIT_VERBOSE=0"
+			]
 		}
 	}
 }
