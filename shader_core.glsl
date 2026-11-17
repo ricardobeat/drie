@@ -237,7 +237,8 @@ layout(binding=1) uniform fs_params {
     vec4 camera_pos;   // w = tone mapping exposure
     vec4 output_params; // x = 1: linear light out (a half-float target: no tone mapping, no sRGB),
                         //   y = 1: the reflection source (ssr_color) is linear light too,
-                        //   z = tone mapping (TONE_*)
+                        //   z = tone mapping (TONE_*), w = the window's colors (DISPLAY_*) when
+                        //   drawn straight into it
     vec4 ambient;      // summed ambient light
     vec4 hemi_sky;
     vec4 hemi_ground;
@@ -1151,7 +1152,12 @@ void main() {
     alpha *= 1.0 - smoothstep(4.0, 16.0, max(emissive.r, max(emissive.g, emissive.b)));
     // into a half-float target as it is (OutputPass tone maps it later), otherwise ready to show
     if (output_params.x > 0.5) frag_color = vec4(min(outc, vec3(60000.0)), alpha);
-    else frag_color = vec4(linear_to_srgb(tone_map(outc, int(output_params.z), camera_pos.w)), alpha);
+    else {
+        // the window's colors: sRGB, Display P3, or extended linear Display P3 (HDR: in SDR's range here)
+        int display = int(output_params.w);
+        vec3 toned = tone_map_gamut(outc, int(output_params.z), camera_pos.w, display != DISPLAY_SRGB);
+        frag_color = vec4(display == DISPLAY_HDR ? toned : linear_to_srgb(toned), alpha);
+    }
 }
 @end
 

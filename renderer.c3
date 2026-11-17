@@ -247,6 +247,17 @@ struct Renderer
     RenderTarget* render_target;
     ToneMapping tone_mapping;
     float tone_mapping_exposure;
+    // What the window takes, like three's outputColorSpace: SRGB_COLOR_SPACE, or
+    // DISPLAY_P3_COLOR_SPACE on a wide-gamut screen, whose extra colors tone mapping then keeps
+    // instead of clipping them to sRGB's. Can change at any time (macOS).
+    ColorSpace output_color_space;
+    // HDR output (macOS, EDR): the window takes linear light in Display P3 with 1 as SDR white,
+    // and what is brighter shows brighter, up to output_headroom(). Tone mapping (OutputPass
+    // with `hdr`) rolls highlights off there. Needs a window that can show it: set it, or
+    // hdr_window, before set_animation_loop; then it can change at any time.
+    bool hdr_output;
+    // Open the window with half-float pixels, so that hdr_output can be turned on later.
+    bool hdr_window;
     // Fragments inside cull_box_min..max are not drawn (to look through a portal past whatever
     // stands between the camera and it).
     bool cull_box;
@@ -392,6 +403,13 @@ struct RendererState @local
     // which frame of them this is
     bool motion;
     Mat4 motion_view_proj;
+    // the window has half-float pixels (Renderer.hdr_window), and the color space set for it
+    // last (DisplayColorSpace's ordinal, -1: none yet)
+    bool float_window;
+    int window_colors;
+    // the last render's view_proj (as drawn, jitter and all), for render_back_faces
+    Mat4 last_view_proj;
+    SgPipeline back_pipeline;
     // the camera's jitter in clip space (per unit of w), left out of the motion vectors
     Vector2 motion_jitter;
     int motion_frame;
@@ -532,6 +550,7 @@ fn void Renderer.set_animation_loop(&self, AnimationLoop cb)
         .height = self.height,
         .sample_count = self.sample_count,
         .high_dpi = true,
+        .hdr = self.hdr_window || self.hdr_output,
         .fullscreen = self.fullscreen,
         .window_title = (ZString)self.title.zstr_tcopy(),
         .icon.sokol_default = true,
@@ -606,6 +625,9 @@ fn void setup_gfx(SgEnvironment environment) @local
 
 fn void on_init() @local
 {
+    Renderer* r = state.renderer;
+    state.float_window = r.hdr_window || r.hdr_output;
+    state.window_colors = -1;
     setup_gfx(sglue::environment());
 }
 
@@ -644,8 +666,23 @@ fn void draw_overlays()
 // What Lod distances are divided by (Renderer.lod_scale of the renderer in use).
 fn float lod_distance_scale() @private => state.renderer ? math::max(state.renderer.lod_scale, 0.01f) : 1;
 
+// HDR output is on, and the window can show it.
+fn bool Renderer.hdr_on(&self) => self.hdr_output && state.float_window;
+
+// The color space the window's pixels are taken in, as the renderer's settings ask.
+fn void apply_window_colors() @local
+{
+    Renderer* r = state.renderer;
+    DisplayColorSpace want = r.hdr_on() ? EXTENDED_LINEAR_DISPLAY_P3 : (r.output_color_space == DISPLAY_P3_COLOR_SPACE ? DISPLAY_P3 : SRGB);
+    if (state.window_colors == want.ordinal) return;
+    // (an 8-bit window that never changed stays as the platform made it)
+    if (state.window_colors >= 0 || want != SRGB || state.float_window) set_display_color_space(want);
+    state.window_colors = want.ordinal;
+}
+
 fn void on_frame() @local
 {
+    apply_window_colors();
     foreach (h : state.frame_hooks) h();
     if (state.renderer.animation_loop) state.renderer.animation_loop(stm::ms(stm::since(state.start_ticks)));
 }
@@ -1315,7 +1352,9 @@ fn FsParams build_light_params(Scene* scene, Camera* camera, SpotLight* caster) 
     float exposure = r.tone_mapping == NO_TONE_MAPPING ? 1 : math::max(r.tone_mapping_exposure, 1e-4f);
     p.camera_pos = { ...camera.matrix_world.get_position(), exposure };
     bool linear = r.render_target && r.render_target.is_linear();
-    p.output_params = { linear ? 1 : 0, r.ssr_linear ? 1 : 0, (float)r.tone_mapping.ordinal, 0 };
+    // drawn straight into the window: its colors and range
+    float window = linear || r.render_target ? 0 : (r.hdr_on() ? 2 : (r.output_color_space == DISPLAY_P3_COLOR_SPACE ? 1 : 0));
+    p.output_params = { linear ? 1 : 0, r.ssr_linear ? 1 : 0, (float)r.tone_mapping.ordinal, window };
     p.cull_min = { ...r.cull_box_min, r.cull_box ? 1 : 0 };
     p.cull_max = { ...r.cull_box_max, 0 };
     Mat4 cw = camera.matrix_world;
