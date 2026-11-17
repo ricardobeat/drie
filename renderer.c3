@@ -1801,16 +1801,20 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     // the scene's environment lights the standard materials without a map of their own
     Texture* env_map = mat.env_map;
     float env_intensity = mat.env_intensity > 0 ? mat.env_intensity : 1;
-    float env_diffuse_lod = 0;
+    bool env_diffuse = false;
     Scene* scene = state.scene;
     if (!env_map && scene && scene.environment && mat.type == STANDARD)
     {
         env_map = scene.environment;
         env_intensity *= scene.environment_intensity;
-        // its light from all around a normal: the mip level about 8 texels wide
-        env_diffuse_lod = math::max(math::log2((float)env_map.width) - 3, 1.0f);
     }
     Texture* env = ready(env_map);
+    // its light from all around a normal, worked out at the upload
+    if (env_map && scene && env_map == scene.environment && env_map.has_env_sh)
+    {
+        env_diffuse = true;
+        foreach (i, c : env_map.env_sh) fs.env_sh[i] = { ...c, 0 };
+    }
     bind.views[VIEW_TEX_ENV] = env.view;
     bind.samplers[SMP_ENV_SMP] = env.sampler;
     bind.samplers[SMP_TEX_SMP] = (mat.map ?: (mat.normal_map ?: (mat.arm_map ?: state.white))).sampler;
@@ -1855,7 +1859,7 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     fs.tex_params = { mat.map ? 1 : 0, mat.normal_map ? mat.normal_scale : 0, mat.arm_map ? 1 : 0, alpha_test };
     fs.parallax_params = { mat.parallax_map && mat.type == STANDARD ? mat.parallax_scale : 0,
                            mat.parallax_distance > 0 ? mat.parallax_distance : 30, mat.parallax_shadow, 0 };
-    fs.env_params = { env_map ? 1 : 0, env_intensity, env_diffuse_lod, env_map ? env_map.env_distance_range : 0 };
+    fs.env_params = { env_map ? 1 : 0, env_intensity, env_diffuse ? 1 : 0, env_map ? env_map.env_distance_range : 0 };
     // each point of it: the probe of the box it is in
     if (probes) fs.env_params = { 2, mat.env_intensity > 0 ? mat.env_intensity : 1, 0, 0 };
     bool boxed = mat.env_box_min != mat.env_box_max;
