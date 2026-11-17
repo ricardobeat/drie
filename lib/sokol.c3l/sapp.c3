@@ -1,0 +1,713 @@
+// machine generated, do not edit
+
+module sokol::sapp;
+import sokol;
+
+extern fn SappEnvironment get_environment() @cname("sapp_get_environment");
+extern fn SappSwapchain acquire_swapchain() @cname("sapp_acquire_swapchain");
+extern fn bool isvalid() @cname("sapp_isvalid");
+extern fn CInt width() @cname("sapp_width");
+extern fn float widthf() @cname("sapp_widthf");
+extern fn CInt height() @cname("sapp_height");
+extern fn float heightf() @cname("sapp_heightf");
+extern fn SappPixelFormat color_format() @cname("sapp_color_format");
+extern fn SappPixelFormat depth_format() @cname("sapp_depth_format");
+extern fn CInt sample_count() @cname("sapp_sample_count");
+extern fn bool high_dpi() @cname("sapp_high_dpi");
+extern fn float dpi_scale() @cname("sapp_dpi_scale");
+extern fn void show_keyboard(bool show) @cname("sapp_show_keyboard");
+extern fn bool keyboard_shown() @cname("sapp_keyboard_shown");
+extern fn bool is_fullscreen() @cname("sapp_is_fullscreen");
+extern fn void toggle_fullscreen() @cname("sapp_toggle_fullscreen");
+extern fn void show_mouse(bool show) @cname("sapp_show_mouse");
+extern fn bool mouse_shown() @cname("sapp_mouse_shown");
+extern fn void lock_mouse(bool lock) @cname("sapp_lock_mouse");
+extern fn bool mouse_locked() @cname("sapp_mouse_locked");
+extern fn void set_mouse_cursor(SappMouseCursor cursor) @cname("sapp_set_mouse_cursor");
+extern fn SappMouseCursor get_mouse_cursor() @cname("sapp_get_mouse_cursor");
+extern fn SappMouseCursor bind_mouse_cursor_image(SappMouseCursor cursor, SappImageDesc* desc) @cname("sapp_bind_mouse_cursor_image");
+extern fn void unbind_mouse_cursor_image(SappMouseCursor cursor) @cname("sapp_unbind_mouse_cursor_image");
+extern fn void* userdata() @cname("sapp_userdata");
+extern fn SappDesc query_desc() @cname("sapp_query_desc");
+extern fn void request_quit() @cname("sapp_request_quit");
+extern fn void cancel_quit() @cname("sapp_cancel_quit");
+extern fn void quit() @cname("sapp_quit");
+extern fn void consume_event() @cname("sapp_consume_event");
+extern fn ulong frame_count() @cname("sapp_frame_count");
+extern fn double frame_duration() @cname("sapp_frame_duration");
+extern fn double frame_duration_unfiltered() @cname("sapp_frame_duration_unfiltered");
+extern fn void set_clipboard_string(ZString str) @cname("sapp_set_clipboard_string");
+extern fn ZString get_clipboard_string() @cname("sapp_get_clipboard_string");
+extern fn void set_window_title(ZString str) @cname("sapp_set_window_title");
+extern fn void set_icon(SappIconDesc* icon_desc) @cname("sapp_set_icon");
+extern fn CInt get_num_dropped_files() @cname("sapp_get_num_dropped_files");
+extern fn ZString get_dropped_file_path(CInt index) @cname("sapp_get_dropped_file_path");
+extern fn void run(SappDesc* desc) @cname("sapp_run");
+extern fn void* egl_get_display() @cname("sapp_egl_get_display");
+extern fn void* egl_get_context() @cname("sapp_egl_get_context");
+extern fn void html5_ask_leave_site(bool ask) @cname("sapp_html5_ask_leave_site");
+extern fn uint html5_get_dropped_file_size(CInt index) @cname("sapp_html5_get_dropped_file_size");
+extern fn void html5_fetch_dropped_file(SappHtml5FetchRequest* request) @cname("sapp_html5_fetch_dropped_file");
+extern fn void* macos_get_window() @cname("sapp_macos_get_window");
+extern fn void* ios_get_window() @cname("sapp_ios_get_window");
+extern fn void* d3d11_get_swap_chain() @cname("sapp_d3d11_get_swap_chain");
+extern fn void* win32_get_hwnd() @cname("sapp_win32_get_hwnd");
+extern fn CInt gl_get_major_version() @cname("sapp_gl_get_major_version");
+extern fn CInt gl_get_minor_version() @cname("sapp_gl_get_minor_version");
+extern fn bool gl_is_gles() @cname("sapp_gl_is_gles");
+extern fn void* x11_get_window() @cname("sapp_x11_get_window");
+extern fn void* x11_get_display() @cname("sapp_x11_get_display");
+extern fn void* android_get_native_activity() @cname("sapp_android_get_native_activity");
+extern fn void* android_get_native_window() @cname("sapp_android_get_native_window");
+
+const usz MAX_TOUCHPOINTS = 8;
+const usz MAX_MOUSEBUTTONS = 3;
+const usz MAX_KEYCODES = 512;
+const usz MAX_ICONIMAGES = 8;
+
+constdef SappEventType : uint
+{
+    INVALID = 0,
+    KEY_DOWN = 1,
+    KEY_UP = 2,
+    CHAR = 3,
+    MOUSE_DOWN = 4,
+    MOUSE_UP = 5,
+    MOUSE_SCROLL = 6,
+    MOUSE_MOVE = 7,
+    MOUSE_ENTER = 8,
+    MOUSE_LEAVE = 9,
+    TOUCHES_BEGAN = 10,
+    TOUCHES_MOVED = 11,
+    TOUCHES_ENDED = 12,
+    TOUCHES_CANCELLED = 13,
+    RESIZED = 14,
+    ICONIFIED = 15,
+    RESTORED = 16,
+    FOCUSED = 17,
+    UNFOCUSED = 18,
+    SUSPENDED = 19,
+    RESUMED = 20,
+    QUIT_REQUESTED = 21,
+    CLIPBOARD_PASTED = 22,
+    FILES_DROPPED = 23,
+    ANDROID_BACK = 24,
+    NUM = 25,
+}
+
+constdef SappKeycode : uint
+{
+    INVALID = 0,
+    SPACE = 32,
+    APOSTROPHE = 39,
+    COMMA = 44,
+    MINUS = 45,
+    PERIOD = 46,
+    SLASH = 47,
+    NUM_0 = 48,
+    NUM_1 = 49,
+    NUM_2 = 50,
+    NUM_3 = 51,
+    NUM_4 = 52,
+    NUM_5 = 53,
+    NUM_6 = 54,
+    NUM_7 = 55,
+    NUM_8 = 56,
+    NUM_9 = 57,
+    SEMICOLON = 59,
+    EQUAL = 61,
+    A = 65,
+    B = 66,
+    C = 67,
+    D = 68,
+    E = 69,
+    F = 70,
+    G = 71,
+    H = 72,
+    I = 73,
+    J = 74,
+    K = 75,
+    L = 76,
+    M = 77,
+    N = 78,
+    O = 79,
+    P = 80,
+    Q = 81,
+    R = 82,
+    S = 83,
+    T = 84,
+    U = 85,
+    V = 86,
+    W = 87,
+    X = 88,
+    Y = 89,
+    Z = 90,
+    LEFT_BRACKET = 91,
+    BACKSLASH = 92,
+    RIGHT_BRACKET = 93,
+    GRAVE_ACCENT = 96,
+    WORLD_1 = 161,
+    WORLD_2 = 162,
+    ESCAPE = 256,
+    ENTER = 257,
+    TAB = 258,
+    BACKSPACE = 259,
+    INSERT = 260,
+    DELETE = 261,
+    RIGHT = 262,
+    LEFT = 263,
+    DOWN = 264,
+    UP = 265,
+    PAGE_UP = 266,
+    PAGE_DOWN = 267,
+    HOME = 268,
+    END = 269,
+    CAPS_LOCK = 280,
+    SCROLL_LOCK = 281,
+    NUM_LOCK = 282,
+    PRINT_SCREEN = 283,
+    PAUSE = 284,
+    F1 = 290,
+    F2 = 291,
+    F3 = 292,
+    F4 = 293,
+    F5 = 294,
+    F6 = 295,
+    F7 = 296,
+    F8 = 297,
+    F9 = 298,
+    F10 = 299,
+    F11 = 300,
+    F12 = 301,
+    F13 = 302,
+    F14 = 303,
+    F15 = 304,
+    F16 = 305,
+    F17 = 306,
+    F18 = 307,
+    F19 = 308,
+    F20 = 309,
+    F21 = 310,
+    F22 = 311,
+    F23 = 312,
+    F24 = 313,
+    F25 = 314,
+    KP_0 = 320,
+    KP_1 = 321,
+    KP_2 = 322,
+    KP_3 = 323,
+    KP_4 = 324,
+    KP_5 = 325,
+    KP_6 = 326,
+    KP_7 = 327,
+    KP_8 = 328,
+    KP_9 = 329,
+    KP_DECIMAL = 330,
+    KP_DIVIDE = 331,
+    KP_MULTIPLY = 332,
+    KP_SUBTRACT = 333,
+    KP_ADD = 334,
+    KP_ENTER = 335,
+    KP_EQUAL = 336,
+    LEFT_SHIFT = 340,
+    LEFT_CONTROL = 341,
+    LEFT_ALT = 342,
+    LEFT_SUPER = 343,
+    RIGHT_SHIFT = 344,
+    RIGHT_CONTROL = 345,
+    RIGHT_ALT = 346,
+    RIGHT_SUPER = 347,
+    MENU = 348,
+}
+
+constdef SappAndroidTooltype : uint
+{
+    UNKNOWN = 0,
+    FINGER = 1,
+    STYLUS = 2,
+    MOUSE = 3,
+}
+
+struct SappTouchpoint
+{
+    uptr identifier;
+    float pos_x;
+    float pos_y;
+    SappAndroidTooltype android_tooltype;
+    bool changed;
+}
+
+constdef SappMousebutton : uint
+{
+    LEFT = 0,
+    RIGHT = 1,
+    MIDDLE = 2,
+    INVALID = 256,
+}
+
+const uint MODIFIER_SHIFT = 1;
+const uint MODIFIER_CTRL = 2;
+const uint MODIFIER_ALT = 4;
+const uint MODIFIER_SUPER = 8;
+const uint MODIFIER_LMB = 256;
+const uint MODIFIER_RMB = 512;
+const uint MODIFIER_MMB = 1024;
+
+struct SappEvent
+{
+    ulong frame_count;
+    SappEventType type;
+    SappKeycode key_code;
+    uint char_code;
+    bool key_repeat;
+    uint modifiers;
+    SappMousebutton mouse_button;
+    float mouse_x;
+    float mouse_y;
+    float mouse_dx;
+    float mouse_dy;
+    float scroll_x;
+    float scroll_y;
+    CInt num_touches;
+    SappTouchpoint[8] touches;
+    CInt window_width;
+    CInt window_height;
+    CInt framebuffer_width;
+    CInt framebuffer_height;
+}
+
+struct SappRange
+{
+    void* ptr;
+    usz size;
+}
+
+struct SappImageDesc
+{
+    CInt width;
+    CInt height;
+    CInt cursor_hotspot_x;
+    CInt cursor_hotspot_y;
+    SappRange pixels;
+}
+
+struct SappIconDesc
+{
+    bool sokol_default;
+    SappImageDesc[8] images;
+}
+
+struct SappAllocator
+{
+    AllocCb alloc_fn;
+    FreeCb free_fn;
+    void* user_data;
+}
+
+constdef SappLogItem : uint
+{
+    OK = 0,
+    MALLOC_FAILED = 1,
+    SWAPCHAIN_DEPTHFORMAT_INVALID = 2,
+    MACOS_INVALID_NSOPENGL_PROFILE = 3,
+    METAL_CREATE_SWAPCHAIN_DEPTH_TEXTURE_FAILED = 4,
+    METAL_CREATE_SWAPCHAIN_MSAA_TEXTURE_FAILED = 5,
+    WIN32_LOAD_OPENGL32_DLL_FAILED = 6,
+    WIN32_CREATE_HELPER_WINDOW_FAILED = 7,
+    WIN32_HELPER_WINDOW_GETDC_FAILED = 8,
+    WIN32_DUMMY_CONTEXT_SET_PIXELFORMAT_FAILED = 9,
+    WIN32_CREATE_DUMMY_CONTEXT_FAILED = 10,
+    WIN32_DUMMY_CONTEXT_MAKE_CURRENT_FAILED = 11,
+    WIN32_GET_PIXELFORMAT_ATTRIB_FAILED = 12,
+    WIN32_WGL_FIND_PIXELFORMAT_FAILED = 13,
+    WIN32_WGL_DESCRIBE_PIXELFORMAT_FAILED = 14,
+    WIN32_WGL_SET_PIXELFORMAT_FAILED = 15,
+    WIN32_WGL_ARB_CREATE_CONTEXT_REQUIRED = 16,
+    WIN32_WGL_ARB_CREATE_CONTEXT_PROFILE_REQUIRED = 17,
+    WIN32_WGL_OPENGL_VERSION_NOT_SUPPORTED = 18,
+    WIN32_WGL_OPENGL_PROFILE_NOT_SUPPORTED = 19,
+    WIN32_WGL_INCOMPATIBLE_DEVICE_CONTEXT = 20,
+    WIN32_WGL_CREATE_CONTEXT_ATTRIBS_FAILED_OTHER = 21,
+    WIN32_D3D11_CREATE_DEVICE_WITH_DEBUG_FAILED = 22,
+    WIN32_D3D11_CREATE_DEVICE_FAILED = 23,
+    WIN32_D3D11_GET_IDXGIFACTORY_FAILED = 24,
+    WIN32_D3D11_GET_IDXGIADAPTER_FAILED = 25,
+    WIN32_D3D11_QUERY_INTERFACE_IDXGIDEVICE1_FAILED = 26,
+    WIN32_D3D11_CREATE_SWAPCHAIN_FAILED = 27,
+    WIN32_REGISTER_RAW_INPUT_DEVICES_FAILED_MOUSE_LOCK = 28,
+    WIN32_REGISTER_RAW_INPUT_DEVICES_FAILED_MOUSE_UNLOCK = 29,
+    WIN32_GET_RAW_INPUT_DATA_FAILED = 30,
+    WIN32_DESTROYICON_FOR_CURSOR_FAILED = 31,
+    LINUX_GLX_LOAD_LIBGL_FAILED = 32,
+    LINUX_GLX_LOAD_ENTRY_POINTS_FAILED = 33,
+    LINUX_GLX_EXTENSION_NOT_FOUND = 34,
+    LINUX_GLX_QUERY_VERSION_FAILED = 35,
+    LINUX_GLX_VERSION_TOO_LOW = 36,
+    LINUX_GLX_NO_GLXFBCONFIGS = 37,
+    LINUX_GLX_NO_SUITABLE_GLXFBCONFIG = 38,
+    LINUX_GLX_GET_VISUAL_FROM_FBCONFIG_FAILED = 39,
+    LINUX_GLX_REQUIRED_EXTENSIONS_MISSING = 40,
+    LINUX_GLX_CREATE_CONTEXT_FAILED = 41,
+    LINUX_GLX_CREATE_WINDOW_FAILED = 42,
+    LINUX_X11_CREATE_WINDOW_FAILED = 43,
+    LINUX_EGL_BIND_OPENGL_API_FAILED = 44,
+    LINUX_EGL_BIND_OPENGL_ES_API_FAILED = 45,
+    LINUX_EGL_GET_DISPLAY_FAILED = 46,
+    LINUX_EGL_INITIALIZE_FAILED = 47,
+    LINUX_EGL_NO_CONFIGS = 48,
+    LINUX_EGL_NO_NATIVE_VISUAL = 49,
+    LINUX_EGL_GET_VISUAL_INFO_FAILED = 50,
+    LINUX_EGL_CREATE_WINDOW_SURFACE_FAILED = 51,
+    LINUX_EGL_CREATE_CONTEXT_FAILED = 52,
+    LINUX_EGL_MAKE_CURRENT_FAILED = 53,
+    LINUX_X11_OPEN_DISPLAY_FAILED = 54,
+    LINUX_X11_QUERY_SYSTEM_DPI_FAILED = 55,
+    LINUX_X11_DROPPED_FILE_URI_WRONG_SCHEME = 56,
+    LINUX_X11_FAILED_TO_BECOME_OWNER_OF_CLIPBOARD = 57,
+    ANDROID_UNSUPPORTED_INPUT_EVENT_INPUT_CB = 58,
+    ANDROID_UNSUPPORTED_INPUT_EVENT_MAIN_CB = 59,
+    ANDROID_READ_MSG_FAILED = 60,
+    ANDROID_WRITE_MSG_FAILED = 61,
+    ANDROID_MSG_CREATE = 62,
+    ANDROID_MSG_RESUME = 63,
+    ANDROID_MSG_PAUSE = 64,
+    ANDROID_MSG_FOCUS = 65,
+    ANDROID_MSG_NO_FOCUS = 66,
+    ANDROID_MSG_SET_NATIVE_WINDOW = 67,
+    ANDROID_MSG_SET_INPUT_QUEUE = 68,
+    ANDROID_MSG_DESTROY = 69,
+    ANDROID_UNKNOWN_MSG = 70,
+    ANDROID_LOOP_THREAD_STARTED = 71,
+    ANDROID_LOOP_THREAD_DONE = 72,
+    ANDROID_NATIVE_ACTIVITY_ONSTART = 73,
+    ANDROID_NATIVE_ACTIVITY_ONRESUME = 74,
+    ANDROID_NATIVE_ACTIVITY_ONSAVEINSTANCESTATE = 75,
+    ANDROID_NATIVE_ACTIVITY_ONWINDOWFOCUSCHANGED = 76,
+    ANDROID_NATIVE_ACTIVITY_ONPAUSE = 77,
+    ANDROID_NATIVE_ACTIVITY_ONSTOP = 78,
+    ANDROID_NATIVE_ACTIVITY_ONNATIVEWINDOWCREATED = 79,
+    ANDROID_NATIVE_ACTIVITY_ONNATIVEWINDOWDESTROYED = 80,
+    ANDROID_NATIVE_ACTIVITY_ONINPUTQUEUECREATED = 81,
+    ANDROID_NATIVE_ACTIVITY_ONINPUTQUEUEDESTROYED = 82,
+    ANDROID_NATIVE_ACTIVITY_ONCONFIGURATIONCHANGED = 83,
+    ANDROID_NATIVE_ACTIVITY_ONLOWMEMORY = 84,
+    ANDROID_NATIVE_ACTIVITY_ONDESTROY = 85,
+    ANDROID_NATIVE_ACTIVITY_DONE = 86,
+    ANDROID_NATIVE_ACTIVITY_ONCREATE = 87,
+    ANDROID_CREATE_THREAD_PIPE_FAILED = 88,
+    ANDROID_NATIVE_ACTIVITY_CREATE_SUCCESS = 89,
+    ANDROID_CHOREOGRAPHER_ENABLED = 90,
+    ANDROID_CHOREOGRAPHER_UNAVAILABLE = 91,
+    WGPU_DEVICE_LOST = 92,
+    WGPU_DEVICE_LOG = 93,
+    WGPU_DEVICE_UNCAPTURED_ERROR = 94,
+    WGPU_SWAPCHAIN_CREATE_SURFACE_FAILED = 95,
+    WGPU_SWAPCHAIN_SURFACE_GET_CAPABILITIES_FAILED = 96,
+    WGPU_SWAPCHAIN_CREATE_DEPTH_STENCIL_TEXTURE_FAILED = 97,
+    WGPU_SWAPCHAIN_CREATE_DEPTH_STENCIL_VIEW_FAILED = 98,
+    WGPU_SWAPCHAIN_CREATE_MSAA_TEXTURE_FAILED = 99,
+    WGPU_SWAPCHAIN_CREATE_MSAA_VIEW_FAILED = 100,
+    WGPU_SWAPCHAIN_GETCURRENTTEXTURE_FAILED = 101,
+    WGPU_REQUEST_DEVICE_STATUS_ERROR = 102,
+    WGPU_REQUEST_DEVICE_STATUS_UNKNOWN = 103,
+    WGPU_REQUEST_ADAPTER_STATUS_UNAVAILABLE = 104,
+    WGPU_REQUEST_ADAPTER_STATUS_ERROR = 105,
+    WGPU_REQUEST_ADAPTER_STATUS_UNKNOWN = 106,
+    WGPU_CREATE_INSTANCE_FAILED = 107,
+    VULKAN_DEBUG_GENERAL = 108,
+    VULKAN_DEBUG_VALIDATION = 109,
+    VULKAN_DEBUG_PERFORMANCE = 110,
+    VULKAN_REQUIRED_INSTANCE_EXTENSION_FUNCTION_MISSING = 111,
+    VULKAN_ALLOC_DEVICE_MEMORY_NO_SUITABLE_MEMORY_TYPE = 112,
+    VULKAN_ALLOCATE_MEMORY_FAILED = 113,
+    VULKAN_CREATE_INSTANCE_FAILED = 114,
+    VULKAN_ENUMERATE_PHYSICAL_DEVICES_FAILED = 115,
+    VULKAN_NO_PHYSICAL_DEVICES_FOUND = 116,
+    VULKAN_NO_SUITABLE_PHYSICAL_DEVICE_FOUND = 117,
+    VULKAN_CREATE_DEVICE_FAILED_EXTENSION_NOT_PRESENT = 118,
+    VULKAN_CREATE_DEVICE_FAILED_FEATURE_NOT_PRESENT = 119,
+    VULKAN_CREATE_DEVICE_FAILED_INITIALIZATION_FAILED = 120,
+    VULKAN_CREATE_DEVICE_FAILED_OTHER = 121,
+    VULKAN_CREATE_SURFACE_FAILED = 122,
+    VULKAN_CREATE_SWAPCHAIN_FAILED = 123,
+    VULKAN_SWAPCHAIN_CREATE_IMAGE_VIEW_FAILED = 124,
+    VULKAN_SWAPCHAIN_CREATE_IMAGE_FAILED = 125,
+    VULKAN_SWAPCHAIN_ALLOC_IMAGE_DEVICE_MEMORY_FAILED = 126,
+    VULKAN_SWAPCHAIN_BIND_IMAGE_MEMORY_FAILED = 127,
+    VULKAN_ACQUIRE_NEXT_IMAGE_FAILED = 128,
+    VULKAN_QUEUE_PRESENT_FAILED = 129,
+    IMAGE_DATA_SIZE_MISMATCH = 130,
+    DROPPED_FILE_PATH_TOO_LONG = 131,
+    CLIPBOARD_STRING_TOO_BIG = 132,
+}
+
+constdef SappPixelFormat : uint
+{
+    DEFAULT = 0,
+    NONE = 1,
+    RGBA8 = 2,
+    SRGB8A8 = 3,
+    BGRA8 = 4,
+    SBGR8A8 = 5,
+    RGBA16F = 6,
+    DEPTH = 7,
+    DEPTH_STENCIL = 8,
+}
+
+struct SappEnvironmentDefaults
+{
+    SappPixelFormat color_format;
+    SappPixelFormat depth_format;
+    CInt sample_count;
+}
+
+struct SappMetalEnvironment
+{
+    void* device;
+}
+
+struct SappD3d11Environment
+{
+    void* device;
+    void* device_context;
+}
+
+struct SappWgpuEnvironment
+{
+    void* device;
+}
+
+struct SappVulkanEnvironment
+{
+    void* instance;
+    void* physical_device;
+    void* device;
+    void* queue;
+    uint queue_family_index;
+}
+
+struct SappEnvironment
+{
+    SappEnvironmentDefaults defaults;
+    SappMetalEnvironment metal;
+    SappD3d11Environment d3d11;
+    SappWgpuEnvironment wgpu;
+    SappVulkanEnvironment vulkan;
+}
+
+struct SappMetalSwapchain
+{
+    void* current_drawable;
+    void* depth_stencil_texture;
+    void* msaa_color_texture;
+}
+
+struct SappD3d11Swapchain
+{
+    void* render_view;
+    void* resolve_view;
+    void* depth_stencil_view;
+}
+
+struct SappWgpuSwapchain
+{
+    void* render_view;
+    void* resolve_view;
+    void* depth_stencil_view;
+}
+
+struct SappVulkanSwapchain
+{
+    void* render_image;
+    void* render_view;
+    void* resolve_image;
+    void* resolve_view;
+    void* depth_stencil_image;
+    void* depth_stencil_view;
+    void* render_finished_semaphore;
+    void* present_complete_semaphore;
+}
+
+struct SappGlSwapchain
+{
+    uint framebuffer;
+}
+
+struct SappSwapchain
+{
+    bool invalid;
+    CInt width;
+    CInt height;
+    CInt sample_count;
+    SappPixelFormat color_format;
+    SappPixelFormat depth_format;
+    SappMetalSwapchain metal;
+    SappD3d11Swapchain d3d11;
+    SappWgpuSwapchain wgpu;
+    SappVulkanSwapchain vulkan;
+    SappGlSwapchain gl;
+}
+
+constdef SappCompositeMode : uint
+{
+    DEFAULT = 0,
+    OPAQUE = 1,
+    PREMULTIPLIED = 2,
+}
+
+struct SappLogger
+{
+    LogCb func;
+    void* user_data;
+}
+
+struct SappGlDesc
+{
+    CInt major_version;
+    CInt minor_version;
+}
+
+struct SappWin32Desc
+{
+    bool console_utf8;
+    bool console_create;
+    bool console_attach;
+}
+
+struct SappHtml5Desc
+{
+    ZString canvas_selector;
+    bool canvas_resize;
+    bool preserve_drawing_buffer;
+    bool ask_leave_site;
+    bool update_document_title;
+    bool bubble_mouse_events;
+    bool bubble_touch_events;
+    bool bubble_wheel_events;
+    bool bubble_key_events;
+    bool bubble_char_events;
+    bool use_emsc_set_main_loop;
+    bool emsc_set_main_loop_simulate_infinite_loop;
+}
+
+struct SappIosDesc
+{
+    bool keyboard_resizes_canvas;
+}
+
+struct SappMetalDesc
+{
+    bool disable_display_sync;
+}
+
+struct SappAndroidDesc
+{
+    NativeEventCb native_event_cb;
+}
+
+struct SappDesc
+{
+    Cb init_cb;
+    Cb frame_cb;
+    Cb cleanup_cb;
+    EventCb event_cb;
+    void* user_data;
+    DataCb init_userdata_cb;
+    DataCb frame_userdata_cb;
+    DataCb cleanup_userdata_cb;
+    EventDataCb event_userdata_cb;
+    CInt width;
+    CInt height;
+    SappPixelFormat depth_format;
+    SappCompositeMode composite_mode;
+    CInt sample_count;
+    CInt swap_interval;
+    bool srgb;
+    bool hdr;
+    bool disable_vsync;
+    bool high_dpi;
+    bool fullscreen;
+    ZString window_title;
+    bool enable_clipboard;
+    CInt clipboard_size;
+    bool enable_dragndrop;
+    CInt max_dropped_files;
+    CInt max_dropped_file_path_length;
+    SappIconDesc icon;
+    SappAllocator allocator;
+    SappLogger logger;
+    SappGlDesc gl;
+    SappMetalDesc metal;
+    SappWin32Desc win32;
+    SappHtml5Desc html5;
+    SappIosDesc ios;
+    SappAndroidDesc android;
+}
+
+constdef SappHtml5FetchError : uint
+{
+    FETCH_ERROR_NO_ERROR = 0,
+    FETCH_ERROR_BUFFER_TOO_SMALL = 1,
+    FETCH_ERROR_OTHER = 2,
+}
+
+struct SappHtml5FetchResponse
+{
+    bool succeeded;
+    SappHtml5FetchError error_code;
+    CInt file_index;
+    SappRange data;
+    SappRange buffer;
+    void* user_data;
+}
+
+struct SappHtml5FetchRequest
+{
+    CInt dropped_file_index;
+    ResponseCb callback;
+    SappRange buffer;
+    void* user_data;
+}
+
+constdef SappMouseCursor : uint
+{
+    DEFAULT = 0,
+    ARROW = 1,
+    IBEAM = 2,
+    CROSSHAIR = 3,
+    POINTING_HAND = 4,
+    RESIZE_EW = 5,
+    RESIZE_NS = 6,
+    RESIZE_NWSE = 7,
+    RESIZE_NESW = 8,
+    RESIZE_ALL = 9,
+    NOT_ALLOWED = 10,
+    CUSTOM_0 = 11,
+    CUSTOM_1 = 12,
+    CUSTOM_2 = 13,
+    CUSTOM_3 = 14,
+    CUSTOM_4 = 15,
+    CUSTOM_5 = 16,
+    CUSTOM_6 = 17,
+    CUSTOM_7 = 18,
+    CUSTOM_8 = 19,
+    CUSTOM_9 = 20,
+    CUSTOM_10 = 21,
+    CUSTOM_11 = 22,
+    CUSTOM_12 = 23,
+    CUSTOM_13 = 24,
+    CUSTOM_14 = 25,
+    CUSTOM_15 = 26,
+    NUM = 27,
+}
+
+alias AllocCb = fn void*(usz, void*);
+alias FreeCb = fn void*(usz, void*);
+alias LogCb = fn void(ZString, uint, uint, ZString, uint, ZString, void*);
+alias NativeEventCb = fn bool(void*);
+alias Cb = fn void();
+alias EventCb = fn void(SappEvent*);
+alias DataCb = fn void(void*);
+alias EventDataCb = fn void(SappEvent*, void*);
+alias ResponseCb = fn void(SappHtml5FetchResponse*);
+

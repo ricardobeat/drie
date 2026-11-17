@@ -1,5 +1,5 @@
 // Compute shaders of the renderer (see compute.c3): light clustering and instance culling.
-// ./build.sh shaders turns this into kernels.c3.
+// just shaders turns this into generated/kernels.c3.
 @header module drie::shaders;
 @header import drie;
 

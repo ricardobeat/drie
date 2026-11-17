@@ -1,5 +1,15 @@
 {
 	"langrev": "1",
+	"dependency-search-paths": [
+		"lib",
+		"../lib"
+	],
+	"dependencies": [
+		"sokol",
+		"drie",
+		"draco",
+		"wamr"
+	],
 	"c-sources": [
 		"../../boomkat/vendor/libregexp/libregexp.c",
 		"../../boomkat/vendor/libunicode/libunicode.c",

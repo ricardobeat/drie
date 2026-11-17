@@ -13,7 +13,7 @@
 // buffers, which every backend the engine targets has (Metal, D3D11, GL 4.3).
 module drie;
 import std::math, std::io;
-import sokol, readback;
+import sokol, drie::readback;
 
 // A buffer kernels read and write (`buffer` in GLSL), and that vertex shaders can read.
 // `cpu_write`: written from the CPU with write(), at most once per frame, and only read by the

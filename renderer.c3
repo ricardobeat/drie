@@ -1,7 +1,7 @@
 // Renderer: owns the window and the GPU, draws a Scene from a Camera.
 module drie;
 import std::collections::list, std::sort, std::io, std::math;
-import sokol, readback;
+import sokol, drie::readback;
 
 alias AnimationLoop = fn void(double time_ms);
 alias EventListener = fn void(SappEvent* event);

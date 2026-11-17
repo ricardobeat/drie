@@ -4,7 +4,7 @@
 //   material.map = t;
 module drie;
 import std::io, std::math;
-import sokol, imageio;
+import sokol, drie::imageio;
 
 enum Wrapping {
     REPEAT_WRAPPING,

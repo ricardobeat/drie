@@ -9,7 +9,7 @@
 //
 // <libdir> holds drie.c3l and what it needs (the game's lib/).
 module reflections_test;
-import drie, drie::postprocessing, sokol, readback;
+import drie, drie::postprocessing, sokol, drie::readback;
 import std::io, std::math, std::io::file;
 
 const int W = 480;
@@ -79,7 +79,7 @@ fn void build_scene()
     panel.rotation.y = 0.5f;
     scene.add(panel);
 
-    // emissive cubes floating at two heights (as the house's color test), a white one far over
+    // emissive cubes floating at two heights, a white one far over
     // white, and a dull cube standing on the floor
     Color[6] colors = { 0xff3010, 0xff8a10, 0xf0e030, 0x40d040, 0x30d0c0, 0x2030ff };
     BufferGeometry* cube = drie::box_geometry(0.16f, 0.16f, 0.16f);

@@ -4,7 +4,7 @@
 // history has that the new frame's neighbourhood does not (a thing that moved away, a light
 // that went off) is clipped to the neighbourhood's spread of colors (variance clipping, in
 // YCoCg), and the history is read with a Catmull-Rom filter so it stays sharp.
-// Regenerate taa.c3 with: ./build.sh shaders
+// Regenerate generated/taa.c3 with: just shaders
 @header module drie::postprocessing;
 @header import drie;
 

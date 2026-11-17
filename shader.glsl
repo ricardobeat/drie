@@ -1,5 +1,5 @@
 // Uber-shader for three's built-in materials, plus the depth-only shadow pass: shader_core.glsl,
-// with hooks that do nothing. Regenerate shader.c3 with: ./build.sh shaders
+// with hooks that do nothing. Regenerate generated/shader.c3 with: just shaders
 //
 // An application with surfaces of its own compiles its own copy of the shader: a .glsl file
 // with its own @header (its module) and the two blocks below, then `@include` of
