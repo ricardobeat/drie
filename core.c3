@@ -433,6 +433,11 @@ struct Mesh
     int arena_base;
     int arena_size;
     int instance_uploads;
+    // for motion vectors (RenderTarget.mrt): its matrix_world in the last frame drawn with them
+    // and in this one, and which frame that was
+    Mat4 motion_prev;
+    Mat4 motion_cur;
+    int motion_frame;
 }
 
 // Draws the same geometry many times with one draw call, like THREE.InstancedMesh.
@@ -530,6 +535,11 @@ struct Camera
     float zoom;
     Mat4 projection_matrix;
     Mat4 matrix_world_inverse;
+    // for motion vectors (RenderTarget.mrt): projection_matrix * matrix_world_inverse of the last
+    // frame drawn with them and of this one, and which frame that was
+    Mat4 motion_prev;
+    Mat4 motion_cur;
+    int motion_frame;
 }
 
 struct PerspectiveCamera

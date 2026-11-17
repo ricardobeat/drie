@@ -40,7 +40,26 @@ struct RenderTarget
     SgView overlay_view;
     // see as_map
     Texture* map_texture;
+    // Multiple render targets, like three's `scenePass.setMRT(mrt({ output, normal, velocity }))`:
+    // a scene rendered into an RGBA16F target with `mrt` set also writes
+    //   normal_texture    RGBA16F: the surface's normal in world space (after its normal map),
+    //                     a = its roughness; 0 where nothing was drawn
+    //   velocity_texture  RG16F: how far it moved across the picture since the last frame
+    //                     drawn with MRT, in texture coordinates (uv now - uv then), with the
+    //                     camera's motion and each mesh's; instances and skinned vertices are
+    //                     taken to stand still
+    // Set it before the first set_size. See-through materials write neither.
+    bool mrt;
+    SgImage[2] mrt_color;
+    SgImage[2] mrt_resolve;
+    SgView[2] mrt_color_view;
+    SgView[2] mrt_resolve_view;
+    SgView normal_texture;
+    SgView velocity_texture;
 }
+
+// The pixel formats of RenderTarget.mrt's extra pictures: normal, velocity.
+const SgPixelFormat[2] MRT_FORMATS = { RGBA16F, RG16F };
 
 // The picture as a Texture, for any material's map, like three's `renderTarget.texture`: a
 // screen in the scene showing what another camera sees, say. It follows set_size. Call it
@@ -74,14 +93,17 @@ fn Texture* RenderTarget.as_map(&self)
 // passes takes a format of its own (RGBA16F, RG16F, R16F...) and no depth buffer:
 //   three::render_target(w, h, format: RGBA16F, depth_buffer: false)
 // A scene rendered into an RGBA16F target keeps its light as it is, brighter than white where
-// it is (see OutputPass in postprocessing.c3):
-//   three::render_target(w, h, 4, RGBA16F)
+// it is (see OutputPass in postprocessing.c3), and with `mrt` it also writes its normals and
+// motion (see RenderTarget.mrt):
+//   three::render_target(w, h, 4, RGBA16F, mrt: true)
 // Must be called after the window opened.
-fn RenderTarget* render_target(int width, int height, int samples = 1, SgPixelFormat format = RGBA8, bool depth_buffer = true)
+fn RenderTarget* render_target(int width, int height, int samples = 1, SgPixelFormat format = RGBA8, bool depth_buffer = true,
+                               bool mrt = false)
 {
     RenderTarget* rt = mem::new(RenderTarget);
     rt.format = format;
     rt.depth_buffer = depth_buffer;
+    rt.mrt = mrt;
     rt.set_size(width, height, samples);
     return rt;
 }
@@ -102,10 +124,20 @@ fn void RenderTarget.dispose(&self)
     if (self.color.id) sg::destroy_image(self.color);
     if (self.resolve.id) sg::destroy_image(self.resolve);
     if (self.depth.id) sg::destroy_image(self.depth);
+    if (self.normal_texture.id) sg::destroy_view(self.normal_texture);
+    if (self.velocity_texture.id) sg::destroy_view(self.velocity_texture);
+    for (int i = 0; i < 2; i++)
+    {
+        if (self.mrt_color_view[i].id) sg::destroy_view(self.mrt_color_view[i]);
+        if (self.mrt_resolve_view[i].id) sg::destroy_view(self.mrt_resolve_view[i]);
+        if (self.mrt_color[i].id) sg::destroy_image(self.mrt_color[i]);
+        if (self.mrt_resolve[i].id) sg::destroy_image(self.mrt_resolve[i]);
+    }
     Texture* map = self.map_texture;
     SgPixelFormat format = self.format;
     bool depth_buffer = self.depth_buffer;
-    *self = { .map_texture = map, .format = format, .depth_buffer = depth_buffer };
+    bool mrt = self.mrt;
+    *self = { .map_texture = map, .format = format, .depth_buffer = depth_buffer, .mrt = mrt };
 }
 
 fn void RenderTarget.set_size(&self, int width, int height, int samples = 1)
@@ -142,6 +174,37 @@ fn void RenderTarget.set_size(&self, int width, int height, int samples = 1)
     }
     self.texture = sg::make_view(&&{ .texture = { .image = self.texture_image } });
     self.overlay_view = sg::make_view(&&{ .color_attachment = { .image = self.texture_image } });
+    if (self.mrt)
+    {
+        if (!self.is_linear()) abort("three: a render target with MRT must be RGBA16F");
+        for (int i = 0; i < 2; i++)
+        {
+            self.mrt_color[i] = sg::make_image(&&{
+                .usage = { .color_attachment = true },
+                .width = width, .height = height, .sample_count = samples, .pixel_format = MRT_FORMATS[i],
+            });
+            self.mrt_color_view[i] = sg::make_view(&&{ .color_attachment = { .image = self.mrt_color[i] } });
+            SgImage shown = self.mrt_color[i];
+            if (samples > 1)
+            {
+                self.mrt_resolve[i] = sg::make_image(&&{
+                    .usage = { .resolve_attachment = true, .color_attachment = true },
+                    .width = width, .height = height, .sample_count = 1, .pixel_format = MRT_FORMATS[i],
+                });
+                self.mrt_resolve_view[i] = sg::make_view(&&{ .resolve_attachment = { .image = self.mrt_resolve[i] } });
+                shown = self.mrt_resolve[i];
+            }
+            SgView view = sg::make_view(&&{ .texture = { .image = shown } });
+            if (i == 0)
+            {
+                self.normal_texture = view;
+            }
+            else
+            {
+                self.velocity_texture = view;
+            }
+        }
+    }
     if (self.map_texture) self.as_map();
 }
 
@@ -151,6 +214,14 @@ fn SgAttachments RenderTarget.attachments(&self)
     a.colors[0] = self.color_view;
     a.depth_stencil = self.depth_view;
     if (self.samples > 1) a.resolves[0] = self.resolve_view;
+    if (self.mrt)
+    {
+        for (int i = 0; i < 2; i++)
+        {
+            a.colors[i + 1] = self.mrt_color_view[i];
+            if (self.samples > 1) a.resolves[i + 1] = self.mrt_resolve_view[i];
+        }
+    }
     return a;
 }
 
@@ -309,9 +380,19 @@ struct RendererState @local
     SgShader opaque_shader;
     SgShader depth_shader;
     SgShader shadow_shader;
+    SgShader mrt_shader;
+    SgShader opaque_mrt_shader;
+    // drawing with motion vectors (a target with MRT): the camera's view_proj a frame ago, and
+    // which frame of them this is
+    bool motion;
+    Mat4 motion_view_proj;
+    int motion_frame;
+    float motion_time;
+    float motion_prev_time;
     // indexed [DrawKind][side][opaque, transparent, additive][wireframe][target: swapchain, RGBA8 1x,
-    // RGBA8 4x, RGBA16F 1x, RGBA16F 4x][alpha to coverage] (C3 declares array dimensions innermost first)
-    SgPipeline[2][5][2][3][3][4] pipelines;
+    // RGBA8 4x, RGBA16F 1x, RGBA16F 4x, MRT 1x, MRT 4x][alpha to coverage] (C3 declares array
+    // dimensions innermost first)
+    SgPipeline[2][7][2][3][3][4] pipelines;
     SgPipeline shadow_pipeline;
     // writes the far depth wherever it draws: clears one tile of the shadow atlas
     SgPipeline tile_clear_pipeline;
@@ -470,15 +551,18 @@ fn bool depth_zero_to_one()
 
 alias ShaderDescFn = fn SgShaderDesc(SgBackend backend);
 
-// The four programs of the material shader, as sokol-shdc generates them from a .glsl file that
+// The programs of the material shader, as sokol-shdc generates them from a .glsl file that
 // includes shader_core.glsl: `my_module::three_shader_desc`, `three_opaque_shader_desc`,
-// `depth_shader_desc` and `shadow_shader_desc`.
+// `depth_shader_desc`, `shadow_shader_desc`, and for RenderTarget.mrt `three_mrt_shader_desc`
+// and `three_opaque_mrt_shader_desc`.
 struct MaterialShaders
 {
     ShaderDescFn main;
     ShaderDescFn opaque;
     ShaderDescFn depth;
     ShaderDescFn shadow;
+    ShaderDescFn main_mrt;
+    ShaderDescFn opaque_mrt;
 }
 
 fn void setup_gfx(SgEnvironment environment) @local
@@ -504,6 +588,8 @@ fn void setup_gfx(SgEnvironment environment) @local
     state.opaque_shader = sg::make_shader(&&(s.opaque ? s.opaque(backend) : three_opaque_shader_desc(backend)));
     state.depth_shader = sg::make_shader(&&(s.depth ? s.depth(backend) : depth_shader_desc(backend)));
     state.shadow_shader = sg::make_shader(&&(s.shadow ? s.shadow(backend) : shadow_shader_desc(backend)));
+    state.mrt_shader = sg::make_shader(&&(s.main_mrt ? s.main_mrt(backend) : three_mrt_shader_desc(backend)));
+    state.opaque_mrt_shader = sg::make_shader(&&(s.opaque_mrt ? s.opaque_mrt(backend) : three_opaque_mrt_shader_desc(backend)));
     state.white = data_texture({ 255, 255, 255, 255 }, 1, 1, NO_COLOR_SPACE);
     float[12] identity = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0 };
     state.identity_instance = sg::make_buffer(&&{ .data = { .ptr = &identity, .size = identity.len * float::size } });
@@ -615,7 +701,7 @@ enum DrawKind : char @local
 fn SgPipeline get_pipeline(Side side, bool transparent, bool wireframe, RenderTarget* rt, bool alpha_test,
                            Blending blending = NORMAL_BLENDING, DrawKind kind = CUT) @local
 {
-    int target = rt ? (rt.samples > 1 ? 2 : 1) + (rt.is_linear() ? 2 : 0) : 0;
+    int target = rt ? (rt.samples > 1 ? 2 : 1) + (rt.mrt ? 4 : (rt.is_linear() ? 2 : 0)) : 0;
     if (rt && rt.samples != 1 && rt.samples != 4) abort("three: render targets support 1 or 4 samples");
     if (rt && rt.pixel_format() != RGBA8 && !rt.is_linear()) abort("three: a scene renders into RGBA8 or RGBA16F");
     int samples = rt ? rt.samples : sapp::sample_count();
@@ -632,11 +718,12 @@ fn SgPipeline get_pipeline(Side side, bool transparent, bool wireframe, RenderTa
         case DOUBLE_SIDE: cull = NONE;
     }
     SgShader shader;
+    bool mrt = rt && rt.mrt;
     switch (kind)
     {
-        case CUT: shader = state.shader;
+        case CUT: shader = mrt ? state.mrt_shader : state.shader;
         case SOLID:
-        case PRETESTED: shader = state.opaque_shader;
+        case PRETESTED: shader = mrt ? state.opaque_mrt_shader : state.opaque_shader;
         case DEPTH: shader = state.depth_shader;
     }
     SgPipelineDesc desc = {
@@ -660,6 +747,16 @@ fn SgPipeline get_pipeline(Side side, bool transparent, bool wireframe, RenderTa
         desc.sample_count = rt.samples;
         desc.colors[0].pixel_format = rt.pixel_format();
         desc.depth.pixel_format = DEPTH;
+    }
+    if (mrt)
+    {
+        desc.color_count = 3;
+        for (int i = 0; i < 2; i++)
+        {
+            desc.colors[i + 1].pixel_format = MRT_FORMATS[i];
+            // what can be seen through leaves the normal and the motion of what is behind it
+            if (kind == DEPTH || transparent) desc.colors[i + 1].write_mask = NONE;
+        }
     }
     if (transparent)
     {
@@ -1418,7 +1515,7 @@ fn VsParams vs_params_of(DrawItem* item, Mat4 view_proj, bool normals = true) @l
 {
     Mesh* m = item.mesh;
     Material* mat = m.material;
-    return {
+    VsParams vs = {
         .view_proj = view_proj,
         .model = m.matrix_world,
         .normal_mat = normals ? m.matrix_world.invert().transpose() : m.matrix_world,
@@ -1427,6 +1524,22 @@ fn VsParams vs_params_of(DrawItem* item, Mat4 view_proj, bool normals = true) @l
         .vs_material_custom = mat.custom,
         .vs_frame_custom = state.renderer.custom,
     };
+    if (state.motion)
+    {
+        // the first time this frame: what was this frame's matrix is the last frame's now (or,
+        // not drawn then, it stood where it is)
+        if (m.motion_frame != state.motion_frame)
+        {
+            m.motion_prev = m.motion_frame == state.motion_frame - 1 ? m.motion_cur : m.matrix_world;
+            m.motion_cur = m.matrix_world;
+            m.motion_frame = state.motion_frame;
+        }
+        vs.prev_view_proj = state.motion_view_proj;
+        vs.prev_model = m.motion_prev;
+        bool moved = m.motion_prev != m.motion_cur || (mat.sway > 0 && state.motion_prev_time != state.motion_time);
+        vs.motion = { moved ? 2 : 1, state.motion_prev_time, 0, 0 };
+    }
+    return vs;
 }
 
 // The depth prepass's draw of an opaque item with holes (see Renderer.depth_prepass).
@@ -1728,6 +1841,18 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera)
     camera.matrix_world_inverse = camera.matrix_world.invert();
     Mat4 view_proj = camera.projection_matrix.mul(camera.matrix_world_inverse);
     Vector3 camera_pos = camera.matrix_world.get_position();
+    // motion vectors: every render with MRT is the next frame of them
+    state.motion = self.render_target && self.render_target.mrt;
+    if (state.motion)
+    {
+        state.motion_frame++;
+        state.motion_prev_time = state.motion_frame > 1 ? state.motion_time : self.time;
+        state.motion_time = self.time;
+        camera.motion_prev = camera.motion_frame == state.motion_frame - 1 ? camera.motion_cur : view_proj;
+        camera.motion_cur = view_proj;
+        camera.motion_frame = state.motion_frame;
+        state.motion_view_proj = camera.motion_prev;
+    }
 
     profile::stop("render: matrices", pt);
     pt = profile::start();
@@ -1829,6 +1954,8 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera)
         // kept for RenderTarget.depth_texture
         pass.action.depth = { .load_action = CLEAR, .store_action = STORE, .clear_value = 1 };
         pass.attachments = self.render_target.attachments();
+        // no normal, no motion where nothing is drawn
+        if (self.render_target.mrt) pass.action.colors[1] = pass.action.colors[2] = { .load_action = CLEAR };
     }
     else
     {
