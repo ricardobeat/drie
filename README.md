@@ -1,6 +1,21 @@
 # drie
 
-A small three.js-style scene graph on top of sokol, written in C3.
+A small three.js-style scene graph on top of [`sokol_gfx`](https://github.com/floooh/sokol-c3), written in [C3](https://c3-lang.org).
+
+## Three.js compatibility
+
+[driejs](driejs/README.md) runs unmodified three.js code (`three.core.js`) using the [boomkat](https://github.com/ricardobeat/boomkat) JS engine, with `drie` as the rendered backend. Scripts can import `three` and `three/addons/...` as they would in a browser.
+
+It is a standalone project inside `driejs/` and is not compiled into applications that use `drie` as a library.
+
+```sh
+just driejs::build
+just driejs::run demos/webgl_geometries.js
+```
+
+See [driejs/README.md](driejs/README.md) for setup, offscreen rendering, and benchmarks.
+
+## Using with C3
 
 ```c3
 import drie;
@@ -32,6 +47,15 @@ fn void animate(double time)
 }
 ```
 
+Add `drie` to your `project.json`:
+
+```json
+"dependencies": [
+    "https://c3.ricar.do/github.com/floooh/sokol-c3:floooh/sokol",
+    "https://c3.ricar.do/github.com:ricardobeat/drie"
+]
+```
+
 ## Translating from three.js
 
 | three.js | three.c3 |
@@ -40,316 +64,32 @@ fn void animate(double time)
 | `new THREE.BoxGeometry(1, 2, 3)` | `drie::box_geometry(1, 2, 3)` |
 | `new THREE.MeshStandardMaterial({ color: 0xff0000, roughness: 0.5 })` | `drie::mesh_standard_material(color: 0xff0000, roughness: 0.5)` |
 | `THREE.DoubleSide` | `DOUBLE_SIDE` |
-| `Math.PI` | `drie::PI` |
-| `mesh.position.set(1, 2, 3)` | same |
-| `mesh.rotation.y += 0.1` | same |
-| `obj.lookAt(0, 0, 0)` | `obj.look_at(0, 0, 0)` |
-| `scene.add(obj)` / `group.remove(obj)` | same |
-| `scene.background = new THREE.Color(0x111111)` | `scene.background = 0x111111` |
-| `scene.fog = new THREE.Fog(color, near, far)` | `scene.fog = drie::fog(color, near, far)` |
-| `renderer.setAnimationLoop(fn)` | `renderer.set_animation_loop(&fn)` (opens the window, blocks) |
-| `new OrbitControls(camera, dom)` | `controls::orbit_controls(camera)` (`drie::controls`) |
-| `new THREE.Clock()` / `clock.getDelta()` | `drie::clock()` / `clock.get_delta()` |
-| `color.setHSL(h, s, l)` | `drie::hsl(h, s, l)` |
-| `window.innerWidth / window.innerHeight` | `drie::window_aspect()` |
-| `window.addEventListener('keydown', fn)` | `drie::add_event_listener(&fn)` (raw sokol events) |
 
-Rules of thumb: `camelCase` becomes `snake_case`, `new THREE.X(...)` becomes `drie::x(...)`,
+And so on. Rules of thumb: `camelCase` becomes `snake_case`, `new THREE.X(...)` becomes `drie::x(...)`,
 and parameter objects become named arguments.
 
-## What's there
+## Features
 
-- **Objects:** `Object3D`, `Group`, `Scene`, `Mesh`, `InstancedMesh`, `Lod`, `PerspectiveCamera`,
-  `OrthographicCamera`
-  `object.matrix_auto_update` and `matrix_world_auto_update` are three's `matrixAutoUpdate`
-  and `matrixWorldAutoUpdate`: with the second off the scene's update leaves that object and
-  everything under it alone, so a big world that stands still costs nothing per frame (place
-  it once with `update_matrix_world()` first).
-- **Skeletons:** `Bone`, `Skeleton`, `SkinnedMesh` (`drie::bone()`, `drie::skeleton(bones)`,
-  `drie::skinned_mesh(geometry, material)`, `mesh.bind(skeleton)`). Skin weights are set on the
-  geometry with `set_skin`, `set_skin_blend` and `skin_range`. Vertices are skinned on the CPU:
-  pose the bones, then call `mesh.update()` once per frame. glTF skins and animation clips are
-  not loaded. See `skeleton.c3`.
-- **Geometry:** `box`, `plane`, `sphere`, `cylinder`, `cone`, `torus`, `lathe` (a profile of
-  (radius, height) points turned around the y axis, like `THREE.LatheGeometry`), plus custom geometry via
-  `drie::buffer_geometry(positions, indices)` (normals are computed for you), or built up with
-  `add_vertex`, `merge` and `compute_vertex_normals`
-- **Materials:** `MeshBasicMaterial`, `MeshLambertMaterial`, `MeshPhongMaterial`,
-  `MeshStandardMaterial`, `MeshNormalMaterial`, with `opacity`/`transparent`, `side`, `wireframe`,
-  `emissive`, `fog`, `map`, `normal_map` + `normal_scale`, `alpha_test`
-- **Textures:** `drie::load_texture(path)` (PNG and JPEG), `drie::data_texture(rgba, w, h)`,
-  `drie::canvas_texture(w, h)` (a texture you draw into with sokol between `.begin()` and `.end()`,
-  for screens in the scene; like a render target's `.texture`),
-  with mipmaps and anisotropic filtering. Pass `NO_COLOR_SPACE` for data such as normal maps.
-- **Models:** `loaders::load_gltf(path)` (`drie::loaders`, like three's addons/loaders) reads binary glTF (`.glb`) with its materials and
-  textures; `model.get("name")` finds a node.
-- **Lights:** `AmbientLight`, `HemisphereLight`, `DirectionalLight`, `PointLight`, `SpotLight`, as
-  many as you like (clustered, see below). Intensities and color handling follow modern three.js (r155+): sRGB hex
-  colors, linear lighting, physically based light units.
-- **Shadows:** spot and directional lights cast them: `light.cast_shadow = true`, and
-  `cast_shadow` / `receive_shadow` on meshes. `light.shadow` has `map_size`, `normal_bias`,
-  `radius`, `intensity` (how dark, 0..1, like three r166+), `near`, `far` and `focus` (spot
-  lights). One spot light's map is redrawn every
-  frame; `renderer.shadow_atlas_capacity` more (default 8) can cast shadows that are drawn once (see `auto_update` below). One
-  directional light (the first that casts) has a map of its own at the same time, in cascades
-  (see below).
-- **Fog:** `Fog` (linear) and `FogExp2`
-- **Controls:** `OrbitControls` in `drie::controls` (left drag rotates, right drag or shift+drag pans, scroll zooms, damping, auto-rotate)
-- **Raycasting** (`raycaster.c3`), like three's `Raycaster`: `drie::raycaster(origin,
-  direction)`, `set_from_camera({ x, y }, camera)` with x and y from -1 to 1, then
-  `intersect_object(object, &list)` / `intersect_objects(objects, &list)`, which add
-  `Intersection`s (`distance`, `point`, `object`, `face`, `face_index`, `uv`, `normal`,
-  `instance_id`) to a list of yours, nearest first. `intersect_first(object, &hit)` finds only
-  the nearest hit, without a list. Meshes, each instance of an instanced mesh and the level of a
-  `Lod` that the ray's origin would see are tested, after their bounding spheres, following the
-  material's `side`. `near`, `far` and `visible_only` limit what counts. As in three, every
-  triangle of a mesh the ray comes near is tested; there is no acceleration structure.
-- **Post-processing** (`drie::postprocessing`, like three's addons of that name):
-  `EffectComposer`, `RenderPass` and `ShaderPass`. A `ShaderPass` is a fullscreen shader of
-  yours (a sokol-shdc `@vs`/`@fs` program whose vertex shader makes a triangle from
-  `gl_VertexIndex`), drawn with `pass.render(target)` (null: the window), over a target's picture
-  with `render_over` (with `MULTIPLY_BLEND`, say), or with `draw()` into a pass you began
-  (`target.begin()`, `begin_screen(aspect: ...)` / `end_screen()`). It keeps its textures,
-  samplers and uniforms (`set_texture`, `set_sampler`, `set_uniforms`) and makes a pipeline for
-  each kind of target it draws into. `output_pass(renderer)` is three's `OutputPass`: the end of a
-  chain in linear light, tone mapped with the renderer's settings when it draws (an
-  `exposure_map`, a 1x1 texture, can scale the exposure from the GPU, for auto exposure).
-  `gtao_pass(camera)` is three's `GTAOPass` (ground-truth AO, after Intel's XeGTAO): from the
-  depth and normals of a target rendered with `mrt`, it darkens only the light that came in
-  indirectly (the target's `indirect_texture`), as three's WebGPU renderer does with an `ao`
-  context, with specular occlusion on reflections; `ao.render(scene_target)` after the scene,
-  or after a `RenderPass` with `mrt` set in a composer. `taa_pass()` is temporal
-  antialiasing: `taa.jitter(camera)` shifts the camera by a fraction of a pixel each frame
-  (`camera.jitter`, Halton 2, 3, left out of the motion vectors) and `taa.render(scene_target)`
-  blends the new frame into the history found again with the motion vectors (variance
-  clipping in YCoCg, a Catmull-Rom history, Karis weighting); the result is `taa.texture()`.
-  The composer's buffers are RGBA16F by default, as three's are. `ping_pong(w, h, format)` is a pair of targets for what
-  builds up from frame to frame. `effect_composer(renderer)` with `add_pass()` and `render()`
-  chains passes as three's does: a `ShaderPass` gets the picture of the pass before at its
-  `input_view`, and the last pass draws into the window. See `postprocessing.c3`.
-- **Menus** (`drie::ui`, not in three.js; `menu.locked = true` leaves the toggle key to the
-  game for a while): `ui::menu(title, handler)` makes a game menu that
-  opens with escape and takes the keyboard and mouse while open (key releases still reach the
-  game). Items are actions or pages; the handler gets `OPEN`, `CLOSE`, `SELECT`, `CONFIRM` and
-  `BACK`. With `overlay = true` it is drawn with a plain built-in look over the finished frame
-  (`render()` to the window and `end_screen()` do it; a game whose last pass is its own calls
-  `drie::draw_overlays()` in it). Otherwise draw it yourself from its fields, inside the
-  picture if you like. `ui::screen_fade` fades to and from black with a callback at the end.
-  `ui::setup()` sets up sokol_debugtext and sokol_gl once, for games that draw text of their
-  own too. `ui::touch_controls()` are on-screen sticks and buttons for phones and tablets.
-- **Game controllers** (`drie::input`, macOS GameController framework):
-  `input::gamepad()` has the sticks (dead zone removed), triggers and buttons (`PAD_*`, with
-  `pressed()` / `released()` for this frame). The renderer polls it before every frame, and
-  by default the d-pad, cross / A, circle / B and options also send arrow, enter, backspace
-  and escape key events, so menus and keyboard code work with a controller unchanged.
-- **Rewind** (`drie::timeline`): `Timeline{Input, State}` records each frame's input and snapshots
-  the state a few times a second; `seek()` goes back by loading a snapshot and replaying the
-  input after it. Needs a deterministic step function.
-- **Renderer:** render targets, tone mapping, frustum culling, and `renderer.info`
-  (draw calls and triangles of the last frame, shadow pass counted separately).
-  `drie::render_target(w, h, samples, format, depth_buffer)` takes three's `type`/`format` and
-  `depthBuffer` options as a sokol pixel format and a flag; passes can use any format.
-  A scene is rendered into RGBA8 (tone mapped and sRGB, ready to show) or, like three's
-  `HalfFloatType` targets, into RGBA16F, where it stays in linear light (a lamp brighter than
-  white keeps its brightness through blurs, reflections and blending) until an `OutputPass`
-  tone maps it. `renderer.tone_mapping` takes three's tone mappings (`LINEAR_`, `REINHARD_`,
-  `CINEON_`, `ACES_FILMIC_`, `AGX_` and `NEUTRAL_TONE_MAPPING`) with `tone_mapping_exposure`;
-  `drie::tone_map(color, mode, exposure)` does the same on the CPU. Shaders of your own can
-  `@include tonemapping.glsl` and use `tone_map()`, `linear_to_srgb()` and `srgb_to_linear()`.
-  With `mrt: true` (`drie::render_target(w, h, 4, RGBA16F, mrt: true)`, like three's
-  `scenePass.setMRT(mrt({ output, normal, velocity }))`) the main pass also writes
-  `normal_texture` (world-space normals after normal maps, in two channels, packed like
-  three's `packNormalToOctahedral`), `velocity_texture` (motion vectors: uv now minus uv a
-  frame ago, from the camera, each mesh's matrix and wind sway) and `indirect_texture` (the
-  shares of each pixel's light that are indirect diffuse and indirect specular, then its
-  roughness and metalness), for temporal filters, motion blur, ambient occlusion and other
-  screen-space effects.
-- **Profiling** (`drie::profile`): `profile::enabled = true`, then `profile::start()` /
-  `profile::stop(name, t)` around stages and `profile::report(frames)`. The renderer times its
-  own stages this way.
+three.js API coverage:
 
-What three.js keeps in its addons is in submodules named after their folders:
-`drie::controls` (OrbitControls), `drie::loaders` (glTF), `drie::objects` (Sky) and
-`drie::postprocessing`. The parts that are not in three.js are submodules too: `drie::ui`,
-`drie::input`, `drie::profile`, `drie::timeline`. The shaders sokol-shdc generates are in
-`drie::shaders`.
-`import drie` imports them too. `ui` and `input` hook into the renderer when the program
-starts (`drie::add_frame_hook`, `add_event_filter`, `add_overlay`), which an application can
-use as well.
-
-## Extensions
-
-These aren't in three.js:
-
-- `material.arm_map`: one texture with ambient occlusion, roughness and metalness in R, G and B
-  (the layout Poly Haven ships).
-- `material.parallax_map`: parallax occlusion mapping from a height map (white = the top),
-  `parallax_scale` meters deep. The view ray is marched into it and the color, normal and arm
-  maps are read where it lands, so stones and ruts stand up and hide each other. It fades out
-  toward `parallax_distance`, and `parallax_shadow` (0 to 1) lets the bumps shade each other
-  from the first directional light. (three's `displacementMap` moves vertices instead.)
-- `material.foliage`: for alpha-tested leaves and blades. Both sides are lit, and light wraps
-  around them a little. `material.sway` and `sway_speed` move the vertices in the wind, more the higher
-  they are above the object's origin.
-- `material.glass`: a transparent material that keeps its reflections however clear it is.
-- `light.radius` on point and spot lights: the size of the source. Falloff softens up close
-  instead of blowing out.
-- `spot_light.specular_radius`: the size of the bright core seen in reflections (0 means
-  `radius`). A big soft lamp can still leave a sharp glint on glass and gloss paint.
-- `material.env_map` and `env_intensity`: reflections of the surroundings from an
-  equirectangular texture, like three's `envMap`. Roughness blurs them through the mip levels.
-- `material.env_box_min`, `env_box_max` and `env_position`: box projection for `env_map`. Give the
-  room the map was captured in and where; reflections of its walls then keep their size and
-  place as the viewer moves.
-- `material.reflect_viewer` (glass): the viewer's own silhouette, a soft dark figure standing at
-  the camera, darkens the reflections by this much.
-- `renderer.capture_environment(scene, position)`: renders the scene in six directions from a
-  point, like a light probe, and returns an equirectangular texture for `env_map`. It reads
-  the result back from the GPU, so call it once at load. `on_face` runs after the camera is
-  aimed at each face (to aim a light with it, for example).
-- `light.shadow.auto_update = false`: for a light that stays put among things that stay put. Its
-  shadow map is drawn once into a shared atlas (`renderer.shadow_atlas_capacity` of them) and costs nothing
-  after that. Set `light.shadow.needs_update = true` to redraw it, as in three.js: only that
-  light's tile is drawn again. The soft edge takes about three taps per pixel it spans (4 to
-  14), and the search for the caster of a `softness` shadow is skipped where its edge could not
-  be a pixel wide, so far and small shadows cost little.
-- Cascaded shadow maps for a `DirectionalLight` (like three's `CSM` addon, built in):
-  `light.shadow.cascades` (1..4, default 4) cuts the camera's view up to
-  `shadow.max_distance` meters (default 150) into slices, each with its own box of parallel
-  rays, `map_size` square, in a 2x2 atlas. `shadow.split_lambda` places the cuts (0: evenly,
-  1: logarithmic; default 0.7) and `shadow.cascade_blend` is the band where one slice fades into
-  the next (a part of the slice, default 0.1); the last fades to no shadow. Each box is fitted
-  around the slice's bounding sphere and moves in whole texels, so edges do not crawl as the
-  camera turns or moves. The blur (`radius`) and `normal_bias` are scaled to each cascade's
-  texel size, so the softness matches across the cuts. Needs a perspective camera.
-  `renderer.debug_cascades = true` tints them red, green, blue and yellow, nearest first.
-- `shadow.cascades = 1`: one box, `light.shadow_extent` meters from its centre to its sides
-  (three's `shadow.camera.right`/`top`), on the light's target, or ahead of the camera with
-  `light.shadow_follow = true`. Faded out towards its edge.
-- `spot_light.fog_glow`: scales how much the light shows in `fog.light_scatter` fog (0: not at all),
-  and only that: a dim lamp can still throw a beam (values far above 1 are fine). In volumetric
-  fog the beam stops where the light's shadow map says it does.
-- `scene.irradiance`: an `IrradianceVolume`, a grid of probes holding light that has bounced
-  around a room. Lit materials inside its box receive it on top of the scene's lights. The
-  engine stores and samples the probes; what goes into them is up to you (see `irradiance.c3`).
-- `scene.reflection_probes`: `ReflectionProbes` (`drie::reflection_probes()`, `probes.add(map,
-  position, box_min, box_max)`), like three's scene-level reflection probes: an environment map
-  per room, kept as the layers of one array texture. A material with `env_probes` set mirrors,
-  at each of its points, the map of the box that point is in (box-projected, cross-faded where
-  boxes meet, with a probe without a box for everywhere else), whichever room the camera is in.
-- `scene.radiance`: `RadianceCascades` (`drie::radiance_cascades(min, max)`, `radiance.c3`):
-  bounced light and the glow of emissive things inside a box, traced anew on the GPU every
-  frame (`rc.update(scene)` before `render`). Radiance cascades on a grid of probes, their
-  rays marched through a voxel copy of the scene (`rc.voxelize(scene)`); the scene's point and
-  spot lights, its sky and the frame before's bounce light what the rays hit. Inside the box
-  it takes the place of the ambient and hemisphere lights and of `scene.irradiance`.
-- `render_target.depth_texture` and `overlay_view`: the depth of the last render (multisampled
-  if the target is) and an attachment for drawing over the resolved picture, for
-  post-processing such as ambient occlusion.
-- A render target's alpha is 0 where a light source was drawn (a material whose emissive is
-  far over white, 16 and up), so that post-processing can keep lamps burnt out.
-- `material.ssr` and `renderer.set_reflection_source(color, depth, view_proj)`: screen-space
-  reflections. A material with `ssr` above 0 mirrors what was on screen around it in the frame
-  before, more at a glancing angle and blurred by its roughness (one noisy ray per pixel:
-  follow it with a temporal filter). The application hands over the last frame's picture and
-  depth every frame, after its own post-processing; see the function's comment for their layout.
-  `renderer.render_back_faces(target)` after `render()` records how thick things are, for
-  `set_reflection_source(..., back:)`: a ray that passes behind something thin goes on past it.
-  `material.ssr_reach` keeps a material's rays short (only what stands on the surface).
-- `reflector(normal, constant)` and `renderer.render_reflector(reflector, scene, camera)`: planar
-  reflections, like three's `Reflector`, for a flat surface that keeps its own material
-  (`material.reflector`). The scene is rendered again from the camera mirrored in the plane,
-  with what is behind the plane clipped by an oblique near plane (`camera.custom_projection`),
-  and the material mirrors that picture, moved by its normal map and blurred by its roughness.
-  It shows what the camera can't (the underside of a thing over the floor); it costs a second
-  render. With `ssr` on too, screen-space reflections add what they find close by.
-  `reflector.box_min`/`box_max` limit it to what is in a box (a room's floor need not mirror
-  the woods outside its windows, which cost as much to draw as in the main view).
-  `renderer.shadow_map_auto_update = false` (three's `shadowMap.autoUpdate`) renders with the
-  shadow maps as they are, as the reflector does.
-- `capture_environment(..., distance: &fn)`: with a ray caster of the application's, the map
-  also stores how far away each direction's surface is (in its alpha). A box-projected glossy
-  material then follows its reflected rays through the room as the map saw it, so that what
-  stands in the middle of the room is mirrored where it stands, not smeared over the walls.
-- Clustered forward lighting (`clusters.c3`): lights go to the GPU in storage buffers, and
-  the view is cut into 16x9x24 clusters (screen tiles x exponential depth slices). Each
-  cluster lists the point and spot lights whose bounding sphere reaches it, and a fragment
-  only shades its own cluster's lights. `renderer.max_lights` (default 1024 per kind, 0 = no
-  limit) caps a render, with a warning. The assignment runs in a compute shader
-  (`cluster_lights_gpu`; `cluster_lights_cpu` gives the same result on the CPU), and
-  `renderer.assign_clusters` (a `ClusterAssignFn`) can replace it. Volumetric fog uses the
-  clusters too; the per-pixel fallback's glow loops over every light. Storage buffers need GL 4.3 for a GL
-  backend (Metal and D3D11 have them).
-- Compute shaders (`compute.c3`), after three.js's WebGPU `renderer.compute()` and storage
-  buffers. `drie::storage_buffer(size)` makes a buffer that kernels read and write
-  (`cpu_write: true` for one the CPU fills with `write()` once a frame), and
-  `drie::compute_pass(my_shader_desc(sg::query_backend()))` a kernel written in GLSL with
-  sokol-shdc's `@cs` (see `kernels.glsl`). Bind with `pass.set_buffer(VIEW_X, buffer)` and
-  `pass.set_uniforms(UB_X, &params, Params::size)`, then `renderer.compute(pass, groups_x)`
-  (or `begin_compute()`, several `pass.dispatch(x, y, z)`, `end_compute()`). Outside of
-  `render()`. Results come back to the CPU without stalling: `buffer.track(slot)` (slots from
-  `drie::readback_slot()`) queues a copy, and `drie::read_back(slot, out, bytes)` returns it
-  once the GPU has got there, a frame or two later (`wait: true` waits, after the frame is
-  committed).
-- GPU instance culling (`culling.c3`, `renderer.gpu_culling`, on by default): an
-  `InstancedMesh` in view (by the sphere around all its instances) has each instance's sphere
-  tested by a compute shader, for the camera and for the shadow maps drawn every frame (the
-  sun's cascades, the spot light's map), and only the instances inside are drawn: the vertex
-  shader reads their matrices from a storage buffer by index. sokol has no indirect draws, so
-  a draw asks for as many instances as the cull of a frame or two before kept, plus some room
-  (`renderer.info` counts those), and the vertex shader drops any past this frame's count. When
-  the view turns fast, a few instances can be missing for a frame. Meshes with fewer than 8
-  instances, `frustum_culled` off, or whose instances keep changing after their first upload
-  (`set_matrix_at` every frame) are drawn whole. Level of detail is still picked per `Lod`, not
-  per instance.
-- `renderer.depth_prepass` (on by default): what has holes in it (`alpha_test`, LOD
-  cross-fades) is drawn twice, first only its depth with a cheap shader that cuts the holes,
-  then lit where that depth is (an EQUAL depth test) with a shader that cuts nothing. Leaves
-  and blades are lit once per pixel instead of once per layer, and no shader of the main pass
-  can discard, which keeps the GPU's early depth test for everything. Only for what covers
-  at least `renderer.depth_prepass_pixels` (default 1.5) pixels per triangle: a far-off tree
-  is mostly triangles and is cheaper drawn once.
-- `renderer.check_compute`: also computes on the CPU what the compute shaders do (clusters,
-  instance culls) and prints where they differ; `drie::print_compute_checks()` sums it up.
-- `material.blending = ADDITIVE_BLENDING`, like three's `AdditiveBlending`: a see-through
-  material's pixels are added to what is behind them (flames, glows).
-- `object.render_order`, like three's `renderOrder`: among see-through meshes, higher ones are
-  drawn later whatever their distance (a film of dirt over a pane of glass).
-- `renderer.lod_scale`: multiplies every `Lod` distance, to keep detail further out.
-- `drie::fog_exp(color, density)`: plain exponential fog, `exp(-density * distance)`.
-- `fog.light_scatter`: point and spot lights light up the fog around them, and are dimmed by it
-  on their way to surfaces. The fog then has no single color, so the renderer draws a backdrop
-  sphere just inside the camera's far plane to carry it where there is no geometry.
-- Volumetric fog (`VolumetricFog`, after three's `webgpu_volume_lighting`): every `Fog` has its
-  settings inline (`fog.light_scatter`, `height_*`, clear box, `sun_*`, `noise_*`,
-  `resolution`, `slices`, `volumetric`); `drie::volumetric_fog(color, density)` makes one.
-  With `fog.volumetric` on (default) and something to scatter (`light_scatter`, `sun_shafts`
-  or `noise_amount` above 0), a compute pass (`fog.c3`, `fog_cs` in `kernels.glsl`) marches a
-  froxel grid before the main pass: `resolution` of the picture's pixels across and up
-  (default 0.125), `slices` of exponential view depth (default 96) out to the far plane,
-  jittered every frame. Each step is lit by the sun through its cascades, by spot lights
-  through their shadow maps (atlas and live map: beams stop at walls), and by point lights,
-  only those of the step's light cluster; the lamps' 1/d^2 glow is integrated exactly over
-  each slice. Density is the height fog, the clear box and optional 3D noise (`noise_amount`
-  0..1, `noise_scale` 1/m, `noise_wind` m/s). Surfaces read the fog in front of them from the
-  grid before tone mapping (see-through ones too). `sun_direction` zero takes the scene's
-  (shadow casting) directional light, `sun_color` 0 its color. `fog.volumetric = false`
-  keeps the older per-pixel fog (unshadowed glow summed over every light at every pixel).
-- `fog.set_clear_box(min, max)`: a box without fog, such as the inside of a building.
-  `fog.clear_box_density` (0..1) leaves that part of the fog in it: a thin haze indoors.
-- `geometry.box_project_uv(tiles_per_unit)`: texture coordinates from world-space position, for
-  tiling a texture over walls and floors without stretching.
-- `renderer.init_headless()`: sets up rendering without a window, for tests and screenshots.
-  Render to a `RenderTarget` and call `drie::commit()` at the end of the frame.
-- `renderer.time` drives `sway`. It follows the clock unless `renderer.auto_time` is off.
-- Shader hooks, compiled in (three's `onBeforeCompile` works on shader text at run time; sokol
-  compiles shaders ahead). An application with surface effects of its own builds its own copy
-  of the material shader: a `.glsl` file with its own `@header` (its module), blocks
-  `vertex_hooks` and `surface_hooks`, and `@include` of `shader_core.glsl`; see `shader.glsl`
-  for what the hooks get. It hands the four programs to `renderer.shaders` before the renderer
-  starts. The hooks read `material.custom` and `renderer.custom` (two `Vec4`s each) as
-  `material_custom[]` and `frame_custom[]`. The engine's own build has empty hooks, which cost
-  nothing. The application's copy has to be regenerated whenever `shader_core.glsl` changes.
+| Area | Status | What's implemented |
+| --- | --- | --- |
+| Scene & Cameras | ✅ | `Object3D`, `Group`, `Scene`, `PerspectiveCamera`, `OrthographicCamera` |
+| Meshes & LOD | ✅ | `Mesh`, `InstancedMesh`, `Lod` |
+| Geometry | ✅ | `box`, `plane`, `sphere`, `cylinder`, `cone`, `torus`, `lathe`, `buffer_geometry`, `merge` |
+| Materials | ✅ | `MeshBasic`, `MeshLambert`, `MeshPhong`, `MeshStandard`, `MeshNormal` |
+| Textures | ✅ | `load_texture` (PNG/JPEG), `data_texture`, `canvas_texture`, mipmaps, anisotropy |
+| Lights | ✅ | `AmbientLight`, `HemisphereLight`, `DirectionalLight`, `PointLight`, `SpotLight` |
+| Fog | ✅ | `Fog`, `FogExp2` |
+| Controls | ✅ | `OrbitControls` (`drie::controls`) |
+| Raycasting | ✅ | `Raycaster` against `Mesh`, `InstancedMesh`, `Lod` (per-triangle) |
+| Post-processing | ✅ | `EffectComposer`, `RenderPass`, `ShaderPass`, `output_pass`, `gtao_pass`, `taa_pass` |
+| Renderer | ✅ | `render_target`, tone mapping, frustum culling, `renderer.info`, MRT |
+| Shadows | ⚠️ | `DirectionalLight` (CSM) and `SpotLight` (1 live + cached atlas); `PointLight` ❌ |
+| Skeletons | ⚠️ | `Bone`, `Skeleton`, `SkinnedMesh` (CPU skinning); animation clips ❌ |
+| glTF (`drie::loaders`) | ⚠️ | `.glb` meshes, materials, textures; skins & animations ❌ |
+| Quaternions / Animation | ❌ | XYZ Euler rotations only; no animation clips |
+| Sky | ✅ | `Sky` (`drie::objects`) |
 
 ## Differences from three.js
 
@@ -369,6 +109,141 @@ These aren't in three.js:
 - Shaders are built for Metal, GL 4.3 and D3D11, but the library has only been tested on macOS/Metal. `./build.sh windows` cross-compiles a
   D3D11 build for Windows.
 
+## Extensions
+
+Features not in three.js:
+
+| Feature | Summary |
+| --- | --- |
+| **Radiance Cascades GI** | Real-time GPU global illumination and emissive bounce (`scene.radiance`) |
+| **Irradiance Volume** | Probe grid for user-populated indirect bounce light (`scene.irradiance`) |
+| **Cascaded Shadow Maps** | 1–4 texel-snapped directional cascades with blending and debug view |
+| **Cached Shadow Atlas** | Static spot-light shadow caching in a shared atlas |
+| **Clustered Forward Lighting** | `16x9x24` compute-assigned light clusters (up to 1024 per kind or unlimited) |
+| **Volumetric Fog** | Compute-marched froxel fog with light scatter, sun shafts, 3D noise, and clear boxes |
+| **Reflections** | Environment maps, load-time probe capture, room probes, SSR, and planar reflectors |
+| **Material Extensions** | Packed ARM maps, parallax occlusion mapping, foliage wind sway, glass, additive blending |
+| **Compute & GPU Culling** | `@cs` compute passes, async readback, depth pre-pass, and GPU instanced culling |
+| **Shader Hooks** | Custom `vertex_hooks` / `surface_hooks` around `shader_core.glsl` |
+| **UI, Input & Tooling** | Menus, macOS GameController support, deterministic timeline rewind, profiling |
+
+### Materials & Geometry
+
+- **Packed ARM maps:** `material.arm_map` packs ambient occlusion, roughness, and metalness in R, G, and B.
+- **Parallax occlusion mapping:** `material.parallax_map` with shadowing from the first directional light.
+- **Foliage & wind sway:** `material.foliage` enables two-sided wrapped lighting for alpha-tested foliage, animated with `sway`, `sway_speed`, and `renderer.time`.
+- **Glass & viewer silhouette:** `material.glass` preserves reflections regardless of opacity; `material.reflect_viewer` darkens glass reflections with a soft silhouette at the camera.
+- **Additive blending & draw order:** `material.blending = ADDITIVE_BLENDING` for transparent materials and `object.render_order` for explicit draw order.
+- **World-space box UVs:** `geometry.box_project_uv(tiles_per_unit)` generates box-projected UVs.
+
+<details>
+<summary>Material and geometry extension fields</summary>
+
+| Feature | Key API / Fields | Notes |
+| --- | --- | --- |
+| Parallax | `material.parallax_map`, `parallax_scale`, `parallax_distance`, `parallax_shadow` | Shadowing uses the first directional light |
+| Foliage | `material.foliage`, `material.sway`, `sway_speed`, `renderer.time`, `renderer.auto_time` | `auto_time` drives `sway` animation |
+
+</details>
+
+### Lighting, Shadows & Global Illumination
+
+- **Light source radius:** `light.radius` softens close-range falloff on point and spot lights; `spot_light.specular_radius` controls reflection highlight size.
+- **Cached static shadows:** `light.shadow.auto_update = false` caches static shadow maps in the shared atlas (`renderer.shadow_atlas_capacity`).
+- **Cascaded shadow maps:** `DirectionalLight` supports 1–4 texel-snapped cascades with blending and debug visualization.
+- **Irradiance volume** (`irradiance.c3`): `scene.irradiance` (`IrradianceVolume`) probe grid for user-populated indirect bounce light.
+- **Radiance Cascades GI** (`radiance.c3`): `scene.radiance` (`RadianceCascades`) computes real-time GPU GI and emissive bounce, replacing ambient/hemisphere lights and `scene.irradiance` inside its box.
+
+<details>
+<summary>Lighting, shadow, and GI extension API</summary>
+
+| Feature | Key API / Fields | Notes |
+| --- | --- | --- |
+| Light radius | `light.radius`, `spot_light.specular_radius` | `specular_radius` defaults to `radius` when `0` |
+| Static shadow atlas | `light.shadow.auto_update = false`, `light.shadow.needs_update = true` | Set `needs_update = true` to redraw |
+| Cascaded shadows | `light.shadow.cascades` (`4`, 1..4), `shadow.max_distance` (`150`), `shadow.split_lambda` (`0.7`), `shadow.cascade_blend` (`0.1`), `renderer.debug_cascades` | With `cascades = 1`, uses `light.shadow_extent` and optional `light.shadow_follow = true` |
+| Radiance Cascades | `drie::radiance_cascades(min, max)`, `rc.voxelize(scene)`, `rc.update(scene)` | Assigned to `scene.radiance` |
+
+</details>
+
+### Reflections
+
+- **Environment maps:** Equirectangular reflections with mip-based roughness blur and optional box projection.
+- **Environment capture:** `renderer.capture_environment(...)` renders a 6-face light probe into an equirectangular `env_map` (reads back from the GPU; intended for load time).
+- **Room reflection probes:** `scene.reflection_probes` (`ReflectionProbes`) array texture of box-projected, cross-faded room probes for materials with `env_probes`.
+- **Screen-space reflections (SSR):** Previous-frame color/depth reflections with optional back-face thickness.
+- **Planar reflections:** `reflector(normal, constant)` renders planar reflections using an oblique near plane.
+
+<details>
+<summary>Reflections extension API</summary>
+
+| Feature | Key API / Fields | Notes |
+| --- | --- | --- |
+| Environment map | `material.env_map`, `env_intensity`, `env_box_min`, `env_box_max`, `env_position` | — |
+| Probe capture | `renderer.capture_environment(scene, position, on_face:, distance:)` | Optional `distance` raycaster callback stores surface distance in alpha for parallax-corrected glossy reflections |
+| Room probes | `drie::reflection_probes()`, `probes.add(map, position, box_min, box_max)` | Used by materials with `env_probes` |
+| SSR | `material.ssr`, `material.ssr_reach`, `renderer.set_reflection_source(color, depth, view_proj, back:)`, `renderer.render_back_faces(target)` | — |
+| Planar reflector | `reflector(normal, constant)`, `renderer.render_reflector(reflector, scene, camera)`, `material.reflector` | Uses `camera.custom_projection`, optional `reflector.box_min`/`box_max`, and `renderer.shadow_map_auto_update = false` |
+
+</details>
+
+### Fog
+
+- **Exponential fog:** `drie::fog_exp(color, density)`.
+- **Volumetric fog** (`fog.c3`): Compute-marched froxel grid supporting light scatter (`spot_light.fog_glow`), height falloff, sun shafts, 3D animated noise, and clear boxes.
+
+<details>
+<summary>Fog extension API</summary>
+
+| Feature | Key API / Fields | Notes |
+| --- | --- | --- |
+| Volumetric fog | `drie::volumetric_fog(color, density)`, `resolution` (`0.125`), `slices` (`96`), `light_scatter`, `spot_light.fog_glow`, `height_*`, `sun_shafts`, `sun_direction`, `sun_color`, `noise_amount`, `noise_scale`, `noise_wind`, `fog.set_clear_box(min, max)`, `fog.clear_box_density` | Set `fog.volumetric = false` to disable |
+
+</details>
+
+### Renderer, Compute & Shaders
+
+- **Clustered forward lighting** (`clusters.c3`): `16x9x24` view-space light clusters assigned via compute shader (requires GL 4.3+ on OpenGL).
+- **Compute shaders** (`compute.c3`): Storage buffers, `@cs` compute passes, and async GPU-to-CPU readback.
+- **GPU instance culling** (`culling.c3`, `renderer.gpu_culling`): Compute-based per-instance frustum culling for static `InstancedMesh`es (`>= 8` instances) across the main camera and live shadow passes.
+- **Depth pre-pass:** `renderer.depth_prepass` for `alpha_test` and LOD cross-fade meshes.
+- **Compute validation:** `renderer.check_compute` and `drie::print_compute_checks()` validate GPU cluster and culling results against CPU reference runs.
+- **Render target & emissive extras:** `render_target.depth_texture`, `overlay_view` for post-resolve overlays, and alpha `0` for high-emissive light sources (`>= 16`) so post-processing can preserve blown-out lamps.
+- **Headless & LOD scaling:** `renderer.init_headless()` (with `drie::commit()`) and `renderer.lod_scale` global multiplier for `Lod` distances.
+- **Shader hooks:** Custom `.glsl` files can define `vertex_hooks` and `surface_hooks` around `@include shader_core.glsl`.
+
+<details>
+<summary>Renderer, compute, and shader hook extension API</summary>
+
+| Area | Key API / Fields | Notes |
+| --- | --- | --- |
+| Clustering | `cluster_lights_gpu`, `cluster_lights_cpu`, `renderer.assign_clusters`, `renderer.max_lights` (`1024`, `0` = unlimited) | — |
+| Compute | `drie::storage_buffer(size)` (`cpu_write: true`), `drie::compute_pass(...)`, `renderer.compute(pass, groups_x)` (or `begin_compute()` / `pass.dispatch()` / `end_compute()`), `drie::readback_slot()`, `buffer.track(slot)`, `drie::read_back(slot, out, bytes)` | — |
+| Depth pre-pass | `renderer.depth_prepass`, `renderer.depth_prepass_pixels` (`1.5`) | Minimum pixels per triangle |
+| Shader hooks | `vertex_hooks`, `surface_hooks`, `@include shader_core.glsl`, `renderer.shaders`, `material.custom`, `renderer.custom` | Accessed in GLSL as `material_custom[]` / `frame_custom[]` |
+
+</details>
+
+### UI, Input & Utilities
+
+- **Menus & UI** (`drie::ui`): Escape-toggled menu, screen fade, setup, and touch controls.
+- **Game controllers** (`drie::input`, macOS GameController): Polled every frame; d-pad, cross/A, circle/B, and options also emit arrow, enter, backspace, and escape key events by default.
+- **Rewind timeline** (`drie::timeline`): `Timeline{Input, State}` records per-frame inputs and periodic state snapshots for deterministic `seek()` replay.
+- **Profiling** (`drie::profile`): Frame section timing and reporting.
+- **Application hooks:** `drie::add_frame_hook`, `add_event_filter`, and `add_overlay`.
+
+<details>
+<summary>UI, input, timeline, and profiling API</summary>
+
+| Area | Key API / Fields | Notes |
+| --- | --- | --- |
+| UI | `ui::menu(title, handler)`, `ui::screen_fade`, `ui::setup()`, `ui::touch_controls()` | Captures keyboard/mouse when open; sends `OPEN`, `CLOSE`, `SELECT`, `CONFIRM`, `BACK`; `overlay = true` for built-in rendering or draw manually |
+| Gamepad | `input::gamepad()`, `PAD_*` (`pressed()` / `released()`), sticks, triggers | — |
+| Timeline | `Timeline{Input, State}`, `seek()` | Requires a deterministic step function |
+| Profiling | `profile::enabled = true`, `profile::start()`, `profile::stop(name, t)`, `profile::report(frames)` | — |
+
+</details>
+
 ## Editing the shader
 
 `shader_core.glsl` is the material shader; `shader.glsl` includes it with empty hooks. Run
@@ -379,19 +254,12 @@ shader generates it into its own sources, and regenerates it whenever `shader_co
 
 ## Tests
 
-`tests/reflections.c3` renders a scene made for reflections (a glossy floor, cubes floating
-over it, a thin panel, a wall) headless from a few low angles, with each kind of reflection side
-by side: `just test reflections` (`just libdir=<path> test reflections` for another library folder).
+- `just test reflections`: `tests/reflections.c3` renders a scene made for reflections from different angles
+- `just test radiance`: `tests/radiance.c3` renders the same scene lit by its hemisphere light, by `RadianceCascades`,
+and by them with only the glowing cubes
 
-`tests/radiance.c3` renders the same scene lit by its hemisphere light, by `RadianceCascades`,
-and by them with only the glowing cubes for light: `just test radiance`.
+## Justfile
 
-The tests write `tests/build/<name>.ppm`. They build against `lib/`: sokol (vendored, `lib/sokol.c3l`)
-and drie itself (`lib/drie.c3l`, a link to this folder). drie's platform code (`drie::readback`,
-`drie::imageio`, `drie::gamectl`, in C and Objective-C) is in `platform/`.
+This repository uses [just](https://github.com/casey/just) as a task runner.
 
-## Recipes
-
-`just` lists them: `just check` type-checks drie, `just test <name>` runs a test, `just docs`
-writes `docs.html` (the API of drie's modules with their comments, by `docgen.py`), and
-`just driejs::<recipe>` builds and runs [driejs](driejs/README.md), three.js code on drie.
+`just --list` to see all available commands.
