@@ -592,7 +592,6 @@ fn void GTAOPass.render(&self, RenderTarget* target)
 {
     self.render_occlusion(target);
     self.apply.set_texture(VIEW_GTAO_AO, self.ao_target.texture);
-    self.apply.set_texture(VIEW_GTAO_APPLY_NORMAL, target.normal_texture);
     self.apply.set_texture(VIEW_GTAO_INDIRECT, target.indirect_texture);
     GtaoApplyParams ap = { .size = { target.width, target.height, self.direct_occlusion, self.specular_occlusion ? 0 : 1 } };
     self.apply.set_uniforms(UB_GTAO_APPLY_PARAMS, &ap);

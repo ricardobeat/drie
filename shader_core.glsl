@@ -334,11 +334,20 @@ in vec4 v_prev_clip;
 layout(location=0) out vec4 frag_color;
 #ifdef MRT
 // Renderer.render into a target with MRT (RenderTarget.mrt): the surface's normal in world
-// space (a = roughness), and how far it moved across the picture since the last frame.
+// space (octahedral, in rg), and how far it moved across the picture since the last frame.
 layout(location=1) out vec4 frag_normal;
 layout(location=2) out vec4 frag_velocity;
-// the shares of the light that are indirect: r = diffuse, g = specular (what AO darkens)
+// the shares of the light that are indirect: r = diffuse, g = specular (what AO darkens);
+// b = roughness, a = metalness
 layout(location=3) out vec4 frag_indirect;
+
+// A direction as a point of the square -1..1 (the octahedron around it unfolded; Cigolle et
+// al. 2014, three's packNormalToOctahedral): two numbers that keep their precision all around.
+vec2 pack_normal_octahedral(vec3 n) {
+    n /= abs(n.x) + abs(n.y) + abs(n.z);
+    if (n.z < 0.0) n.xy = (1.0 - abs(n.yx)) * vec2(n.x >= 0.0 ? 1.0 : -1.0, n.y >= 0.0 ? 1.0 : -1.0);
+    return n.xy;
+}
 #endif
 
 const float PI = 3.14159265359;
@@ -951,8 +960,8 @@ void main() {
         vec2 d = (now - was) * 0.5;
         if (ssr_params.w > 0.5) d.y = -d.y;
         frag_velocity = vec4(d, 0.0, 1.0);
-        frag_indirect = vec4(0.0, 0.0, 0.0, 1.0);
-        frag_normal = vec4(normalize(v_normal), mat_params.y);
+        frag_indirect = vec4(0.0, 0.0, mat_params.y, mat_params.z);
+        frag_normal = vec4(pack_normal_octahedral(normalize(v_normal)), 0.0, 1.0);
     }
 #endif
 
@@ -1005,7 +1014,7 @@ void main() {
     g_dpdy = dFdy(v_world_pos);
     if (tex_params.y != 0.0 && mode != 0) n = perturb_normal(n, tex_params.y);
 #ifdef MRT
-    frag_normal.xyz = n;
+    frag_normal.xy = pack_normal_octahedral(n);
 #endif
 
     g_rough = mat_params.y;
@@ -1020,7 +1029,7 @@ void main() {
 
     if (mode != 0) surface_hook(geo_n, g_base, g_rough, g_metal);
 #ifdef MRT
-    frag_normal.w = g_rough;
+    frag_indirect.ba = vec2(g_rough, g_metal);
 #endif
 
     vec3 outc;
@@ -1222,7 +1231,7 @@ void main() {
     {
         const vec3 lw = vec3(0.2126, 0.7152, 0.0722);
         float total = max(dot(outc, lw), 1e-6);
-        frag_indirect = vec4(clamp(vec2(dot(max(ind_d, 0.0), lw), dot(max(ind_s, 0.0), lw)) / total, 0.0, 1.0), 0.0, 1.0);
+        frag_indirect.rg = clamp(vec2(dot(max(ind_d, 0.0), lw), dot(max(ind_s, 0.0), lw)) / total, 0.0, 1.0);
     }
 #endif
     // a light source (emissive far over white) leaves the target's alpha at 0, for

@@ -158,11 +158,12 @@ and parameter objects become named arguments.
   `@include tonemapping.glsl` and use `tone_map()`, `linear_to_srgb()` and `srgb_to_linear()`.
   With `mrt: true` (`three::render_target(w, h, 4, RGBA16F, mrt: true)`, like three's
   `scenePass.setMRT(mrt({ output, normal, velocity }))`) the main pass also writes
-  `normal_texture` (world-space normals after normal maps, roughness in alpha) and
-  `velocity_texture` (motion vectors: uv now minus uv a frame ago, from the camera, each mesh's
-  matrix and wind sway) and `indirect_texture` (the shares of each pixel's light that are
-  indirect diffuse and indirect specular), for temporal filters, motion blur, ambient
-  occlusion and other screen-space effects.
+  `normal_texture` (world-space normals after normal maps, in two channels, packed like
+  three's `packNormalToOctahedral`), `velocity_texture` (motion vectors: uv now minus uv a
+  frame ago, from the camera, each mesh's matrix and wind sway) and `indirect_texture` (the
+  shares of each pixel's light that are indirect diffuse and indirect specular, then its
+  roughness and metalness), for temporal filters, motion blur, ambient occlusion and other
+  screen-space effects.
 - **Profiling** (`three::profile`): `profile::enabled = true`, then `profile::start()` /
   `profile::stop(name, t)` around stages and `profile::report(frames)`. The renderer times its
   own stages this way.

@@ -36,6 +36,14 @@ layout(binding=0) uniform gtao_params {
 
 out vec4 frag_color;
 
+// the direction a point of the octahedral square stands for (RenderTarget.normal_texture)
+vec3 unpack_octahedral_normal(vec2 e) {
+    vec3 n = vec3(e, 1.0 - abs(e.x) - abs(e.y));
+    float t = max(-n.z, 0.0);
+    n.xy += vec2(n.x >= 0.0 ? -t : t, n.y >= 0.0 ? -t : t);
+    return normalize(n);
+}
+
 const int SLICES = 2;
 const int STEPS = 6;
 const float PI = 3.14159265;
@@ -60,14 +68,13 @@ vec3 position_at(ivec2 px) {
 void main() {
     ivec2 px = ivec2(gl_FragCoord.xy);
     vec3 p = position_at(px);
-    vec3 wn = texelFetch(sampler2D(gtao_normal, gtao_smp), px, 0).xyz;
+    vec3 wn = unpack_octahedral_normal(texelFetch(sampler2D(gtao_normal, gtao_smp), px, 0).xy);
     bool faded = tune.w > 0.0 && p.z > tune.w;
-    if (faded || p.z > clip.y * 0.98 || dot(wn, wn) < 0.01) {
+    if (faded || p.z > clip.y * 0.98) {
         frag_color = vec4(1.0, p.z, 1.0, 1.0);
         return;
     }
     vec3 v = normalize(-p);
-    wn = normalize(wn);
     vec3 n = vec3(dot(wn, cam_right.xyz), dot(wn, cam_up.xyz) * (clip.w > 0.5 ? -1.0 : 1.0), dot(wn, cam_fwd.xyz));
     // (leaves lit from behind face away)
     if (dot(n, v) < 0.0) n = -n;
@@ -148,12 +155,10 @@ layout(binding=0) uniform texture2DMS gtao_depth_ms;
 
 @fs gtao_apply_fs
 @image_sample_type gtao_ao unfilterable_float
-@image_sample_type gtao_apply_normal unfilterable_float
 @image_sample_type gtao_indirect unfilterable_float
 @sampler_type gtao_apply_smp nonfiltering
 layout(binding=0) uniform texture2D gtao_ao;
-layout(binding=1) uniform texture2D gtao_apply_normal;
-layout(binding=2) uniform texture2D gtao_indirect;
+layout(binding=1) uniform texture2D gtao_indirect;
 layout(binding=0) uniform sampler gtao_apply_smp;
 layout(binding=0) uniform gtao_apply_params {
     vec4 size;     // xy = picture size, z = the share of the occlusion that darkens direct light
@@ -178,8 +183,9 @@ void main() {
         }
     }
     float ao = sum / wsum;
-    float rough = texelFetch(sampler2D(gtao_apply_normal, gtao_apply_smp), px, 0).a;
-    vec2 share = texelFetch(sampler2D(gtao_indirect, gtao_apply_smp), px, 0).rg;
+    vec4 surface = texelFetch(sampler2D(gtao_indirect, gtao_apply_smp), px, 0);
+    vec2 share = surface.rg;
+    float rough = surface.b;
     // specular occlusion (Lagarde and de Rousiers 2014): a rough surface's reflection is
     // occluded about as its diffuse light is, a smooth one's only at a grazing angle
     float nov = c.b;
