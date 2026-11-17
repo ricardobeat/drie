@@ -224,6 +224,12 @@ These aren't in three.js:
 - `scene.irradiance`: an `IrradianceVolume`, a grid of probes holding light that has bounced
   around a room. Lit materials inside its box receive it on top of the scene's lights. The
   engine stores and samples the probes; what goes into them is up to you (see `irradiance.c3`).
+- `scene.radiance`: `RadianceCascades` (`three::radiance_cascades(min, max)`, `radiance.c3`):
+  bounced light and the glow of emissive things inside a box, traced anew on the GPU every
+  frame (`rc.update(scene)` before `render`). Radiance cascades on a grid of probes, their
+  rays marched through a voxel copy of the scene (`rc.voxelize(scene)`); the scene's point and
+  spot lights, its sky and the frame before's bounce light what the rays hit. Inside the box
+  it takes the place of the ambient and hemisphere lights and of `scene.irradiance`.
 - `render_target.depth_texture` and `overlay_view`: the depth of the last render (multisampled
   if the target is) and an attachment for drawing over the resolved picture, for
   post-processing such as ambient occlusion.
@@ -362,3 +368,6 @@ passes, and `taa.c3`), and any application shaders that include `shader_core.gls
 `tests/reflections.c3` renders a scene made for reflections (a glossy floor, cubes floating
 over it, a thin panel, a wall) headless from a few low angles, with each kind of reflection side
 by side: `tests/run.sh reflections <the application's lib/> out.ppm`.
+
+`tests/radiance.c3` renders the same scene lit by its hemisphere light, by `RadianceCascades`,
+and by them with only the glowing cubes for light: `tests/run.sh radiance <lib/> out.ppm`.

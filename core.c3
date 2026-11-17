@@ -397,6 +397,14 @@ struct Scene
     Fog* fog;
     // Extension: bounced light for the materials inside its box (see irradiance.c3).
     IrradianceVolume* irradiance;
+    // Extension: light bouncing around a box, traced every frame (see radiance.c3). Inside
+    // the box it takes the place of the ambient and hemisphere lights and of `irradiance`.
+    RadianceCascades* radiance;
+    // Like three's scene.environment: an equirectangular map (capture_environment, best with
+    // hdr) that lights every standard material without an env_map of its own, both the light
+    // falling on it from all around and its reflections, times environment_intensity.
+    Texture* environment;
+    float environment_intensity;
     // Like three's matrixWorldAutoUpdate: render() refreshes every object's world matrix first.
     // Switch it off for a second render of an unchanged scene in the same frame (update
     // whatever did move yourself).
