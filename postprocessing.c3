@@ -132,7 +132,7 @@ fn void RenderTarget.begin(
     };
     pass.attachments = self.attachments();
     if (self.depth_buffer) pass.action.depth = { .load_action = CLEAR, .store_action = STORE, .clear_value = 1 };
-    sg::begin_pass(&pass);
+    profile::begin_pass(&pass);
     post_state.current = { self.pixel_format(), self.depth_buffer ? DEPTH : NONE, self.samples, false };
 }
 
@@ -141,7 +141,7 @@ fn void RenderTarget.begin(
 fn void RenderTarget.begin_over(&self, ZString label = "drie-over") {
     SgPass pass = { .action.colors[0] = { .load_action = LOAD }, .label = label };
     pass.attachments.colors[0] = self.overlay_view;
-    sg::begin_pass(&pass);
+    profile::begin_pass(&pass);
     post_state.current = { self.pixel_format(), NONE, 1, false };
 }
 
@@ -150,7 +150,7 @@ fn void RenderTarget.end(&self) => sg::end_pass();
 // Starts a pass into the window, cleared to `clear`. With `aspect` (width / height) the
 // picture keeps that shape, with black bars in a window of any other. End with end_screen().
 fn void begin_screen(Color clear = 0x000000, float aspect = 0, ZString label = "drie-screen") {
-    sg::begin_pass(
+    profile::begin_pass(
         &&{
             .action.colors[0] = { .load_action = CLEAR, .clear_value = clear_color_of(clear, 1) },
             .swapchain = sglue::swapchain(),
@@ -476,7 +476,7 @@ fn void EffectComposer.render(&self, float delta = 0) {
     }
     self.width = tw;
     self.height = th;
-    sg::commit();
+    profile::commit();
 }
 
 fn void EffectComposer.dispose(&self) {

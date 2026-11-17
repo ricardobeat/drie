@@ -19,11 +19,10 @@ struct ProfSlot @local {
 
 ProfSlot[48] prof_slots @local;
 int prof_count @local;
-ulong prof_wait_base @local;
-
-// how long sokol has waited for a frame in flight to finish (lib/sokol.c3l, Metal only: only
-// used under env::DARWIN)
-extern ulong sg_mtl_wait_ns @cname("sg_mtl_wait_ns");
+// time spent in the first begin_pass of each frame: sokol acquires the frame's command buffer
+// there, waiting for a frame in flight to finish (and, for the window pass, for a drawable)
+ulong prof_wait @local;
+bool prof_frame_started @local;
 
 fn ulong start() => enabled ? stm::now() : 0;
 
@@ -40,20 +39,30 @@ fn void stop(String name, ulong started) {
     prof_slots[prof_count++] = { name, dt };
 }
 
-// Milliseconds the CPU has waited for the GPU since the last reset (0 off Metal).
-fn double gpu_wait_ms() {
-    $if env::DARWIN:
-        return (double)(sg_mtl_wait_ns - prof_wait_base) / 1e6;
-    $else
-        return 0;
-    $endif
+// sg::begin_pass, timing the frame's first pass while profiling. drie calls this and commit()
+// in place of sokol's.
+fn void begin_pass(SgPass* pass) @inline {
+    if (!enabled || prof_frame_started) {
+        sg::begin_pass(pass);
+        return;
+    }
+    prof_frame_started = true;
+    ulong t = stm::now();
+    sg::begin_pass(pass);
+    prof_wait += stm::since(t);
 }
+
+fn void commit() @inline {
+    sg::commit();
+    prof_frame_started = false;
+}
+
+// Milliseconds the CPU has waited for the GPU since the last reset.
+fn double gpu_wait_ms() => stm::ms(prof_wait);
 
 fn void reset() {
     for (int i = 0; i < prof_count; i++) prof_slots[i].ticks = 0;
-    $if env::DARWIN:
-        prof_wait_base = sg_mtl_wait_ns;
-    $endif
+    prof_wait = 0;
 }
 
 fn void report(int frames) {

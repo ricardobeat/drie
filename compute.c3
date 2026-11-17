@@ -159,7 +159,7 @@ fn void ComputePass.dispatch(&self, int x, int y = 1, int z = 1) {
 fn bool compute_supported() => sg::isvalid() && sg::query_features().compute;
 
 fn void begin_compute(ZString label = "drie-compute") {
-    sg::begin_pass(&&{ .compute = true, .label = label });
+    profile::begin_pass(&&{ .compute = true, .label = label });
 }
 
 fn void end_compute() {

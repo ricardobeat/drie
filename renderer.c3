@@ -424,7 +424,7 @@ fn void Renderer.render_back_faces(&self, RenderTarget* target) {
             }
         );
     }
-    sg::begin_pass(
+    profile::begin_pass(
         &&{
             .action = {
                 .colors[0] = { .load_action = CLEAR, .store_action = STORE, .clear_value = { 0, 0, 0, 0 } },
@@ -1153,7 +1153,7 @@ fn void update_shadow_atlas(Scene* scene, Camera* camera) @local {
     foreach (l : state.atlas_pending) state.atlas_lights.push(l);
     Vector3 camera_pos = camera.matrix_world.get_position();
     bool top_left      = depth_zero_to_one();
-    sg::begin_pass(
+    profile::begin_pass(
         &&{
             .action = { .depth = { .load_action = all ? CLEAR : LOAD, .store_action = STORE, .clear_value = 1 } },
             .attachments = { .depth_stencil = state.atlas_attachment },
@@ -1418,7 +1418,7 @@ fn void draw_sun_shadow(DirectionalLight* sun) @local {
     int n         = state.sun_cascades;
     int tile      = math::max(sun.shadow.map_size, 4);
     bool top_left = depth_zero_to_one();
-    sg::begin_pass(
+    profile::begin_pass(
         &&{ // depth is not stored by default: ask for it, the main pass samples this map
             .action = { .depth = { .load_action = CLEAR, .store_action = STORE, .clear_value = 1 } },
             .attachments = { .depth_stencil = state.sun_attachment },
@@ -2206,7 +2206,7 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera) {
     pt = profile::start();
 
     if (caster && shadows) {
-        sg::begin_pass(
+        profile::begin_pass(
             &&{ // depth is not stored by default: ask for it, the main pass samples this map
                 .action = { .depth = { .load_action = CLEAR, .store_action = STORE, .clear_value = 1 } },
                 .attachments = { .depth_stencil = state.shadow_attachment },
@@ -2280,7 +2280,7 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera) {
     } else {
         pass.swapchain = sglue::swapchain();
     }
-    sg::begin_pass(&pass);
+    profile::begin_pass(&pass);
     // (not with a cull box: everything would have holes)
     bool prepass = self.depth_prepass && !self.cull_box;
     // pixels per unit of tan(angle) up the view, for prepassed()
@@ -2311,7 +2311,7 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera) {
     profile::stop("render: main transparent", pt);
     // When rendering to the window, finish the frame. With a render target, the caller
     // usually runs more passes (post-processing) and must call drie::commit() at the end.
-    if (!self.render_target) sg::commit();
+    if (!self.render_target) profile::commit();
 }
 
 // Ends the frame. Only needed when the last render() went to a render target.
@@ -2425,5 +2425,5 @@ fn Texture* Renderer.capture_environment(
 }
 
 fn void commit() {
-    sg::commit();
+    profile::commit();
 }

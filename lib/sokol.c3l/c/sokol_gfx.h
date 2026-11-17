@@ -18113,14 +18113,10 @@ _SOKOL_PRIVATE void _sg_mtl_begin_render_pass(const sg_pass* pass, const _sg_att
     #endif
 }
 
-uint64_t sg_mtl_wait_ns;
 _SOKOL_PRIVATE void _sg_mtl_acquire_cmd_buffer(void) {
     if (nil == _sg.mtl.cmd_buffer) {
-        // block until the oldest frame in flight has finished (the time it takes is summed
-        // in sg_mtl_wait_ns, for profiling: how long the CPU waited for the GPU)
-        uint64_t _sg_wait_t0 = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
+        // block until the oldest frame in flight has finished
         dispatch_semaphore_wait(_sg.mtl.sem, DISPATCH_TIME_FOREVER);
-        sg_mtl_wait_ns += clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - _sg_wait_t0;
         if (_sg.desc.metal.use_command_buffer_with_retained_references) {
             _sg.mtl.cmd_buffer = [_sg.mtl.cmd_queue commandBuffer];
         } else {
