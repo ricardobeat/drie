@@ -77,6 +77,23 @@ fn Texture* data_texture(char[] rgba, int width, int height, ColorSpace color_sp
     return t;
 }
 
+// A texture from RGBA floats in linear light (copied); see Texture.float_pixels.
+fn Texture* float_texture(float[] rgba, int width, int height)
+{
+    Texture* t = mem::new(Texture);
+    *t = {
+        .width = width,
+        .height = height,
+        .color_space = NO_COLOR_SPACE,
+        .repeat = { 1, 1 },
+        .generate_mipmaps = true,
+        .anisotropy = 8,
+    };
+    t.float_pixels = mem::new_array(float, (sz)width * height * 4);
+    t.float_pixels[..] = rgba[:(sz)width * height * 4];
+    return t;
+}
+
 // A texture that is drawn into instead of loaded, like THREE.WebGLRenderTarget's `.texture`:
 // for a screen in the scene, say. Draw with sokol between begin_canvas and end_canvas (not
 // inside another pass), and use `canvas.texture` as any material's map.
