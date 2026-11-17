@@ -4,7 +4,7 @@
 #include <stdbool.h>
 #include <string.h>
 
-bool rb_read_texture(void* tex_ptr, void* ctx_ptr, int width, int height, unsigned char* out, int pixel_bytes) {
+bool rb_read_texture(void* tex_ptr, void* ctx_ptr, int width, int height, int bytes_per_pixel, unsigned char* out) {
     ID3D11Texture2D* tex = (ID3D11Texture2D*)tex_ptr;
     ID3D11DeviceContext* ctx = (ID3D11DeviceContext*)ctx_ptr;
     if (!tex || !ctx || !out) return false;
@@ -28,7 +28,7 @@ bool rb_read_texture(void* tex_ptr, void* ctx_ptr, int width, int height, unsign
     D3D11_MAPPED_SUBRESOURCE map;
     hr = ID3D11DeviceContext_Map(ctx, (ID3D11Resource*)staging, 0, D3D11_MAP_READ, 0, &map);
     if (FAILED(hr)) { ID3D11Texture2D_Release(staging); return false; }
-    size_t row = (size_t)width * (size_t)pixel_bytes;
+    size_t row = (size_t)width * (size_t)bytes_per_pixel;
     for (int y = 0; y < height; y++) {
         memcpy(out + row * (size_t)y, (const unsigned char*)map.pData + (size_t)map.RowPitch * (size_t)y, row);
     }

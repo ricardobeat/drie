@@ -1,13 +1,13 @@
-// Copies a Metal texture (BGRA8/RGBA8, or RGBA16F) into CPU memory. Compiled as Objective-C.
+// Copies a Metal texture (BGRA8/RGBA8) into CPU memory. Compiled as Objective-C.
 #import <Metal/Metal.h>
 #include <stdbool.h>
 #include <string.h>
 
-bool rb_read_texture(const void* tex_ptr, const void* queue_ptr, int width, int height, unsigned char* out, int pixel_bytes) {
+bool rb_read_texture(const void* tex_ptr, const void* queue_ptr, int width, int height, int bytes_per_pixel, unsigned char* out) {
     id<MTLTexture> tex = (__bridge id<MTLTexture>)tex_ptr;
     id<MTLCommandQueue> queue = (__bridge id<MTLCommandQueue>)queue_ptr;
     if (!tex || !queue || !out) return false;
-    NSUInteger row = (NSUInteger)width * (NSUInteger)pixel_bytes;
+    NSUInteger row = (NSUInteger)width * (NSUInteger)bytes_per_pixel;
     id<MTLBuffer> buf = [queue.device newBufferWithLength:row * (NSUInteger)height options:MTLResourceStorageModeShared];
     id<MTLCommandBuffer> cb = [queue commandBuffer];
     id<MTLBlitCommandEncoder> blit = [cb blitCommandEncoder];
