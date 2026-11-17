@@ -1,0 +1,84 @@
+{
+    "provides": "sokol",
+    "c-sources": [
+        "c/sokol.c"
+    ],
+    "targets": {
+        "macos-aarch64": {
+            "cflags-override": "-DIMPL -mmacos-version-min=14.0 -x objective-c -DSOKOL_METAL",
+            "linked-libraries": [
+                "Foundation.framework",
+                "CoreGraphics.framework",
+                "Cocoa.framework",
+                "QuartzCore.framework",
+                "CoreAudio.framework",
+                "AudioToolbox.framework",
+                "Metal.framework",
+                "MetalKit.framework",
+                "c"
+            ]
+        },
+        "linux-x64": {
+            "cflags-override": "-DIMPL -DSOKOL_GLCORE",
+            "linked-libraries": [
+                "X11",
+                "Xi",
+                "Xcursor",
+                "GL",
+                "pulse-simple",
+                "pulse",
+                "dl",
+                "pthread",
+                "m"
+            ]
+        },
+        "windows-x64": {
+            "cflags-override": "-DIMPL -DSOKOL_D3D11",
+            "linked-libraries": [
+                "kernel32",
+                "user32",
+                "gdi32",
+                "shell32",
+                "ole32",
+                "d3d11",
+                "dxgi"
+            ]
+        },
+        "mingw-x64": {
+            "cflags-override": "-DIMPL -DSOKOL_D3D11",
+            "linked-libraries": [
+                "kernel32",
+                "user32",
+                "gdi32",
+                "shell32",
+                "ole32",
+                "d3d11",
+                "dxgi"
+            ]
+        },
+        "ios-aarch64": {
+            "cflags-override": "-DIMPL -x objective-c -DSOKOL_METAL",
+            "linked-libraries": [
+                "Foundation.framework",
+                "UIKit.framework",
+                "QuartzCore.framework",
+                "Metal.framework",
+                "MetalKit.framework",
+                "AudioToolbox.framework",
+                "AVFoundation.framework"
+            ]
+        },
+        "ios-aarch64-sim": {
+            "cflags-override": "-DIMPL -x objective-c -DSOKOL_METAL",
+            "linked-libraries": [
+                "Foundation.framework",
+                "UIKit.framework",
+                "QuartzCore.framework",
+                "Metal.framework",
+                "MetalKit.framework",
+                "AudioToolbox.framework",
+                "AVFoundation.framework"
+            ]
+        }
+    }
+}

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Build docs.html from `c3c docgen --json`, keeping only our own modules.
 
-    c3c docgen *.c3 --emit-stdlib=no --libdir ~/cousas/house/lib \
-        --lib sokol --lib readback --lib imageio --lib gamectl --json \
+    c3c docgen *.c3 generated/*.c3 platform/*.c3 --emit-stdlib=no --libdir lib \
+        --lib sokol --json \
       | python3 docgen.py -o docs.html
 
 c3c's JSON has no doc comments, so they are read from the sources: the `//`

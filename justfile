@@ -4,16 +4,15 @@
 
 mod driejs
 
-# drie's dependencies (sokol, readback, imageio, gamectl) and drie itself: the game's lib/.
+# where drie's dependency, sokol, is (lib/sokol.c3l).
 # Another: `just libdir=path test radiance`.
-libdir := "../house/lib"
-libs := "--libdir " + libdir + " --lib sokol --lib readback --lib imageio --lib gamectl"
+libdir := "lib"
+libs := "--libdir " + libdir + " --lib sokol"
 macos := if os() == "macos" { "--macos-min-version 14.0" } else { "" }
 
-# the sources c3fmt formats: the hand written ones. The sokol-shdc generated
-# files (gtao.c3, kernels.c3, output.c3, radiance_cs.c3, shader.c3, taa.c3) are
-# left out: they are machine made, and c3fmt is very slow on them.
-c3fmt_files := "audio.c3 clock.c3 clusters.c3 compute.c3 controls.c3 core.c3 culling.c3 display.c3 fog.c3 gamepad.c3 geometry.c3 gltf.c3 irradiance.c3 material.c3 math.c3 menu.c3 postprocessing.c3 profile.c3 radiance.c3 raycaster.c3 reflection_probes.c3 reflector.c3 renderer.c3 skeleton.c3 sky.c3 texture.c3 timeline.c3 touch.c3"
+# the sources c3fmt formats: the hand written ones at the top. The sokol-shdc generated
+# files are in generated/ (manifest.json's "sources" adds it to the library).
+c3fmt_files := "*.c3"
 
 
 [private]
@@ -22,7 +21,7 @@ default:
 
 # type-check drie, without building a program
 check:
-    c3c compile-only {{libs}} --obj-out build/check *.c3
+    c3c compile-only {{libs}} --obj-out build/check *.c3 generated/*.c3 platform/*.c3
 
 # build and run a rendering test, headless: `just test radiance` writes tests/build/radiance.ppm
 test name out=("tests/build/" + name + ".ppm"):
@@ -30,9 +29,15 @@ test name out=("tests/build/" + name + ".ppm"):
     c3c compile {{macos}} {{libs}} --lib drie tests/{{name}}.c3 -o tests/build/{{name}}
     tests/build/{{name}} {{out}}
 
+# regenerate generated/*.c3 from the .glsl files with sokol-shdc (sokol-tools)
+shaders:
+    for s in shader kernels output gtao taa radiance_cs; do \
+        sokol-shdc -i $s.glsl -o generated/$s.c3 -f sokol_c3 -l glsl430:hlsl5:metal_macos:metal_ios:metal_sim || exit 1; \
+    done
+
 # docs.html: the API of drie's modules, with their comments (docgen.py)
 docs:
-    c3c docgen *.c3 --emit-stdlib=no {{libs}} --json | python3 docgen.py -o docs.html
+    c3c docgen *.c3 generated/*.c3 platform/*.c3 --emit-stdlib=no {{libs}} --json | python3 docgen.py -o docs.html
 
 # format drie's sources with c3fmt (see .c3fmt)
 fmt:

@@ -137,7 +137,7 @@ and parameter objects become named arguments.
   picture if you like. `ui::screen_fade` fades to and from black with a callback at the end.
   `ui::setup()` sets up sokol_debugtext and sokol_gl once, for games that draw text of their
   own too. `ui::touch_controls()` are on-screen sticks and buttons for phones and tablets.
-- **Game controllers** (`drie::input`, macOS GameController framework, needs `--lib gamectl`):
+- **Game controllers** (`drie::input`, macOS GameController framework):
   `input::gamepad()` has the sticks (dead zone removed), triggers and buttons (`PAD_*`, with
   `pressed()` / `released()` for this frame). The renderer polls it before every frame, and
   by default the d-pad, cross / A, circle / B and options also send arrow, enter, backspace
@@ -372,21 +372,23 @@ These aren't in three.js:
 ## Editing the shader
 
 `shader_core.glsl` is the material shader; `shader.glsl` includes it with empty hooks. Run
-`./build.sh shaders` in the application (`house`) to regenerate `shader.c3` (and `kernels.c3`
-from `kernels.glsl`, the compute shaders, `output.c3` and `gtao.c3` for the post-processing
-passes, and `taa.c3`), and any application shaders that include `shader_core.glsl`.
+`just shaders` (sokol-shdc, from sokol-tools) to regenerate `generated/shader.c3`, and with it
+`kernels.c3` (the compute shaders, from `kernels.glsl`), `output.c3`, `gtao.c3` and `taa.c3` (the
+post-processing passes) and `radiance_cs.c3`. An application with its own copy of the material
+shader generates it into its own sources, and regenerates it whenever `shader_core.glsl` changes.
 
 ## Tests
 
 `tests/reflections.c3` renders a scene made for reflections (a glossy floor, cubes floating
 over it, a thin panel, a wall) headless from a few low angles, with each kind of reflection side
-by side: `just test reflections` (`just libdir=<the application's lib/> test reflections` for another).
+by side: `just test reflections` (`just libdir=<path> test reflections` for another library folder).
 
 `tests/radiance.c3` renders the same scene lit by its hemisphere light, by `RadianceCascades`,
 and by them with only the glowing cubes for light: `just test radiance`.
 
-The tests write `tests/build/<name>.ppm`. They build against the game's `lib/`
-(`../house/lib`), which holds drie and its dependencies.
+The tests write `tests/build/<name>.ppm`. They build against `lib/`: sokol (vendored, `lib/sokol.c3l`)
+and drie itself (`lib/drie.c3l`, a link to this folder). drie's platform code (`drie::readback`,
+`drie::imageio`, `drie::gamectl`, in C and Objective-C) is in `platform/`.
 
 ## Recipes
 

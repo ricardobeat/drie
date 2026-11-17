@@ -1,6 +1,6 @@
 // GTAOPass (postprocessing.c3): ground-truth ambient occlusion (Jimenez et al. 2016, after
 // Intel's XeGTAO), from the depth and normals of a scene rendered with MRT, taken off the
-// indirect light only. Regenerate gtao.c3 with: ./build.sh shaders
+// indirect light only. Regenerate generated/gtao.c3 with: just shaders
 //
 //   gtao_fs / gtao_ms_fs  per pixel, the visibility over a few slices of the hemisphere above
 //                         it: r = visibility, g = distance from the camera's plane (m), b = n·v

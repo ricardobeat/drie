@@ -1,6 +1,6 @@
 // The kernels of RadianceCascades (radiance.c3): world-space radiance cascades (Sannikov's)
 // on a grid of probes, traced through a voxel copy of the scene.
-// ./build.sh shaders turns this into radiance_cs.c3.
+// just shaders turns this into generated/radiance_cs.c3.
 //
 //   rc_trace_cs       one thread per probe and direction of one cascade: marches its ray over
 //                     the cascade's stretch of distance through the voxels; what it hits gives

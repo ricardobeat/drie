@@ -26,7 +26,7 @@ import boomkat::builtins, boomkat::hobject;
 import drie, drie::ui;
 import sokol;
 import std::io, std::time, std::math, std::collections::list;
-import readback, libc, draco;
+import drie::readback, libc, draco;
 
 const double GEOMETRY_BASE = 1_000_000;
 const double MATERIAL_BASE = 2_000_000;

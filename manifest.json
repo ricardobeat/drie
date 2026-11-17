@@ -1,10 +1,12 @@
 {
     "provides": "drie",
+    "sources": [
+        "./*",
+        "generated/*",
+        "platform/*"
+    ],
     "dependencies": [
-        "sokol",
-        "readback",
-        "imageio",
-        "gamectl"
+        "sokol"
     ],
     "c-sources": [
         "display.c"
@@ -12,24 +14,96 @@
     "targets": {
         "macos-aarch64": {
             "cflags-override": "-O2 -DNDEBUG -x objective-c -fobjc-arc -mmacos-version-min=14.0",
+            "c-sources": [
+                "platform/readback.c",
+                "platform/imageio.c",
+                "platform/gamectl.c"
+            ],
             "linked-libraries": [
                 "AppKit.framework",
                 "QuartzCore.framework",
-                "CoreGraphics.framework"
+                "CoreGraphics.framework",
+                "Metal.framework",
+                "Foundation.framework",
+                "ImageIO.framework",
+                "CoreFoundation.framework",
+                "GameController.framework"
             ]
         },
         "macos-x64": {
             "cflags-override": "-O2 -DNDEBUG -x objective-c -fobjc-arc -mmacos-version-min=14.0",
+            "c-sources": [
+                "platform/readback.c",
+                "platform/imageio.c",
+                "platform/gamectl.c"
+            ],
             "linked-libraries": [
                 "AppKit.framework",
                 "QuartzCore.framework",
-                "CoreGraphics.framework"
+                "CoreGraphics.framework",
+                "Metal.framework",
+                "Foundation.framework",
+                "ImageIO.framework",
+                "CoreFoundation.framework",
+                "GameController.framework"
             ]
         },
         "linux-x64": {},
-        "windows-x64": {},
-        "mingw-x64": {},
-        "ios-aarch64": {},
-        "ios-aarch64-sim": {}
+        "windows-x64": {
+            "c-sources": [
+                "platform/readback_win.c",
+                "platform/imageio_win.c",
+                "platform/gamectl_win.c"
+            ],
+            "linked-libraries": [
+                "d3d11",
+                "ole32",
+                "windowscodecs"
+            ]
+        },
+        "mingw-x64": {
+            "c-sources": [
+                "platform/readback_win.c",
+                "platform/imageio_win.c",
+                "platform/gamectl_win.c"
+            ],
+            "linked-libraries": [
+                "d3d11",
+                "ole32",
+                "windowscodecs"
+            ]
+        },
+        "ios-aarch64": {
+            "cflags-override": "-x objective-c -fobjc-arc",
+            "c-sources": [
+                "platform/readback.c",
+                "platform/imageio.c",
+                "platform/gamectl.c"
+            ],
+            "linked-libraries": [
+                "CoreGraphics.framework",
+                "Metal.framework",
+                "Foundation.framework",
+                "ImageIO.framework",
+                "CoreFoundation.framework",
+                "GameController.framework"
+            ]
+        },
+        "ios-aarch64-sim": {
+            "cflags-override": "-x objective-c -fobjc-arc",
+            "c-sources": [
+                "platform/readback.c",
+                "platform/imageio.c",
+                "platform/gamectl.c"
+            ],
+            "linked-libraries": [
+                "CoreGraphics.framework",
+                "Metal.framework",
+                "Foundation.framework",
+                "ImageIO.framework",
+                "CoreFoundation.framework",
+                "GameController.framework"
+            ]
+        }
     }
 }

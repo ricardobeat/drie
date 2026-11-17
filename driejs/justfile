@@ -1,7 +1,7 @@
 # driejs: three.js code running on drie, in boomkat (see README.md). `just` lists the recipes.
 # boomkat comes from its jit branch, ../../boomkat/.worktrees/jit (project.json).
 
-libs := "--libdir lib --lib sokol --lib readback --lib imageio --lib gamectl --lib drie"
+libs := "--libdir lib --libdir ../lib --lib sokol --lib drie"
 macos := if os() == "macos" { "--macos-min-version 14.0" } else { "" }
 
 # three.js: its npm package (build/ and examples/jsm) and, for the demos' models and textures,

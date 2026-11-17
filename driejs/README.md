@@ -31,7 +31,7 @@ It also measures the per-frame CPU work three.js does in JS before a renderer dr
 | `bench/drie_bench.c3` | its transform cases in drie, natively |
 | `bench/driejs_bench.js` | its transform cases in [drie-js](../../drie-js), whose three.js-shaped API pushes transforms to drie |
 | `just bench` | `just bench [boomkat\|boomkat-jit\|boomkat-opt\|node\|node-jitless\|bun\|drie\|drie-js\|all]` |
-| `lib/` | `drie.c3l` is this repository (`../..`); sokol, readback, imageio and gamectl are symlinked from `../../house/lib` |
+| `lib/` | `draco.c3l` and `wamr.c3l`; drie and sokol come from drie's `lib/` (`../lib`, the second search path in `project.json`) |
 | `lib/wamr.c3l`, `js/wasm.js` | `WebAssembly`, on [WAMR](https://github.com/bytecodealliance/wasm-micro-runtime) 2.4.5's fast interpreter, which `just build` fetches into `third_party/` and builds |
 | `lib/draco.c3l` | DRACOLoader's decoder: libdraco, linked statically from Homebrew (`brew install draco` to build) |
 

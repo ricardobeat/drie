@@ -11,7 +11,7 @@
 // code work with it unchanged: the d-pad sends the arrow keys, cross / A sends enter,
 // circle / B backspace, and options / menu escape.
 module drie::input;
-import gamectl, sokol, drie, drie::ui;
+import drie::gamectl, sokol, drie, drie::ui;
 import std::math;
 
 const uint PAD_SOUTH = 1 << 0; // cross / A
