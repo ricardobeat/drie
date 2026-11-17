@@ -915,6 +915,7 @@ fn void h_set_animation_loop(JsCtx ctx, void* udata)
 
 fn bool js_frame(double time_ms)
 {
+    fire_timers();
     JsValue? t = js.number(time_ms);
     if (catch t) return false;
     defer js.release(t);
@@ -1169,6 +1170,7 @@ fn int main(String[] args)
     reg(natives, "sky", &h_sky, 0);
     reg(natives, "skyParams", &h_sky_params, 15);
     reg(natives, "sceneEnvironment", &h_scene_environment, 3);
+    reg(natives, "xmlParse", &h_xml_parse, 1);
 
     JsValue flag = js.boolean(profile)!!;
     js.set(natives, "profile", flag)!!;
@@ -1183,6 +1185,7 @@ fn int main(String[] args)
     JsValue global = js.global()!!;
     defer js.release(global);
     js.set(global, "__drie", natives)!!;
+    register_timers(global);
 
     char[]? source = file::load_temp(script_path);
     if (catch source)
@@ -1202,6 +1205,7 @@ fn int main(String[] args)
         io::eprintfn("uncaught error in a promise job: %s", js.last_error());
         return 1;
     }
+    wait_for_timers();
     if (js_loop.is_empty() || loop_renderer == null) return 0;
     if (frames > 0)
     {
