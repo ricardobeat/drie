@@ -12,7 +12,7 @@ Mesh* cube;
 
 fn void main()
 {
-    renderer = drie::webgl_renderer(antialias: true);
+    renderer = drie::renderer(antialias: true);
     scene = drie::scene();
     camera = drie::perspective_camera(75, drie::window_aspect(), 0.1, 1000);
     camera.position.z = 5;

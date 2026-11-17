@@ -121,7 +121,7 @@ fn void frame(View* v, int mode, bool reset)
 fn int main(String[] args)
 {
     String out_path = args.len > 1 ? args[1] : "radiance.ppm";
-    renderer = drie::webgl_renderer(antialias: false, width: W, height: H);
+    renderer = drie::renderer(antialias: false, width: W, height: H);
     renderer.init_headless();
     renderer.tone_mapping = ACES_FILMIC_TONE_MAPPING;
     build_scene();

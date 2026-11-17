@@ -168,7 +168,7 @@ fn float[] floats_arg(JsCtx ctx, uint i)
 fn void h_renderer(JsCtx ctx, void* udata)
 {
     String title = ctx.arg(3).as_string() ?? "three.js";
-    Renderer* r = drie::webgl_renderer(antialias: bool_arg(ctx, 0, true), width: (int)num_arg(ctx, 1, 1280),
+    Renderer* r = drie::renderer(antialias: bool_arg(ctx, 0, true), width: (int)num_arg(ctx, 1, 1280),
                                         height: (int)num_arg(ctx, 2, 720), title: title);
     ctx.ret_number(@reg(renderers, r, RENDERER_BASE));
 }

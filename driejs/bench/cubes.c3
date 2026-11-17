@@ -27,7 +27,7 @@ fn int main(String[] args)
 {
     int frames = args.len > 1 ? args[1].to_int() ?? 600 : 600;
     profile::enabled = args.len > 2 && args[2] == "--profile";
-    renderer = drie::webgl_renderer(antialias: true, width: WIDTH, height: HEIGHT, title: "cubes");
+    renderer = drie::renderer(antialias: true, width: WIDTH, height: HEIGHT, title: "cubes");
     scene = drie::scene();
     camera = drie::perspective_camera(60, (float)WIDTH / HEIGHT, 0.1, 500);
 

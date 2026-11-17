@@ -602,7 +602,7 @@ struct RendererState @local {
 
 RendererState state @local;
 
-fn Renderer* webgl_renderer(bool antialias = true, int width = 800, int height = 600, String title = "drie") {
+fn Renderer* renderer(bool antialias = true, int width = 800, int height = 600, String title = "drie") {
     Renderer* r = mem::new(Renderer);
     *r = {
         .width = width,
