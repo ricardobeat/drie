@@ -127,7 +127,8 @@ three:
 assets: \
     (asset "textures/uv_grid_opengl.jpg" "909d9a1eb2a5d5de9d221a5e8de4e9119d409decddf522d48896bd51523d354d") \
     (asset "models/gltf/LittlestTokyo.glb" "8375c2aa6808e28ad1cb9c0d43e1513f57ffd7865244bf66bbbd5bb0e907e06d") \
-    (asset "models/gltf/collision-world.glb" "07524c7fd5829c6dc354d0b129f78943c47a8737d141496c6d611f5ee2d00864")
+    (asset "models/gltf/collision-world.glb" "07524c7fd5829c6dc354d0b129f78943c47a8737d141496c6d611f5ee2d00864") \
+    (asset "models/gltf/DispersionTest.glb" "bb7710e6eaeb1c81fc5f62000ed014689e4bd8ef300c3f9e3a08b2a6db821be7")
 
 [private]
 asset path sha256: (fetch examples + "/" + path sha256 "demos/" + path)
