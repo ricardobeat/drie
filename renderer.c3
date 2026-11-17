@@ -2223,6 +2223,12 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera) {
     profile::stop("render: sun shadow", pt);
     pt = profile::start();
     if (shadows) update_shadow_atlas(scene, camera);
+    // a render that draws no shadow maps (a reflector's, reusing the last frame's) can come
+    // before any that does: the shaders still sample the maps, so they must exist
+    if (!shadows) {
+        ensure_sun_map(state.sun_size ?: 4);
+        if (!state.atlas_tile) ensure_shadow_atlas(4, 1);
+    }
     profile::stop("render: spot atlas", pt);
     pt = profile::start();
     if (!state.no_irradiance) state.no_irradiance = irradiance_volume({ 0, 0, 0 }, { 1, 1, 1 }, 1);
