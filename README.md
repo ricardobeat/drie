@@ -180,6 +180,11 @@ These aren't in three.js:
 
 - `material.arm_map`: one texture with ambient occlusion, roughness and metalness in R, G and B
   (the layout Poly Haven ships).
+- `material.parallax_map`: parallax occlusion mapping from a height map (white = the top),
+  `parallax_scale` meters deep. The view ray is marched into it and the color, normal and arm
+  maps are read where it lands, so stones and ruts stand up and hide each other. It fades out
+  toward `parallax_distance`, and `parallax_shadow` (0 to 1) lets the bumps shade each other
+  from the first directional light. (three's `displacementMap` moves vertices instead.)
 - `material.foliage`: for alpha-tested leaves and blades. Both sides are lit, and light wraps
   around them a little. `material.sway` and `sway_speed` move the vertices in the wind, more the higher
   they are above the object's origin.

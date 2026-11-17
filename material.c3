@@ -58,6 +58,16 @@ struct Material
     // Packed ambient occlusion (R), roughness (G) and metalness (B), as in glTF's ORM textures.
     // Roughness and metalness are multiplied with the material's values.
     Texture* arm_map;
+    // Parallax occlusion mapping (not in three.js; three's displacementMap moves the vertices,
+    // this only the texture): a height map (r: 1 = the top of the surface, 0 = parallax_scale
+    // meters under it), in the same uv as the other maps. The view ray is marched into it and
+    // the color, normal and arm maps are all read where it meets it, so stones and ruts stand
+    // up and hide each other. It fades out toward parallax_distance meters away (0: 30 m), and
+    // with parallax_shadow (0..1) the bumps shade each other from the first directional light.
+    Texture* parallax_map;
+    float parallax_scale;
+    float parallax_distance;
+    float parallax_shadow;
     // Discard pixels with alpha below this (0 = off). Cutout edges are antialiased with MSAA.
     float alpha_test;
     // Extensions:

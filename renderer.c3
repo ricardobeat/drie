@@ -1776,6 +1776,8 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     bind.views[VIEW_TEX_MAP] = map.view;
     bind.views[VIEW_TEX_NORMAL] = ready(mat.normal_map).view;
     bind.views[VIEW_TEX_ARM] = ready(mat.arm_map).view;
+    // (the parallax map: white, none, where the material has none)
+    bind.views[VIEW_TEX_PARALLAX] = ready(mat.parallax_map).view;
     bind.views[VIEW_SHADOW_MAP] = state.shadow_view;
     bind.views[VIEW_SHADOW_ATLAS] = state.atlas_view;
     bind.views[VIEW_SUN_SHADOW] = state.sun_view;
@@ -1851,6 +1853,8 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     fs.specular = { ...color_to_linear(mat.specular), (float)flags };
     fs.mat_params = { (float)mat.type, mat.roughness, mat.metalness, mat.shininess };
     fs.tex_params = { mat.map ? 1 : 0, mat.normal_map ? mat.normal_scale : 0, mat.arm_map ? 1 : 0, alpha_test };
+    fs.parallax_params = { mat.parallax_map && mat.type == STANDARD ? mat.parallax_scale : 0,
+                           mat.parallax_distance > 0 ? mat.parallax_distance : 30, mat.parallax_shadow, 0 };
     fs.env_params = { env_map ? 1 : 0, env_intensity, env_diffuse_lod, env_map ? env_map.env_distance_range : 0 };
     // each point of it: the probe of the box it is in
     if (probes) fs.env_params = { 2, mat.env_intensity > 0 ? mat.env_intensity : 1, 0, 0 };
