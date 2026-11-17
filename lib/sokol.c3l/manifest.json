@@ -5,7 +5,7 @@
     ],
     "targets": {
         "macos-aarch64": {
-            "cflags-override": "-DIMPL -mmacos-version-min=14.0 -x objective-c -DSOKOL_METAL",
+            "cflags-override": "-O2 -DNDEBUG -DIMPL -mmacos-version-min=14.0 -x objective-c -DSOKOL_METAL",
             "linked-libraries": [
                 "Foundation.framework",
                 "CoreGraphics.framework",
@@ -19,7 +19,7 @@
             ]
         },
         "linux-x64": {
-            "cflags-override": "-DIMPL -DSOKOL_GLCORE",
+            "cflags-override": "-O2 -DNDEBUG -DIMPL -DSOKOL_GLCORE",
             "linked-libraries": [
                 "X11",
                 "Xi",
@@ -33,7 +33,7 @@
             ]
         },
         "windows-x64": {
-            "cflags-override": "-DIMPL -DSOKOL_D3D11",
+            "cflags-override": "-O2 -DNDEBUG -DIMPL -DSOKOL_D3D11",
             "linked-libraries": [
                 "kernel32",
                 "user32",
@@ -45,7 +45,7 @@
             ]
         },
         "mingw-x64": {
-            "cflags-override": "-DIMPL -DSOKOL_D3D11",
+            "cflags-override": "-O2 -DNDEBUG -DIMPL -DSOKOL_D3D11",
             "linked-libraries": [
                 "kernel32",
                 "user32",
@@ -57,7 +57,7 @@
             ]
         },
         "ios-aarch64": {
-            "cflags-override": "-DIMPL -x objective-c -DSOKOL_METAL",
+            "cflags-override": "-O2 -DNDEBUG -DIMPL -x objective-c -DSOKOL_METAL",
             "linked-libraries": [
                 "Foundation.framework",
                 "UIKit.framework",
@@ -69,7 +69,7 @@
             ]
         },
         "ios-aarch64-sim": {
-            "cflags-override": "-DIMPL -x objective-c -DSOKOL_METAL",
+            "cflags-override": "-O2 -DNDEBUG -DIMPL -x objective-c -DSOKOL_METAL",
             "linked-libraries": [
                 "Foundation.framework",
                 "UIKit.framework",
