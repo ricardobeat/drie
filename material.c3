@@ -77,6 +77,23 @@ struct Material {
     bool foliage;
     // Transparent, but reflections and highlights stay fully visible. Use with `transparent`.
     bool glass;
+    // Light passing through: how much of what stands behind the surface shows through it, bent
+    // as it crosses (KHR_materials_transmission). The renderer draws the scene behind into a
+    // target of its own first, so it costs a second pass over the opaque scene. 0 = off.
+    float transmission;
+    // How far (m) a ray bends as it travels through it: light leaves the surface shifted by the
+    // part of the material it crosses. Thin glass wants a few millimeters.
+    float thickness;
+    // Index of refraction: how strongly it bends light (1.5: glass, 1.33: water).
+    float ior;
+    // How much the refraction differs across the red..blue channels (KHR_materials_dispersion):
+    // each is bent with an IOR of `ior` + (ior - 1) * 0.025 * dispersion, so edges come out
+    // fringed with rainbow colors. 0 = all wavelengths bent alike.
+    float dispersion;
+    // Light is tinted as it crosses the volume, toward this color: Beer's law over
+    // attenuation_distance meters. 0 distance: no tint.
+    Color attenuation_color;
+    float attenuation_distance;
     // Reflections of the surroundings: an equirectangular map, for example from
     // Renderer.capture_environment (like three's envMap). Rougher surfaces blur it.
     Texture* env_map;
@@ -165,6 +182,8 @@ fn void Material.init_base(
     self.roughness = 1;
     self.normal_scale = 1;
     self.sway_speed = 1;
+    self.ior = 1.5f;
+    self.attenuation_color = 0xffffff;
 }
 
 // Unlit, flat color.
@@ -246,7 +265,13 @@ fn MeshStandardMaterial* mesh_standard_material(
     bool wireframe = false,
     bool fog = true,
     bool vertex_colors = false,
-    Texture* map = null
+    Texture* map = null,
+    float transmission = 0,
+    float thickness = 0,
+    float ior = 1.5f,
+    float dispersion = 0,
+    Color attenuation_color = 0xffffff,
+    float attenuation_distance = 0
 ) {
     MeshStandardMaterial* m = mem::new(MeshStandardMaterial);
     m.init_base(STANDARD, color, opacity, transparent, side, wireframe, fog);
@@ -256,6 +281,12 @@ fn MeshStandardMaterial* mesh_standard_material(
     m.metalness = metalness;
     m.emissive = emissive;
     m.emissive_intensity = emissive_intensity;
+    m.transmission = transmission;
+    m.thickness = thickness;
+    m.ior = ior;
+    m.dispersion = dispersion;
+    m.attenuation_color = attenuation_color;
+    m.attenuation_distance = attenuation_distance;
     return m;
 }
 
