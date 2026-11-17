@@ -5,8 +5,7 @@ module drie;
 import sokol;
 import std::math;
 
-enum DisplayColorSpace
-{
+enum DisplayColorSpace {
     SRGB,
     DISPLAY_P3,
     // linear, with EDR: 1 is SDR white
@@ -29,7 +28,9 @@ fn float display_potential_headroom() => math::max(drie_display_potential_headro
 fn bool display_wide_gamut() => drie_display_wide_gamut(sapp::macos_get_window());
 
 // Sets the color space the window's pixels are taken in (after it opened).
-fn bool set_display_color_space(DisplayColorSpace space) => drie_display_set_color_space(sapp::macos_get_window(), (CInt)space.ordinal);
+fn bool set_display_color_space(
+    DisplayColorSpace space
+) => drie_display_set_color_space(sapp::macos_get_window(), (CInt)space.ordinal);
 
 // The headroom the renderer's output has: the screen's with HDR output on, else 1.
 fn float Renderer.output_headroom(&self) => self.hdr_on() ? display_headroom() : 1.0f;

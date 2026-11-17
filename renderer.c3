@@ -9,13 +9,12 @@ alias Event = SappEvent;
 alias KeyCode = SappKeycode;
 
 // Defaults of Renderer.max_lights and Renderer.shadow_atlas_capacity.
-const int DEFAULT_MAX_LIGHTS = 1024;
+const int DEFAULT_MAX_LIGHTS            = 1024;
 const int DEFAULT_SHADOW_ATLAS_CAPACITY = 8;
 
 // An offscreen image to render into, like three's WebGLRenderTarget.
 // Use `texture` (a sokol texture view) to sample the result in your own passes.
-struct RenderTarget
-{
+struct RenderTarget {
     int width;
     int height;
     int samples;
@@ -68,10 +67,8 @@ struct RenderTarget
 // RenderTarget.mrt's extra pictures (after the color, at attachments 1, 2, 3) and their pixel
 // formats: normal, velocity, indirect.
 const int MRT_COUNT = 3;
-fn SgPixelFormat mrt_format(int i) @local
-{
-    switch (i)
-    {
+fn SgPixelFormat mrt_format(int i) @local {
+    switch (i) {
         case 0: return sg::query_pixelformat(SgPixelFormat.RG16SN).render ? SgPixelFormat.RG16SN : SgPixelFormat.RG16F;
         case 1: return RG16F;
         default: return RGBA8;
@@ -84,16 +81,20 @@ fn SgPixelFormat mrt_format(int i) @local
 //   RenderTarget* feed = drie::render_target(256, 144);
 //   screen_material.map = feed.as_map();
 //   renderer.set_render_target(feed); renderer.render(scene, other_camera);
-fn Texture* RenderTarget.as_map(&self)
-{
-    if (!self.map_texture)
-    {
+fn Texture* RenderTarget.as_map(&self) {
+    if (!self.map_texture) {
         Texture* t = mem::new(Texture);
-        *t = { .repeat = { 1, 1 }, .wrap_s = CLAMP_TO_EDGE_WRAPPING, .wrap_t = CLAMP_TO_EDGE_WRAPPING, .uploaded = true };
-        t.sampler = sg::make_sampler(&&{ .min_filter = LINEAR, .mag_filter = LINEAR, .wrap_u = CLAMP_TO_EDGE, .wrap_v = CLAMP_TO_EDGE });
+        *t = {
+            .repeat = { 1, 1 },
+            .wrap_s = CLAMP_TO_EDGE_WRAPPING,
+            .wrap_t = CLAMP_TO_EDGE_WRAPPING,
+            .uploaded = true
+        };
+        t.sampler = sg::make_sampler(
+            &&{ .min_filter = LINEAR, .mag_filter = LINEAR, .wrap_u = CLAMP_TO_EDGE, .wrap_v = CLAMP_TO_EDGE }
+        );
         // a render target's first row is at the top, except in GL
-        if (depth_zero_to_one())
-        {
+        if (depth_zero_to_one()) {
             t.repeat.y = -1;
             t.offset.y = 1;
         }
@@ -114,9 +115,14 @@ fn Texture* RenderTarget.as_map(&self)
 // motion (see RenderTarget.mrt):
 //   drie::render_target(w, h, 4, RGBA16F, mrt: true)
 // Must be called after the window opened.
-fn RenderTarget* render_target(int width, int height, int samples = 1, SgPixelFormat format = RGBA8, bool depth_buffer = true,
-                               bool mrt = false)
-{
+fn RenderTarget* render_target(
+    int width,
+    int height,
+    int samples = 1,
+    SgPixelFormat format = RGBA8,
+    bool depth_buffer = true,
+    bool mrt = false
+) {
     RenderTarget* rt = mem::new(RenderTarget);
     rt.format = format;
     rt.depth_buffer = depth_buffer;
@@ -130,8 +136,7 @@ fn SgPixelFormat RenderTarget.pixel_format(&self) => self.format == DEFAULT ? RG
 // Whether a scene rendered into it is left in linear light (a half-float target).
 fn bool RenderTarget.is_linear(&self) => self.pixel_format() == RGBA16F;
 
-fn void RenderTarget.dispose(&self)
-{
+fn void RenderTarget.dispose(&self) {
     if (self.texture.id) sg::destroy_view(self.texture);
     if (self.color_view.id) sg::destroy_view(self.color_view);
     if (self.resolve_view.id) sg::destroy_view(self.resolve_view);
@@ -144,77 +149,94 @@ fn void RenderTarget.dispose(&self)
     if (self.normal_texture.id) sg::destroy_view(self.normal_texture);
     if (self.velocity_texture.id) sg::destroy_view(self.velocity_texture);
     if (self.indirect_texture.id) sg::destroy_view(self.indirect_texture);
-    for (int i = 0; i < MRT_COUNT; i++)
-    {
+    for (int i = 0; i < MRT_COUNT; i++) {
         if (self.mrt_color_view[i].id) sg::destroy_view(self.mrt_color_view[i]);
         if (self.mrt_resolve_view[i].id) sg::destroy_view(self.mrt_resolve_view[i]);
         if (self.mrt_color[i].id) sg::destroy_image(self.mrt_color[i]);
         if (self.mrt_resolve[i].id) sg::destroy_image(self.mrt_resolve[i]);
     }
-    Texture* map = self.map_texture;
+    Texture* map         = self.map_texture;
     SgPixelFormat format = self.format;
-    bool depth_buffer = self.depth_buffer;
-    bool mrt = self.mrt;
+    bool depth_buffer    = self.depth_buffer;
+    bool mrt             = self.mrt;
     *self = { .map_texture = map, .format = format, .depth_buffer = depth_buffer, .mrt = mrt };
 }
 
-fn void RenderTarget.set_size(&self, int width, int height, int samples = 1)
-{
+fn void RenderTarget.set_size(&self, int width, int height, int samples = 1) {
     if (self.width == width && self.height == height && self.samples == samples) return;
     self.dispose();
     self.width = width;
     self.height = height;
     self.samples = samples;
     SgPixelFormat format = self.pixel_format();
-    self.color = sg::make_image(&&{
-        .usage = { .color_attachment = true },
-        .width = width, .height = height, .sample_count = samples, .pixel_format = format,
-    });
+    self.color = sg::make_image(
+        &&{
+            .usage = { .color_attachment = true },
+            .width = width,
+            .height = height,
+            .sample_count = samples,
+            .pixel_format = format,
+        }
+    );
     self.color_view = sg::make_view(&&{ .color_attachment = { .image = self.color } });
-    if (self.depth_buffer)
-    {
-        self.depth = sg::make_image(&&{
-            .usage = { .depth_stencil_attachment = true },
-            .width = width, .height = height, .sample_count = samples, .pixel_format = DEPTH,
-        });
+    if (self.depth_buffer) {
+        self.depth = sg::make_image(
+            &&{
+                .usage = { .depth_stencil_attachment = true },
+                .width = width,
+                .height = height,
+                .sample_count = samples,
+                .pixel_format = DEPTH,
+            }
+        );
         self.depth_view = sg::make_view(&&{ .depth_stencil_attachment = { .image = self.depth } });
         self.depth_texture = sg::make_view(&&{ .texture = { .image = self.depth } });
     }
     self.texture_image = self.color;
-    if (samples > 1)
-    {
-        self.resolve = sg::make_image(&&{
-            .usage = { .resolve_attachment = true, .color_attachment = true },
-            .width = width, .height = height, .sample_count = 1, .pixel_format = format,
-        });
+    if (samples > 1) {
+        self.resolve = sg::make_image(
+            &&{
+                .usage = { .resolve_attachment = true, .color_attachment = true },
+                .width = width,
+                .height = height,
+                .sample_count = 1,
+                .pixel_format = format,
+            }
+        );
         self.resolve_view = sg::make_view(&&{ .resolve_attachment = { .image = self.resolve } });
         self.texture_image = self.resolve;
     }
     self.texture = sg::make_view(&&{ .texture = { .image = self.texture_image } });
     self.overlay_view = sg::make_view(&&{ .color_attachment = { .image = self.texture_image } });
-    if (self.mrt)
-    {
+    if (self.mrt) {
         if (!self.is_linear()) abort("drie: a render target with MRT must be RGBA16F");
-        for (int i = 0; i < MRT_COUNT; i++)
-        {
-            self.mrt_color[i] = sg::make_image(&&{
-                .usage = { .color_attachment = true },
-                .width = width, .height = height, .sample_count = samples, .pixel_format = mrt_format(i),
-            });
+        for (int i = 0; i < MRT_COUNT; i++) {
+            self.mrt_color[i] = sg::make_image(
+                &&{
+                    .usage = { .color_attachment = true },
+                    .width = width,
+                    .height = height,
+                    .sample_count = samples,
+                    .pixel_format = mrt_format(i),
+                }
+            );
             self.mrt_color_view[i] = sg::make_view(&&{ .color_attachment = { .image = self.mrt_color[i] } });
             SgImage shown = self.mrt_color[i];
-            if (samples > 1)
-            {
-                self.mrt_resolve[i] = sg::make_image(&&{
-                    .usage = { .resolve_attachment = true, .color_attachment = true },
-                    .width = width, .height = height, .sample_count = 1, .pixel_format = mrt_format(i),
-                });
+            if (samples > 1) {
+                self.mrt_resolve[i] = sg::make_image(
+                    &&{
+                        .usage = { .resolve_attachment = true, .color_attachment = true },
+                        .width = width,
+                        .height = height,
+                        .sample_count = 1,
+                        .pixel_format = mrt_format(i),
+                    }
+                );
                 self.mrt_resolve_view[i] = sg::make_view(&&{ .resolve_attachment = { .image = self.mrt_resolve[i] } });
                 shown = self.mrt_resolve[i];
             }
             SgView view = sg::make_view(&&{ .texture = { .image = shown } });
-            switch (i)
-            {
+            switch (i) {
                 case 0: self.normal_texture = view;
                 case 1: self.velocity_texture = view;
                 default: self.indirect_texture = view;
@@ -224,16 +246,13 @@ fn void RenderTarget.set_size(&self, int width, int height, int samples = 1)
     if (self.map_texture) self.as_map();
 }
 
-fn SgAttachments RenderTarget.attachments(&self)
-{
+fn SgAttachments RenderTarget.attachments(&self) {
     SgAttachments a;
     a.colors[0] = self.color_view;
     a.depth_stencil = self.depth_view;
     if (self.samples > 1) a.resolves[0] = self.resolve_view;
-    if (self.mrt)
-    {
-        for (int i = 0; i < MRT_COUNT; i++)
-        {
+    if (self.mrt) {
+        for (int i = 0; i < MRT_COUNT; i++) {
             a.colors[i + 1] = self.mrt_color_view[i];
             if (self.samples > 1) a.resolves[i + 1] = self.mrt_resolve_view[i];
         }
@@ -241,8 +260,7 @@ fn SgAttachments RenderTarget.attachments(&self)
     return a;
 }
 
-struct Renderer
-{
+struct Renderer {
     int width;
     int height;
     int sample_count;
@@ -347,9 +365,15 @@ struct Renderer
 // clear_reflection_source() switches reflections off (for a render from another viewpoint).
 // `back` (optional) is render_back_faces' picture of the same frame: how thick things are, so a
 // reflected ray that passes behind something thin goes on to what is behind it.
-fn void Renderer.set_reflection_source(&self, SgView color, SgView depth, Mat4 view_proj, float reach = 12, bool linear = false,
-                                       SgView back = {})
-{
+fn void Renderer.set_reflection_source(
+    &self,
+    SgView color,
+    SgView depth,
+    Mat4 view_proj,
+    float reach = 12,
+    bool linear = false,
+    SgView back = { }
+) {
     self.ssr_linear = linear;
     self.ssr_color = color;
     self.ssr_depth = depth;
@@ -359,11 +383,10 @@ fn void Renderer.set_reflection_source(&self, SgView color, SgView depth, Mat4 v
     self.ssr_frame++;
 }
 
-fn void Renderer.clear_reflection_source(&self)
-{
-    self.ssr_color = {};
-    self.ssr_depth = {};
-    self.ssr_back = {};
+fn void Renderer.clear_reflection_source(&self) {
+    self.ssr_color = { };
+    self.ssr_depth = { };
+    self.ssr_back = { };
 }
 
 // After render(): draws the back faces of the opaque, one-sided, solid things it drew into
@@ -372,35 +395,47 @@ fn void Renderer.clear_reflection_source(&self)
 // to set_reflection_source next frame, so reflections know how thick things are.
 //   RenderTarget* back = drie::render_target(w, h, 1, R16F);
 //   renderer.render(scene, camera); renderer.render_back_faces(back);
-fn void Renderer.render_back_faces(&self, RenderTarget* target)
-{
-    if (target.samples != 1 || target.pixel_format() != R16F || !target.depth_buffer) abort("drie: back faces go into an R16F target with depth, one sample");
+fn void Renderer.render_back_faces(&self, RenderTarget* target) {
+    if (target.samples != 1 || target.pixel_format() != R16F || !target.depth_buffer) abort(
+        "drie: back faces go into an R16F target with depth, one sample"
+    );
     ulong pt = profile::start();
-    if (!state.back_pipeline.id)
-    {
-        state.back_pipeline = sg::make_pipeline(&&{
-            .shader = state.depth_shader,
-            .index_type = UINT32,
-            .cull_mode = FRONT,
-            .face_winding = CCW,
-            .layout = vertex_layout({ shaders::ATTR_THREE_POSITION, shaders::ATTR_THREE_NORMAL, shaders::ATTR_THREE_UV, shaders::ATTR_THREE_COLOR0,
-                                      shaders::ATTR_THREE_INST0, shaders::ATTR_THREE_INST1, shaders::ATTR_THREE_INST2 }),
-            .depth = { .pixel_format = DEPTH, .write_enabled = true, .compare = LESS_EQUAL },
-            .colors[0].pixel_format = R16F,
-            .label = "drie-back-faces",
-        });
+    if (!state.back_pipeline.id) {
+        state.back_pipeline = sg::make_pipeline(
+            &&{
+                .shader = state.depth_shader,
+                .index_type = UINT32,
+                .cull_mode = FRONT,
+                .face_winding = CCW,
+                .layout = vertex_layout(
+                    {
+                        shaders::ATTR_THREE_POSITION,
+                        shaders::ATTR_THREE_NORMAL,
+                        shaders::ATTR_THREE_UV,
+                        shaders::ATTR_THREE_COLOR0,
+                        shaders::ATTR_THREE_INST0,
+                        shaders::ATTR_THREE_INST1,
+                        shaders::ATTR_THREE_INST2
+                    }
+                ),
+                .depth = { .pixel_format = DEPTH, .write_enabled = true, .compare = LESS_EQUAL },
+                .colors[0].pixel_format = R16F,
+                .label = "drie-back-faces",
+            }
+        );
     }
-    sg::begin_pass(&&{
-        .action = {
-            .colors[0] = { .load_action = CLEAR, .store_action = STORE, .clear_value = { 0, 0, 0, 0 } },
-            .depth = { .load_action = CLEAR, .clear_value = 1 },
-        },
-        .attachments = target.attachments(),
-        .label = "drie-back-faces",
-    });
+    sg::begin_pass(
+        &&{
+            .action = {
+                .colors[0] = { .load_action = CLEAR, .store_action = STORE, .clear_value = { 0, 0, 0, 0 } },
+                .depth = { .load_action = CLEAR, .clear_value = 1 },
+            },
+            .attachments = target.attachments(),
+            .label = "drie-back-faces",
+        }
+    );
     Mat4 view_proj = state.last_view_proj;
-    foreach (&item : state.opaque)
-    {
+    foreach (&item : state.opaque) {
         Material* mat = item.mesh.material;
         // (what has holes or two sides has no inside to speak of)
         if (mat.side != FRONT_SIDE || mat.wireframe || has_holes(item) || mat.screen_target) continue;
@@ -409,7 +444,7 @@ fn void Renderer.render_back_faces(&self, RenderTarget* target)
         SgBindings bind = { .vertex_buffers[0] = g.vbuf, .index_buffer = g.ibuf };
         bind_instances(&bind, item);
         Vec4 inst_cull = cull_bind(&bind, item.job - 1);
-        Texture* map = ready(state.white);
+        Texture* map   = ready(state.white);
         bind.views[shaders::VIEW_TEX_MAP] = map.view;
         bind.samplers[shaders::SMP_TEX_SMP] = map.sampler;
         sg::apply_bindings(&bind);
@@ -425,8 +460,7 @@ fn void Renderer.render_back_faces(&self, RenderTarget* target)
     profile::stop("render: back faces", pt);
 }
 
-struct RenderInfo
-{
+struct RenderInfo {
     int calls;
     int triangles;
     int shadow_calls;
@@ -437,8 +471,7 @@ alias WebGLRenderer = Renderer;
 
 // three's tone mappings (the order is TONE_* in tonemapping.glsl). The renderer applies it when
 // it draws into the window or an RGBA8 target, OutputPass after post-processing in linear light.
-enum ToneMapping
-{
+enum ToneMapping {
     NO_TONE_MAPPING,
     LINEAR_TONE_MAPPING,
     REINHARD_TONE_MAPPING,
@@ -448,8 +481,7 @@ enum ToneMapping
     NEUTRAL_TONE_MAPPING,
 }
 
-struct DrawItem @local
-{
+struct DrawItem @local {
     Mesh* mesh;
     float depth;
     // in a LOD's cross-fade: how far it has gone (0..1), and 1 for the level fading in, -1 for
@@ -462,13 +494,11 @@ struct DrawItem @local
     float cover;
 }
 
-struct Frustum @private
-{
+struct Frustum @private {
     Vec4[5] planes;
 }
 
-struct RendererState @local
-{
+struct RendererState @local {
     Renderer* renderer;
     List{FrameHook} frame_hooks;
     List{EventFilter} event_filters;
@@ -572,8 +602,7 @@ struct RendererState @local
 
 RendererState state @local;
 
-fn Renderer* webgl_renderer(bool antialias = true, int width = 800, int height = 600, String title = "drie")
-{
+fn Renderer* webgl_renderer(bool antialias = true, int width = 800, int height = 600, String title = "drie") {
     Renderer* r = mem::new(Renderer);
     *r = {
         .width = width,
@@ -607,50 +636,47 @@ fn Renderer* webgl_renderer(bool antialias = true, int width = 800, int height =
     return r;
 }
 
-fn void Renderer.set_size(&self, int width, int height)
-{
+fn void Renderer.set_size(&self, int width, int height) {
     self.width = width;
     self.height = height;
 }
 
 // Render into `target` instead of the window (null renders to the window again).
-fn void Renderer.set_render_target(&self, RenderTarget* target)
-{
+fn void Renderer.set_render_target(&self, RenderTarget* target) {
     self.render_target = target;
 }
 
-fn void Renderer.set_clear_color(&self, Color color, float alpha = 1)
-{
+fn void Renderer.set_clear_color(&self, Color color, float alpha = 1) {
     self.clear_color = color;
     self.clear_alpha = alpha;
 }
 
 // Opens the window and calls `cb` every frame with the elapsed time in milliseconds.
 // Like three's renderer.setAnimationLoop. This call blocks until the window is closed.
-fn void Renderer.set_animation_loop(&self, AnimationLoop cb)
-{
+fn void Renderer.set_animation_loop(&self, AnimationLoop cb) {
     self.animation_loop = cb;
     state.renderer = self;
-    sapp::run(&&{
-        .init_cb = &on_init,
-        .frame_cb = &on_frame,
-        .cleanup_cb = &on_cleanup,
-        .event_cb = &on_event,
-        .width = self.width,
-        .height = self.height,
-        .sample_count = self.sample_count,
-        .high_dpi = true,
-        .hdr = self.hdr_window || self.hdr_output,
-        .fullscreen = self.fullscreen,
-        .window_title = (ZString)self.title.zstr_tcopy(),
-        .icon.sokol_default = true,
-        .logger.func = &slog::func,
-    });
+    sapp::run(
+        &&{
+            .init_cb = &on_init,
+            .frame_cb = &on_frame,
+            .cleanup_cb = &on_cleanup,
+            .event_cb = &on_event,
+            .width = self.width,
+            .height = self.height,
+            .sample_count = self.sample_count,
+            .high_dpi = true,
+            .hdr = self.hdr_window || self.hdr_output,
+            .fullscreen = self.fullscreen,
+            .window_title = (ZString)self.title.zstr_tcopy(),
+            .icon.sokol_default = true,
+            .logger.func = &slog::func,
+        }
+    );
 }
 
 // Register a listener for raw input / window events (keyboard, mouse, resize).
-fn void add_event_listener(EventListener listener)
-{
+fn void add_event_listener(EventListener listener) {
     state.listeners.push(listener);
 }
 
@@ -659,8 +685,7 @@ fn float window_height() => sapp::isvalid() ? sapp::heightf() / sapp::dpi_scale(
 // Equivalent of `window.innerWidth / window.innerHeight`.
 fn float window_aspect() => window_width() / window_height();
 
-fn bool depth_zero_to_one()
-{
+fn bool depth_zero_to_one() {
     if (!state.gfx_ready) return true;
     SgBackend b = sg::query_backend();
     return b != GLCORE && b != GLES3;
@@ -672,8 +697,7 @@ alias ShaderDescFn = fn SgShaderDesc(SgBackend backend);
 // includes shader_core.glsl: `my_module::three_shader_desc`, `three_opaque_shader_desc`,
 // `depth_shader_desc`, `shadow_shader_desc`, and for RenderTarget.mrt `three_mrt_shader_desc`
 // and `three_opaque_mrt_shader_desc`.
-struct MaterialShaders
-{
+struct MaterialShaders {
     ShaderDescFn main;
     ShaderDescFn opaque;
     ShaderDescFn depth;
@@ -682,44 +706,45 @@ struct MaterialShaders
     ShaderDescFn opaque_mrt;
 }
 
-fn void setup_gfx(SgEnvironment environment) @local
-{
-    sg::setup(&&{
-        .environment = environment,
-        .logger.func = &slog::func,
-        // a buffer per geometry (two, indexed), and per instanced mesh whose instances change
-        // often: a farm of scattered plants has tens of thousands. sokol's maximum.
-        .buffer_pool_size = 65535,
-        // room for the uniforms of some thousands of draws a frame (sokol's default, 4 MB,
-        // is too little for a scene of many scattered plants seen from afar)
-        .uniform_buffer_size = 16 * 1024 * 1024,
-        .image_pool_size = 1024,
-        .view_pool_size = 4096,
-        .sampler_pool_size = 1024,
-        // a pipeline per variant of the material shader that is drawn (get_pipeline: kind,
-        // side, blending, wireframe, target, alpha to coverage; up to 1008), and the passes'.
-        // sokol's default (64) runs out once a scene is drawn into a few kinds of target
-        .pipeline_pool_size = 2048,
-        .shader_pool_size = 256,
-    });
+fn void setup_gfx(SgEnvironment environment) @local {
+    sg::setup(
+        &&{
+            .environment = environment,
+            .logger.func = &slog::func, // a buffer per geometry (two, indexed), and per instanced mesh whose instances change
+            // often: a farm of scattered plants has tens of thousands. sokol's maximum.
+            .buffer_pool_size = 65535, // room for the uniforms of some thousands of draws a frame (sokol's default, 4 MB,
+            // is too little for a scene of many scattered plants seen from afar)
+            .uniform_buffer_size = 16 * 1024 * 1024,
+            .image_pool_size = 1024,
+            .view_pool_size = 4096,
+            .sampler_pool_size = 1024, // a pipeline per variant of the material shader that is drawn (get_pipeline: kind,
+            // side, blending, wireframe, target, alpha to coverage; up to 1008), and the passes'.
+            // sokol's default (64) runs out once a scene is drawn into a few kinds of target
+            .pipeline_pool_size = 2048,
+            .shader_pool_size = 256,
+        }
+    );
     stm::setup();
     state.start_ticks = stm::now();
-    MaterialShaders s = state.renderer ? state.renderer.shaders : {};
+    MaterialShaders s = state.renderer ? state.renderer.shaders : { };
     SgBackend backend = sg::query_backend();
     state.shader = sg::make_shader(&&(s.main ? s.main(backend) : shaders::three_shader_desc(backend)));
-    state.opaque_shader = sg::make_shader(&&(s.opaque ? s.opaque(backend) : shaders::three_opaque_shader_desc(backend)));
+    state.opaque_shader = sg::make_shader(
+        &&(s.opaque ? s.opaque(backend) : shaders::three_opaque_shader_desc(backend))
+    );
     state.depth_shader = sg::make_shader(&&(s.depth ? s.depth(backend) : shaders::depth_shader_desc(backend)));
     state.shadow_shader = sg::make_shader(&&(s.shadow ? s.shadow(backend) : shaders::shadow_shader_desc(backend)));
     state.mrt_shader = sg::make_shader(&&(s.main_mrt ? s.main_mrt(backend) : shaders::three_mrt_shader_desc(backend)));
-    state.opaque_mrt_shader = sg::make_shader(&&(s.opaque_mrt ? s.opaque_mrt(backend) : shaders::three_opaque_mrt_shader_desc(backend)));
+    state.opaque_mrt_shader = sg::make_shader(
+        &&(s.opaque_mrt ? s.opaque_mrt(backend) : shaders::three_opaque_mrt_shader_desc(backend))
+    );
     state.white = data_texture({ 255, 255, 255, 255 }, 1, 1, NO_COLOR_SPACE);
     float[12] identity = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0 };
     state.identity_instance = sg::make_buffer(&&{ .data = { .ptr = &identity, .size = identity.len * float::size } });
     state.gfx_ready = true;
 }
 
-fn void on_init() @local
-{
+fn void on_init() @local {
     Renderer* r = state.renderer;
     state.float_window = r.hdr_window || r.hdr_output;
     state.window_colors = -1;
@@ -729,8 +754,7 @@ fn void on_init() @local
 // Sets up the GPU without opening a window (Metal on macOS, D3D11 on Windows), for rendering into
 // RenderTargets from scripts, tests or on a machine without a display. Use instead of
 // set_animation_loop: call render() with a render target set, then drie::commit().
-fn void Renderer.init_headless(&self)
-{
+fn void Renderer.init_headless(&self) {
     state.renderer = self;
     setup_gfx(readback::headless_environment());
 }
@@ -753,8 +777,7 @@ fn void add_event_filter(EventFilter filter) => state.event_filters.push(filter)
 fn void add_overlay(FrameHook overlay) => state.overlays.push(overlay);
 
 // Draws the overlays into the current pass, which must be a pass to the window.
-fn void draw_overlays()
-{
+fn void draw_overlays() {
     foreach (o : state.overlays) o();
 }
 
@@ -765,25 +788,23 @@ fn float lod_distance_scale() @private => state.renderer ? math::max(state.rende
 fn bool Renderer.hdr_on(&self) => self.hdr_output && state.float_window;
 
 // The color space the window's pixels are taken in, as the renderer's settings ask.
-fn void apply_window_colors() @local
-{
-    Renderer* r = state.renderer;
-    DisplayColorSpace want = r.hdr_on() ? EXTENDED_LINEAR_DISPLAY_P3 : (r.output_color_space == DISPLAY_P3_COLOR_SPACE ? DISPLAY_P3 : SRGB);
+fn void apply_window_colors() @local {
+    Renderer* r            = state.renderer;
+    DisplayColorSpace want = r.hdr_on() ? EXTENDED_LINEAR_DISPLAY_P3
+        : (r.output_color_space == DISPLAY_P3_COLOR_SPACE ? DISPLAY_P3 : SRGB);
     if (state.window_colors == want.ordinal) return;
     // (an 8-bit window that never changed stays as the platform made it)
     if (state.window_colors >= 0 || want != SRGB || state.float_window) set_display_color_space(want);
     state.window_colors = want.ordinal;
 }
 
-fn void on_frame() @local
-{
+fn void on_frame() @local {
     apply_window_colors();
     foreach (h : state.frame_hooks) h();
     if (state.renderer.animation_loop) state.renderer.animation_loop(stm::ms(stm::since(state.start_ticks)));
 }
 
-fn void on_cleanup() @local
-{
+fn void on_cleanup() @local {
     sg::shutdown();
 }
 
@@ -791,11 +812,9 @@ fn void on_cleanup() @local
 // key events, say).
 fn void send_event(SappEvent* e) => on_event(e);
 
-fn void on_event(SappEvent* e) @local
-{
+fn void on_event(SappEvent* e) @local {
     if (e.type == KEY_DOWN && !e.key_repeat
-        && (e.key_code == F11 || (e.key_code == ENTER && (e.modifiers & sapp::MODIFIER_ALT))))
-    {
+        && (e.key_code == F11 || (e.key_code == ENTER && (e.modifiers & sapp::MODIFIER_ALT)))) {
         sapp::toggle_fullscreen();
         return;
     }
@@ -804,8 +823,7 @@ fn void on_event(SappEvent* e) @local
     foreach (l : state.listeners) l(e);
 }
 
-fn SgVertexLayoutState vertex_layout(int[7] attrs) @local
-{
+fn SgVertexLayoutState vertex_layout(int[7] attrs) @local {
     SgVertexLayoutState layout;
     layout.buffers[0].stride = FLOATS_PER_VERTEX * float::size;
     layout.buffers[1] = { .stride = 12 * float::size, .step_func = PER_INSTANCE };
@@ -820,8 +838,7 @@ fn SgVertexLayoutState vertex_layout(int[7] attrs) @local
 }
 
 // How a draw of the main pass is made (see Renderer.depth_prepass).
-enum DrawKind : char @local
-{
+enum DrawKind : char @local {
     // the shader that can cut holes (transparent things, or without a depth prepass)
     CUT,
     // the shader that cuts none, for what has no holes
@@ -832,29 +849,34 @@ enum DrawKind : char @local
     DEPTH,
 }
 
-fn SgPipeline get_pipeline(Side side, bool transparent, bool wireframe, RenderTarget* rt, bool alpha_test,
-                           Blending blending = NORMAL_BLENDING, DrawKind kind = CUT) @local
-{
+fn SgPipeline get_pipeline(
+    Side side,
+    bool transparent,
+    bool wireframe,
+    RenderTarget* rt,
+    bool alpha_test,
+    Blending blending = NORMAL_BLENDING,
+    DrawKind kind = CUT
+) @local {
     int target = rt ? (rt.samples > 1 ? 2 : 1) + (rt.mrt ? 4 : (rt.is_linear() ? 2 : 0)) : 0;
     if (rt && rt.samples != 1 && rt.samples != 4) abort("drie: render targets support 1 or 4 samples");
     if (rt && rt.pixel_format() != RGBA8 && !rt.is_linear()) abort("drie: a scene renders into RGBA8 or RGBA16F");
-    int samples = rt ? rt.samples : sapp::sample_count();
+    int samples     = rt ? rt.samples : sapp::sample_count();
     // after the prepass, the coverage of the cut-out's edge is in the depth buffer's samples
-    bool a2c = alpha_test && !transparent && samples > 1 && kind != PRETESTED;
-    bool additive = transparent && blending == ADDITIVE_BLENDING;
-    SgPipeline* pip = &state.pipelines[kind.ordinal][side.ordinal][transparent ? (additive ? 2 : 1) : 0][wireframe ? 1 : 0][target][a2c ? 1 : 0];
+    bool a2c        = alpha_test && !transparent && samples > 1 && kind != PRETESTED;
+    bool additive   = transparent && blending == ADDITIVE_BLENDING;
+    SgPipeline* pip = &state.pipelines[kind.ordinal][side.ordinal][transparent ? (additive ? 2 : 1)
+        : 0][wireframe ? 1 : 0][target][a2c ? 1 : 0];
     if (pip.id) return *pip;
     SgCullMode cull;
-    switch (side)
-    {
+    switch (side) {
         case FRONT_SIDE: cull = BACK;
         case BACK_SIDE: cull = FRONT;
         case DOUBLE_SIDE: cull = NONE;
     }
     SgShader shader;
     bool mrt = rt && rt.mrt;
-    switch (kind)
-    {
+    switch (kind) {
         case CUT: shader = mrt ? state.mrt_shader : state.shader;
         case SOLID:
         case PRETESTED: shader = mrt ? state.opaque_mrt_shader : state.opaque_shader;
@@ -866,8 +888,17 @@ fn SgPipeline get_pipeline(Side side, bool transparent, bool wireframe, RenderTa
         .primitive_type = wireframe ? LINES : TRIANGLES,
         .cull_mode = wireframe ? NONE : cull,
         .face_winding = CCW,
-        .layout = vertex_layout({ shaders::ATTR_THREE_POSITION, shaders::ATTR_THREE_NORMAL, shaders::ATTR_THREE_UV, shaders::ATTR_THREE_COLOR0,
-                                  shaders::ATTR_THREE_INST0, shaders::ATTR_THREE_INST1, shaders::ATTR_THREE_INST2 }),
+        .layout = vertex_layout(
+            {
+                shaders::ATTR_THREE_POSITION,
+                shaders::ATTR_THREE_NORMAL,
+                shaders::ATTR_THREE_UV,
+                shaders::ATTR_THREE_COLOR0,
+                shaders::ATTR_THREE_INST0,
+                shaders::ATTR_THREE_INST1,
+                shaders::ATTR_THREE_INST2
+            }
+        ),
         .depth = {
             .write_enabled = !transparent && kind != PRETESTED,
             .compare = kind == PRETESTED ? SgCompareFunc.EQUAL : SgCompareFunc.LESS_EQUAL,
@@ -876,24 +907,20 @@ fn SgPipeline get_pipeline(Side side, bool transparent, bool wireframe, RenderTa
         .label = kind == DEPTH ? "drie-depth-prepass" : "drie-pipeline",
     };
     if (kind == DEPTH) desc.colors[0].write_mask = NONE;
-    if (rt)
-    {
+    if (rt) {
         desc.sample_count = rt.samples;
         desc.colors[0].pixel_format = rt.pixel_format();
         desc.depth.pixel_format = DEPTH;
     }
-    if (mrt)
-    {
+    if (mrt) {
         desc.color_count = 1 + MRT_COUNT;
-        for (int i = 0; i < MRT_COUNT; i++)
-        {
+        for (int i = 0; i < MRT_COUNT; i++) {
             desc.colors[i + 1].pixel_format = mrt_format(i);
             // what can be seen through leaves the normal, motion and light of what is behind it
             if (kind == DEPTH || transparent) desc.colors[i + 1].write_mask = NONE;
         }
     }
-    if (transparent)
-    {
+    if (transparent) {
         desc.colors[0].blend = {
             .enabled = true,
             .src_factor_rgb = SRC_ALPHA,
@@ -907,53 +934,76 @@ fn SgPipeline get_pipeline(Side side, bool transparent, bool wireframe, RenderTa
     return *pip;
 }
 
-fn SgPipeline get_shadow_pipeline() @local
-{
+fn SgPipeline get_shadow_pipeline() @local {
     if (state.shadow_pipeline.id) return state.shadow_pipeline;
-    state.shadow_pipeline = sg::make_pipeline(&&{
-        .shader = state.shadow_shader,
-        .index_type = UINT32,
-        .cull_mode = NONE,
-        .layout = vertex_layout({ shaders::ATTR_SHADOW_POSITION, shaders::ATTR_SHADOW_NORMAL, shaders::ATTR_SHADOW_UV, shaders::ATTR_SHADOW_COLOR0,
-                                  shaders::ATTR_SHADOW_INST0, shaders::ATTR_SHADOW_INST1, shaders::ATTR_SHADOW_INST2 }),
-        .depth = {
-            .pixel_format = DEPTH,
-            .write_enabled = true,
-            .compare = LESS_EQUAL,
-        },
-        .color_count = 0,
-        .colors[0].pixel_format = NONE,
-        .sample_count = 1,
-        .label = "drie-shadow-pipeline",
-    });
+    state.shadow_pipeline = sg::make_pipeline(
+        &&{
+            .shader = state.shadow_shader,
+            .index_type = UINT32,
+            .cull_mode = NONE,
+            .layout = vertex_layout(
+                {
+                    shaders::ATTR_SHADOW_POSITION,
+                    shaders::ATTR_SHADOW_NORMAL,
+                    shaders::ATTR_SHADOW_UV,
+                    shaders::ATTR_SHADOW_COLOR0,
+                    shaders::ATTR_SHADOW_INST0,
+                    shaders::ATTR_SHADOW_INST1,
+                    shaders::ATTR_SHADOW_INST2
+                }
+            ),
+            .depth = {
+                .pixel_format = DEPTH,
+                .write_enabled = true,
+                .compare = LESS_EQUAL,
+            },
+            .color_count = 0,
+            .colors[0].pixel_format = NONE,
+            .sample_count = 1,
+            .label = "drie-shadow-pipeline",
+        }
+    );
     return state.shadow_pipeline;
 }
 
 // Clears the atlas's tile at the current viewport to the far depth (a pass clears all of it).
-fn void clear_atlas_tile() @local
-{
-    if (!state.tile_clear_pipeline.id)
-    {
-        state.tile_clear_pipeline = sg::make_pipeline(&&{
-            .shader = state.shadow_shader,
-            .index_type = UINT32,
-            .cull_mode = NONE,
-            .layout = vertex_layout({ shaders::ATTR_SHADOW_POSITION, shaders::ATTR_SHADOW_NORMAL, shaders::ATTR_SHADOW_UV, shaders::ATTR_SHADOW_COLOR0,
-                                      shaders::ATTR_SHADOW_INST0, shaders::ATTR_SHADOW_INST1, shaders::ATTR_SHADOW_INST2 }),
-            .depth = { .pixel_format = DEPTH, .write_enabled = true, .compare = ALWAYS },
-            .color_count = 0,
-            .colors[0].pixel_format = NONE,
-            .sample_count = 1,
-            .label = "drie-atlas-tile-clear",
-        });
+fn void clear_atlas_tile() @local {
+    if (!state.tile_clear_pipeline.id) {
+        state.tile_clear_pipeline = sg::make_pipeline(
+            &&{
+                .shader = state.shadow_shader,
+                .index_type = UINT32,
+                .cull_mode = NONE,
+                .layout = vertex_layout(
+                    {
+                        shaders::ATTR_SHADOW_POSITION,
+                        shaders::ATTR_SHADOW_NORMAL,
+                        shaders::ATTR_SHADOW_UV,
+                        shaders::ATTR_SHADOW_COLOR0,
+                        shaders::ATTR_SHADOW_INST0,
+                        shaders::ATTR_SHADOW_INST1,
+                        shaders::ATTR_SHADOW_INST2
+                    }
+                ),
+                .depth = { .pixel_format = DEPTH, .write_enabled = true, .compare = ALWAYS },
+                .color_count = 0,
+                .colors[0].pixel_format = NONE,
+                .sample_count = 1,
+                .label = "drie-atlas-tile-clear",
+            }
+        );
         state.tile_quad = plane_geometry(2, 2);
     }
     BufferGeometry* g = state.tile_quad;
     g.upload();
     sg::apply_pipeline(state.tile_clear_pipeline);
-    SgBindings bind = { .vertex_buffers[0] = g.vbuf, .vertex_buffers[1] = state.identity_instance, .index_buffer = g.ibuf };
-    Vec4 inst_cull = cull_bind(&bind, -1);
-    Texture* white = ready(state.white);
+    SgBindings bind = {
+        .vertex_buffers[0] = g.vbuf,
+        .vertex_buffers[1] = state.identity_instance,
+        .index_buffer = g.ibuf
+    };
+    Vec4 inst_cull  = cull_bind(&bind, -1);
+    Texture* white  = ready(state.white);
     bind.views[shaders::VIEW_S_MAP] = white.view;
     bind.samplers[shaders::SMP_S_SMP] = white.sampler;
     sg::apply_bindings(&bind);
@@ -962,8 +1012,12 @@ fn void clear_atlas_tile() @local
     Mat4 to_far = mat4_identity();
     to_far[2][2] = 0;
     to_far[3][2] = 1;
-    ShadowVsParams vs = { .s_view_proj = to_far, .s_model = mat4_identity(), .s_uv_transform = { 1, 1, 0, 0 },
-                          .s_inst_cull = inst_cull };
+    ShadowVsParams vs = {
+        .s_view_proj = to_far,
+        .s_model = mat4_identity(),
+        .s_uv_transform = { 1, 1, 0, 0 },
+        .s_inst_cull = inst_cull
+    };
     sg::apply_uniforms(shaders::UB_SHADOW_VS_PARAMS, &&{ .ptr = &vs, .size = ShadowVsParams::size });
     ShadowFsParams fs;
     sg::apply_uniforms(shaders::UB_SHADOW_FS_PARAMS, &&{ .ptr = &fs, .size = ShadowFsParams::size });
@@ -971,62 +1025,66 @@ fn void clear_atlas_tile() @local
     sg::apply_pipeline(get_shadow_pipeline());
 }
 
-fn void ensure_shadow_map(int size) @local
-{
+fn void ensure_shadow_map(int size) @local {
     if (state.shadow_size == size) return;
-    if (state.shadow_size)
-    {
+    if (state.shadow_size) {
         sg::destroy_view(state.shadow_attachment);
         sg::destroy_view(state.shadow_view);
         sg::destroy_image(state.shadow_image);
-    }
-    else
-    {
-        state.shadow_sampler = sg::make_sampler(&&{
-            .min_filter = LINEAR,
-            .mag_filter = LINEAR,
-            .wrap_u = CLAMP_TO_EDGE,
-            .wrap_v = CLAMP_TO_EDGE,
-            .compare = LESS_EQUAL,
-        });
+    } else {
+        state.shadow_sampler = sg::make_sampler(
+            &&{
+                .min_filter = LINEAR,
+                .mag_filter = LINEAR,
+                .wrap_u = CLAMP_TO_EDGE,
+                .wrap_v = CLAMP_TO_EDGE,
+                .compare = LESS_EQUAL,
+            }
+        );
     }
     state.shadow_size = size;
-    state.shadow_image = sg::make_image(&&{
-        .usage = { .depth_stencil_attachment = true },
-        .width = size, .height = size, .sample_count = 1, .pixel_format = DEPTH,
-    });
+    state.shadow_image = sg::make_image(
+        &&{
+            .usage = { .depth_stencil_attachment = true },
+            .width = size,
+            .height = size,
+            .sample_count = 1,
+            .pixel_format = DEPTH,
+        }
+    );
     state.shadow_attachment = sg::make_view(&&{ .depth_stencil_attachment = { .image = state.shadow_image } });
     state.shadow_view = sg::make_view(&&{ .texture = { .image = state.shadow_image } });
 }
 
-fn void ensure_sun_map(int size) @local
-{
+fn void ensure_sun_map(int size) @local {
     if (state.sun_size == size) return;
-    if (state.sun_size)
-    {
+    if (state.sun_size) {
         sg::destroy_view(state.sun_attachment);
         sg::destroy_view(state.sun_view);
         sg::destroy_image(state.sun_image);
     }
     state.sun_size = size;
-    state.sun_image = sg::make_image(&&{
-        .usage = { .depth_stencil_attachment = true },
-        .width = size, .height = size, .sample_count = 1, .pixel_format = DEPTH,
-    });
+    state.sun_image = sg::make_image(
+        &&{
+            .usage = { .depth_stencil_attachment = true },
+            .width = size,
+            .height = size,
+            .sample_count = 1,
+            .pixel_format = DEPTH,
+        }
+    );
     state.sun_attachment = sg::make_view(&&{ .depth_stencil_attachment = { .image = state.sun_image } });
     state.sun_view = sg::make_view(&&{ .texture = { .image = state.sun_image } });
 }
 
-fn void ensure_shadow_atlas(int tile, int capacity) @local
-{
+fn void ensure_shadow_atlas(int tile, int capacity) @local {
     int columns = math::max(4, (int)math::ceil(math::sqrt((float)capacity)));
-    int rows = math::max((capacity + columns - 1) / columns, 1);
+    int rows    = math::max((capacity + columns - 1) / columns, 1);
     // within the GPU's largest texture
-    int most = sg::query_limits().max_image_size_2d;
+    int most    = sg::query_limits().max_image_size_2d;
     if (most > 0) tile = math::max(math::min(tile, most / math::max(columns, rows)), 4);
     if (state.atlas_tile == tile && state.atlas_columns == columns && state.atlas_rows == rows) return;
-    if (state.atlas_tile)
-    {
+    if (state.atlas_tile) {
         sg::destroy_view(state.atlas_attachment);
         sg::destroy_view(state.atlas_view);
         sg::destroy_image(state.atlas_image);
@@ -1035,19 +1093,22 @@ fn void ensure_shadow_atlas(int tile, int capacity) @local
     state.atlas_columns = columns;
     state.atlas_rows = rows;
     state.atlas_lights.clear();
-    state.atlas_image = sg::make_image(&&{
-        .usage = { .depth_stencil_attachment = true },
-        .width = tile * columns, .height = tile * rows, .sample_count = 1, .pixel_format = DEPTH,
-    });
+    state.atlas_image = sg::make_image(
+        &&{
+            .usage = { .depth_stencil_attachment = true },
+            .width = tile * columns,
+            .height = tile * rows,
+            .sample_count = 1,
+            .pixel_format = DEPTH,
+        }
+    );
     state.atlas_attachment = sg::make_view(&&{ .depth_stencil_attachment = { .image = state.atlas_image } });
     state.atlas_view = sg::make_view(&&{ .texture = { .image = state.atlas_image } });
 }
 
 // The tile of a light in the atlas, -1 if it has none.
-fn int atlas_tile_of(SpotLight* sl) @local
-{
-    foreach (i, l : state.atlas_lights)
-    {
+fn int atlas_tile_of(SpotLight* sl) @local {
+    foreach (i, l : state.atlas_lights) {
         if (l == sl) return (int)i;
     }
     return -1;
@@ -1055,13 +1116,11 @@ fn int atlas_tile_of(SpotLight* sl) @local
 
 // Draws the maps of the lights with shadow.auto_update off: the tiles of those that ask for
 // it, or whose tile has changed hands.
-fn void update_shadow_atlas(Scene* scene, Camera* camera) @local
-{
+fn void update_shadow_atlas(Scene* scene, Camera* camera) @local {
     int capacity = math::max(state.renderer.shadow_atlas_capacity, 1);
     state.atlas_pending.clear();
     int tile = 4;
-    foreach (l : state.lights)
-    {
+    foreach (l : state.lights) {
         if (l.light_type != SPOT || !l.cast_shadow || !l.visible || l.intensity <= 0) continue;
         SpotLight* sl = (SpotLight*)l;
         if (sl.shadow.auto_update || state.atlas_pending.len() >= capacity) continue;
@@ -1079,12 +1138,10 @@ fn void update_shadow_atlas(Scene* scene, Camera* camera) @local
     // a tile is drawn again for a light that asks for it, or that it newly belongs to
     bool[64] redraw;
     int redraws;
-    for (int i = 0; i < count; i++)
-    {
+    for (int i = 0; i < count; i++) {
         SpotLight* sl = state.atlas_pending[i];
-        bool moved = i >= state.atlas_lights.len() || state.atlas_lights[i] != sl;
-        if (all || moved || sl.shadow.needs_update || i >= redraw.len)
-        {
+        bool moved    = i >= state.atlas_lights.len() || state.atlas_lights[i] != sl;
+        if (all || moved || sl.shadow.needs_update || i >= redraw.len) {
             if (i < redraw.len) redraw[i] = true;
             redraws++;
         }
@@ -1095,19 +1152,20 @@ fn void update_shadow_atlas(Scene* scene, Camera* camera) @local
     state.atlas_lights.clear();
     foreach (l : state.atlas_pending) state.atlas_lights.push(l);
     Vector3 camera_pos = camera.matrix_world.get_position();
-    bool top_left = depth_zero_to_one();
-    sg::begin_pass(&&{
-        .action = { .depth = { .load_action = all ? CLEAR : LOAD, .store_action = STORE, .clear_value = 1 } },
-        .attachments = { .depth_stencil = state.atlas_attachment },
-        .label = "drie-spot-atlas",
-    });
+    bool top_left      = depth_zero_to_one();
+    sg::begin_pass(
+        &&{
+            .action = { .depth = { .load_action = all ? CLEAR : LOAD, .store_action = STORE, .clear_value = 1 } },
+            .attachments = { .depth_stencil = state.atlas_attachment },
+            .label = "drie-spot-atlas",
+        }
+    );
     sg::apply_pipeline(get_shadow_pipeline());
-    for (int i = 0; i < count; i++)
-    {
+    for (int i = 0; i < count; i++) {
         if (!all && !redraw[i]) continue;
         SpotLight* sl = state.atlas_pending[i];
         sl.shadow.needs_update = false;
-        Mat4 light_vp = shadow_view_proj(sl);
+        Mat4 light_vp         = shadow_view_proj(sl);
         Frustum light_frustum = frustum_from(light_vp);
         state.casters.clear();
         state.skip_instanced = sl.shadow.skip_instanced;
@@ -1124,8 +1182,7 @@ fn void update_shadow_atlas(Scene* scene, Camera* camera) @local
 }
 
 // Clip planes of a view-projection matrix (left, right, bottom, top, far), pointing inwards.
-fn Frustum frustum_from(Mat4 vp) @local
-{
+fn Frustum frustum_from(Mat4 vp) @local {
     Vec4[4] rows;
     for (int r = 0; r < 4; r++) rows[r] = { vp[0][r], vp[1][r], vp[2][r], vp[3][r] };
     Frustum f;
@@ -1134,37 +1191,39 @@ fn Frustum frustum_from(Mat4 vp) @local
     f.planes[2] = rows[3] + rows[1];
     f.planes[3] = rows[3] - rows[1];
     f.planes[4] = rows[3] - rows[2];
-    foreach (&p : f.planes)
-    {
-        float len = ((Vector3){ (*p).x, (*p).y, (*p).z }).length();
+    foreach (&p : f.planes) {
+        float len = ((Vector3) { (*p).x, (*p).y, (*p).z }).length();
         if (len > 0) *p /= len;
     }
     return f;
 }
 
-fn bool Frustum.contains_sphere(&self, Vector3 c, float radius)
-{
-    foreach (p : self.planes)
-    {
+fn bool Frustum.contains_sphere(&self, Vector3 c, float radius) {
+    foreach (p : self.planes) {
         if (p.x * c.x + p.y * c.y + p.z * c.z + p.w < -radius) return false;
     }
     return true;
 }
 
-fn float max_scale(Mat4 m) @local
-{
-    float sx = ((Vector3){ m[0][0], m[0][1], m[0][2] }).length();
-    float sy = ((Vector3){ m[1][0], m[1][1], m[1][2] }).length();
-    float sc = ((Vector3){ m[2][0], m[2][1], m[2][2] }).length();
+fn float max_scale(Mat4 m) @local {
+    float sx = ((Vector3) { m[0][0], m[0][1], m[0][2] }).length();
+    float sy = ((Vector3) { m[1][0], m[1][1], m[1][2] }).length();
+    float sc = ((Vector3) { m[2][0], m[2][1], m[2][2] }).length();
     return math::max(sx, math::max(sy, sc));
 }
 
 // Gathers what to draw. `lod_from` is the position LOD levels are measured from.
-fn void collect(Object3D* obj, Mat4 view, Frustum* frustum, Vector3 lod_from, bool shadow_pass, float fade = 0, float fade_dir = 0) @local
-{
+fn void collect(
+    Object3D* obj,
+    Mat4 view,
+    Frustum* frustum,
+    Vector3 lod_from,
+    bool shadow_pass,
+    float fade = 0,
+    float fade_dir = 0
+) @local {
     if (!obj.visible) return;
-    switch (obj.kind)
-    {
+    switch (obj.kind) {
         case MESH:
             Mesh* m = (Mesh*)obj;
             if (!m.geometry || !m.material || !m.material.visible) break;
@@ -1177,8 +1236,7 @@ fn void collect(Object3D* obj, Mat4 view, Frustum* frustum, Vector3 lod_from, bo
             g.upload();
             Vector3 center = g.bounds_center;
             float radius = g.bounds_radius;
-            if (m.instance_data.len() > 0)
-            {
+            if (m.instance_data.len() > 0) {
                 upload_instances_gpu(m);
                 center = m.instance_center;
                 radius = m.instance_radius;
@@ -1188,25 +1246,22 @@ fn void collect(Object3D* obj, Mat4 view, Frustum* frustum, Vector3 lod_from, bo
             if (m.frustum_culled && !frustum.contains_sphere(wc, r)) break;
             // a Reflector's picture holds only what is in its box
             Reflector* refl = state.renderer.reflecting;
-            if (refl && refl.box_min != refl.box_max)
-            {
-                Vector3 nearest = { clamp(wc.x, refl.box_min.x, refl.box_max.x), clamp(wc.y, refl.box_min.y, refl.box_max.y),
-                                    clamp(wc.z, refl.box_min.z, refl.box_max.z) };
+            if (refl && refl.box_min != refl.box_max) {
+                Vector3 nearest = {
+                    clamp(wc.x, refl.box_min.x, refl.box_max.x),
+                    clamp(wc.y, refl.box_min.y, refl.box_max.y),
+                    clamp(wc.z, refl.box_min.z, refl.box_max.z)
+                };
                 if ((nearest - wc).length() > r) break;
             }
             Vector3 vc = view.transform_point(wc);
             float dist = math::max(vc.length(), r);
             DrawItem item = { m, vc.z, fade, fade_dir, 0, r * r / (dist * dist) };
-            if (shadow_pass)
-            {
+            if (shadow_pass) {
                 state.casters.push(item);
-            }
-            else if (m.material.transparent)
-            {
+            } else if (m.material.transparent) {
                 state.transparent.push(item);
-            }
-            else
-            {
+            } else {
                 state.opaque.push(item);
             }
         case LIGHT:
@@ -1217,16 +1272,13 @@ fn void collect(Object3D* obj, Mat4 view, Frustum* frustum, Vector3 lod_from, bo
             // a shadow shows less of a thing's shape than the thing does
             if (shadow_pass) d *= math::max(state.renderer.shadow_lod_bias, 1.0f);
             sz pick = -1;
-            for (sz i = 0; i < l.distances.len(); i++)
-            {
+            for (sz i = 0; i < l.distances.len(); i++) {
                 if (d >= l.distances[i]) pick = i;
             }
             // near the next level's distance (or past this one's), both are drawn, dissolving
-            if (l.fade > 0 && !shadow_pass)
-            {
+            if (l.fade > 0 && !shadow_pass) {
                 float half = l.fade * 0.5f;
-                for (sz i = 1; i < l.distances.len() && i < l.children.len(); i++)
-                {
+                for (sz i = 1; i < l.distances.len() && i < l.children.len(); i++) {
                     float t = (d - (l.distances[i] - half)) / l.fade;
                     if (t <= 0 || t >= 1) continue;
                     collect(l.children[i - 1], view, frustum, lod_from, shadow_pass, t, -1);
@@ -1243,10 +1295,8 @@ fn void collect(Object3D* obj, Mat4 view, Frustum* frustum, Vector3 lod_from, bo
 }
 
 // The one light whose shadow map is drawn every frame.
-fn SpotLight* shadow_light() @local
-{
-    foreach (l : state.lights)
-    {
+fn SpotLight* shadow_light() @local {
+    foreach (l : state.lights) {
         if (l.light_type != SPOT || !l.cast_shadow || !l.visible || l.intensity <= 0) continue;
         if (((SpotLight*)l).shadow.auto_update) return (SpotLight*)l;
     }
@@ -1254,26 +1304,22 @@ fn SpotLight* shadow_light() @local
 }
 
 // The directional light to draw a shadow map for: the first that casts one.
-fn DirectionalLight* directional_shadow_light() @local
-{
-    foreach (l : state.lights)
-    {
+fn DirectionalLight* directional_shadow_light() @local {
+    foreach (l : state.lights) {
         if (l.light_type == DIRECTIONAL && l.cast_shadow && l.visible && l.intensity > 0) return (DirectionalLight*)l;
     }
     return null;
 }
 
 // View-projection of a directional light's shadow box.
-fn Mat4 directional_shadow_view_proj(DirectionalLight* d, Camera* camera) @local
-{
-    Vector3 target = d.target ? d.target.get_world_position() : (Vector3){ 0, 0, 0 };
-    Vector3 dir = (d.matrix_world.get_position() - target).normalize();
-    float extent = math::max(d.shadow_extent, 0.1f);
+fn Mat4 directional_shadow_view_proj(DirectionalLight* d, Camera* camera) @local {
+    Vector3 target = d.target ? d.target.get_world_position() : (Vector3) { 0, 0, 0 };
+    Vector3 dir    = (d.matrix_world.get_position() - target).normalize();
+    float extent   = math::max(d.shadow_extent, 0.1f);
     Vector3 center = target;
-    if (d.shadow_follow)
-    {
-        Vector3 at = camera.matrix_world.get_position();
-        Mat4 cw = camera.matrix_world;
+    if (d.shadow_follow) {
+        Vector3 at    = camera.matrix_world.get_position();
+        Mat4 cw       = camera.matrix_world;
         Vector3 ahead = { -cw[2][0], 0, -cw[2][2] };
         if (ahead.length() > 1e-4f) center = at + ahead.normalize() * (extent * 0.55f);
     }
@@ -1282,18 +1328,25 @@ fn Mat4 directional_shadow_view_proj(DirectionalLight* d, Camera* camera) @local
 
 // View-projection of a box of parallel rays towards `dir`, `radius` meters around `center`,
 // moved a whole texel of a `size` map at a time (or the shadows' edges crawl as it travels).
-fn Mat4 sun_box_view_proj(DirectionalLight* d, Vector3 dir, Vector3 center, float radius, int size) @local
-{
-    Vector3 up = math::abs(dir.y) > 0.99f ? (Vector3){ 1, 0, 0 } : (Vector3){ 0, 1, 0 };
+fn Mat4 sun_box_view_proj(DirectionalLight* d, Vector3 dir, Vector3 center, float radius, int size) @local {
+    Vector3 up    = math::abs(dir.y) > 0.99f ? (Vector3) { 1, 0, 0 } : (Vector3) { 0, 1, 0 };
     Vector3 right = up.cross(dir).normalize();
     up = dir.cross(right);
     float texel = 2 * radius / (float)math::max(size, 1);
     center -= right * (center.dot(right) % texel) + up * (center.dot(up) % texel);
-    float far = d.shadow.far > 0 ? d.shadow.far : 300.0f;
+    float far   = d.shadow.far > 0 ? d.shadow.far : 300.0f;
     Vector3 eye = center + dir * (far * 0.5f);
-    Mat4 world = mat4_look_at(eye, center, up, true);
+    Mat4 world  = mat4_look_at(eye, center, up, true);
     world[3] = { eye.x, eye.y, eye.z, 1 };
-    Mat4 proj = mat4_orthographic(-radius, radius, radius, -radius, math::max(d.shadow.near, 0.01f), far, depth_zero_to_one());
+    Mat4 proj = mat4_orthographic(
+        -radius,
+        radius,
+        radius,
+        -radius,
+        math::max(d.shadow.near, 0.01f),
+        far,
+        depth_zero_to_one()
+    );
     return proj.mul(world.invert());
 }
 
@@ -1301,8 +1354,7 @@ fn Mat4 sun_box_view_proj(DirectionalLight* d, Vector3 dir, Vector3 center, floa
 // to each: around the sphere that holds the slice, so its size does not change as the camera
 // turns. Fills state.sun_*; returns how many there are (0: the camera is not a perspective
 // one, use one box).
-fn int fit_sun_cascades(DirectionalLight* d, Camera* camera, Vector3 dir) @local
-{
+fn int fit_sun_cascades(DirectionalLight* d, Camera* camera, Vector3 dir) @local {
     int n = math::min(math::max(d.shadow.cascades, 1), 4);
     if (n < 2 || camera.camera_type != PERSPECTIVE) return 0;
     Mat4 p = camera.projection_matrix;
@@ -1315,16 +1367,15 @@ fn int fit_sun_cascades(DirectionalLight* d, Camera* camera, Vector3 dir) @local
     float lambda = clamp(d.shadow.split_lambda, 0, 1);
     Mat4 cw = camera.matrix_world;
     Vector3 at = cw.get_position();
-    Vector3 fwd = ((Vector3){ -cw[2][0], -cw[2][1], -cw[2][2] }).normalize();
+    Vector3 fwd = ((Vector3) { -cw[2][0], -cw[2][1], -cw[2][2] }).normalize();
     state.sun_forward = fwd;
-    int tile = math::max(d.shadow.map_size, 4);
+    int tile   = math::max(d.shadow.map_size, 4);
     float from = near;
-    for (int i = 0; i < n; i++)
-    {
-        float f = (float)(i + 1) / (float)n;
-        float to = lambda * near * math::pow(far / near, f) + (1 - lambda) * (near + (far - near) * f);
+    for (int i = 0; i < n; i++) {
+        float f      = (float)(i + 1) / (float)n;
+        float to     = lambda * near * math::pow(far / near, f) + (1 - lambda) * (near + (far - near) * f);
         // the slice's sphere: centred on the view axis, as far from its near corners as from its far ones
-        float z = math::min((from + to) * (1 + k) * 0.5f, to);
+        float z      = math::min((from + to) * (1 + k) * 0.5f, to);
         float radius = math::sqrt((to - z) * (to - z) + to * to * k);
         // in steps, so that rounding does not change its size from one frame to the next
         radius = math::ceil(radius * 16) / 16;
@@ -1338,51 +1389,45 @@ fn int fit_sun_cascades(DirectionalLight* d, Camera* camera, Vector3 dir) @local
 
 // Gathers what to draw into the directional light's shadow map: its cascades, each into a tile
 // of a 2x2 atlas with the casters inside its own box (state.sun_casters), or one box.
-fn void prepare_sun_shadow(Scene* scene, Camera* camera, DirectionalLight* sun) @local
-{
+fn void prepare_sun_shadow(Scene* scene, Camera* camera, DirectionalLight* sun) @local {
     foreach (&l : state.sun_casters) l.clear();
-    if (!sun)
-    {
+    if (!sun) {
         ensure_sun_map(state.sun_size ?: 4);
         return;
     }
-    Vector3 target = sun.target ? sun.target.get_world_position() : (Vector3){ 0, 0, 0 };
-    Vector3 dir = (sun.matrix_world.get_position() - target).normalize();
-    int tile = math::max(sun.shadow.map_size, 4);
-    int n = fit_sun_cascades(sun, camera, dir);
+    Vector3 target = sun.target ? sun.target.get_world_position() : (Vector3) { 0, 0, 0 };
+    Vector3 dir    = (sun.matrix_world.get_position() - target).normalize();
+    int tile       = math::max(sun.shadow.map_size, 4);
+    int n          = fit_sun_cascades(sun, camera, dir);
     state.sun_cascades = n;
-    if (!n)
-    {
+    if (!n) {
         state.sun_view_proj[0] = directional_shadow_view_proj(sun, camera);
         state.sun_rect[0] = { 0, 0, 1, 1 };
         state.sun_info[0] = { 1e9f, 2 * math::max(sun.shadow_extent, 0.1f) / (float)tile, 0, 0 };
     }
     ensure_sun_map(n ? tile * 2 : tile);
-    for (int i = 0; i < math::max(n, 1); i++)
-    {
+    for (int i = 0; i < math::max(n, 1); i++) {
         Frustum light_frustum = frustum_from(state.sun_view_proj[i]);
         gather_casters(scene, camera, &light_frustum, sun.shadow.skip_instanced, &state.sun_casters[i]);
     }
 }
 
 // Draws what prepare_sun_shadow gathered.
-fn void draw_sun_shadow(DirectionalLight* sun) @local
-{
+fn void draw_sun_shadow(DirectionalLight* sun) @local {
     if (!sun) return;
-    int n = state.sun_cascades;
-    int tile = math::max(sun.shadow.map_size, 4);
+    int n         = state.sun_cascades;
+    int tile      = math::max(sun.shadow.map_size, 4);
     bool top_left = depth_zero_to_one();
-    sg::begin_pass(&&{
-        // depth is not stored by default: ask for it, the main pass samples this map
-        .action = { .depth = { .load_action = CLEAR, .store_action = STORE, .clear_value = 1 } },
-        .attachments = { .depth_stencil = state.sun_attachment },
-        .label = "drie-sun-cascades",
-    });
+    sg::begin_pass(
+        &&{ // depth is not stored by default: ask for it, the main pass samples this map
+            .action = { .depth = { .load_action = CLEAR, .store_action = STORE, .clear_value = 1 } },
+            .attachments = { .depth_stencil = state.sun_attachment },
+            .label = "drie-sun-cascades",
+        }
+    );
     sg::apply_pipeline(get_shadow_pipeline());
-    for (int i = 0; i < math::max(n, 1); i++)
-    {
-        if (n)
-        {
+    for (int i = 0; i < math::max(n, 1); i++) {
+        if (n) {
             sg::apply_viewport((i % 2) * tile, (i / 2) * tile, tile, tile, top_left);
             sg::apply_scissor_rect((i % 2) * tile, (i / 2) * tile, tile, tile, top_left);
         }
@@ -1393,16 +1438,20 @@ fn void draw_sun_shadow(DirectionalLight* sun) @local
 
 // Gathers the shadow casters inside `frustum` into `out`, their instances culled on the GPU
 // for it.
-fn void gather_casters(Scene* scene, Camera* camera, Frustum* frustum, bool skip_instanced, List{DrawItem}* out) @local
-{
+fn void gather_casters(
+    Scene* scene,
+    Camera* camera,
+    Frustum* frustum,
+    bool skip_instanced,
+    List{DrawItem}* out
+) @local {
     state.casters.clear();
     state.skip_instanced = skip_instanced;
     collect(scene, camera.matrix_world_inverse, frustum, camera.matrix_world.get_position(), true);
     state.skip_instanced = false;
     out.clear();
     int view = cull_view(frustum);
-    foreach (item : state.casters)
-    {
+    foreach (item : state.casters) {
         item.job = cull_job(item.mesh, view) + 1;
         out.push(item);
     }
@@ -1410,9 +1459,8 @@ fn void gather_casters(Scene* scene, Camera* camera, Frustum* frustum, bool skip
 }
 
 // Clip space -> shadow map uv (v points down outside of GL) and 0..1 depth.
-fn Mat4 shadow_bias() @local
-{
-    bool zo = depth_zero_to_one();
+fn Mat4 shadow_bias() @local {
+    bool zo   = depth_zero_to_one();
     Mat4 bias = mat4_identity();
     bias[0][0] = 0.5f;
     bias[3][0] = 0.5f;
@@ -1423,19 +1471,17 @@ fn Mat4 shadow_bias() @local
     return bias;
 }
 
-fn Vector3 spot_direction(SpotLight* sl) @private
-{
-    Vector3 target = sl.target ? sl.target.get_world_position() : (Vector3){ 0, 0, 0 };
+fn Vector3 spot_direction(SpotLight* sl) @private {
+    Vector3 target = sl.target ? sl.target.get_world_position() : (Vector3) { 0, 0, 0 };
     return (target - sl.matrix_world.get_position()).normalize();
 }
 
 // View-projection of the shadow casting spot light.
-fn Mat4 shadow_view_proj(SpotLight* sl) @local
-{
+fn Mat4 shadow_view_proj(SpotLight* sl) @local {
     Vector3 pos = sl.matrix_world.get_position();
     Vector3 dir = spot_direction(sl);
-    Vector3 up = math::abs(dir.y) > 0.99f ? (Vector3){ 1, 0, 0 } : (Vector3){ 0, 1, 0 };
-    Mat4 world = mat4_look_at(pos, pos + dir, up, true);
+    Vector3 up  = math::abs(dir.y) > 0.99f ? (Vector3) { 1, 0, 0 } : (Vector3) { 0, 1, 0 };
+    Mat4 world  = mat4_look_at(pos, pos + dir, up, true);
     world[3] = { pos.x, pos.y, pos.z, 1 };
     float fov = math::min(sl.angle * 2 * RAD2DEG * clamp(sl.shadow.focus, 0.05f, 1) + 4, 150.0f);
     float far = sl.shadow.far > 0 ? sl.shadow.far : (sl.distance > 0 ? sl.distance : 50.0f);
@@ -1443,27 +1489,25 @@ fn Mat4 shadow_view_proj(SpotLight* sl) @local
     return proj.mul(world.invert());
 }
 
-fn FsParams build_light_params(Scene* scene, Camera* camera, SpotLight* caster) @local
-{
+fn FsParams build_light_params(Scene* scene, Camera* camera, SpotLight* caster) @local {
     FsParams p;
-    Renderer* r = state.renderer;
+    Renderer* r  = state.renderer;
     LightData* g = &lights_gpu;
     g.clear();
     float exposure = r.tone_mapping == NO_TONE_MAPPING ? 1 : math::max(r.tone_mapping_exposure, 1e-4f);
     p.camera_pos = { ...camera.matrix_world.get_position(), exposure };
-    bool linear = r.render_target && r.render_target.is_linear();
+    bool linear  = r.render_target && r.render_target.is_linear();
     // drawn straight into the window: its colors and range
-    float window = linear || r.render_target ? 0 : (r.hdr_on() ? 2 : (r.output_color_space == DISPLAY_P3_COLOR_SPACE ? 1 : 0));
+    float window = linear || r.render_target ? 0
+        : (r.hdr_on() ? 2 : (r.output_color_space == DISPLAY_P3_COLOR_SPACE ? 1 : 0));
     p.output_params = { linear ? 1 : 0, r.ssr_linear ? 1 : 0, (float)r.tone_mapping.ordinal, window };
     p.cull_min = { ...r.cull_box_min, r.cull_box ? 1 : 0 };
     p.cull_max = { ...r.cull_box_max, 0 };
     Mat4 cw = camera.matrix_world;
-    p.dir_cascade_fwd = { ...((Vector3){ -cw[2][0], -cw[2][1], -cw[2][2] }).normalize(), 1 };
-    foreach (l : state.lights)
-    {
+    p.dir_cascade_fwd = { ...((Vector3) { -cw[2][0], -cw[2][1], -cw[2][2] }).normalize(), 1 };
+    foreach (l : state.lights) {
         Vector3 c = color_to_linear(l.color) * l.intensity;
-        switch (l.light_type)
-        {
+        switch (l.light_type) {
             case AMBIENT:
                 p.ambient += { ...c, 0 };
             case HEMISPHERE:
@@ -1473,34 +1517,43 @@ fn FsParams build_light_params(Scene* scene, Camera* camera, SpotLight* caster) 
             case DIRECTIONAL:
                 if (!g.room(g.dirs.len(), r.max_lights)) break;
                 DirectionalLight* d = (DirectionalLight*)l;
-                Vector3 target = d.target ? d.target.get_world_position() : (Vector3){ 0, 0, 0 };
+                Vector3 target = d.target ? d.target.get_world_position() : (Vector3) { 0, 0, 0 };
                 Vector3 dir = l.matrix_world.get_position() - target;
-                if (d == state.sun_caster)
-                {
+                if (d == state.sun_caster) {
                     int n = state.sun_cascades;
-                    for (int i = 0; i < math::max(n, 1); i++)
-                    {
+                    for (int i = 0; i < math::max(n, 1); i++) {
                         p.dir_shadow_mat[i] = shadow_bias().mul(state.sun_view_proj[i]);
                         p.dir_cascade_rect[i] = state.sun_rect[i];
                         p.dir_cascade_info[i] = state.sun_info[i];
                     }
-                    p.dir_shadow_params = { (float)(g.dirs.len() + 1), d.shadow.normal_bias, 1.0f / (float)state.sun_size, d.shadow.radius };
-                    p.dir_cascade_params = { (float)math::max(n, 1), clamp(d.shadow.cascade_blend, 0, 1),
-                                             r.debug_cascades ? 1 : 0, n ? 0 : 1 };
+                    p.dir_shadow_params = {
+                        (float)(g.dirs.len() + 1),
+                        d.shadow.normal_bias,
+                        1.0f / (float)state.sun_size,
+                        d.shadow.radius
+                    };
+                    p.dir_cascade_params = {
+                        (float)math::max(n, 1),
+                        clamp(d.shadow.cascade_blend, 0, 1),
+                        r.debug_cascades ? 1 : 0,
+                        n ? 0 : 1
+                    };
                     p.dir_cascade_fwd.w = clamp(d.shadow.intensity, 0, 1);
                 }
                 g.dirs.push({ .dir = { ...dir, 0 }, .color = { ...c, 0 } });
             case POINT:
                 if (!g.room(g.points.len(), r.max_lights)) break;
                 PointLight* pl = (PointLight*)l;
-                g.points.push({
-                    .pos = { ...l.matrix_world.get_position(), pl.distance },
-                    .color = { ...c, pl.decay },
-                    .params = { pl.radius, 0, 0, 0 },
-                });
+                g.points.push(
+                    {
+                        .pos = { ...l.matrix_world.get_position(), pl.distance },
+                        .color = { ...c, pl.decay },
+                        .params = { pl.radius, 0, 0, 0 },
+                    }
+                );
                 // a light that adds nothing needs no place in the clusters
                 LightBounds b = point_light_bounds(pl);
-                if (l.intensity <= 0) b = { {}, 0 };
+                if (l.intensity <= 0) b = { { }, 0 };
                 g.point_bounds.push(b);
             case SPOT:
                 SpotLight* sl = (SpotLight*)l;
@@ -1511,15 +1564,18 @@ fn FsParams build_light_params(Scene* scene, Camera* camera, SpotLight* caster) 
                     .pos = { ...l.matrix_world.get_position(), sl.distance },
                     .dir = { ...spot_direction(sl), cos_outer },
                     .color = { ...c, sl.decay },
-                    .params = { math::max(cos_inner, cos_outer + 1e-4f), sl.radius,
-                                sl.specular_radius > 0 ? sl.specular_radius : sl.radius, sl.fog_glow },
+                    .params = {
+                        math::max(cos_inner, cos_outer + 1e-4f),
+                        sl.radius,
+                        sl.specular_radius > 0 ? sl.specular_radius : sl.radius,
+                        sl.fog_glow
+                    },
                     .shadow = { -1, 1, 0, 0 },
                 };
                 // clip space -> shadow map uv (v points down outside of GL) and 0..1 depth
                 int tile = atlas_tile_of(sl);
-                if (sl == caster || (tile >= 0 && sl.cast_shadow))
-                {
-                    bool zo = depth_zero_to_one();
+                if (sl == caster || (tile >= 0 && sl.cast_shadow)) {
+                    bool zo   = depth_zero_to_one();
                     Mat4 bias = mat4_identity();
                     bias[0][0] = 0.5f;
                     bias[3][0] = 0.5f;
@@ -1531,50 +1587,50 @@ fn FsParams build_light_params(Scene* scene, Camera* camera, SpotLight* caster) 
                     sh.mat = bias.mul(shadow_view_proj(sl));
                     float size = sl == caster ? (float)state.shadow_size : (float)state.atlas_tile;
                     sh.params = { sl == caster ? 1 : 2, sl.shadow.normal_bias, 1.0f / size, sl.shadow.radius };
-                    float fov = math::min(sl.angle * 2 * RAD2DEG * clamp(sl.shadow.focus, 0.05f, 1) + 4, 150.0f);
+                    float fov   = math::min(sl.angle * 2 * RAD2DEG * clamp(sl.shadow.focus, 0.05f, 1) + 4, 150.0f);
                     float width = 2 * math::tan(fov * DEG2RAD * 0.5f);
-                    float far = sl.shadow.far > 0 ? sl.shadow.far : (sl.distance > 0 ? sl.distance : 50.0f);
+                    float far   = sl.shadow.far > 0 ? sl.shadow.far : (sl.distance > 0 ? sl.distance : 50.0f);
                     sh.soft = { sl.shadow.softness, math::max(sl.shadow.near, 0.01f), far, zo ? width : -width };
-                    if (sl != caster)
-                    {
+                    if (sl != caster) {
                         float cols = (float)state.atlas_columns;
                         float rows = (float)state.atlas_rows;
-                        sh.rect = { (float)(tile % state.atlas_columns) / cols, (float)(tile / state.atlas_columns) / rows,
-                                    1.0f / cols, 1.0f / rows };
+                        sh.rect = {
+                            (float)(tile % state.atlas_columns) / cols,
+                            (float)(tile / state.atlas_columns) / rows,
+                            1.0f / cols,
+                            1.0f / rows
+                        };
                     }
                     gs.shadow = { (float)g.shadows.len(), clamp(sl.shadow.intensity, 0, 1), 0, 0 };
                     g.shadows.push(sh);
                 }
                 g.spots.push(gs);
                 LightBounds b = spot_light_bounds(sl);
-                if (l.intensity <= 0) b = { {}, 0 };
+                if (l.intensity <= 0) b = { { }, 0 };
                 g.spot_bounds.push(b);
         }
     }
-    int ndir = (int)g.dirs.len();
-    int npoint = (int)g.points.len();
-    int nspot = (int)g.spots.len();
+    int ndir         = (int)g.dirs.len();
+    int npoint       = (int)g.points.len();
+    int nspot        = (int)g.spots.len();
     ClusterGrid grid = cluster_grid(camera);
     p.cluster_view_proj = camera.projection_matrix.mul(camera.matrix_world_inverse);
     p.cluster_grid = { CLUSTER_X, CLUSTER_Y, CLUSTER_Z, 0 };
     p.cluster_depth = { grid.near, grid.log_scale, grid.far, 0 };
     g.upload(&grid, r.assign_clusters, r.check_compute);
     p.counts = { ndir, npoint, nspot, 0 };
-    if (scene.irradiance)
-    {
+    if (scene.irradiance) {
         IrradianceVolume* v = scene.irradiance;
-        Vector3 size = v.max - v.min;
+        Vector3 size        = v.max - v.min;
         p.gi_min = { ...v.min, v.replaces_ambient ? 2 : 1 };
         p.gi_inv_size = { 1 / size.x, 1 / size.y, 1 / size.z, v.intensity };
         p.gi_dims = { v.nx, v.ny, v.nz, v.normal_offset };
     }
-    if (scene.reflection_probes && scene.reflection_probes.count)
-    {
+    if (scene.reflection_probes && scene.reflection_probes.count) {
         ReflectionProbes* rp = scene.reflection_probes;
         rp.upload();
         p.probe_info = { (float)rp.count, 0, 0, 0 };
-        for (int i = 0; i < rp.count; i++)
-        {
+        for (int i = 0; i < rp.count; i++) {
             ReflectionProbe* pr = &rp.probes[i];
             p.probe_pos[i] = { ...pr.position, pr.distance_range };
             p.probe_min[i] = { ...pr.box_min, pr.blend };
@@ -1582,23 +1638,18 @@ fn FsParams build_light_params(Scene* scene, Camera* camera, SpotLight* caster) 
         }
         state.probes_view = rp.view;
         state.probes_sampler = rp.sampler;
+    } else {
+        state.probes_view = { };
     }
-    else
-    {
-        state.probes_view = {};
-    }
-    if (scene.radiance)
-    {
+    if (scene.radiance) {
         RadianceCascades* rc = scene.radiance;
         p.rc_min = { ...rc.min, rc.spacing };
         p.rc_size = { rc.nx, rc.ny, rc.nz, rc.intensity };
     }
-    if (scene.fog)
-    {
+    if (scene.fog) {
         Fog* f = scene.fog;
         float mode;
-        switch (f.type)
-        {
+        switch (f.type) {
             case LINEAR: mode = 1;
             case EXP2: mode = 2;
             case EXP: mode = 3;
@@ -1610,46 +1661,44 @@ fn FsParams build_light_params(Scene* scene, Camera* camera, SpotLight* caster) 
         p.fog_height = { f.height_base, f.height_falloff, 0, f.shade_density };
         Vector3 sun_dir = f.sun_direction;
         Color sun_color = f.sun_color;
-        if (sun_dir == (Vector3){ 0, 0, 0 } || !sun_color)
-        {
+        if (sun_dir == (Vector3) { 0, 0, 0 } || !sun_color) {
             // the scene's sun: the directional light that casts a shadow, else the first one
             Light* sun = state.sun_caster;
-            if (!sun) foreach (l : state.lights) if (l.light_type == DIRECTIONAL && l.visible) { sun = l; break; }
-            if (sun)
-            {
+            if (!sun) foreach (l : state.lights) if (l.light_type == DIRECTIONAL && l.visible) {
+                sun = l;
+                break;
+            }
+            if (sun) {
                 DirectionalLight* d = (DirectionalLight*)sun;
-                Vector3 target = d.target ? d.target.get_world_position() : (Vector3){ 0, 0, 0 };
-                if (sun_dir == (Vector3){ 0, 0, 0 }) sun_dir = (sun.matrix_world.get_position() - target).normalize();
+                Vector3 target      = d.target ? d.target.get_world_position() : (Vector3) { 0, 0, 0 };
+                if (sun_dir == (Vector3) { 0, 0, 0 }) sun_dir = (sun.matrix_world.get_position() - target).normalize();
                 if (!sun_color) sun_color = sun.color;
             }
         }
-        p.fog_sun_dir = { ...sun_dir, sun_dir == (Vector3){ 0, 0, 0 } ? 0 : f.sun_sharpness };
+        p.fog_sun_dir = { ...sun_dir, sun_dir == (Vector3) { 0, 0, 0 } ? 0 : f.sun_sharpness };
         p.fog_sun_color = { ...color_to_linear(sun_color), f.sun_shafts };
     }
     return p;
 }
 
-fn Texture* ready(Texture* t) @local
-{
+fn Texture* ready(Texture* t) @local {
     if (!t) t = state.white;
     t.upload();
     return t;
 }
 
-fn Vec4 uv_transform(Material* mat) @local
-{
+fn Vec4 uv_transform(Material* mat) @local {
     Texture* t = mat.map ?: (mat.normal_map ?: mat.arm_map);
-    return t ? (Vec4){ t.repeat.x, t.repeat.y, t.offset.x, t.offset.y } : (Vec4){ 1, 1, 0, 0 };
+    return t ? (Vec4) { t.repeat.x, t.repeat.y, t.offset.x, t.offset.y } : (Vec4) { 1, 1, 0, 0 };
 }
 
 fn Vec4 sway_params(Material* mat) @local => { state.renderer.time, mat.sway, mat.sway_speed, 0 };
 
 // Draws `m`'s geometry; with item.job, as many instances as its cull asks for.
-fn int draw_geometry(DrawItem* item, bool wireframe) @local
-{
-    Mesh* m = item.mesh;
+fn int draw_geometry(DrawItem* item, bool wireframe) @local {
+    Mesh* m           = item.mesh;
     BufferGeometry* g = m.geometry;
-    int instances = m.instance_data.len() > 0 ? m.instance_count : 1;
+    int instances     = m.instance_data.len() > 0 ? m.instance_count : 1;
     if (item.job) instances = cull_draw_count(item.job - 1);
     int elements = wireframe ? (int)g.wire_count : (int)g.index_count;
     sg::draw(0, elements, instances);
@@ -1659,8 +1708,7 @@ fn int draw_geometry(DrawItem* item, bool wireframe) @local
 fn float alpha_test_of(Material* mat) @local => state.renderer.prof_no_alpha_test ? 0 : mat.alpha_test;
 
 // Whether the main pass's shader would cut holes into `item`.
-fn bool has_holes(DrawItem* item) @local
-{
+fn bool has_holes(DrawItem* item) @local {
     Material* mat = item.mesh.material;
     if (mat.screen_target) return false;
     return alpha_test_of(mat) > 0 || item.fade_dir != 0 || state.renderer.cull_box;
@@ -1669,39 +1717,33 @@ fn bool has_holes(DrawItem* item) @local
 // Whether `item` goes through the depth prepass (see Renderer.depth_prepass): it has holes,
 // and enough pixels per triangle that shading them once saves more than drawing its
 // triangles twice costs (a far tree is mostly triangles, a meadow mostly pixels).
-fn bool prepassed(DrawItem* item) @local
-{
+fn bool prepassed(DrawItem* item) @local {
     if (item.mesh.material.wireframe || !has_holes(item)) return false;
     if (state.prepass_focal <= 0) return true;
-    Mesh* m = item.mesh;
+    Mesh* m       = item.mesh;
     int instances = m.instance_data.len() > 0 ? m.instance_count : 1;
     if (item.job) instances = cull_draw_count(item.job - 1);
     float triangles = (float)m.geometry.index_count / 3 * math::max(instances, 1);
     // the pixels of its bounding sphere's disk, about
-    float pixels = PI * item.cover * state.prepass_focal * state.prepass_focal;
+    float pixels    = PI * item.cover * state.prepass_focal * state.prepass_focal;
     return pixels > state.renderer.depth_prepass_pixels * triangles;
 }
 
 // `normals`: false when nothing reads them (the depth prepass), to save the inverse.
-fn VsParams vs_params_of(DrawItem* item, Mat4 view_proj, bool normals = true) @local
-{
-    Mesh* m = item.mesh;
+fn VsParams vs_params_of(DrawItem* item, Mat4 view_proj, bool normals = true) @local {
+    Mesh* m       = item.mesh;
     Material* mat = m.material;
     VsParams vs = {
         .view_proj = view_proj,
         .model = m.matrix_world,
-        .normal_mat = normals ? m.matrix_world.invert().transpose() : m.matrix_world,
-        .uv_transform = uv_transform(mat),
-        .sway = sway_params(mat),
-        .vs_material_custom = mat.custom,
-        .vs_frame_custom = state.renderer.custom,
-    };
-    if (state.motion)
-    {
+        .normal_mat = normals ? m.matrix_world.invert()
+        .transpose() : m.matrix_world, .uv_transform = uv_transform(
+            mat
+        ), .sway = sway_params(mat), .vs_material_custom = mat.custom, .vs_frame_custom = state.renderer.custom, };
+    if (state.motion) {
         // the first time this frame: what was this frame's matrix is the last frame's now (or,
         // not drawn then, it stood where it is)
-        if (m.motion_frame != state.motion_frame)
-        {
+        if (m.motion_frame != state.motion_frame) {
             m.motion_prev = m.motion_frame == state.motion_frame - 1 ? m.motion_cur : m.matrix_world;
             m.motion_cur = m.matrix_world;
             m.motion_frame = state.motion_frame;
@@ -1715,18 +1757,17 @@ fn VsParams vs_params_of(DrawItem* item, Mat4 view_proj, bool normals = true) @l
 }
 
 // The depth prepass's draw of an opaque item with holes (see Renderer.depth_prepass).
-fn void draw_depth_item(DrawItem* item, Mat4 view_proj) @local
-{
-    Mesh* m = item.mesh;
-    Material* mat = m.material;
+fn void draw_depth_item(DrawItem* item, Mat4 view_proj) @local {
+    Mesh* m           = item.mesh;
+    Material* mat     = m.material;
     BufferGeometry* g = m.geometry;
-    Renderer* r = state.renderer;
-    float alpha_test = alpha_test_of(mat);
+    Renderer* r       = state.renderer;
+    float alpha_test  = alpha_test_of(mat);
     sg::apply_pipeline(get_pipeline(mat.side, false, false, r.render_target, alpha_test > 0, mat.blending, DEPTH));
     SgBindings bind = { .vertex_buffers[0] = g.vbuf, .index_buffer = g.ibuf };
     bind_instances(&bind, item);
     Vec4 inst_cull = cull_bind(&bind, item.job - 1);
-    Texture* map = ready(mat.map);
+    Texture* map   = ready(mat.map);
     bind.views[shaders::VIEW_TEX_MAP] = map.view;
     bind.samplers[shaders::SMP_TEX_SMP] = map.sampler;
     sg::apply_bindings(&bind);
@@ -1745,10 +1786,9 @@ fn void draw_depth_item(DrawItem* item, Mat4 view_proj) @local
     draw_geometry(item, false);
 }
 
-fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = CUT) @local
-{
-    Mesh* m = item.mesh;
-    Material* mat = m.material;
+fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = CUT) @local {
+    Mesh* m           = item.mesh;
+    Material* mat     = m.material;
     BufferGeometry* g = m.geometry;
     if (mat.wireframe) g.upload_wire();
     Renderer* r = state.renderer;
@@ -1756,7 +1796,9 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     Texture* map = ready(mat.map);
     if (mat.screen_target) map = state.white;
     float alpha_test = alpha_test_of(mat);
-    sg::apply_pipeline(get_pipeline(mat.side, mat.transparent, mat.wireframe, r.render_target, alpha_test > 0, mat.blending, kind));
+    sg::apply_pipeline(
+        get_pipeline(mat.side, mat.transparent, mat.wireframe, r.render_target, alpha_test > 0, mat.blending, kind)
+    );
     // the prepass has cut it out already (the shader takes a negative threshold as "covered")
     if (kind == PRETESTED && alpha_test > 0) alpha_test = -1;
     SgBindings bind = {
@@ -1780,46 +1822,47 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     bind.views[shaders::VIEW_SSR_BACK] = ssr && r.ssr_back.id ? r.ssr_back : ready(state.white).view;
     Reflector* mirror = mat.reflector && mat.reflector.rendered && mat.reflector.target ? mat.reflector : null;
     bind.views[shaders::VIEW_REFLECTOR_MAP] = mirror ? mirror.target.texture : ready(state.white).view;
-    if (!state.clamp_sampler.id)
-    {
-        state.clamp_sampler = sg::make_sampler(&&{
-            .min_filter = LINEAR, .mag_filter = LINEAR, .wrap_u = CLAMP_TO_EDGE, .wrap_v = CLAMP_TO_EDGE,
-        });
+    if (!state.clamp_sampler.id) {
+        state.clamp_sampler = sg::make_sampler(
+            &&{
+                .min_filter = LINEAR,
+                .mag_filter = LINEAR,
+                .wrap_u = CLAMP_TO_EDGE,
+                .wrap_v = CLAMP_TO_EDGE,
+            }
+        );
     }
     bind.samplers[shaders::SMP_SSR_SMP] = state.clamp_sampler;
     bind.views[shaders::VIEW_TEX_GI] = state.irradiance.view;
     bind.views[shaders::VIEW_RC_PROBES] = state.radiance_view;
     bind.samplers[shaders::SMP_GI_SMP] = state.irradiance.sampler;
     // the scene's environment lights the standard materials without a map of their own
-    Texture* env_map = mat.env_map;
+    Texture* env_map    = mat.env_map;
     float env_intensity = mat.env_intensity > 0 ? mat.env_intensity : 1;
-    bool env_diffuse = false;
-    Scene* scene = state.scene;
-    if (!env_map && scene && scene.environment && mat.type == STANDARD)
-    {
+    bool env_diffuse    = false;
+    Scene* scene        = state.scene;
+    if (!env_map && scene && scene.environment && mat.type == STANDARD) {
         env_map = scene.environment;
         env_intensity *= scene.environment_intensity;
     }
     Texture* env = ready(env_map);
     // its light from all around a normal, worked out at the upload
-    if (env_map && scene && env_map == scene.environment && env_map.has_env_sh)
-    {
+    if (env_map && scene && env_map == scene.environment && env_map.has_env_sh) {
         env_diffuse = true;
         foreach (i, c : env_map.env_sh) fs.env_sh[i] = { ...c, 0 };
     }
     bind.views[shaders::VIEW_TEX_ENV] = env.view;
     bind.samplers[shaders::SMP_ENV_SMP] = env.sampler;
     bind.samplers[shaders::SMP_TEX_SMP] = (mat.map ?: (mat.normal_map ?: (mat.arm_map ?: state.white))).sampler;
-    if (mat.screen_target)
-    {
+    if (mat.screen_target) {
         bind.views[shaders::VIEW_TEX_MAP] = mat.screen_target.texture;
         bind.samplers[shaders::SMP_TEX_SMP] = state.white.sampler;
     }
-    if (!state.no_probes.id)
-    {
+    if (!state.no_probes.id) {
         char[4] white = { 255, 255, 255, 255 };
-        state.no_probes_image = sg::make_image(&&{ .type = ARRAY, .width = 1, .height = 1, .num_slices = 1,
-                                                    .data = { .ptr = &white, .size = 4 } });
+        state.no_probes_image = sg::make_image(
+            &&{ .type = ARRAY, .width = 1, .height = 1, .num_slices = 1, .data = { .ptr = &white, .size = 4 } }
+        );
         state.no_probes = sg::make_view(&&{ .texture = { .image = state.no_probes_image } });
     }
     // the scene's reflection probes, for a material that mirrors them
@@ -1834,23 +1877,27 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     vs.inst_cull = inst_cull;
     sg::apply_uniforms(shaders::UB_VS_PARAMS, &&{ .ptr = &vs, .size = VsParams::size });
 
-    int flags = (mat.vertex_colors ? 1 : 0) | (mat.foliage ? 2 : 0) | (m.receive_shadow ? 4 : 0) | (mat.glass ? 8 : 0)
-              | (mat.vertex_light > 0 ? 16 : 0) | (mat.screen_target ? 32 : 0) | (mat.map_emissive ? 64 : 0);
+    int flags = (mat.vertex_colors ? 1
+        : 0) | (mat.foliage ? 2
+            : 0) | (m.receive_shadow ? 4
+                : 0) | (mat.glass ? 8
+                    : 0) | (mat.vertex_light > 0 ? 16 : 0) | (mat.screen_target ? 32 : 0) | (mat.map_emissive ? 64 : 0);
     fs.color = { ...color_to_linear(mat.color) * (mat.color_scale > 0 ? mat.color_scale : 1), mat.opacity };
     fs.emissive = { ...color_to_linear(mat.emissive) * mat.emissive_intensity, mat.vertex_light };
-    if (r.render_target)
-    {
+    if (r.render_target) {
         fs.screen_params = { 1.0f / r.render_target.width, 1.0f / r.render_target.height, item.fade, item.fade_dir };
-    }
-    else
-    {
+    } else {
         fs.screen_params = { 1.0f / sapp::widthf(), 1.0f / sapp::heightf(), item.fade, item.fade_dir };
     }
     fs.specular = { ...color_to_linear(mat.specular), (float)flags };
     fs.mat_params = { (float)mat.type, mat.roughness, mat.metalness, mat.shininess };
     fs.tex_params = { mat.map ? 1 : 0, mat.normal_map ? mat.normal_scale : 0, mat.arm_map ? 1 : 0, alpha_test };
-    fs.parallax_params = { mat.parallax_map && mat.type == STANDARD ? mat.parallax_scale : 0,
-                           mat.parallax_distance > 0 ? mat.parallax_distance : 30, mat.parallax_shadow, 0 };
+    fs.parallax_params = {
+        mat.parallax_map && mat.type == STANDARD ? mat.parallax_scale : 0,
+        mat.parallax_distance > 0 ? mat.parallax_distance : 30,
+        mat.parallax_shadow,
+        0
+    };
     fs.env_params = { env_map ? 1 : 0, env_intensity, env_diffuse ? 1 : 0, env_map ? env_map.env_distance_range : 0 };
     // each point of it: the probe of the box it is in
     if (probes) fs.env_params = { 2, mat.env_intensity > 0 ? mat.env_intensity : 1, 0, 0 };
@@ -1863,14 +1910,11 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     fs.ssr_view_proj = r.ssr_view_proj;
     fs.ssr_params = { ssr ? mat.ssr : 0, r.ssr_reach, (float)(r.ssr_frame % 64), depth_zero_to_one() ? 1 : 0 };
     fs.ssr_thickness = { ssr && r.ssr_back.id ? 1 : 0, mat.ssr_reach > 0 ? mat.ssr_reach : r.ssr_reach, 0, 0 };
-    if (mirror)
-    {
+    if (mirror) {
         fs.reflector_view_proj = mirror.view_proj;
         fs.reflector_params = { mirror.strength, mirror.distortion, mirror.blur, 0 };
-    }
-    else
-    {
-        fs.reflector_params = {};
+    } else {
+        fs.reflector_params = { };
     }
     float fog_mode = fs.fog_params.w;
     if (!mat.fog) fs.fog_params.w = 0;
@@ -1881,11 +1925,10 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     r.info.triangles += draw_geometry(item, mat.wireframe);
 }
 
-fn void draw_shadow_item(DrawItem* item, Mat4 light_vp) @local
-{
-    Mesh* m = item.mesh;
+fn void draw_shadow_item(DrawItem* item, Mat4 light_vp) @local {
+    Mesh* m       = item.mesh;
     Material* mat = m.material;
-    Texture* map = ready(mat.map);
+    Texture* map  = ready(mat.map);
     SgBindings bind = {
         .vertex_buffers[0] = m.geometry.vbuf,
         .index_buffer = m.geometry.ibuf,
@@ -1905,18 +1948,18 @@ fn void draw_shadow_item(DrawItem* item, Mat4 light_vp) @local
         .s_frame_custom = state.renderer.custom,
     };
     sg::apply_uniforms(shaders::UB_SHADOW_VS_PARAMS, &&{ .ptr = &vs, .size = ShadowVsParams::size });
-    ShadowFsParams fs = { .s_params = { mat.map && !state.renderer.prof_no_alpha_test ? mat.alpha_test : 0, mat.opacity, 0, 0 } };
+    ShadowFsParams fs = {
+        .s_params = { mat.map && !state.renderer.prof_no_alpha_test ? mat.alpha_test : 0, mat.opacity, 0, 0 }
+    };
     sg::apply_uniforms(shaders::UB_SHADOW_FS_PARAMS, &&{ .ptr = &fs, .size = ShadowFsParams::size });
     state.renderer.info.shadow_calls++;
     state.renderer.info.shadow_triangles += draw_geometry(item, false);
 }
 
 // The instance attributes of a draw (one identity instance for a plain mesh).
-fn void bind_instances(SgBindings* bind, DrawItem* item) @local
-{
+fn void bind_instances(SgBindings* bind, DrawItem* item) @local {
     Mesh* m = item.mesh;
-    if (!m.instance_data.len())
-    {
+    if (!m.instance_data.len()) {
         bind.vertex_buffers[1] = state.identity_instance;
         return;
     }
@@ -1926,88 +1969,117 @@ fn void bind_instances(SgBindings* bind, DrawItem* item) @local
 }
 
 fn int cmp_opaque(DrawItem a, DrawItem b) @local => a.depth < b.depth ? 1 : (a.depth > b.depth ? -1 : 0);
-fn int cmp_transparent(DrawItem a, DrawItem b) @local
-{
+fn int cmp_transparent(DrawItem a, DrawItem b) @local {
     if (a.mesh.render_order != b.mesh.render_order) return a.mesh.render_order < b.mesh.render_order ? -1 : 1;
     return a.depth < b.depth ? -1 : (a.depth > b.depth ? 1 : 0);
 }
 
 // The background color as it comes out of the lit shader, so that it matches fog of the same color.
-fn Vector3 tone_mapped(Renderer* r, Color color) @local
-{
+fn Vector3 tone_mapped(Renderer* r, Color color) @local {
     Vector3 c = tone_map(color_to_linear(color), r.tone_mapping, r.tone_mapping_exposure);
     Vector3 result;
-    for (int i = 0; i < 3; i++)
-    {
+    for (int i = 0; i < 3; i++) {
         float x = clamp(c[i], 0, 1);
         result[i] = x <= 0.0031308f ? x * 12.92f : 1.055f * math::pow(x, 1.0f / 2.4f) - 0.055f;
     }
     return result;
 }
 
-fn Vector3 mat3_mul(float[9] m, Vector3 v) @local
-{
-    return { m[0] * v.x + m[1] * v.y + m[2] * v.z, m[3] * v.x + m[4] * v.y + m[5] * v.z, m[6] * v.x + m[7] * v.y + m[8] * v.z };
+fn Vector3 mat3_mul(float[9] m, Vector3 v) @local {
+    return {
+        m[0] * v.x + m[1] * v.y + m[2] * v.z,
+        m[3] * v.x + m[4] * v.y + m[5] * v.z,
+        m[6] * v.x + m[7] * v.y + m[8] * v.z
+    };
 }
 
 // Linear light through a tone mapping, as the shaders do it (tonemapping.glsl): 0..1, still
 // linear. For matching a color of your own to the picture.
-fn Vector3 tone_map(Vector3 c, ToneMapping mode, float exposure)
-{
+fn Vector3 tone_map(Vector3 c, ToneMapping mode, float exposure) {
     if (mode == NO_TONE_MAPPING) return c;
-    c = (Vector3){ math::max(c.x, 0.0f), math::max(c.y, 0.0f), math::max(c.z, 0.0f) } * math::max(exposure, 1e-4f);
+    c = (Vector3) { math::max(c.x, 0.0f), math::max(c.y, 0.0f), math::max(c.z, 0.0f) } * math::max(exposure, 1e-4f);
     Vector3 out;
-    switch (mode)
-    {
+    switch (mode) {
         case LINEAR_TONE_MAPPING:
             out = c;
         case REINHARD_TONE_MAPPING:
             out = { c.x / (1 + c.x), c.y / (1 + c.y), c.z / (1 + c.z) };
         case CINEON_TONE_MAPPING:
-            for (int i = 0; i < 3; i++)
-            {
+            for (int i = 0; i < 3; i++) {
                 float x = math::max(0.0f, c[i] - 0.004f);
                 out[i] = math::pow((x * (6.2f * x + 0.5f)) / (x * (6.2f * x + 1.7f) + 0.06f), 2.2f);
             }
         case ACES_FILMIC_TONE_MAPPING:
-            Vector3 v = mat3_mul({ 0.59719f, 0.35458f, 0.04823f, 0.07600f, 0.90834f, 0.01566f, 0.02840f, 0.13383f, 0.83777f }, c / 0.6f);
-            for (int i = 0; i < 3; i++)
-            {
+            Vector3 v = mat3_mul(
+                { 0.59719f, 0.35458f, 0.04823f, 0.07600f, 0.90834f, 0.01566f, 0.02840f, 0.13383f, 0.83777f },
+                c / 0.6f
+            );
+            for (int i = 0; i < 3; i++) {
                 float x = v[i];
                 v[i] = (x * (x + 0.0245786f) - 0.000090537f) / (x * (0.983729f * x + 0.4329510f) + 0.238081f);
             }
-            out = mat3_mul({ 1.60475f, -0.53108f, -0.07367f, -0.10208f, 1.10813f, -0.00605f, -0.00327f, -0.07276f, 1.07602f }, v);
+            out = mat3_mul(
+                { 1.60475f, -0.53108f, -0.07367f, -0.10208f, 1.10813f, -0.00605f, -0.00327f, -0.07276f, 1.07602f },
+                v
+            );
         case AGX_TONE_MAPPING:
             // (rows of the shader's column-major matrices)
-            Vector3 v = mat3_mul({ 0.6274f, 0.3293f, 0.0433f, 0.0691f, 0.9195f, 0.0113f, 0.0164f, 0.0880f, 0.8956f }, c);
-            v = mat3_mul({ 0.856627153315983f, 0.0951212405381588f, 0.0482516061458583f,
-                           0.137318972929847f, 0.761241990602591f, 0.101439036467562f,
-                           0.11189821299995f, 0.0767994186031903f, 0.811302368396859f }, v);
-            for (int i = 0; i < 3; i++)
-            {
-                float x = clamp((math::log2(math::max(v[i], 1e-10f)) + 12.47393f) / (4.026069f + 12.47393f), 0, 1);
+            Vector3 v = mat3_mul(
+                { 0.6274f, 0.3293f, 0.0433f, 0.0691f, 0.9195f, 0.0113f, 0.0164f, 0.0880f, 0.8956f },
+                c
+            );
+            v = mat3_mul(
+                {
+                    0.856627153315983f,
+                    0.0951212405381588f,
+                    0.0482516061458583f,
+                    0.137318972929847f,
+                    0.761241990602591f,
+                    0.101439036467562f,
+                    0.11189821299995f,
+                    0.0767994186031903f,
+                    0.811302368396859f
+                },
+                v
+            );
+            for (int i = 0; i < 3; i++) {
+                float x  = clamp((math::log2(math::max(v[i], 1e-10f)) + 12.47393f) / (4.026069f + 12.47393f), 0, 1);
                 float x2 = x * x;
                 float x4 = x2 * x2;
-                v[i] = 15.5f * x4 * x2 - 40.14f * x4 * x + 31.96f * x4 - 6.868f * x2 * x + 0.4298f * x2 + 0.1191f * x - 0.00232f;
+                v[i] = 15.5f * x4 * x2 - 40.14f * x4 * x + 31.96f * x4 - 6.868f * x2 * x + 0.4298f * x2 + 0.1191f * x
+                    - 0.00232f;
             }
-            v = mat3_mul({ 1.1271005818144368f, -0.11060664309660323f, -0.016493938717834573f,
-                           -0.1413297634984383f, 1.157823702216272f, -0.016493938717834257f,
-                           -0.14132976349843826f, -0.11060664309660294f, 1.2519364065950405f }, v);
+            v = mat3_mul(
+                {
+                    1.1271005818144368f,
+                    -0.11060664309660323f,
+                    -0.016493938717834573f,
+                    -0.1413297634984383f,
+                    1.157823702216272f,
+                    -0.016493938717834257f,
+                    -0.14132976349843826f,
+                    -0.11060664309660294f,
+                    1.2519364065950405f
+                },
+                v
+            );
             for (int i = 0; i < 3; i++) v[i] = math::pow(math::max(v[i], 0.0f), 2.2f);
-            out = mat3_mul({ 1.6605f, -0.5876f, -0.0728f, -0.1246f, 1.1329f, -0.0083f, -0.0182f, -0.1006f, 1.1187f }, v);
+            out = mat3_mul(
+                { 1.6605f, -0.5876f, -0.0728f, -0.1246f, 1.1329f, -0.0083f, -0.0182f, -0.1006f, 1.1187f },
+                v
+            );
         case NEUTRAL_TONE_MAPPING:
             float start = 0.8f - 0.04f;
             float x = math::min(c.x, math::min(c.y, c.z));
             float offset = x < 0.08f ? x - 6.25f * x * x : 0.04f;
-            out = c - (Vector3){ offset, offset, offset };
+            out = c - (Vector3) { offset, offset, offset };
             float peak = math::max(out.x, math::max(out.y, out.z));
-            if (peak >= start)
-            {
-                float d = 1 - start;
+            if (peak >= start) {
+                float d        = 1 - start;
                 float new_peak = 1 - d * d / (peak + d - start);
                 out *= new_peak / peak;
                 float g = 1 - 1 / (0.15f * (peak - new_peak) + 1);
-                out = out + ((Vector3){ new_peak, new_peak, new_peak } - out) * g;
+                out = out + ((Vector3) { new_peak, new_peak, new_peak } - out) * g;
             }
         default:
             out = c;
@@ -2017,12 +2089,10 @@ fn Vector3 tone_map(Vector3 c, ToneMapping mode, float exposure)
 
 // Fog that is lit by lights isn't one color: where the view ends in empty space, a sphere
 // just inside the far plane picks up the same fog as the geometry in front of it.
-fn void draw_backdrop(Scene* scene, Camera* camera, Mat4 view_proj, FsParams* fs) @local
-{
+fn void draw_backdrop(Scene* scene, Camera* camera, Mat4 view_proj, FsParams* fs) @local {
     if (!scene.fog || scene.fog.light_scatter <= 0 || camera.camera_type != PERSPECTIVE) return;
     if (state.renderer.prof_no_fog_scatter) return;
-    if (!state.backdrop)
-    {
+    if (!state.backdrop) {
         MeshBasicMaterial* mat = mesh_basic_material();
         mat.side = BACK_SIDE;
         state.backdrop = mesh(sphere_geometry(1, 24, 12), mat);
@@ -2038,16 +2108,14 @@ fn void draw_backdrop(Scene* scene, Camera* camera, Mat4 view_proj, FsParams* fs
 }
 
 // Draws the scene from the camera's point of view. Call once per frame from the animation loop.
-fn void Renderer.render(&self, Scene* scene, Camera* camera)
-{
+fn void Renderer.render(&self, Scene* scene, Camera* camera) {
     if (!state.gfx_ready) return;
     if (self.auto_time) self.time = (float)stm::sec(stm::since(state.start_ticks));
-    self.info = {};
+    self.info = { };
 
-    if (self.auto_aspect && camera.camera_type == PERSPECTIVE && !camera.custom_projection)
-    {
+    if (self.auto_aspect && camera.camera_type == PERSPECTIVE && !camera.custom_projection) {
         PerspectiveCamera* pc = (PerspectiveCamera*)camera;
-        RenderTarget* rt = self.render_target;
+        RenderTarget* rt      = self.render_target;
         pc.aspect = rt ? (float)rt.width / rt.height : sapp::widthf() / sapp::heightf();
     }
     ulong pt = profile::start();
@@ -2058,17 +2126,17 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera)
     // cameras don't have to be part of the scene
     if (!camera.parent) camera.update_matrix_world();
     camera.matrix_world_inverse = camera.matrix_world.invert();
-    Mat4 view_proj = camera.projection_matrix.mul(camera.matrix_world_inverse);
+    Mat4 view_proj        = camera.projection_matrix.mul(camera.matrix_world_inverse);
     Mat4 steady_view_proj = view_proj;
-    state.motion_jitter = {};
-    if (camera.jitter != {})
-    {
+    state.motion_jitter = { };
+    if (camera.jitter != { }) {
         // shifted across the picture after the projection: x' = x + s * w
         RenderTarget* rt = self.render_target;
-        Vector2 s = { 2 * camera.jitter.x / (rt ? (float)rt.width : sapp::widthf()),
-                      2 * camera.jitter.y / (rt ? (float)rt.height : sapp::heightf()) };
-        for (int c = 0; c < 4; c++)
-        {
+        Vector2 s = {
+            2 * camera.jitter.x / (rt ? (float)rt.width : sapp::widthf()),
+            2 * camera.jitter.y / (rt ? (float)rt.height : sapp::heightf())
+        };
+        for (int c = 0; c < 4; c++) {
             view_proj[c][0] += s.x * view_proj[c][3];
             view_proj[c][1] += s.y * view_proj[c][3];
         }
@@ -2077,8 +2145,7 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera)
     Vector3 camera_pos = camera.matrix_world.get_position();
     // motion vectors: every render with MRT is the next frame of them
     state.motion = self.render_target && self.render_target.mrt;
-    if (state.motion)
-    {
+    if (state.motion) {
         state.motion_frame++;
         state.motion_prev_time = state.motion_frame > 1 ? state.motion_time : self.time;
         state.motion_time = self.time;
@@ -2118,8 +2185,7 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera)
     bool shadows = self.shadow_map_auto_update;
     if (shadows) state.spot_casters.clear();
     if (caster && !shadows) caster_vp = shadow_view_proj(caster);
-    if (caster && shadows)
-    {
+    if (caster && shadows) {
         caster_vp = shadow_view_proj(caster);
         Frustum light_frustum = frustum_from(caster_vp);
         gather_casters(scene, camera, &light_frustum, caster.shadow.skip_instanced, &state.spot_casters);
@@ -2128,8 +2194,7 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera)
     profile::stop("render: spot casters", pt);
     pt = profile::start();
     DirectionalLight* sun = shadows ? directional_shadow_light() : state.sun_caster;
-    if (shadows)
-    {
+    if (shadows) {
         state.sun_caster = sun;
         prepare_sun_shadow(scene, camera, sun);
     }
@@ -2140,14 +2205,14 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera)
     profile::stop("render: cull dispatch", pt);
     pt = profile::start();
 
-    if (caster && shadows)
-    {
-        sg::begin_pass(&&{
-            // depth is not stored by default: ask for it, the main pass samples this map
-            .action = { .depth = { .load_action = CLEAR, .store_action = STORE, .clear_value = 1 } },
-            .attachments = { .depth_stencil = state.shadow_attachment },
-            .label = "drie-spot-shadow",
-        });
+    if (caster && shadows) {
+        sg::begin_pass(
+            &&{ // depth is not stored by default: ask for it, the main pass samples this map
+                .action = { .depth = { .load_action = CLEAR, .store_action = STORE, .clear_value = 1 } },
+                .attachments = { .depth_stencil = state.shadow_attachment },
+                .label = "drie-spot-shadow",
+            }
+        );
         sg::apply_pipeline(get_shadow_pipeline());
         foreach (&item : state.spot_casters) draw_shadow_item(item, caster_vp);
         sg::end_pass();
@@ -2170,18 +2235,25 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera)
     profile::stop("render: lights/clusters", pt);
     pt = profile::start();
     state.fog_view = ready(state.white).view;
-    if (fog_volume_wanted(scene.fog, camera, self.prof_no_fog_scatter))
-    {
-        RenderTarget* rt = self.render_target;
+    if (fog_volume_wanted(scene.fog, camera, self.prof_no_fog_scatter)) {
+        RenderTarget* rt     = self.render_target;
         FogShadowViews views = { state.shadow_view, state.atlas_view, state.sun_view, state.shadow_sampler };
-        state.fog_view = update_fog_volume(scene, camera, &fs, rt ? rt.width : sapp::width(), rt ? rt.height : sapp::height(),
-                                           views, self.time);
+        state.fog_view = update_fog_volume(
+            scene,
+            camera,
+            &fs,
+            rt ? rt.width : sapp::width(),
+            rt ? rt.height : sapp::height(),
+            views,
+            self.time
+        );
     }
     profile::stop("render: volumetric fog", pt);
     pt = profile::start();
 
     Color background = scene.background ? scene.background : self.clear_color;
-    Vector3 clear = self.render_target && self.render_target.is_linear() ? color_to_linear(background) : tone_mapped(self, background);
+    Vector3 clear    = self.render_target && self.render_target.is_linear() ? color_to_linear(background)
+        : tone_mapped(self, background);
     SgPass pass = {
         .action = {
             .colors[0] = {
@@ -2191,19 +2263,15 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera)
         },
         .label = "drie-main",
     };
-    if (self.render_target)
-    {
+    if (self.render_target) {
         // kept for RenderTarget.depth_texture
         pass.action.depth = { .load_action = CLEAR, .store_action = STORE, .clear_value = 1 };
         pass.attachments = self.render_target.attachments();
         // no normal, no motion, no indirect light where nothing is drawn
-        if (self.render_target.mrt)
-        {
+        if (self.render_target.mrt) {
             for (int i = 1; i <= MRT_COUNT; i++) pass.action.colors[i] = { .load_action = CLEAR };
         }
-    }
-    else
-    {
+    } else {
         pass.swapchain = sglue::swapchain();
     }
     sg::begin_pass(&pass);
@@ -2211,22 +2279,18 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera)
     bool prepass = self.depth_prepass && !self.cull_box;
     // pixels per unit of tan(angle) up the view, for prepassed()
     state.prepass_focal = 0;
-    if (camera.camera_type == PERSPECTIVE)
-    {
+    if (camera.camera_type == PERSPECTIVE) {
         RenderTarget* rt = self.render_target;
         state.prepass_focal = camera.projection_matrix[1][1] * 0.5f * (rt ? rt.height : sapp::heightf());
     }
-    if (prepass)
-    {
-        foreach (&item : state.opaque)
-        {
+    if (prepass) {
+        foreach (&item : state.opaque) {
             if (prepassed(item)) draw_depth_item(item, view_proj);
         }
     }
     profile::stop("render: depth prepass", pt);
     pt = profile::start();
-    foreach (&item : state.opaque)
-    {
+    foreach (&item : state.opaque) {
         DrawKind kind = SOLID;
         if (item.mesh.material.wireframe || has_holes(item)) kind = prepass && prepassed(item) ? PRETESTED : CUT;
         draw_item(item, view_proj, &fs, kind);
@@ -2261,11 +2325,19 @@ alias EnvDistanceFn = fn float(Vector3 origin, Vector3 dir);
 // direction's surface is, up to `distance_range` meters. A box-projected material then follows
 // its reflected rays through the room as the map saw it, instead of taking everything to be on
 // the walls: furniture in the middle of the room is mirrored where it stands.
-fn Texture* Renderer.capture_environment(&self, Scene* scene, Vector3 position, int face_size = 256,
-                                         int width = 1024, float near = 0.05, float far = 100,
-                                         EnvFaceFn on_face = null, EnvDistanceFn distance = null,
-                                         float distance_range = 16, bool hdr = false)
-{
+fn Texture* Renderer.capture_environment(
+    &self,
+    Scene* scene,
+    Vector3 position,
+    int face_size = 256,
+    int width = 1024,
+    float near = 0.05,
+    float far = 100,
+    EnvFaceFn on_face = null,
+    EnvDistanceFn distance = null,
+    float distance_range = 16,
+    bool hdr = false
+) {
     Vector3[6] fwd = { { 1, 0, 0 }, { -1, 0, 0 }, { 0, 1, 0 }, { 0, -1, 0 }, { 0, 0, 1 }, { 0, 0, -1 } };
     Vector3[6] ups = { { 0, 1, 0 }, { 0, 1, 0 }, { 0, 0, -1 }, { 0, 0, 1 }, { 0, 1, 0 }, { 0, 1, 0 } };
     Vector3[6] rights;
@@ -2276,10 +2348,9 @@ fn Texture* Renderer.capture_environment(&self, Scene* scene, Vector3 position, 
     bool prev_auto = self.auto_aspect;
     self.auto_aspect = false;
     usz face_bytes = (usz)face_size * (usz)face_size * (usz)pixel_bytes;
-    char[] faces = mem::new_array(char, (sz)face_bytes * 6);
+    char[] faces   = mem::new_array(char, (sz)face_bytes * 6);
     defer free(faces);
-    for (int i = 0; i < 6; i++)
-    {
+    for (int i = 0; i < 6; i++) {
         rights[i] = fwd[i].cross(ups[i]);
         cam.position = position;
         cam.up = ups[i];
@@ -2290,8 +2361,7 @@ fn Texture* Renderer.capture_environment(&self, Scene* scene, Vector3 position, 
         self.set_render_target(rt);
         self.render(scene, cam);
         commit();
-        readback::read_image(rt.texture_image, face_size, face_size,
-                               &faces[face_bytes * (usz)i], pixel_bytes);
+        readback::read_image(rt.texture_image, face_size, face_size, &faces[face_bytes * (usz)i], pixel_bytes);
     }
     self.set_render_target(prev_target);
     self.auto_aspect = prev_auto;
@@ -2303,52 +2373,41 @@ fn Texture* Renderer.capture_environment(&self, Scene* scene, Vector3 position, 
     int height = width / 2;
     char[] px;
     float[] fpx;
-    if (hdr)
-    {
+    if (hdr) {
         fpx = mem::new_array(float, (sz)width * height * 4);
-    }
-    else
-    {
+    } else {
         px = mem::new_array(char, (sz)width * height * 4);
     }
-    defer
-    {
+    defer {
         free(px);
         free(fpx);
     }
-    for (int y = 0; y < height; y++)
-    {
+    for (int y = 0; y < height; y++) {
         float phi = ((float)y + 0.5f) / height * PI;
-        for (int x = 0; x < width; x++)
-        {
-            float theta = (((float)x + 0.5f) / width - 0.5f) * 2 * PI;
-            Vector3 d = { math::cos(theta) * math::sin(phi), math::cos(phi), math::sin(theta) * math::sin(phi) };
+        for (int x = 0; x < width; x++) {
+            float theta    =  (((float)x + 0.5f) / width - 0.5f) * 2 * PI;
+            Vector3 d      =  { math::cos(theta) * math::sin(phi), math::cos(phi), math::sin(theta) * math::sin(phi) };
             int best;
             float best_dot = -2;
-            for (int i = 0; i < 6; i++)
-            {
+            for (int i = 0; i < 6; i++) {
                 float dd = d.dot(fwd[i]);
-                if (dd > best_dot)
-                {
+                if (dd > best_dot) {
                     best_dot = dd;
                     best = i;
                 }
             }
-            float fx = d.dot(rights[best]) / best_dot;
-            float fy = d.dot(ups[best]) / best_dot;
-            int sx = math::clamp((int)((fx * 0.5f + 0.5f) * face_size), 0, face_size - 1);
-            int sy = math::clamp((int)((0.5f - fy * 0.5f) * face_size), 0, face_size - 1);
-            usz src = face_bytes * (usz)best + ((usz)sy * (usz)face_size + (usz)sx) * (usz)pixel_bytes;
-            usz dst = ((usz)y * (usz)width + (usz)x) * 4;
+            float fx       = d.dot(rights[best]) / best_dot;
+            float fy       = d.dot(ups[best]) / best_dot;
+            int sx         = math::clamp((int)((fx * 0.5f + 0.5f) * face_size), 0, face_size - 1);
+            int sy         = math::clamp((int)((0.5f - fy * 0.5f) * face_size), 0, face_size - 1);
+            usz src        = face_bytes * (usz)best + ((usz)sy * (usz)face_size + (usz)sx) * (usz)pixel_bytes;
+            usz dst        = ((usz)y * (usz)width + (usz)x) * 4;
             float far_part = distance ? math::clamp(distance(position, d) / distance_range, 0.0f, 1.0f) : 1;
-            if (hdr)
-            {
+            if (hdr) {
                 ushort* h = (ushort*)&faces[src];
                 for (usz c = 0; c < 3; c++) fpx[dst + c] = half_to_float(h[c]);
                 fpx[dst + 3] = far_part;
-            }
-            else
-            {
+            } else {
                 px[dst:3] = faces[src:3];
                 px[dst + 3] = (char)(far_part * 255 + 0.5f);
             }
@@ -2359,7 +2418,6 @@ fn Texture* Renderer.capture_environment(&self, Scene* scene, Vector3 position, 
     return map;
 }
 
-fn void commit()
-{
+fn void commit() {
     sg::commit();
 }

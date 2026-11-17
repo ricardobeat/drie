@@ -3,8 +3,7 @@ module drie;
 import std::collections::list, libc;
 import sokol;
 
-enum ObjectKind
-{
+enum ObjectKind {
     OBJECT,
     GROUP,
     SCENE,
@@ -14,8 +13,7 @@ enum ObjectKind
     LIGHT,
 }
 
-struct Object3D
-{
+struct Object3D {
     ObjectKind kind;
     String name;
     Vector3 position;
@@ -55,8 +53,7 @@ struct Object3D
     void* user_data;
 }
 
-fn void Object3D.init(&self, ObjectKind kind)
-{
+fn void Object3D.init(&self, ObjectKind kind) {
     self.kind = kind;
     self.scale = { 1, 1, 1 };
     self.up = { 0, 1, 0 };
@@ -72,8 +69,7 @@ fn void Object3D.init(&self, ObjectKind kind)
 }
 
 // Adds a child, removing it from its previous parent first. Returns self for chaining.
-fn Object3D* Object3D.add(&self, Object3D* child)
-{
+fn Object3D* Object3D.add(&self, Object3D* child) {
     if (child == self) return self;
     if (child.parent) child.parent.remove(child);
     child.parent = self;
@@ -82,12 +78,9 @@ fn Object3D* Object3D.add(&self, Object3D* child)
     return self;
 }
 
-fn Object3D* Object3D.remove(&self, Object3D* child)
-{
-    foreach (i, c : self.children)
-    {
-        if (c == child)
-        {
+fn Object3D* Object3D.remove(&self, Object3D* child) {
+    foreach (i, c : self.children) {
+        if (c == child) {
             self.children.remove_at(i);
             child.parent = null;
             break;
@@ -96,17 +89,14 @@ fn Object3D* Object3D.remove(&self, Object3D* child)
     return self;
 }
 
-fn void Object3D.clear(&self)
-{
+fn void Object3D.clear(&self) {
     foreach (c : self.children) c.parent = null;
     self.children.clear();
 }
 
-fn Object3D* Object3D.get_object_by_name(&self, String name)
-{
+fn Object3D* Object3D.get_object_by_name(&self, String name) {
     if (self.name == name) return self;
-    foreach (c : self.children)
-    {
+    foreach (c : self.children) {
         Object3D* found = c.get_object_by_name(name);
         if (found) return found;
     }
@@ -117,16 +107,12 @@ fn Object3D* Object3D.get_object_by_name(&self, String name)
 // geometries and materials, without a parent. For groups and meshes (a loaded model's
 // nodes, say: scene.add(model.get("chair").clone())); lights, cameras, LODs and instanced
 // meshes come out as empty groups.
-fn Object3D* Object3D.clone(&self)
-{
+fn Object3D* Object3D.clone(&self) {
     Object3D* copy;
-    if (self.kind == MESH && ((Mesh*)self).instance_data.len() == 0)
-    {
+    if (self.kind == MESH && ((Mesh*)self).instance_data.len() == 0) {
         Mesh* from = (Mesh*)self;
         copy = mesh(from.geometry, from.material);
-    }
-    else
-    {
+    } else {
         copy = group();
     }
     copy.name = self.name;
@@ -145,14 +131,12 @@ fn Object3D* Object3D.clone(&self)
 
 alias TraverseCallback = fn void(Object3D*);
 
-fn void Object3D.traverse(&self, TraverseCallback cb)
-{
+fn void Object3D.traverse(&self, TraverseCallback cb) {
     cb(self);
     foreach (c : self.children) c.traverse(cb);
 }
 
-fn void Object3D.update_matrix(&self)
-{
+fn void Object3D.update_matrix(&self) {
     self.matrix = mat4_compose(self.position, self.rotation, self.scale);
 }
 
@@ -161,16 +145,13 @@ fn void Object3D.update_matrix(&self)
 // rotation and scale, not `matrix`: it is rebuilt from them.
 fn void Object3D.update_matrix_world(&self) => self.update_world(true);
 
-fn void Object3D.update_world(&self, bool parent_moved)
-{
+fn void Object3D.update_world(&self, bool parent_moved) {
     // (with matrix_auto_update off the matrix may have changed in any way: matrix_world is
     // computed, and compared below)
     bool moved = !self.matrix_auto_update;
-    if (self.matrix_auto_update && (!self.placed
-        || self.position != self.placed_position
-        || self.rotation != self.placed_rotation
-        || self.scale != self.placed_scale))
-    {
+    if (self.matrix_auto_update
+        && (!self.placed || self.position != self.placed_position || self.rotation != self.placed_rotation
+            || self.scale != self.placed_scale)) {
         moved = true;
         self.update_matrix();
         self.placed_position = self.position;
@@ -178,8 +159,7 @@ fn void Object3D.update_world(&self, bool parent_moved)
         self.placed_scale = self.scale;
         self.placed = true;
     }
-    if (moved || parent_moved)
-    {
+    if (moved || parent_moved) {
         Mat4 world = self.parent ? self.parent.matrix_world.mul(self.matrix) : self.matrix;
         // (the first object of the walk can't tell whether its parent moved, so it is
         // always computed: its descendants only if that changed anything)
@@ -190,15 +170,13 @@ fn void Object3D.update_world(&self, bool parent_moved)
     moved = moved || self.world_dirty;
 
     self.world_dirty = false;
-    foreach (c : self.children)
-    {
+    foreach (c : self.children) {
         if (c.matrix_world_auto_update) c.update_world(moved);
     }
 }
 
 // Recomputes matrix_world for this object using its ancestors' current transforms.
-fn void Object3D.update_world_matrix_from_parents(&self)
-{
+fn void Object3D.update_world_matrix_from_parents(&self) {
     if (self.parent) self.parent.update_world_matrix_from_parents();
     if (self.matrix_auto_update) self.update_matrix();
     Mat4 world = self.parent ? self.parent.matrix_world.mul(self.matrix) : self.matrix;
@@ -207,8 +185,7 @@ fn void Object3D.update_world_matrix_from_parents(&self)
     self.matrix_world = world;
 }
 
-fn Vector3 Object3D.get_world_position(&self)
-{
+fn Vector3 Object3D.get_world_position(&self) {
     self.update_world_matrix_from_parents();
     return self.matrix_world.get_position();
 }
@@ -216,19 +193,16 @@ fn Vector3 Object3D.get_world_position(&self)
 // Rotates the object to face a world-space point. Cameras and lights point -Z at it, like three.
 fn void Object3D.look_at(&self, float x, float y, float z) => self.look_at_vec({ x, y, z });
 
-fn void Object3D.look_at_vec(&self, Vector3 target)
-{
+fn void Object3D.look_at_vec(&self, Vector3 target) {
     Vector3 eye = self.get_world_position();
-    bool neg_z = self.kind == CAMERA || self.kind == LIGHT;
-    Mat4 rot = mat4_look_at(eye, target, self.up, neg_z);
-    if (self.parent)
-    {
+    bool neg_z  = self.kind == CAMERA || self.kind == LIGHT;
+    Mat4 rot    = mat4_look_at(eye, target, self.up, neg_z);
+    if (self.parent) {
         // remove the parent's rotation (assumes uniform scale)
         Mat4 pm = self.parent.matrix_world;
         pm[3] = { 0, 0, 0, 1 };
-        Vector3 s = { ((Vector3){ pm[0][0], pm[0][1], pm[0][2] }).length(), 0, 0 };
-        if (s.x > 0)
-        {
+        Vector3 s = { ((Vector3) { pm[0][0], pm[0][1], pm[0][2] }).length(), 0, 0 };
+        if (s.x > 0) {
             for (int c = 0; c < 3; c++) for (int r = 0; r < 3; r++) pm[c][r] /= s.x;
         }
         rot = pm.transpose().mul(rot);
@@ -241,8 +215,7 @@ fn void Object3D.rotate_y(&self, float angle) => self.rotation.y += angle;
 fn void Object3D.rotate_z(&self, float angle) => self.rotation.z += angle;
 
 // Moves along the object's local axis (like three's translateX/Y/Z).
-fn void Object3D.translate_on_axis(&self, Vector3 axis, float distance)
-{
+fn void Object3D.translate_on_axis(&self, Vector3 axis, float distance) {
     Mat4 r = mat4_compose({ 0, 0, 0 }, self.rotation, { 1, 1, 1 });
     self.position += r.transform_point(axis) * distance;
 }
@@ -250,8 +223,7 @@ fn void Object3D.translate_x(&self, float d) => self.translate_on_axis({ 1, 0, 0
 fn void Object3D.translate_y(&self, float d) => self.translate_on_axis({ 0, 1, 0 }, d);
 fn void Object3D.translate_z(&self, float d) => self.translate_on_axis({ 0, 0, 1 }, d);
 
-fn Object3D* object3d()
-{
+fn Object3D* object3d() {
     Object3D* o = mem::new(Object3D);
     o.init(OBJECT);
     return o;
@@ -261,20 +233,17 @@ fn Object3D* object3d()
 // Group / Scene / Fog
 // ----------------------------------------------------------------------------
 
-struct Group
-{
+struct Group {
     inline Object3D object;
 }
 
-fn Group* group()
-{
+fn Group* group() {
     Group* g = mem::new(Group);
     g.init(GROUP);
     return g;
 }
 
-enum FogType
-{
+enum FogType {
     LINEAR,
     EXP2,
     // Extension: plain exponential falloff, exp(-density * distance), like real haze.
@@ -293,8 +262,7 @@ enum FogType
 // lights of its own cluster. A surface then reads the fog in front of it from the grid. Off,
 // the fog is worked out per pixel of each surface: no shadows on the lamps' glow, and the
 // glow of every light in the scene added up at every pixel.
-struct VolumetricFog
-{
+struct VolumetricFog {
     // Use the froxel grid when the fog has light to scatter (false: the per-pixel fog).
     bool volumetric;
     // How much point and spot lights light up the fog around them (0 = fog has a constant color).
@@ -336,8 +304,7 @@ struct VolumetricFog
     int slices;
 }
 
-struct Fog
-{
+struct Fog {
     // Extensions (not in three.js): fog.light_scatter, fog.volumetric... (see VolumetricFog)
     inline VolumetricFog volume;
     FogType type;
@@ -347,50 +314,49 @@ struct Fog
     float density;
 }
 
-const VolumetricFog VOLUMETRIC_FOG_DEFAULTS = { .volumetric = true, .shade_density = 1, .noise_scale = 0.15f,
-                                                .resolution = 0.125f, .slices = 96 };
+const VolumetricFog VOLUMETRIC_FOG_DEFAULTS = {
+    .volumetric = true,
+    .shade_density = 1,
+    .noise_scale = 0.15f,
+    .resolution = 0.125f,
+    .slices = 96
+};
 
 // Extension: exponential fog, exp(-density * distance).
-fn Fog* fog_exp(Color color, float density = 0.01)
-{
+fn Fog* fog_exp(Color color, float density = 0.01) {
     Fog* f = mem::new(Fog);
     *f = { .type = EXP, .color = color, .density = density, .volume = VOLUMETRIC_FOG_DEFAULTS };
     return f;
 }
 
 // Extension: exponential fog that lights scatter in: lamp beams, light shafts (see VolumetricFog).
-fn Fog* volumetric_fog(Color color, float density = 0.01, float light_scatter = 1)
-{
+fn Fog* volumetric_fog(Color color, float density = 0.01, float light_scatter = 1) {
     Fog* f = fog_exp(color, density);
     f.light_scatter = light_scatter;
     return f;
 }
 
-fn void Fog.set_clear_box(&self, Vector3 min, Vector3 max)
-{
+fn void Fog.set_clear_box(&self, Vector3 min, Vector3 max) {
     self.has_clear_box = true;
     self.clear_box_min = min;
     self.clear_box_max = max;
 }
 
 // Linear fog, like `new THREE.Fog(color, near, far)`.
-fn Fog* fog(Color color, float near = 1, float far = 1000)
-{
+fn Fog* fog(Color color, float near = 1, float far = 1000) {
     Fog* f = mem::new(Fog);
     *f = { .type = LINEAR, .color = color, .near = near, .far = far, .volume = VOLUMETRIC_FOG_DEFAULTS };
     return f;
 }
 
 // Exponential squared fog, like `new THREE.FogExp2(color, density)`.
-fn Fog* fog_exp2(Color color, float density = 0.00025)
-{
+fn Fog* fog_exp2(Color color, float density = 0.00025) {
     Fog* f = mem::new(Fog);
     *f = { .type = EXP2, .color = color, .density = density, .volume = VOLUMETRIC_FOG_DEFAULTS };
     return f;
 }
 
-struct Scene
-{
+struct Scene {
     inline Object3D object;
     // Clear color for this scene. 0 (black) falls back to the renderer's clear color.
     Color background;
@@ -413,8 +379,7 @@ struct Scene
     bool no_matrix_world_update;
 }
 
-fn Scene* scene()
-{
+fn Scene* scene() {
     Scene* s = mem::new(Scene);
     s.init(SCENE);
     s.environment_intensity = 1;
@@ -425,8 +390,7 @@ fn Scene* scene()
 // Mesh
 // ----------------------------------------------------------------------------
 
-struct Mesh
-{
+struct Mesh {
     inline Object3D object;
     BufferGeometry* geometry;
     Material* material;
@@ -453,13 +417,11 @@ struct Mesh
 
 // Draws the same geometry many times with one draw call, like THREE.InstancedMesh.
 // Set the transforms once with set_matrix_at; they are uploaded on first render.
-struct InstancedMesh
-{
+struct InstancedMesh {
     inline Mesh mesh;
 }
 
-fn InstancedMesh* instanced_mesh(BufferGeometry* geometry, Material* material, int count = 0)
-{
+fn InstancedMesh* instanced_mesh(BufferGeometry* geometry, Material* material, int count = 0) {
     InstancedMesh* m = mem::new(InstancedMesh);
     m.init(MESH);
     m.instance_data.allocator = mem;
@@ -469,19 +431,16 @@ fn InstancedMesh* instanced_mesh(BufferGeometry* geometry, Material* material, i
     return m;
 }
 
-fn void InstancedMesh.set_matrix_at(&self, int index, Mat4 m)
-{
+fn void InstancedMesh.set_matrix_at(&self, int index, Mat4 m) {
     float* d = &self.instance_data[(sz)index * 12];
-    for (int row = 0; row < 3; row++)
-    {
+    for (int row = 0; row < 3; row++) {
         for (int col = 0; col < 4; col++) d[row * 4 + col] = m[col][row];
     }
     self.instances_uploaded = false;
 }
 
 // Appends an instance and returns its index.
-fn int InstancedMesh.add_instance(&self, Mat4 m)
-{
+fn int InstancedMesh.add_instance(&self, Mat4 m) {
     for (int i = 0; i < 12; i++) self.instance_data.push(0);
     self.instance_count++;
     self.set_matrix_at(self.instance_count - 1, m);
@@ -489,8 +448,7 @@ fn int InstancedMesh.add_instance(&self, Mat4 m)
 }
 
 // Level of detail: shows the one child whose distance range contains the camera, like THREE.LOD.
-struct Lod
-{
+struct Lod {
     inline Object3D object;
     List{float} distances;
     // Meters over which one level dissolves into the next instead of swapping at once (0: swap).
@@ -499,8 +457,7 @@ struct Lod
     float fade;
 }
 
-fn Lod* lod()
-{
+fn Lod* lod() {
     Lod* l = mem::new(Lod);
     l.init(LOD);
     l.distances.allocator = mem;
@@ -509,16 +466,14 @@ fn Lod* lod()
 
 // `object` is shown from `distance` on, until the next level takes over.
 // Pass null to show nothing from that distance on. Add levels in increasing distance.
-fn Lod* Lod.add_level(&self, Object3D* object, float distance = 0)
-{
+fn Lod* Lod.add_level(&self, Object3D* object, float distance = 0) {
     if (!object) object = object3d();
     self.add(object);
     self.distances.push(distance);
     return self;
 }
 
-fn Mesh* mesh(BufferGeometry* geometry, Material* material = null)
-{
+fn Mesh* mesh(BufferGeometry* geometry, Material* material = null) {
     Mesh* m = mem::new(Mesh);
     m.init(MESH);
     m.instance_data.allocator = mem;
@@ -531,14 +486,12 @@ fn Mesh* mesh(BufferGeometry* geometry, Material* material = null)
 // Cameras
 // ----------------------------------------------------------------------------
 
-enum CameraType
-{
+enum CameraType {
     PERSPECTIVE,
     ORTHOGRAPHIC,
 }
 
-struct Camera
-{
+struct Camera {
     inline Object3D object;
     CameraType camera_type;
     float near;
@@ -560,15 +513,13 @@ struct Camera
     Vector2 jitter;
 }
 
-struct PerspectiveCamera
-{
+struct PerspectiveCamera {
     inline Camera camera;
     float fov;
     float aspect;
 }
 
-struct OrthographicCamera
-{
+struct OrthographicCamera {
     inline Camera camera;
     float left;
     float right;
@@ -576,8 +527,7 @@ struct OrthographicCamera
     float bottom;
 }
 
-fn PerspectiveCamera* perspective_camera(float fov = 50, float aspect = 1, float near = 0.1, float far = 2000)
-{
+fn PerspectiveCamera* perspective_camera(float fov = 50, float aspect = 1, float near = 0.1, float far = 2000) {
     PerspectiveCamera* c = mem::new(PerspectiveCamera);
     c.init(CAMERA);
     c.camera_type = PERSPECTIVE;
@@ -590,9 +540,14 @@ fn PerspectiveCamera* perspective_camera(float fov = 50, float aspect = 1, float
     return c;
 }
 
-fn OrthographicCamera* orthographic_camera(float left = -1, float right = 1, float top = 1, float bottom = -1,
-                                           float near = 0.1, float far = 2000)
-{
+fn OrthographicCamera* orthographic_camera(
+    float left = -1,
+    float right = 1,
+    float top = 1,
+    float bottom = -1,
+    float near = 0.1,
+    float far = 2000
+) {
     OrthographicCamera* c = mem::new(OrthographicCamera);
     c.init(CAMERA);
     c.camera_type = ORTHOGRAPHIC;
@@ -607,11 +562,9 @@ fn OrthographicCamera* orthographic_camera(float left = -1, float right = 1, flo
     return c;
 }
 
-fn void Camera.update_projection_matrix(&self)
-{
+fn void Camera.update_projection_matrix(&self) {
     bool z01 = depth_zero_to_one();
-    switch (self.camera_type)
-    {
+    switch (self.camera_type) {
         case PERSPECTIVE:
             PerspectiveCamera* p = (PerspectiveCamera*)self;
             self.projection_matrix = mat4_perspective(p.fov, p.aspect, self.near, self.far, self.zoom, z01);
@@ -629,8 +582,7 @@ fn void Camera.update_projection_matrix(&self)
 // Lights
 // ----------------------------------------------------------------------------
 
-enum LightType
-{
+enum LightType {
     AMBIENT,
     HEMISPHERE,
     DIRECTIONAL,
@@ -638,27 +590,23 @@ enum LightType
     SPOT,
 }
 
-struct Light
-{
+struct Light {
     inline Object3D object;
     LightType light_type;
     Color color;
     float intensity;
 }
 
-struct AmbientLight
-{
+struct AmbientLight {
     inline Light light;
 }
 
-struct HemisphereLight
-{
+struct HemisphereLight {
     inline Light light;
     Color ground_color;
 }
 
-struct DirectionalLight
-{
+struct DirectionalLight {
     inline Light light;
     // The light shines from its position towards target's world position.
     Object3D* target;
@@ -678,8 +626,7 @@ struct DirectionalLight
     bool shadow_follow;
 }
 
-struct PointLight
-{
+struct PointLight {
     inline Light light;
     float distance;
     float decay;
@@ -689,8 +636,7 @@ struct PointLight
 }
 
 // Shadow settings of a light, like three's light.shadow.
-struct LightShadow
-{
+struct LightShadow {
     int map_size;
     // World-space offset along the surface normal per meter of distance to the light.
     float normal_bias;
@@ -730,8 +676,7 @@ struct LightShadow
     float cascade_blend;
 }
 
-struct SpotLight
-{
+struct SpotLight {
     inline Light light;
     // The light points towards target's world position.
     Object3D* target;
@@ -753,23 +698,20 @@ struct SpotLight
     LightShadow shadow;
 }
 
-fn void Light.init_light(&self, LightType t, Color color, float intensity)
-{
+fn void Light.init_light(&self, LightType t, Color color, float intensity) {
     self.init(LIGHT);
     self.light_type = t;
     self.color = color;
     self.intensity = intensity;
 }
 
-fn AmbientLight* ambient_light(Color color = 0xffffff, float intensity = 1)
-{
+fn AmbientLight* ambient_light(Color color = 0xffffff, float intensity = 1) {
     AmbientLight* l = mem::new(AmbientLight);
     l.init_light(AMBIENT, color, intensity);
     return l;
 }
 
-fn HemisphereLight* hemisphere_light(Color sky_color = 0xffffff, Color ground_color = 0xffffff, float intensity = 1)
-{
+fn HemisphereLight* hemisphere_light(Color sky_color = 0xffffff, Color ground_color = 0xffffff, float intensity = 1) {
     HemisphereLight* l = mem::new(HemisphereLight);
     l.init_light(HEMISPHERE, sky_color, intensity);
     l.ground_color = ground_color;
@@ -777,20 +719,18 @@ fn HemisphereLight* hemisphere_light(Color sky_color = 0xffffff, Color ground_co
     return l;
 }
 
-fn DirectionalLight* directional_light(Color color = 0xffffff, float intensity = 1)
-{
+fn DirectionalLight* directional_light(Color color = 0xffffff, float intensity = 1) {
     DirectionalLight* l = mem::new(DirectionalLight);
     l.init_light(DIRECTIONAL, color, intensity);
     l.position = { 0, 1, 0 };
     l.target = object3d();
     l.shadow = { .map_size = 2048, .normal_bias = 0.03f, .radius = 2, .intensity = 1, .near = 0.5f, .far = 300, .auto_update = true,
-                 .cascades = 4, .split_lambda = 0.7f, .max_distance = 150, .cascade_blend = 0.1f };
+        .cascades = 4, .split_lambda = 0.7f, .max_distance = 150, .cascade_blend = 0.1f };
     l.shadow_extent = 30;
     return l;
 }
 
-fn PointLight* point_light(Color color = 0xffffff, float intensity = 1, float distance = 0, float decay = 2)
-{
+fn PointLight* point_light(Color color = 0xffffff, float intensity = 1, float distance = 0, float decay = 2) {
     PointLight* l = mem::new(PointLight);
     l.init_light(POINT, color, intensity);
     l.distance = distance;
@@ -798,9 +738,14 @@ fn PointLight* point_light(Color color = 0xffffff, float intensity = 1, float di
     return l;
 }
 
-fn SpotLight* spot_light(Color color = 0xffffff, float intensity = 1, float distance = 0, float angle = PI / 3,
-                         float penumbra = 0, float decay = 2)
-{
+fn SpotLight* spot_light(
+    Color color = 0xffffff,
+    float intensity = 1,
+    float distance = 0,
+    float angle = PI / 3,
+    float penumbra = 0,
+    float decay = 2
+) {
     SpotLight* l = mem::new(SpotLight);
     l.init_light(SPOT, color, intensity);
     l.position = { 0, 1, 0 };
@@ -810,7 +755,15 @@ fn SpotLight* spot_light(Color color = 0xffffff, float intensity = 1, float dist
     l.penumbra = penumbra;
     l.decay = decay;
     l.fog_glow = 1;
-    l.shadow = { .map_size = 1024, .normal_bias = 0.006f, .radius = 2, .intensity = 1, .near = 0.05f, .focus = 1,
-                 .auto_update = true, .needs_update = true };
+    l.shadow = {
+        .map_size = 1024,
+        .normal_bias = 0.006f,
+        .radius = 2,
+        .intensity = 1,
+        .near = 0.05f,
+        .focus = 1,
+        .auto_update = true,
+        .needs_update = true
+    };
     return l;
 }

@@ -14,29 +14,28 @@ module drie::input;
 import gamectl, sokol, drie, drie::ui;
 import std::math;
 
-const uint PAD_SOUTH = 1 << 0;   // cross / A
-const uint PAD_EAST = 1 << 1;    // circle / B
-const uint PAD_WEST = 1 << 2;    // square / X
-const uint PAD_NORTH = 1 << 3;   // triangle / Y
-const uint PAD_L1 = 1 << 4;
-const uint PAD_R1 = 1 << 5;
-const uint PAD_L2 = 1 << 6;
-const uint PAD_R2 = 1 << 7;
-const uint PAD_L3 = 1 << 8;      // left stick pressed
-const uint PAD_R3 = 1 << 9;
-const uint PAD_UP = 1 << 10;     // d-pad
-const uint PAD_DOWN = 1 << 11;
-const uint PAD_LEFT = 1 << 12;
+const uint PAD_SOUTH = 1 << 0; // cross / A
+const uint PAD_EAST  = 1 << 1; // circle / B
+const uint PAD_WEST  = 1 << 2; // square / X
+const uint PAD_NORTH = 1 << 3; // triangle / Y
+const uint PAD_L1    = 1 << 4;
+const uint PAD_R1    = 1 << 5;
+const uint PAD_L2    = 1 << 6;
+const uint PAD_R2    = 1 << 7;
+const uint PAD_L3    = 1 << 8; // left stick pressed
+const uint PAD_R3    = 1 << 9;
+const uint PAD_UP    = 1 << 10; // d-pad
+const uint PAD_DOWN  = 1 << 11;
+const uint PAD_LEFT  = 1 << 12;
 const uint PAD_RIGHT = 1 << 13;
-const uint PAD_MENU = 1 << 14;   // options / menu
-const uint PAD_VIEW = 1 << 15;   // create / view
-const uint PAD_HOME = 1 << 16;   // PS / Xbox button
+const uint PAD_MENU  = 1 << 14; // options / menu
+const uint PAD_VIEW  = 1 << 15; // create / view
+const uint PAD_HOME  = 1 << 16; // PS / Xbox button
 
 // Sticks closer to the middle than this read as 0.
 const float PAD_DEAD_ZONE = 0.12;
 
-struct Gamepad
-{
+struct Gamepad {
     bool connected;
     String name;
     float left_x;
@@ -63,11 +62,9 @@ fn bool Gamepad.pressed(&self, uint buttons) => (self.held & ~self.last & button
 fn bool Gamepad.released(&self, uint buttons) => (~self.held & self.last & buttons) != 0;
 
 // The stick without its dead zone, rescaled so it still reaches 1.
-fn void dead_zone(float* x, float* y) @local
-{
+fn void dead_zone(float* x, float* y) @local {
     float len = math::sqrt(*x * *x + *y * *y);
-    if (len <= PAD_DEAD_ZONE)
-    {
+    if (len <= PAD_DEAD_ZONE) {
         *x = 0;
         *y = 0;
         return;
@@ -77,8 +74,7 @@ fn void dead_zone(float* x, float* y) @local
     *y *= k;
 }
 
-fn void pad_key(KeyCode key, bool down) @local
-{
+fn void pad_key(KeyCode key, bool down) @local {
     SappEvent e = { .type = down ? KEY_DOWN : KEY_UP, .key_code = key };
     drie::send_event(&e);
 }
@@ -86,8 +82,7 @@ fn void pad_key(KeyCode key, bool down) @local
 // Reads the controller before every frame (see drie::add_frame_hook).
 fn void register_input() @init @local => drie::add_frame_hook(&poll_gamepad);
 
-fn void poll_gamepad() @local
-{
+fn void poll_gamepad() @local {
     Gamepad* p = &pad_state;
     GcState s;
     gamectl::poll(&s);
@@ -108,8 +103,7 @@ fn void poll_gamepad() @local
     if (!p.keys) return;
     uint[*] buttons = { PAD_UP, PAD_DOWN, PAD_LEFT, PAD_RIGHT, PAD_SOUTH, PAD_EAST, PAD_MENU };
     KeyCode[*] keys = { UP, DOWN, LEFT, RIGHT, ENTER, BACKSPACE, ESCAPE };
-    foreach (i, b : buttons)
-    {
+    foreach (i, b : buttons) {
         if (p.pressed(b)) pad_key(keys[i], true);
         if (p.released(b)) pad_key(keys[i], false);
     }

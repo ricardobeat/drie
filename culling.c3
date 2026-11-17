@@ -20,13 +20,12 @@ import sokol;
 // Meshes with fewer instances than this are drawn whole.
 const int CULL_MIN_INSTANCES @private = 8;
 // Renders per frame that can cull (each needs buffers and readback slots of its own).
-const int CULL_MAX_SETS @private = 16;
+const int CULL_MAX_SETS @private      = 16;
 
 // Views of one render: the camera and the shadow maps drawn with it.
 const int CULL_MAX_VIEWS @private = 8;
 
-struct InstanceArena @private
-{
+struct InstanceArena @private {
     List{float} data;
     StorageBuffer* buffer;
     bool dirty;
@@ -36,24 +35,24 @@ InstanceArena arena @private;
 
 // The instance matrices of `m` as the GPU has them, for drawing: the buffer and the offset of
 // its first instance. Puts them in the arena on their first upload.
-fn void upload_instances_gpu(Mesh* m) @private
-{
+fn void upload_instances_gpu(Mesh* m) @private {
     if (m.instances_uploaded) return;
     m.instance_uploads++;
-    BufferGeometry* g = m.geometry;
-    Vector3 lo = { 1e30f, 1e30f, 1e30f };
-    Vector3 hi = -lo;
-    for (int i = 0; i < m.instance_count; i++)
-    {
-        float* d = &m.instance_data[(sz)i * 12];
+    BufferGeometry* g =  m.geometry;
+    Vector3 lo        =  { 1e30f, 1e30f, 1e30f };
+    Vector3 hi        = -lo;
+    for (int i = 0; i < m.instance_count; i++) {
+        float* d   = &m.instance_data[(sz)i * 12];
         Vector3 gc = g.bounds_center;
         Vector3 c = {
             d[0] * gc.x + d[1] * gc.y + d[2] * gc.z + d[3],
             d[4] * gc.x + d[5] * gc.y + d[6] * gc.z + d[7],
             d[8] * gc.x + d[9] * gc.y + d[10] * gc.z + d[11],
         };
-        float s = math::max(((Vector3){ d[0], d[4], d[8] }).length(),
-            math::max(((Vector3){ d[1], d[5], d[9] }).length(), ((Vector3){ d[2], d[6], d[10] }).length()));
+        float s = math::max(
+            ((Vector3) { d[0], d[4], d[8] }).length(),
+            math::max(((Vector3) { d[1], d[5], d[9] }).length(), ((Vector3) { d[2], d[6], d[10] }).length())
+        );
         Vector3 r = { s, s, s };
         r *= g.bounds_radius;
         lo = math::min(lo, c - r);
@@ -62,8 +61,7 @@ fn void upload_instances_gpu(Mesh* m) @private
     m.instance_center = (lo + hi) * 0.5f;
     m.instance_radius = (hi - lo).length() * 0.5f;
     m.instances_uploaded = true;
-    if (m.instance_uploads == 1 && !m.in_arena)
-    {
+    if (m.instance_uploads == 1 && !m.in_arena) {
         // the first upload: into the arena
         arena.data.allocator = mem;
         m.arena_base = (int)(arena.data.len() / 12);
@@ -73,27 +71,30 @@ fn void upload_instances_gpu(Mesh* m) @private
         arena.dirty = true;
         return;
     }
-    if (m.in_arena && m.instance_uploads == 2 && m.arena_size == m.instance_count)
-    {
+    if (m.in_arena && m.instance_uploads == 2 && m.arena_size == m.instance_count) {
         // changed once (instances placed over two frames, say): in place
-        mem::copy(&arena.data[(sz)m.arena_base * 12], m.instance_data.entries, (sz)m.instance_count * 12 * (sz)float::size);
+        mem::copy(
+            &arena.data[(sz)m.arena_base * 12],
+            m.instance_data.entries,
+            (sz)m.instance_count * 12 * (sz)float::size
+        );
         arena.dirty = true;
         return;
     }
     // changes often: a buffer of its own (what it had in the arena stays there unused)
     m.in_arena = false;
     if (m.instance_buf.id) sg::destroy_buffer(m.instance_buf);
-    m.instance_buf = sg::make_buffer(&&{
-        .data = { .ptr = m.instance_data.entries, .size = (usz)m.instance_data.len() * float::size },
-    });
+    m.instance_buf = sg::make_buffer(
+        &&{
+            .data = { .ptr = m.instance_data.entries, .size = (usz)m.instance_data.len() * float::size },
+        }
+    );
 }
 
 // The arena's GPU buffer, uploaded if it changed.
-fn StorageBuffer* arena_buffer() @private
-{
+fn StorageBuffer* arena_buffer() @private {
     if (!arena.buffer) arena.buffer = storage_buffer(16, false, true, "drie-instances");
-    if (arena.dirty)
-    {
+    if (arena.dirty) {
         arena.dirty = false;
         arena.buffer.write(arena.data.entries, arena.data.len() * float::size);
     }
@@ -101,16 +102,14 @@ fn StorageBuffer* arena_buffer() @private
 }
 
 // Instance buffer of a mesh for the draw: vertex buffer and offset.
-fn SgBuffer instance_vertex_buffer(Mesh* m, int* offset) @private
-{
+fn SgBuffer instance_vertex_buffer(Mesh* m, int* offset) @private {
     *offset = 0;
     if (!m.in_arena) return m.instance_buf;
     *offset = m.arena_base * 12 * (int)float::size;
     return arena_buffer().buffer;
 }
 
-struct CullJobInfo @private
-{
+struct CullJobInfo @private {
     Mesh* mesh;
     int view;
     // instances asked for in the draw
@@ -121,8 +120,7 @@ struct CullJobInfo @private
 
 // One render's buffers. counts[] rotate by frame: the CPU reads one back while the GPU fills
 // another.
-struct CullSet @private
-{
+struct CullSet @private {
     StorageBuffer* jobs;
     StorageBuffer* planes;
     StorageBuffer* visible;
@@ -139,8 +137,7 @@ struct CullSet @private
     bool[3] checked;
 }
 
-struct CullState @private
-{
+struct CullState @private {
     List{CullSet*} sets;
     uint frame;
     int used;
@@ -164,8 +161,7 @@ struct CullState @private
 CullState cull @private;
 
 // Starts a render's culling (`enabled`: Renderer.gpu_culling and compute shaders).
-fn void cull_begin(bool enabled, bool check) @private
-{
+fn void cull_begin(bool enabled, bool check) @private {
     cull.active = false;
     cull.views = 0;
     cull.jobs.allocator = mem;
@@ -174,20 +170,17 @@ fn void cull_begin(bool enabled, bool check) @private
     cull.check = check;
     if (!enabled || !compute_supported()) return;
     uint frame = sg::query_stats().prev_frame.frame_index;
-    if (frame != cull.frame || !cull.sets.len())
-    {
+    if (frame != cull.frame || !cull.sets.len()) {
         cull.frame = frame;
         cull.used = 0;
     }
     if (cull.used >= CULL_MAX_SETS) return;
-    if (cull.used >= cull.sets.len())
-    {
+    if (cull.used >= cull.sets.len()) {
         CullSet* s = mem::new(CullSet);
         s.jobs = storage_buffer(16, true, false, "drie-cull-jobs");
         s.planes = storage_buffer(16, true, false, "drie-cull-planes");
         s.visible = storage_buffer(16, false, false, "drie-cull-visible");
-        for (int i = 0; i < 3; i++)
-        {
+        for (int i = 0; i < 3; i++) {
             s.counts[i] = storage_buffer(16, false, false, "drie-cull-counts");
             s.slots[i] = readback_slot();
             s.infos[i].allocator = mem;
@@ -205,12 +198,10 @@ fn void cull_begin(bool enabled, bool check) @private
 }
 
 // A view to cull for; -1 if there's no room.
-fn int cull_view(Frustum* f) @private
-{
+fn int cull_view(Frustum* f) @private {
     if (!cull.active || cull.views >= CULL_MAX_VIEWS) return -1;
     int v = cull.views++;
-    for (int k = 0; k < 5; k++)
-    {
+    for (int k = 0; k < 5; k++) {
         Vec4 p = f.planes[k];
         cull.planes[v * 6 + k].plane = { p.x, p.y, p.z, p.w };
     }
@@ -220,36 +211,36 @@ fn int cull_view(Frustum* f) @private
 }
 
 // Culls the instances of `m` for view `view`; returns its job, or -1 if `m` is drawn whole.
-fn int cull_job(Mesh* m, int view) @private
-{
-    if (!cull.active || view < 0 || !m.in_arena || !m.frustum_culled || m.instance_count < CULL_MIN_INSTANCES) return -1;
-    int j = (int)cull.jobs.len();
-    Mat4 w = m.matrix_world;
+fn int cull_job(Mesh* m, int view) @private {
+    if (!cull.active || view < 0 || !m.in_arena || !m.frustum_culled
+        || m.instance_count < CULL_MIN_INSTANCES) return -1;
+    int j             = (int)cull.jobs.len();
+    Mat4 w            = m.matrix_world;
     BufferGeometry* g = m.geometry;
-    cull.jobs.push({
-        .m0 = { w[0][0], w[1][0], w[2][0], w[3][0] },
-        .m1 = { w[0][1], w[1][1], w[2][1], w[3][1] },
-        .m2 = { w[0][2], w[1][2], w[2][2], w[3][2] },
-        .sphere = { g.bounds_center.x, g.bounds_center.y, g.bounds_center.z, g.bounds_radius },
-        .extra = { m.material.sway * 2, max_scale_of(w), 0, 0 },
-        .range = { (uint)m.arena_base, (uint)m.instance_count, (uint)cull.visible_total, (uint)view },
-    });
+    cull.jobs.push(
+        {
+            .m0 = { w[0][0], w[1][0], w[2][0], w[3][0] },
+            .m1 = { w[0][1], w[1][1], w[2][1], w[3][1] },
+            .m2 = { w[0][2], w[1][2], w[2][2], w[3][2] },
+            .sphere = { g.bounds_center.x, g.bounds_center.y, g.bounds_center.z, g.bounds_radius },
+            .extra = { m.material.sway * 2, max_scale_of(w), 0, 0 },
+            .range = { (uint)m.arena_base, (uint)m.instance_count, (uint)cull.visible_total, (uint)view },
+        }
+    );
     cull.visible_total += m.instance_count;
     cull.current.infos[cull.ring].push({ .mesh = m, .view = view, .draw_count = m.instance_count, .cpu_count = -1 });
     return j;
 }
 
-fn float max_scale_of(Mat4 m) @private
-{
-    float sx = ((Vector3){ m[0][0], m[0][1], m[0][2] }).length();
-    float sy = ((Vector3){ m[1][0], m[1][1], m[1][2] }).length();
-    float sc = ((Vector3){ m[2][0], m[2][1], m[2][2] }).length();
+fn float max_scale_of(Mat4 m) @private {
+    float sx = ((Vector3) { m[0][0], m[0][1], m[0][2] }).length();
+    float sy = ((Vector3) { m[1][0], m[1][1], m[1][2] }).length();
+    float sc = ((Vector3) { m[2][0], m[2][1], m[2][2] }).length();
     return math::max(sx, math::max(sy, sc));
 }
 
 // Runs the culling of this render's jobs, and picks how many instances each draw asks for.
-fn void cull_dispatch() @private
-{
+fn void cull_dispatch() @private {
     if (!cull.active || !cull.jobs.len()) return;
     CullSet* s = cull.current;
     if (!cull.kernel) cull.kernel = compute_pass(shaders::cull_shader_desc(sg::query_backend()), "drie-cull");
@@ -269,12 +260,10 @@ fn void cull_dispatch() @private
     s.tracked[cull.ring] = counts.track(s.slots[cull.ring]);
     end_compute();
     // what an earlier frame kept: the newest one the GPU has finished
-    if (s.fetched_frame != cull.frame || s.fetched_ring < 0)
-    {
+    if (s.fetched_frame != cull.frame || s.fetched_ring < 0) {
         s.fetched_frame = cull.frame;
         s.fetched_ring = -1;
-        for (uint back = 1; back <= 2; back++)
-        {
+        for (uint back = 1; back <= 2; back++) {
             int r = (int)((cull.frame + 3 - back) % 3);
             if (!s.tracked[r] || s.frames[r] != cull.frame - back) continue;
             sz n = s.infos[r].len();
@@ -282,18 +271,16 @@ fn void cull_dispatch() @private
             for (sz i = 0; i < n; i++) s.fetched.push(0);
             // checking: wait for the frame before, to compare every frame
             bool wait = cull.check && back == 1;
-            if (n && read_back(s.slots[r], s.fetched.entries, n * (sz)uint::size, wait))
-            {
+            if (n && read_back(s.slots[r], s.fetched.entries, n * (sz)uint::size, wait)) {
                 s.fetched_ring = r;
                 if (cull.check) cull_compare(s, r);
                 break;
             }
         }
     }
-    List{CullJobInfo}* infos = &s.infos[cull.ring];
+    List{CullJobInfo}* infos  = &s.infos[cull.ring];
     List{CullJobInfo}* before = s.fetched_ring >= 0 ? &s.infos[s.fetched_ring] : null;
-    foreach (j, &info : *infos)
-    {
+    foreach (j, &info : *infos) {
         if (cull.check) info.cpu_count = cpu_cull_count(&cull.jobs[j]);
         if (!before || j >= before.len()) continue;
         CullJobInfo* b = &before.entries[j];
@@ -308,10 +295,8 @@ fn void cull_dispatch() @private
 fn int cull_draw_count(int job) @private => cull.current.infos[cull.ring][job].draw_count;
 
 // The bindings and the vertex shader's inst_cull of a draw (job -1: not culled on the GPU).
-fn Vec4 cull_bind(SgBindings* bind, int job) @private
-{
-    if (job < 0 || !cull.active)
-    {
+fn Vec4 cull_bind(SgBindings* bind, int job) @private {
+    if (job < 0 || !cull.active) {
         StorageBuffer* dummy = arena_buffer();
         bind.views[shaders::VIEW_INST_ROWS] = dummy.view;
         bind.views[shaders::VIEW_INST_VISIBLE] = dummy.view;
@@ -326,13 +311,11 @@ fn Vec4 cull_bind(SgBindings* bind, int job) @private
 }
 
 // The instances of a job the CPU finds inside its view (the same test as the kernel's).
-fn int cpu_cull_count(CullJob* job) @private
-{
+fn int cpu_cull_count(CullJob* job) @private {
     int kept;
     CullPlane* planes = &cull.planes[job.range[3] * 6];
-    for (uint i = 0; i < job.range[1]; i++)
-    {
-        float* d = &arena.data[(sz)(job.range[0] + i) * 12];
+    for (uint i = 0; i < job.range[1]; i++) {
+        float* d   = &arena.data[(sz)(job.range[0] + i) * 12];
         float[4] c = { job.sphere[0], job.sphere[1], job.sphere[2], 1 };
         float[4] lc = {
             d[0] * c[0] + d[1] * c[1] + d[2] * c[2] + d[3],
@@ -345,12 +328,13 @@ fn int cpu_cull_count(CullJob* job) @private
             job.m1[0] * lc[0] + job.m1[1] * lc[1] + job.m1[2] * lc[2] + job.m1[3],
             job.m2[0] * lc[0] + job.m2[1] * lc[1] + job.m2[2] * lc[2] + job.m2[3],
         };
-        float scale = math::max(((Vector3){ d[0], d[4], d[8] }).length(),
-            math::max(((Vector3){ d[1], d[5], d[9] }).length(), ((Vector3){ d[2], d[6], d[10] }).length()));
+        float scale = math::max(
+            ((Vector3) { d[0], d[4], d[8] }).length(),
+            math::max(((Vector3) { d[1], d[5], d[9] }).length(), ((Vector3) { d[2], d[6], d[10] }).length())
+        );
         float radius = job.sphere[3] * scale * job.extra[1] + job.extra[0];
-        bool inside = true;
-        for (int k = 0; k < 6; k++)
-        {
+        bool inside  = true;
+        for (int k = 0; k < 6; k++) {
             float[4] p = planes[k].plane;
             if (p[0] * wc.x + p[1] * wc.y + p[2] * wc.z + p[3] < -radius) inside = false;
         }
@@ -360,40 +344,45 @@ fn int cpu_cull_count(CullJob* job) @private
 }
 
 // Renderer.check_compute: compares the counts read back from ring `r` with the CPU's.
-fn void cull_compare(CullSet* s, int r) @private
-{
+fn void cull_compare(CullSet* s, int r) @private {
     int bad;
     int worst;
-    foreach (j, info : s.infos[r])
-    {
+    foreach (j, info : s.infos[r]) {
         if (info.cpu_count < 0) continue;
         int d = math::abs((int)s.fetched[j] - info.cpu_count);
         cull.checks++;
         // a draw that asked for fewer instances than its cull kept (the count it went by was
         // an earlier frame's): some were left out for a frame
-        if (info.draw_count < (int)s.fetched[j])
-        {
+        if (info.draw_count < (int)s.fetched[j]) {
             cull.short_draws++;
             cull.short_instances += (int)s.fetched[j] - info.draw_count;
         }
-        if (d)
-        {
+        if (d) {
             bad++;
             worst = math::max(worst, d);
         }
     }
-    if (bad)
-    {
+    if (bad) {
         cull.check_failures++;
-        io::eprintfn("drie: check_compute: GPU culling differs from the CPU's in %d of %d jobs (by up to %d instances)",
-                     bad, s.infos[r].len(), worst);
+        io::eprintfn(
+            "drie: check_compute: GPU culling differs from the CPU's in %d of %d jobs (by up to %d instances)",
+            bad,
+            s.infos[r].len(),
+            worst
+        );
     }
 }
 
 // Renderer.check_compute: how the comparisons went, on stderr.
-fn void print_compute_checks()
-{
-    io::eprintfn("drie: check_compute: %d cluster grids compared (%d differed), %d culled draws compared (%d frames differed); "
-                 "%d draws asked for fewer instances than their cull kept (%d instances left out for a frame)",
-                 lights_gpu.checks, lights_gpu.check_failures, cull.checks, cull.check_failures, cull.short_draws, cull.short_instances);
+fn void print_compute_checks() {
+    io::eprintfn(
+        "drie: check_compute: %d cluster grids compared (%d differed), %d culled draws compared (%d frames differed); "
+            "%d draws asked for fewer instances than their cull kept (%d instances left out for a frame)",
+        lights_gpu.checks,
+        lights_gpu.check_failures,
+        cull.checks,
+        cull.check_failures,
+        cull.short_draws,
+        cull.short_instances
+    );
 }

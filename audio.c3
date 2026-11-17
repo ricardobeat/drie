@@ -12,24 +12,21 @@
 module drie;
 import std::math;
 
-struct AudioListener
-{
+struct AudioListener {
     Vector3 position;
     Vector3 forward;
     Vector3 right;
 }
 
 // Ears at `position`, facing along `yaw` (radians around +y; 0 looks down -z).
-fn void AudioListener.set(&self, Vector3 position, float yaw)
-{
+fn void AudioListener.set(&self, Vector3 position, float yaw) {
     self.position = position;
     self.forward = { -math::sin(yaw), 0, -math::cos(yaw) };
     self.right = { math::cos(yaw), 0, -math::sin(yaw) };
 }
 
 // Ears on an object, usually the camera: where it is and the way it looks.
-fn void AudioListener.set_from(&self, Object3D* obj)
-{
+fn void AudioListener.set_from(&self, Object3D* obj) {
     Mat4 m = obj.matrix_world;
     self.position = m.get_position();
     self.forward = (m.transform_point({ 0, 0, -1 }) - self.position).normalize();
@@ -39,8 +36,7 @@ fn void AudioListener.set_from(&self, Object3D* obj)
 // A sound somewhere in the world. Its level falls off like three's "inverse" distance model:
 // full within ref_distance, ref / (ref + rolloff * (d - ref)) beyond, and no lower than
 // what it is at max_distance (0 = no limit).
-struct PositionalAudio
-{
+struct PositionalAudio {
     Vector3 position;
     float ref_distance;
     float rolloff_factor;
@@ -48,8 +44,7 @@ struct PositionalAudio
 }
 
 // How one source reaches the two ears.
-struct StereoPan
-{
+struct StereoPan {
     // level at each ear, distance included
     float left;
     float right;
@@ -68,19 +63,17 @@ struct StereoPan
 // Half the width of a head over the speed of sound: the longest one ear waits for the other.
 const float EAR_DELAY = 0.00066;
 
-fn StereoPan AudioListener.pan(&self, PositionalAudio source)
-{
-    Vector3 to = source.position - self.position;
-    float d = to.length();
+fn StereoPan AudioListener.pan(&self, PositionalAudio source) {
+    Vector3 to      = source.position - self.position;
+    float d         = to.length();
     float reference = math::max(source.ref_distance, 0.01f);
-    float rolloff = source.rolloff_factor > 0 ? source.rolloff_factor : 1.0f;
-    float reach = source.max_distance > 0 ? math::min(d, source.max_distance) : d;
-    float gain = reference / (reference + rolloff * (math::max(reach, reference) - reference));
+    float rolloff   = source.rolloff_factor > 0 ? source.rolloff_factor : 1.0f;
+    float reach     = source.max_distance > 0 ? math::min(d, source.max_distance) : d;
+    float gain      = reference / (reference + rolloff * (math::max(reach, reference) - reference));
     // on top of the listener: no direction
-    float side = 0;
-    float front = 1;
-    if (d > 0.001f)
-    {
+    float side      = 0;
+    float front     = 1;
+    if (d > 0.001f) {
         side = to.dot(self.right) / d;
         front = to.dot(self.forward) / d;
     }

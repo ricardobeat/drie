@@ -10,8 +10,7 @@ import drie;
 
 faultdef GLTF_INVALID;
 
-struct GltfModel
-{
+struct GltfModel {
     // Root of the loaded node hierarchy. Each glTF node is an Object3D named like the node,
     // with one child Mesh per material it uses.
     Group* scene;
@@ -22,8 +21,7 @@ struct GltfModel
 // The node (or mesh) with this name, or null.
 fn Object3D* GltfModel.get(&self, String name) => self.scene.get_object_by_name(name);
 
-struct GltfReader @local
-{
+struct GltfReader @local {
     Object* json;
     char[] bin;
     String dir;
@@ -35,16 +33,17 @@ struct GltfReader @local
 
 fn Object*? child(Object* o, String key) @local => o.has_key(key) ? o.get(key) : io::EOF~;
 
-fn float num(Object* o, String key, float fallback) @local
-{
+fn float num(Object* o, String key, float fallback) @local {
     if (!o.has_key(key)) return fallback;
     return (float)(o.get_float(key) ?? (double)fallback);
 }
 
-fn uint read_u32(char[] data, sz at) @local => data[at] | (uint)data[at + 1] << 8 | (uint)data[at + 2] << 16 | (uint)data[at + 3] << 24;
+fn uint read_u32(
+    char[] data,
+    sz at
+) @local => data[at] | (uint)data[at + 1] << 8 | (uint)data[at + 2] << 16 | (uint)data[at + 3] << 24;
 
-struct Accessor @local
-{
+struct Accessor @local {
     char* ptr;
     sz count;
     sz stride;
@@ -52,14 +51,12 @@ struct Accessor @local
     int components;
 }
 
-fn Accessor? GltfReader.accessor(&self, int index)
-{
-    Object* a = self.json.get("accessors")!.get_at(index);
+fn Accessor? GltfReader.accessor(&self, int index) {
+    Object* a    = self.json.get("accessors")!.get_at(index);
     Object* view = self.json.get("bufferViews")!.get_at(a.get_int("bufferView")!);
     Accessor acc;
-    String type = a.get_string("type")!;
-    switch (type)
-    {
+    String type  = a.get_string("type")!;
+    switch (type) {
         case "SCALAR": acc.components = 1;
         case "VEC2": acc.components = 2;
         case "VEC3": acc.components = 3;
@@ -68,8 +65,7 @@ fn Accessor? GltfReader.accessor(&self, int index)
     }
     acc.component_type = a.get_int("componentType")!;
     sz size;
-    switch (acc.component_type)
-    {
+    switch (acc.component_type) {
         case 5120:
         case 5121: size = 1;
         case 5122:
@@ -86,12 +82,10 @@ fn Accessor? GltfReader.accessor(&self, int index)
     return acc;
 }
 
-fn float Accessor.value(&self, sz i, int c)
-{
+fn float Accessor.value(&self, sz i, int c) {
     char* p = self.ptr + i * self.stride;
-    switch (self.component_type)
-    {
-        case 5126: return ((float*)p)[c]; // may be unaligned, which arm64 and x86 allow
+    switch (self.component_type) {
+        case 5126: return ((float*)p)[c];  // may be unaligned, which arm64 and x86 allow
         // normalized integers (KHR_mesh_quantization)
         case 5120: return math::max((float)((ichar*)p)[c] / 127.0f, -1.0f);
         case 5121: return p[c] / 255.0f;
@@ -101,38 +95,31 @@ fn float Accessor.value(&self, sz i, int c)
     }
 }
 
-fn uint Accessor.index(&self, sz i)
-{
+fn uint Accessor.index(&self, sz i) {
     char* p = self.ptr + i * self.stride;
-    switch (self.component_type)
-    {
+    switch (self.component_type) {
         case 5121: return p[0];
         case 5123: return *(ushort*)p;
         default: return *(uint*)p;
     }
 }
 
-fn Texture*? GltfReader.texture(&self, Object* info, ColorSpace space)
-{
-    Object* tex = self.json.get("textures")!.get_at(info.get_int("index")!);
+fn Texture*? GltfReader.texture(&self, Object* info, ColorSpace space) {
+    Object* tex     = self.json.get("textures")!.get_at(info.get_int("index")!);
     int image_index = tex.get_int("source")!;
-    while (self.textures.len() <= image_index) self.textures.push({});
+    while (self.textures.len() <= image_index) self.textures.push({ });
     int slot = space == SRGB_COLOR_SPACE ? 0 : 1;
     if (self.textures[image_index][slot]) return self.textures[image_index][slot];
     Object* image = self.json.get("images")!.get_at(image_index);
     Texture* t;
-    if (image.has_key("uri"))
-    {
-        @pool()
-        {
+    if (image.has_key("uri")) {
+        @pool() {
             t = drie::load_texture(string::tformat("%s%s", self.dir, image.get_string("uri")!), space, flip_y: false);
         };
-    }
-    else
-    {
+    } else {
         Object* view = self.json.get("bufferViews")!.get_at(image.get_int("bufferView")!);
-        sz offset = (sz)num(view, "byteOffset", 0);
-        sz len = view.get_int("byteLength")!;
+        sz offset    = (sz)num(view, "byteOffset", 0);
+        sz len       = view.get_int("byteLength")!;
         if (offset + len > self.bin.len) return GLTF_INVALID~;
         t = drie::decode_texture(self.bin[offset:len], space, flip_y: false)!;
     }
@@ -140,12 +127,10 @@ fn Texture*? GltfReader.texture(&self, Object* info, ColorSpace space)
     return t;
 }
 
-fn Color linear_color(float r, float g, float b) @local
-{
+fn Color linear_color(float r, float g, float b) @local {
     float[3] c = { r, g, b };
     uint result;
-    foreach (v : c)
-    {
+    foreach (v : c) {
         v = drie::clamp(v, 0, 1);
         float s = v <= 0.0031308f ? v * 12.92f : 1.055f * math::pow(v, 1.0f / 2.4f) - 0.055f;
         result = result << 8 | (uint)(s * 255 + 0.5f);
@@ -153,13 +138,10 @@ fn Color linear_color(float r, float g, float b) @local
     return result;
 }
 
-fn Material*? GltfReader.material(&self, Object* m)
-{
+fn Material*? GltfReader.material(&self, Object* m) {
     MeshStandardMaterial* mat = drie::mesh_standard_material();
-    if (try pbr = child(m, "pbrMetallicRoughness"))
-    {
-        if (try f = child(pbr, "baseColorFactor"))
-        {
+    if (try pbr = child(m, "pbrMetallicRoughness")) {
+        if (try f = child(pbr, "baseColorFactor")) {
             mat.color = linear_color((float)f.get_float_at(0)!, (float)f.get_float_at(1)!, (float)f.get_float_at(2)!);
             mat.opacity = (float)f.get_float_at(3)!;
         }
@@ -168,17 +150,14 @@ fn Material*? GltfReader.material(&self, Object* m)
         if (try t = child(pbr, "baseColorTexture")) mat.map = self.texture(t, SRGB_COLOR_SPACE)!;
         if (try t = child(pbr, "metallicRoughnessTexture")) mat.arm_map = self.texture(t, NO_COLOR_SPACE)!;
     }
-    if (try t = child(m, "normalTexture"))
-    {
+    if (try t = child(m, "normalTexture")) {
         mat.normal_map = self.texture(t, NO_COLOR_SPACE)!;
         mat.normal_scale = num(t, "scale", 1);
     }
-    if (try e = child(m, "emissiveFactor"))
-    {
+    if (try e = child(m, "emissiveFactor")) {
         mat.emissive = linear_color((float)e.get_float_at(0)!, (float)e.get_float_at(1)!, (float)e.get_float_at(2)!);
     }
-    if (m.has_key("alphaMode"))
-    {
+    if (m.has_key("alphaMode")) {
         String mode = m.get_string("alphaMode")!;
         if (mode == "MASK") mat.alpha_test = num(m, "alphaCutoff", 0.5f);
         if (mode == "BLEND") mat.transparent = true;
@@ -187,11 +166,10 @@ fn Material*? GltfReader.material(&self, Object* m)
     return mat;
 }
 
-fn BufferGeometry*? GltfReader.geometry(&self, Object* primitive)
-{
+fn BufferGeometry*? GltfReader.geometry(&self, Object* primitive) {
     if (primitive.has_key("mode") && primitive.get_int("mode")! != 4) return GLTF_INVALID~;
     Object* attrs = primitive.get("attributes")!;
-    Accessor pos = self.accessor(attrs.get_int("POSITION")!)!;
+    Accessor pos  = self.accessor(attrs.get_int("POSITION")!)!;
     Accessor normal;
     Accessor uv;
     Accessor color;
@@ -202,74 +180,72 @@ fn BufferGeometry*? GltfReader.geometry(&self, Object* primitive)
     BufferGeometry* g = mem::new(BufferGeometry);
     g.init_lists();
     g.vertices.reserve(pos.count * drie::FLOATS_PER_VERTEX);
-    for (sz i = 0; i < pos.count; i++)
-    {
+    for (sz i = 0; i < pos.count; i++) {
         Vector3 p = { pos.value(i, 0), pos.value(i, 1), pos.value(i, 2) };
-        Vector3 n = normal.ptr ? (Vector3){ normal.value(i, 0), normal.value(i, 1), normal.value(i, 2) } : (Vector3){ 0, 1, 0 };
-        Vector2 t = uv.ptr ? (Vector2){ uv.value(i, 0), uv.value(i, 1) } : (Vector2){};
-        Vector3 c = color.ptr ? (Vector3){ color.value(i, 0), color.value(i, 1), color.value(i, 2) } : (Vector3){ 1, 1, 1 };
+        Vector3 n = normal.ptr ? (Vector3) { normal.value(i, 0), normal.value(i, 1), normal.value(i, 2) }
+            : (Vector3) { 0, 1, 0 };
+        Vector2 t = uv.ptr ? (Vector2) { uv.value(i, 0), uv.value(i, 1) } : (Vector2) { };
+        Vector3 c = color.ptr ? (Vector3) { color.value(i, 0), color.value(i, 1), color.value(i, 2) }
+            : (Vector3) { 1, 1, 1 };
         g.add_vertex(p, n, t, c);
     }
-    if (primitive.has_key("indices"))
-    {
+    if (primitive.has_key("indices")) {
         Accessor idx = self.accessor(primitive.get_int("indices")!)!;
         g.indices.reserve(idx.count);
         for (sz i = 0; i < idx.count; i++) g.indices.push(idx.index(i));
-    }
-    else
-    {
+    } else {
         for (uint i = 0; i < pos.count; i++) g.indices.push(i);
     }
     if (!normal.ptr) g.compute_vertex_normals();
     return g;
 }
 
-fn Object3D*? GltfReader.node(&self, int index)
-{
-    Object* n = self.json.get("nodes")!.get_at(index);
+fn Object3D*? GltfReader.node(&self, int index) {
+    Object* n  = self.json.get("nodes")!.get_at(index);
     Group* obj = drie::group();
     if (n.has_key("name")) obj.name = n.get_string("name")!.copy(mem);
-    if (try t = child(n, "translation")) obj.position = { (float)t.get_float_at(0)!, (float)t.get_float_at(1)!, (float)t.get_float_at(2)! };
-    if (try s = child(n, "scale")) obj.scale = { (float)s.get_float_at(0)!, (float)s.get_float_at(1)!, (float)s.get_float_at(2)! };
-    if (try q = child(n, "rotation"))
-    {
+    if (try t = child(
+        n,
+        "translation"
+    )) obj.position = { (float)t.get_float_at(0)!, (float)t.get_float_at(1)!, (float)t.get_float_at(2)! };
+    if (try s = child(
+        n,
+        "scale"
+    )) obj.scale = { (float)s.get_float_at(0)!, (float)s.get_float_at(1)!, (float)s.get_float_at(2)! };
+    if (try q = child(n, "rotation")) {
         // quaternion -> rotation matrix -> euler
-        float x = (float)q.get_float_at(0)!;
-        float y = (float)q.get_float_at(1)!;
-        float z = (float)q.get_float_at(2)!;
-        float w = (float)q.get_float_at(3)!;
+        float x      = (float)q.get_float_at(0)!;
+        float y      = (float)q.get_float_at(1)!;
+        float z      = (float)q.get_float_at(2)!;
+        float w      = (float)q.get_float_at(3)!;
         drie::Mat4 m = drie::mat4_identity();
         m[0] = { 1 - 2 * (y * y + z * z), 2 * (x * y + z * w), 2 * (x * z - y * w), 0 };
         m[1] = { 2 * (x * y - z * w), 1 - 2 * (x * x + z * z), 2 * (y * z + x * w), 0 };
         m[2] = { 2 * (x * z + y * w), 2 * (y * z - x * w), 1 - 2 * (x * x + y * y), 0 };
         obj.rotation = drie::euler_from_rotation(m);
     }
-    if (n.has_key("mesh"))
-    {
-        int mesh_index = n.get_int("mesh")!;
+    if (n.has_key("mesh")) {
+        int mesh_index     = n.get_int("mesh")!;
         Object* primitives = self.json.get("meshes")!.get_at(mesh_index).get("primitives")!;
-        for (sz i = 0; i < primitives.get_len(); i++)
-        {
+        for (sz i = 0; i < primitives.get_len(); i++) {
             Object* prim = primitives.get_at(i);
             // geometry is shared between nodes that use the same glTF mesh
             if (!self.geometries[mesh_index][i]) self.geometries[mesh_index][i] = self.geometry(prim)!;
             Material* mat = prim.has_key("material") ? self.model.materials[prim.get_int("material")!]
-                                                     : (Material*)drie::mesh_standard_material();
-            Mesh* m = drie::mesh(self.geometries[mesh_index][i], mat);
+                : (Material*)drie::mesh_standard_material();
+            Mesh* m       = drie::mesh(self.geometries[mesh_index][i], mat);
             m.name = obj.name;
             obj.add(m);
             self.model.meshes.push(m);
         }
     }
-    if (try kids = child(n, "children"))
-    {
+    if (try kids = child(n, "children")) {
         for (sz i = 0; i < kids.get_len(); i++) obj.add(self.node(kids.get_int_at(i)!)!);
     }
     return obj;
 }
 
-fn GltfModel*? load_gltf(String path)
-{
+fn GltfModel*? load_gltf(String path) {
     char[] data = file::load(mem, path)!;
     defer mem::free(data.ptr);
     GltfReader r;
@@ -277,8 +253,7 @@ fn GltfModel*? load_gltf(String path)
     r.geometries.allocator = mem;
     defer r.textures.free();
     sz slash = -1;
-    foreach (i, c : path)
-    {
+    foreach (i, c : path) {
         if (c == '/') slash = i;
     }
     r.dir = path[:slash + 1];
@@ -286,31 +261,25 @@ fn GltfModel*? load_gltf(String path)
     String text;
     char[] external_bin;
     defer if (external_bin.ptr) mem::free(external_bin.ptr);
-    if (data.len >= 20 && data[0] == 'g' && data[1] == 'l' && data[2] == 'T' && data[3] == 'F')
-    {
+    if (data.len >= 20 && data[0] == 'g' && data[1] == 'l' && data[2] == 'T' && data[3] == 'F') {
         // GLB container: header, JSON chunk, optional BIN chunk
         sz json_len = read_u32(data, 12);
         if (20 + json_len > data.len) return GLTF_INVALID~;
         text = (String)data[20:json_len];
         sz at = 20 + json_len;
-        if (at + 8 <= data.len)
-        {
+        if (at + 8 <= data.len) {
             sz bin_len = read_u32(data, at);
             if (at + 8 + bin_len > data.len) return GLTF_INVALID~;
             r.bin = data[at + 8:bin_len];
         }
-    }
-    else
-    {
+    } else {
         text = (String)data;
     }
     r.json = json::parse(mem, text)!;
     defer r.json.free();
-    if (!r.bin.len)
-    {
+    if (!r.bin.len) {
         Object* buffer = r.json.get("buffers")!.get_at(0);
-        @pool()
-        {
+        @pool() {
             external_bin = file::load(mem, string::tformat("%s%s", r.dir, buffer.get_string("uri")!))!;
         };
         r.bin = external_bin;
@@ -320,26 +289,22 @@ fn GltfModel*? load_gltf(String path)
     model.materials.allocator = mem;
     model.meshes.allocator = mem;
     r.model = model;
-    if (try mats = child(r.json, "materials"))
-    {
+    if (try mats = child(r.json, "materials")) {
         for (sz i = 0; i < mats.get_len(); i++) model.materials.push(r.material(mats.get_at(i))!);
     }
-    if (try meshes = child(r.json, "meshes"))
-    {
-        for (sz i = 0; i < meshes.get_len(); i++)
-        {
+    if (try meshes = child(r.json, "meshes")) {
+        for (sz i = 0; i < meshes.get_len(); i++) {
             r.geometries.push(mem::new_array(BufferGeometry*, meshes.get_at(i).get("primitives")!.get_len()));
         }
     }
-    defer
-    {
+    defer {
         foreach (g : r.geometries) mem::free(g.ptr);
         r.geometries.free();
     }
 
     model.scene = drie::group();
     Object* scenes = r.json.get("scenes")!;
-    Object* nodes = scenes.get_at((sz)num(r.json, "scene", 0)).get("nodes")!;
+    Object* nodes  = scenes.get_at((sz)num(r.json, "scene", 0)).get("nodes")!;
     for (sz i = 0; i < nodes.get_len(); i++) model.scene.add(r.node(nodes.get_int_at(i)!)!);
     return model;
 }

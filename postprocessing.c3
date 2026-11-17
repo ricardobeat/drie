@@ -34,18 +34,27 @@ import sokol, drie;
 
 // Blend states for ShaderPass (three's MultiplyBlending, AdditiveBlending, NormalBlending).
 // Multiply keeps the target's alpha.
-const SgBlendState NO_BLEND = {};
+const SgBlendState NO_BLEND       = { };
 const SgBlendState MULTIPLY_BLEND = {
-    .enabled = true, .src_factor_rgb = DST_COLOR, .dst_factor_rgb = ZERO,
-    .src_factor_alpha = ZERO, .dst_factor_alpha = ONE,
+    .enabled = true,
+    .src_factor_rgb = DST_COLOR,
+    .dst_factor_rgb = ZERO,
+    .src_factor_alpha = ZERO,
+    .dst_factor_alpha = ONE,
 };
 const SgBlendState ADDITIVE_BLEND = {
-    .enabled = true, .src_factor_rgb = ONE, .dst_factor_rgb = ONE,
-    .src_factor_alpha = ZERO, .dst_factor_alpha = ONE,
+    .enabled = true,
+    .src_factor_rgb = ONE,
+    .dst_factor_rgb = ONE,
+    .src_factor_alpha = ZERO,
+    .dst_factor_alpha = ONE,
 };
-const SgBlendState ALPHA_BLEND = {
-    .enabled = true, .src_factor_rgb = SRC_ALPHA, .dst_factor_rgb = ONE_MINUS_SRC_ALPHA,
-    .src_factor_alpha = ONE, .dst_factor_alpha = ONE_MINUS_SRC_ALPHA,
+const SgBlendState ALPHA_BLEND    = {
+    .enabled = true,
+    .src_factor_rgb = SRC_ALPHA,
+    .dst_factor_rgb = ONE_MINUS_SRC_ALPHA,
+    .src_factor_alpha = ONE,
+    .dst_factor_alpha = ONE_MINUS_SRC_ALPHA,
 };
 
 // sokol has 8 uniform block slots; a pass keeps a copy of each block it was given.
@@ -53,22 +62,19 @@ const int PASS_UNIFORM_SLOTS = 8;
 const int PASS_UNIFORM_BYTES = 512;
 
 // What the pass being drawn into is made of: a pipeline is made for each.
-struct PassFormat @local
-{
+struct PassFormat @local {
     SgPixelFormat color;
     SgPixelFormat depth;
     int samples;
     bool screen;
 }
 
-struct PassPipeline @local
-{
+struct PassPipeline @local {
     PassFormat format;
     SgPipeline pipeline;
 }
 
-struct PostState @local
-{
+struct PostState @local {
     SgSampler linear;
     SgSampler nearest;
     // the pass begun by begin_screen, RenderTarget.begin or ShaderPass.render
@@ -78,39 +84,52 @@ struct PostState @local
 PostState post_state @local;
 
 // Shared samplers for passes: bilinear and nearest, both clamped to the edge.
-fn SgSampler linear_sampler()
-{
-    if (!post_state.linear.id)
-    {
-        post_state.linear = sg::make_sampler(&&{
-            .min_filter = LINEAR, .mag_filter = LINEAR, .wrap_u = CLAMP_TO_EDGE, .wrap_v = CLAMP_TO_EDGE,
-        });
+fn SgSampler linear_sampler() {
+    if (!post_state.linear.id) {
+        post_state.linear = sg::make_sampler(
+            &&{
+                .min_filter = LINEAR,
+                .mag_filter = LINEAR,
+                .wrap_u = CLAMP_TO_EDGE,
+                .wrap_v = CLAMP_TO_EDGE,
+            }
+        );
     }
     return post_state.linear;
 }
 
-fn SgSampler nearest_sampler()
-{
-    if (!post_state.nearest.id)
-    {
-        post_state.nearest = sg::make_sampler(&&{
-            .min_filter = NEAREST, .mag_filter = NEAREST, .wrap_u = CLAMP_TO_EDGE, .wrap_v = CLAMP_TO_EDGE,
-        });
+fn SgSampler nearest_sampler() {
+    if (!post_state.nearest.id) {
+        post_state.nearest = sg::make_sampler(
+            &&{
+                .min_filter = NEAREST,
+                .mag_filter = NEAREST,
+                .wrap_u = CLAMP_TO_EDGE,
+                .wrap_v = CLAMP_TO_EDGE,
+            }
+        );
     }
     return post_state.nearest;
 }
 
-fn SgColor clear_color_of(Color c, float alpha) @local
-{
+fn SgColor clear_color_of(Color c, float alpha) @local {
     return { ((c >> 16) & 0xff) / 255.0f, ((c >> 8) & 0xff) / 255.0f, (c & 0xff) / 255.0f, alpha };
 }
 
 // Starts a pass into the target, for ShaderPass.draw and drawing of your own (sokol_gl,
 // sokol_debugtext). `clear` and `clear_alpha` are used with load: CLEAR. A target with a depth
 // buffer has it cleared. End with end().
-fn void RenderTarget.begin(&self, SgLoadAction load = CLEAR, Color clear = 0x000000, float clear_alpha = 1, ZString label = "drie-target")
-{
-    SgPass pass = { .action.colors[0] = { .load_action = load, .clear_value = clear_color_of(clear, clear_alpha) }, .label = label };
+fn void RenderTarget.begin(
+    &self,
+    SgLoadAction load = CLEAR,
+    Color clear = 0x000000,
+    float clear_alpha = 1,
+    ZString label = "drie-target"
+) {
+    SgPass pass = {
+        .action.colors[0] = { .load_action = load, .clear_value = clear_color_of(clear, clear_alpha) },
+        .label = label
+    };
     pass.attachments = self.attachments();
     if (self.depth_buffer) pass.action.depth = { .load_action = CLEAR, .store_action = STORE, .clear_value = 1 };
     sg::begin_pass(&pass);
@@ -119,8 +138,7 @@ fn void RenderTarget.begin(&self, SgLoadAction load = CLEAR, Color clear = 0x000
 
 // Starts a pass over the target's resolved picture (its `texture`), as it is: for drawing on
 // top of a render, such as darkening it with MULTIPLY_BLEND. End with end().
-fn void RenderTarget.begin_over(&self, ZString label = "drie-over")
-{
+fn void RenderTarget.begin_over(&self, ZString label = "drie-over") {
     SgPass pass = { .action.colors[0] = { .load_action = LOAD }, .label = label };
     pass.attachments.colors[0] = self.overlay_view;
     sg::begin_pass(&pass);
@@ -131,16 +149,16 @@ fn void RenderTarget.end(&self) => sg::end_pass();
 
 // Starts a pass into the window, cleared to `clear`. With `aspect` (width / height) the
 // picture keeps that shape, with black bars in a window of any other. End with end_screen().
-fn void begin_screen(Color clear = 0x000000, float aspect = 0, ZString label = "drie-screen")
-{
-    sg::begin_pass(&&{
-        .action.colors[0] = { .load_action = CLEAR, .clear_value = clear_color_of(clear, 1) },
-        .swapchain = sglue::swapchain(),
-        .label = label,
-    });
+fn void begin_screen(Color clear = 0x000000, float aspect = 0, ZString label = "drie-screen") {
+    sg::begin_pass(
+        &&{
+            .action.colors[0] = { .load_action = CLEAR, .clear_value = clear_color_of(clear, 1) },
+            .swapchain = sglue::swapchain(),
+            .label = label,
+        }
+    );
     post_state.current = { .screen = true };
-    if (aspect > 0)
-    {
+    if (aspect > 0) {
         SlbxViewport vp = slbx::letterbox(sapp::width(), sapp::height(), &&{ .content_aspect_ratio = aspect });
         sg::apply_viewport(vp.x, vp.y, vp.width, vp.height, true);
     }
@@ -148,8 +166,7 @@ fn void begin_screen(Color clear = 0x000000, float aspect = 0, ZString label = "
 
 // Draws the overlays (drie::add_overlay: menus, fades, touch controls) over the whole window
 // and ends the pass begun with begin_screen.
-fn void end_screen()
-{
+fn void end_screen() {
     sg::apply_viewport(0, 0, sapp::width(), sapp::height(), true);
     drie::draw_overlays();
     sg::end_pass();
@@ -157,10 +174,15 @@ fn void end_screen()
 
 // The base of a pass in an EffectComposer, like three's Pass: a pass of your own is a struct
 // with `inline Pass pass;` first and its own `render_fn`.
-alias PassRenderFn = fn void(Pass* pass, EffectComposer* composer, RenderTarget* write, RenderTarget* read, float delta);
+alias PassRenderFn = fn void(
+    Pass* pass,
+    EffectComposer* composer,
+    RenderTarget* write,
+    RenderTarget* read,
+    float delta
+);
 
-struct Pass
-{
+struct Pass {
     PassRenderFn render_fn;
     bool enabled;
     // the composer swaps its read and write buffers after this pass
@@ -169,8 +191,7 @@ struct Pass
     bool render_to_screen;
 }
 
-struct ShaderPass
-{
+struct ShaderPass {
     inline Pass pass;
     SgShader shader;
     ZString label;
@@ -188,18 +209,27 @@ struct ShaderPass
 
 // A fullscreen pass with this shader (`my_shader_desc(sg::query_backend())`). `blend` blends
 // it into what is in the target (NO_BLEND, MULTIPLY_BLEND, ADDITIVE_BLEND, ALPHA_BLEND).
-fn ShaderPass* shader_pass(SgShaderDesc desc, ZString label = "drie-pass", SgBlendState blend = NO_BLEND,
-                           int input_view = -1, int input_sampler = -1)
-{
+fn ShaderPass* shader_pass(
+    SgShaderDesc desc,
+    ZString label = "drie-pass",
+    SgBlendState blend = NO_BLEND,
+    int input_view = -1,
+    int input_sampler = -1
+) {
     ShaderPass* p = mem::new(ShaderPass);
     p.init(desc, label, blend, input_view, input_sampler);
     return p;
 }
 
 // Sets up a ShaderPass in place (for a pass of your own that inlines one).
-fn void ShaderPass.init(&self, SgShaderDesc desc, ZString label = "drie-pass", SgBlendState blend = NO_BLEND,
-                        int input_view = -1, int input_sampler = -1)
-{
+fn void ShaderPass.init(
+    &self,
+    SgShaderDesc desc,
+    ZString label = "drie-pass",
+    SgBlendState blend = NO_BLEND,
+    int input_view = -1,
+    int input_sampler = -1
+) {
     self.shader = sg::make_shader(&desc);
     self.label = label;
     self.blend = blend;
@@ -215,29 +245,26 @@ fn void ShaderPass.set_sampler(&self, int slot, SgSampler sampler) => self.bindi
 
 // Keeps a copy of a uniform block (the struct sokol-shdc generated), applied on every draw
 // until it is set again: pass.set_uniforms(UB_MY_PARAMS, &params).
-macro void ShaderPass.set_uniforms(&self, int slot, data)
-{
+macro void ShaderPass.set_uniforms(&self, int slot, data) {
     self.set_uniform_bytes(slot, (char*)data, $Typeof(*data)::size);
 }
 
-fn void ShaderPass.set_uniform_bytes(&self, int slot, char* data, usz size)
-{
-    assert(slot >= 0 && slot < PASS_UNIFORM_SLOTS && size <= PASS_UNIFORM_BYTES, "uniform block slot %d of %d bytes", slot, size);
+fn void ShaderPass.set_uniform_bytes(&self, int slot, char* data, usz size) {
+    assert(slot >= 0 && slot < PASS_UNIFORM_SLOTS
+        && size <= PASS_UNIFORM_BYTES, "uniform block slot %d of %d bytes", slot, size);
     mem::copy(&self.uniforms[slot], data, (sz)size);
     self.uniform_size[slot] = size;
 }
 
-fn SgPipeline ShaderPass.pipeline_for(&self, PassFormat f)
-{
-    foreach (p : self.pipelines)
-    {
+fn SgPipeline ShaderPass.pipeline_for(&self, PassFormat f) {
+    foreach (p : self.pipelines) {
         PassFormat g = p.format;
-        if (g.color == f.color && g.depth == f.depth && g.samples == f.samples && g.screen == f.screen) return p.pipeline;
+        if (g.color == f.color && g.depth == f.depth && g.samples == f.samples
+            && g.screen == f.screen) return p.pipeline;
     }
     SgPipelineDesc desc = { .shader = self.shader, .label = self.label };
     desc.colors[0].blend = self.blend;
-    if (!f.screen)
-    {
+    if (!f.screen) {
         desc.colors[0].pixel_format = f.color;
         desc.depth.pixel_format = f.depth;
         desc.sample_count = f.samples;
@@ -248,12 +275,10 @@ fn SgPipeline ShaderPass.pipeline_for(&self, PassFormat f)
 }
 
 // Draws into the pass that is going on (begin_screen, RenderTarget.begin or begin_over).
-fn void ShaderPass.draw(&self)
-{
+fn void ShaderPass.draw(&self) {
     sg::apply_pipeline(self.pipeline_for(post_state.current));
     sg::apply_bindings(&self.bindings);
-    for (int i = 0; i < PASS_UNIFORM_SLOTS; i++)
-    {
+    for (int i = 0; i < PASS_UNIFORM_SLOTS; i++) {
         if (self.uniform_size[i]) sg::apply_uniforms(i, &&{ .ptr = &self.uniforms[i], .size = self.uniform_size[i] });
     }
     sg::draw(0, 3, 1);
@@ -262,10 +287,14 @@ fn void ShaderPass.draw(&self)
 // Draws into `target` in a pass of its own; null draws into the whole window (with the
 // overlay, see end_screen). By default what was in the target is not kept (load: DONTCARE):
 // the pass covers all of it.
-fn void ShaderPass.render(&self, RenderTarget* target, SgLoadAction load = DONTCARE, Color clear = 0x000000, float clear_alpha = 1)
-{
-    if (!target)
-    {
+fn void ShaderPass.render(
+    &self,
+    RenderTarget* target,
+    SgLoadAction load = DONTCARE,
+    Color clear = 0x000000,
+    float clear_alpha = 1
+) {
+    if (!target) {
         begin_screen(clear, label: self.label);
         self.draw();
         end_screen();
@@ -277,22 +306,25 @@ fn void ShaderPass.render(&self, RenderTarget* target, SgLoadAction load = DONTC
 }
 
 // Draws over the target's resolved picture, keeping it (see RenderTarget.begin_over).
-fn void ShaderPass.render_over(&self, RenderTarget* target)
-{
+fn void ShaderPass.render_over(&self, RenderTarget* target) {
     target.begin_over(self.label);
     self.draw();
     target.end();
 }
 
-fn void ShaderPass.dispose(&self)
-{
+fn void ShaderPass.dispose(&self) {
     foreach (p : self.pipelines) sg::destroy_pipeline(p.pipeline);
     self.pipelines.free();
     sg::destroy_shader(self.shader);
 }
 
-fn void shader_pass_render(Pass* pass, EffectComposer* composer, RenderTarget* write, RenderTarget* read, float delta) @local
-{
+fn void shader_pass_render(
+    Pass* pass,
+    EffectComposer* composer,
+    RenderTarget* write,
+    RenderTarget* read,
+    float delta
+) @local {
     ShaderPass* self = (ShaderPass*)pass;
     if (self.input_view >= 0) self.bindings.views[self.input_view] = read.texture;
     if (self.input_sampler >= 0) self.bindings.samplers[self.input_sampler] = linear_sampler();
@@ -302,8 +334,7 @@ fn void shader_pass_render(Pass* pass, EffectComposer* composer, RenderTarget* w
 // Renders a scene, like three's RenderPass: into a target of its own (multisampled, with a
 // depth buffer, as big as the composer's), which the next pass then reads. Set `mrt` (on an
 // RGBA16F composer) for passes that read its normals, motion or indirect light (GTAOPass).
-struct RenderPass
-{
+struct RenderPass {
     inline Pass pass;
     Scene* scene;
     Camera* camera;
@@ -312,26 +343,35 @@ struct RenderPass
     RenderTarget* target;
 }
 
-fn RenderPass* render_pass(Scene* scene, Camera* camera, int samples = 4)
-{
+fn RenderPass* render_pass(Scene* scene, Camera* camera, int samples = 4) {
     RenderPass* p = mem::new(RenderPass);
     *p = { .render_fn = &render_pass_render, .enabled = true, .scene = scene, .camera = camera, .samples = samples };
     return p;
 }
 
-fn void render_pass_render(Pass* pass, EffectComposer* composer, RenderTarget* write, RenderTarget* read, float delta) @local
-{
-    RenderPass* self = (RenderPass*)pass;
-    Renderer* r = composer.renderer;
+fn void render_pass_render(
+    Pass* pass,
+    EffectComposer* composer,
+    RenderTarget* write,
+    RenderTarget* read,
+    float delta
+) @local {
+    RenderPass* self   = (RenderPass*)pass;
+    Renderer* r        = composer.renderer;
     RenderTarget* prev = r.render_target;
-    if (pass.render_to_screen)
-    {
+    if (pass.render_to_screen) {
         r.set_render_target(null);
         r.render(self.scene, self.camera);
         r.set_render_target(prev);
         return;
     }
-    if (!self.target) self.target = drie::render_target(composer.width, composer.height, self.samples, composer.format, mrt: self.mrt);
+    if (!self.target) self.target = drie::render_target(
+        composer.width,
+        composer.height,
+        self.samples,
+        composer.format,
+        mrt: self.mrt
+    );
     self.target.set_size(composer.width, composer.height, self.samples);
     r.set_render_target(self.target);
     r.render(self.scene, self.camera);
@@ -342,23 +382,25 @@ fn void render_pass_render(Pass* pass, EffectComposer* composer, RenderTarget* w
 
 // Two render targets that take turns, for what builds up from frame to frame (a running
 // average, a meter): read() is the one written last, write() the other. swap() after writing.
-struct PingPong
-{
+struct PingPong {
     RenderTarget*[2] targets;
     int cur;
 }
 
-fn PingPong ping_pong(int width, int height, SgPixelFormat format = RGBA8)
-{
-    return { .targets = { drie::render_target(width, height, 1, format, false), drie::render_target(width, height, 1, format, false) } };
+fn PingPong ping_pong(int width, int height, SgPixelFormat format = RGBA8) {
+    return {
+        .targets = {
+            drie::render_target(width, height, 1, format, false),
+            drie::render_target(width, height, 1, format, false)
+        }
+    };
 }
 
 fn RenderTarget* PingPong.read(&self) => self.targets[self.cur];
 fn RenderTarget* PingPong.write(&self) => self.targets[1 - self.cur];
 fn void PingPong.swap(&self) => self.cur = 1 - self.cur;
 
-fn void PingPong.set_size(&self, int width, int height)
-{
+fn void PingPong.set_size(&self, int width, int height) {
     foreach (t : self.targets) t.set_size(width, height, 1);
     self.cur = 0;
 }
@@ -368,8 +410,7 @@ fn void PingPong.set_size(&self, int width, int height)
 // are swapped. The last enabled pass draws into the window. The buffers are `format`, one
 // sample, no depth: RGBA16F (three's HalfFloatType) keeps the light as it is until an
 // OutputPass at the end; with RGBA8 the scene is tone mapped as it is rendered.
-struct EffectComposer
-{
+struct EffectComposer {
     Renderer* renderer;
     int width;
     int height;
@@ -383,8 +424,7 @@ struct EffectComposer
 }
 
 // `width` and `height` 0: the window's size, followed as it changes.
-fn EffectComposer* effect_composer(Renderer* renderer, int width = 0, int height = 0, SgPixelFormat format = RGBA16F)
-{
+fn EffectComposer* effect_composer(Renderer* renderer, int width = 0, int height = 0, SgPixelFormat format = RGBA16F) {
     EffectComposer* c = mem::new(EffectComposer);
     *c = { .renderer = renderer, .width = width, .height = height, .format = format, .render_to_screen = true };
     return c;
@@ -392,38 +432,31 @@ fn EffectComposer* effect_composer(Renderer* renderer, int width = 0, int height
 
 fn void EffectComposer.add_pass(&self, Pass* pass) => self.passes.push(pass);
 
-fn void EffectComposer.remove_pass(&self, Pass* pass)
-{
-    foreach (i, p : self.passes)
-    {
-        if (p == pass)
-        {
+fn void EffectComposer.remove_pass(&self, Pass* pass) {
+    foreach (i, p : self.passes) {
+        if (p == pass) {
             self.passes.remove_at(i);
             return;
         }
     }
 }
 
-fn void EffectComposer.swap_buffers(&self)
-{
+fn void EffectComposer.swap_buffers(&self) {
     self.read_buffer = self.write_buffer;
     self.write_buffer = self.read_buffer == self.buffers[0] ? self.buffers[1] : self.buffers[0];
 }
 
-fn void EffectComposer.set_size(&self, int width, int height)
-{
+fn void EffectComposer.set_size(&self, int width, int height) {
     self.width = width;
     self.height = height;
     foreach (b : self.buffers) if (b) b.set_size(width, height, 1);
 }
 
 // Runs the passes. Like render(), call once per frame; the frame is committed after it.
-fn void EffectComposer.render(&self, float delta = 0)
-{
+fn void EffectComposer.render(&self, float delta = 0) {
     int w = self.width ?: sapp::width();
     int h = self.height ?: sapp::height();
-    if (!self.buffers[0])
-    {
+    if (!self.buffers[0]) {
         for (int i = 0; i < 2; i++) self.buffers[i] = drie::render_target(w, h, 1, self.format, false);
     }
     foreach (b : self.buffers) b.set_size(w, h, 1);
@@ -435,8 +468,7 @@ fn void EffectComposer.render(&self, float delta = 0)
     self.write_buffer = self.buffers[1];
     sz last = -1;
     foreach (i, p : self.passes) if (p.enabled) last = (sz)i;
-    foreach (i, p : self.passes)
-    {
+    foreach (i, p : self.passes) {
         if (!p.enabled) continue;
         p.render_to_screen = self.render_to_screen && (sz)i == last;
         p.render_fn(p, self, self.write_buffer, self.read_buffer, delta);
@@ -447,8 +479,7 @@ fn void EffectComposer.render(&self, float delta = 0)
     sg::commit();
 }
 
-fn void EffectComposer.dispose(&self)
-{
+fn void EffectComposer.dispose(&self) {
     foreach (b : self.buffers) if (b) b.dispose();
     self.passes.free();
 }
@@ -460,8 +491,7 @@ fn void EffectComposer.dispose(&self)
 //   OutputPass* out = postprocessing::output_pass(renderer);
 //   out.set_source(hdr_target.texture);
 //   out.render(ldr_target);           // or null: the window
-struct OutputPass
-{
+struct OutputPass {
     inline ShaderPass shader_pass;
     Renderer* renderer;
     // A 1x1 texture whose red channel multiplies the exposure (an auto exposure's meter, say),
@@ -480,10 +510,14 @@ struct OutputPass
     bool hdr;
 }
 
-fn OutputPass* output_pass(Renderer* renderer)
-{
+fn OutputPass* output_pass(Renderer* renderer) {
     OutputPass* p = mem::new(OutputPass);
-    p.init(output_shader_desc(sg::query_backend()), "drie-output", input_view: VIEW_OUTPUT_SRC, input_sampler: SMP_OUTPUT_SMP);
+    p.init(
+        output_shader_desc(sg::query_backend()),
+        "drie-output",
+        input_view: VIEW_OUTPUT_SRC,
+        input_sampler: SMP_OUTPUT_SMP
+    );
     p.renderer = renderer;
     p.render_fn = &output_pass_render;
     p.set_sampler(SMP_OUTPUT_SMP, linear_sampler());
@@ -494,41 +528,59 @@ fn OutputPass* output_pass(Renderer* renderer)
 fn void OutputPass.set_source(&self, SgView picture) => self.bindings.views[VIEW_OUTPUT_SRC] = picture;
 
 // Takes the renderer's tone mapping as it is now. render() and draw() call it.
-fn void OutputPass.update(&self)
-{
+fn void OutputPass.update(&self) {
     Renderer* r = self.renderer;
     OutputParams p = {
-        .params = { (float)r.tone_mapping.ordinal, r.tone_mapping_exposure, self.exposure_map.id ? 1 : 0, self.keep_linear ? 1 : 0 },
-        .params2 = { self.hdr || self.color_space == DISPLAY_P3_COLOR_SPACE ? 1 : 0, self.hdr ? r.output_headroom() : 0, 0, 0 },
+        .params = {
+            (float)r.tone_mapping.ordinal,
+            r.tone_mapping_exposure,
+            self.exposure_map.id ? 1 : 0,
+            self.keep_linear ? 1 : 0
+        },
+        .params2 = {
+            self.hdr || self.color_space == DISPLAY_P3_COLOR_SPACE ? 1 : 0,
+            self.hdr ? r.output_headroom() : 0,
+            0,
+            0
+        },
     };
     self.set_uniforms(UB_OUTPUT_PARAMS, &p);
     // (an unused slot still needs a texture)
-    self.bindings.views[VIEW_OUTPUT_EXPOSURE] = self.exposure_map.id ? self.exposure_map : self.bindings.views[VIEW_OUTPUT_SRC];
+    self.bindings.views[VIEW_OUTPUT_EXPOSURE] = self.exposure_map.id ? self.exposure_map
+        : self.bindings.views[VIEW_OUTPUT_SRC];
 }
 
-fn void OutputPass.render(&self, RenderTarget* target, SgLoadAction load = DONTCARE, Color clear = 0x000000, float clear_alpha = 1)
-{
+fn void OutputPass.render(
+    &self,
+    RenderTarget* target,
+    SgLoadAction load = DONTCARE,
+    Color clear = 0x000000,
+    float clear_alpha = 1
+) {
     if (!target) self.match_window();
     self.update();
     self.shader_pass.render(target, load, clear, clear_alpha);
 }
 
 // Takes the window's colors and range from the renderer (output_color_space, hdr_output).
-fn void OutputPass.match_window(&self)
-{
+fn void OutputPass.match_window(&self) {
     self.color_space = self.renderer.output_color_space;
     self.hdr = self.renderer.hdr_on();
 }
 
-fn void OutputPass.draw(&self)
-{
+fn void OutputPass.draw(&self) {
     if (post_state.current.screen) self.match_window();
     self.update();
     self.shader_pass.draw();
 }
 
-fn void output_pass_render(Pass* pass, EffectComposer* composer, RenderTarget* write, RenderTarget* read, float delta) @local
-{
+fn void output_pass_render(
+    Pass* pass,
+    EffectComposer* composer,
+    RenderTarget* write,
+    RenderTarget* read,
+    float delta
+) @local {
     OutputPass* self = (OutputPass*)pass;
     self.set_source(read.texture);
     self.render(pass.render_to_screen ? null : write);
@@ -549,8 +601,7 @@ fn void output_pass_render(Pass* pass, EffectComposer* composer, RenderTarget* w
 // In an EffectComposer it goes right after a RenderPass with `mrt` set. `ao_target` keeps the
 // occlusion (r), each pixel's distance from the camera's plane in meters (g) and n·v (b) until
 // the next render, for other passes that want the distance.
-struct GTAOPass
-{
+struct GTAOPass {
     inline Pass pass;
     Camera* camera;
     // how far around a point things darken it (m)
@@ -571,11 +622,16 @@ struct GTAOPass
     int frame;
 }
 
-fn GTAOPass* gtao_pass(Camera* camera)
-{
+fn GTAOPass* gtao_pass(Camera* camera) {
     GTAOPass* p = mem::new(GTAOPass);
-    *p = { .render_fn = &gtao_pass_render, .enabled = true, .camera = camera, .radius = 0.5, .intensity = 1,
-           .specular_occlusion = true };
+    *p = {
+        .render_fn = &gtao_pass_render,
+        .enabled = true,
+        .camera = camera,
+        .radius = 0.5,
+        .intensity = 1,
+        .specular_occlusion = true
+    };
     SgBackend backend = sg::query_backend();
     p.gtao.init(gtao_shader_desc(backend), "drie-gtao");
     p.gtao_ms.init(gtao_ms_shader_desc(backend), "drie-gtao");
@@ -588,24 +644,24 @@ fn GTAOPass* gtao_pass(Camera* camera)
 
 // Works out the occlusion of what `target` (rendered from the pass's camera, with MRT) shows
 // into ao_target, and darkens the target's picture with it.
-fn void GTAOPass.render(&self, RenderTarget* target)
-{
+fn void GTAOPass.render(&self, RenderTarget* target) {
     self.render_occlusion(target);
     self.apply.set_texture(VIEW_GTAO_AO, self.ao_target.texture);
     self.apply.set_texture(VIEW_GTAO_INDIRECT, target.indirect_texture);
-    GtaoApplyParams ap = { .size = { target.width, target.height, self.direct_occlusion, self.specular_occlusion ? 0 : 1 } };
+    GtaoApplyParams ap = {
+        .size = { target.width, target.height, self.direct_occlusion, self.specular_occlusion ? 0 : 1 }
+    };
     self.apply.set_uniforms(UB_GTAO_APPLY_PARAMS, &ap);
     self.apply.render_over(target);
 }
 
 // Only the occlusion, into ao_target, leaving the picture as it is.
-fn void GTAOPass.render_occlusion(&self, RenderTarget* target)
-{
+fn void GTAOPass.render_occlusion(&self, RenderTarget* target) {
     if (!target.mrt || !target.depth_buffer) abort("drie: GTAOPass needs a target with MRT and a depth buffer");
     if (!self.ao_target) self.ao_target = drie::render_target(target.width, target.height, 1, RGBA16F, false);
     self.ao_target.set_size(target.width, target.height, 1);
     Camera* cam = self.camera;
-    Mat4 m = cam.matrix_world;
+    Mat4 m      = cam.matrix_world;
     GtaoParams p = {
         .clip = { cam.near, cam.far, drie::depth_zero_to_one() ? 1 : 0, drie::depth_zero_to_one() ? 1 : 0 },
         .view = { 1 / cam.projection_matrix[0][0], 1 / cam.projection_matrix[1][1], target.width, target.height },
@@ -622,16 +678,20 @@ fn void GTAOPass.render_occlusion(&self, RenderTarget* target)
     g.render(self.ao_target);
 }
 
-fn void GTAOPass.dispose(&self)
-{
+fn void GTAOPass.dispose(&self) {
     self.gtao.dispose();
     self.gtao_ms.dispose();
     self.apply.dispose();
     if (self.ao_target) self.ao_target.dispose();
 }
 
-fn void gtao_pass_render(Pass* pass, EffectComposer* composer, RenderTarget* write, RenderTarget* read, float delta) @local
-{
+fn void gtao_pass_render(
+    Pass* pass,
+    EffectComposer* composer,
+    RenderTarget* write,
+    RenderTarget* read,
+    float delta
+) @local {
     GTAOPass* self = (GTAOPass*)pass;
     self.render(read);
 }
@@ -647,8 +707,7 @@ fn void gtao_pass_render(Pass* pass, EffectComposer* composer, RenderTarget* wri
 //   renderer.set_render_target(scene_rt); renderer.render(scene, camera);
 //   taa.render(scene_rt);
 //   output.set_source(taa.texture());
-struct TAAPass
-{
+struct TAAPass {
     inline Pass pass;
     // the share of each new frame in the average: less is smoother and slower to follow
     float blend;
@@ -664,11 +723,17 @@ struct TAAPass
     int frame;
 }
 
-fn TAAPass* taa_pass()
-{
+fn TAAPass* taa_pass() {
     TAAPass* p = mem::new(TAAPass);
-    *p = { .render_fn = &taa_pass_render, .enabled = true, .needs_swap = false, .blend = 0.1, .clip_width = 1.25,
-           .jitter_samples = 8, .reset = true };
+    *p = {
+        .render_fn = &taa_pass_render,
+        .enabled = true,
+        .needs_swap = false,
+        .blend = 0.1,
+        .clip_width = 1.25,
+        .jitter_samples = 8,
+        .reset = true
+    };
     p.resolve.init(taa_shader_desc(sg::query_backend()), "drie-taa");
     p.resolve.set_sampler(SMP_TAA_SMP, linear_sampler());
     p.resolve.set_sampler(SMP_TAA_POINT_SMP, nearest_sampler());
@@ -676,12 +741,10 @@ fn TAAPass* taa_pass()
 }
 
 // The i-th number of the Halton sequence of `base`, in 0..1.
-fn float halton(int i, int base)
-{
+fn float halton(int i, int base) {
     float f = 1;
     float r = 0;
-    while (i > 0)
-    {
+    while (i > 0) {
         f /= base;
         r += f * (i % base);
         i /= base;
@@ -690,20 +753,17 @@ fn float halton(int i, int base)
 }
 
 // Shifts the camera for the next frame (Halton 2, 3: within half a pixel of the middle).
-fn void TAAPass.jitter(&self, Camera* camera)
-{
+fn void TAAPass.jitter(&self, Camera* camera) {
     int i = self.frame % self.jitter_samples + 1;
     camera.jitter = { halton(i, 2) - 0.5f, halton(i, 3) - 0.5f };
 }
 
 // Blends what `target` (rendered with MRT, with the jittered camera) shows now into the history.
-fn void TAAPass.render(&self, RenderTarget* target)
-{
+fn void TAAPass.render(&self, RenderTarget* target) {
     if (!target.mrt) abort("drie: TAAPass needs a target with MRT (for its motion vectors)");
     if (!self.history.targets[0]) self.history = ping_pong(target.width, target.height, RGBA16F);
     RenderTarget* h = self.history.read();
-    if (h.width != target.width || h.height != target.height)
-    {
+    if (h.width != target.width || h.height != target.height) {
         self.history.set_size(target.width, target.height);
         self.reset = true;
     }
@@ -725,16 +785,20 @@ fn void TAAPass.render(&self, RenderTarget* target)
 // The antialiased picture, after render().
 fn SgView TAAPass.texture(&self) => self.history.read().texture;
 
-fn void TAAPass.dispose(&self)
-{
+fn void TAAPass.dispose(&self) {
     self.resolve.dispose();
     foreach (t : self.history.targets) if (t) t.dispose();
 }
 
 // In an EffectComposer, after a RenderPass with `mrt` set (call jitter() before the composer
 // renders): the next pass reads the antialiased picture.
-fn void taa_pass_render(Pass* pass, EffectComposer* composer, RenderTarget* write, RenderTarget* read, float delta) @local
-{
+fn void taa_pass_render(
+    Pass* pass,
+    EffectComposer* composer,
+    RenderTarget* write,
+    RenderTarget* read,
+    float delta
+) @local {
     TAAPass* self = (TAAPass*)pass;
     self.render(read);
     composer.read_buffer = self.history.read();
