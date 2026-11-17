@@ -598,6 +598,9 @@ struct RendererState @local {
     SgView fog_view;
     // the camera's focal length in pixels (0: not a perspective camera), for prepassed()
     float prepass_focal;
+    // What the transmission materials refract (Material.transmission): the opaque scene from
+    // the same camera, drawn before the main pass (see render_transmission).
+    RenderTarget* transmission;
 }
 
 RendererState state @local;
@@ -1833,6 +1836,12 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
         );
     }
     bind.samplers[shaders::SMP_SSR_SMP] = state.clamp_sampler;
+    // what a transmission material refracts (its own draw leaves the picture alone: the
+    // renderer draws the opaque scene without it first, see render_transmission)
+    Texture* none     = ready(state.white);
+    bool transmission = mat.transmission > 0 && mat.type == STANDARD && state.transmission != null;
+    bind.views[shaders::VIEW_TEX_TRANSMISSION] = transmission ? state.transmission.texture : none.view;
+    bind.samplers[shaders::SMP_TRANSMISSION_SMP] = transmission ? state.clamp_sampler : none.sampler;
     bind.views[shaders::VIEW_TEX_GI] = state.irradiance.view;
     bind.views[shaders::VIEW_RC_PROBES] = state.radiance_view;
     bind.samplers[shaders::SMP_GI_SMP] = state.irradiance.sampler;
@@ -1906,6 +1915,9 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     fs.env_box_min = { ...mat.env_box_min, 0 };
     fs.env_box_max = { ...mat.env_box_max, 0 };
     fs.material_custom = mat.custom;
+    // (a draw without the picture behind it, the transmission pass's own, leaves it off)
+    fs.transmission_params = { mat.ior > 0 ? mat.ior : 1.5f, mat.thickness, mat.dispersion, mat.attenuation_distance };
+    fs.transmission_color = { ...color_to_linear(mat.attenuation_color), transmission ? mat.transmission : 0 };
     fs.frame_custom = r.custom;
     fs.ssr_view_proj = r.ssr_view_proj;
     fs.ssr_params = { ssr ? mat.ssr : 0, r.ssr_reach, (float)(r.ssr_frame % 64), depth_zero_to_one() ? 1 : 0 };
@@ -2107,6 +2119,42 @@ fn void draw_backdrop(Scene* scene, Camera* camera, Mat4 view_proj, FsParams* fs
     draw_item(&item, view_proj, fs, has_holes(&item) ? CUT : SOLID);
 }
 
+// The picture the transmission materials refract, like three's renderTransmissionPass: the
+// opaque scene without them, from the same camera, in linear light, with the frame's lights.
+// The main pass then samples it where each refraction ray leaves the surface.
+fn void render_transmission(Renderer* r, Scene* scene, Mat4 view_proj, FsParams* fs) @local {
+    int width   = r.render_target ? r.render_target.width : sapp::width();
+    int height  = r.render_target ? r.render_target.height : sapp::height();
+    int samples = (r.render_target ? r.render_target.samples : sapp::sample_count()) > 1 ? 4 : 1;
+    if (!state.transmission) state.transmission = render_target(width, height, samples, RGBA16F);
+    state.transmission.set_size(width, height, samples);
+
+    RenderTarget* prev = r.render_target;
+    r.render_target = state.transmission;
+    // the same lights, but into linear light: the target is half float, tone mapped later
+    FsParams tfs = *fs;
+    tfs.output_params = { 1, fs.output_params.y, fs.output_params.z, 0 };
+    Color background = scene.background ? scene.background : r.clear_color;
+    Vector3 clear    = color_to_linear(background);
+    profile::begin_pass(
+        &&{
+            .action = {
+                .colors[0] = { .load_action = CLEAR, .clear_value = { clear.x, clear.y, clear.z, 1 } },
+                .depth = { .load_action = CLEAR, .store_action = STORE, .clear_value = 1 },
+            },
+            .attachments = state.transmission.attachments(),
+            .label = "drie-transmission",
+        }
+    );
+    foreach (&item : state.opaque) {
+        // the glass is not behind itself
+        if (item.mesh.material.transmission > 0 && item.mesh.material.type == STANDARD) continue;
+        draw_item(item, view_proj, &tfs, item.mesh.material.wireframe || has_holes(item) ? CUT : SOLID);
+    }
+    sg::end_pass();
+    r.render_target = prev;
+}
+
 // Draws the scene from the camera's point of view. Call once per frame from the animation loop.
 fn void Renderer.render(&self, Scene* scene, Camera* camera) {
     if (!state.gfx_ready) return;
@@ -2255,6 +2303,16 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera) {
         );
     }
     profile::stop("render: volumetric fog", pt);
+    pt = profile::start();
+    // what the transmission materials refract: the opaque scene behind them, without them
+    foreach (&item : state.opaque) {
+        Material* mat = item.mesh.material;
+        if (mat.transmission > 0 && mat.type == STANDARD) {
+            render_transmission(self, scene, view_proj, &fs);
+            break;
+        }
+    }
+    profile::stop("render: transmission", pt);
     pt = profile::start();
 
     Color background = scene.background ? scene.background : self.clear_color;
