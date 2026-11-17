@@ -205,7 +205,7 @@ fn void Raycaster.intersect_mesh(&self, Mesh* m, HitSink* sink) {
         return;
     }
     for (int i = 0; i < m.instance_count; i++) {
-        float* d  = &m.instance_data[(sz)i * 12];
+        float* d = &m.instance_data[(sz)i * 12];
         // the instance's rows of a 3x4 matrix (InstancedMesh.set_matrix_at)
         Mat4 inst = {
             { d[0], d[4], d[8], 0 },
