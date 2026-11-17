@@ -42,16 +42,18 @@ struct RenderTarget
     Texture* map_texture;
     // Multiple render targets, like three's `scenePass.setMRT(mrt({ output, normal, velocity }))`:
     // a scene rendered into an RGBA16F target with `mrt` set also writes
-    //   normal_texture    RGBA16F: the surface's normal in world space (after its normal map),
-    //                     a = its roughness; 0 where nothing was drawn
+    //   normal_texture    RG16SN (RG16F where that can't be drawn into): the surface's normal
+    //                     in world space (after its normal map), packed into two numbers like
+    //                     three's packNormalToOctahedral (unpack_octahedral_normal in gtao.glsl)
     //   velocity_texture  RG16F: how far it moved across the picture since the last frame
     //                     drawn with MRT, in texture coordinates (uv now - uv then), with the
     //                     camera's motion and each mesh's; instances and skinned vertices are
     //                     taken to stand still
-    //   indirect_texture  RG8: the share of the pixel's light that is indirect, r = diffuse
+    //   indirect_texture  RGBA8: the share of the pixel's light that is indirect, r = diffuse
     //                     (ambient, hemisphere, irradiance volume, baked vertex light), g =
     //                     specular (environment map and screen-space reflections): what ambient
-    //                     occlusion darkens (GTAOPass in postprocessing.c3)
+    //                     occlusion darkens (GTAOPass in postprocessing.c3); b = the surface's
+    //                     roughness, a = its metalness
     // Set it before the first set_size. See-through materials write none of them.
     bool mrt;
     SgImage[MRT_COUNT] mrt_color;
@@ -66,7 +68,15 @@ struct RenderTarget
 // RenderTarget.mrt's extra pictures (after the color, at attachments 1, 2, 3) and their pixel
 // formats: normal, velocity, indirect.
 const int MRT_COUNT = 3;
-const SgPixelFormat[MRT_COUNT] MRT_FORMATS = { RGBA16F, RG16F, RG8 };
+fn SgPixelFormat mrt_format(int i) @local
+{
+    switch (i)
+    {
+        case 0: return sg::query_pixelformat(SgPixelFormat.RG16SN).render ? SgPixelFormat.RG16SN : SgPixelFormat.RG16F;
+        case 1: return RG16F;
+        default: return RGBA8;
+    }
+}
 
 // The picture as a Texture, for any material's map, like three's `renderTarget.texture`: a
 // screen in the scene showing what another camera sees, say. It follows set_size. Call it
@@ -189,7 +199,7 @@ fn void RenderTarget.set_size(&self, int width, int height, int samples = 1)
         {
             self.mrt_color[i] = sg::make_image(&&{
                 .usage = { .color_attachment = true },
-                .width = width, .height = height, .sample_count = samples, .pixel_format = MRT_FORMATS[i],
+                .width = width, .height = height, .sample_count = samples, .pixel_format = mrt_format(i),
             });
             self.mrt_color_view[i] = sg::make_view(&&{ .color_attachment = { .image = self.mrt_color[i] } });
             SgImage shown = self.mrt_color[i];
@@ -197,7 +207,7 @@ fn void RenderTarget.set_size(&self, int width, int height, int samples = 1)
             {
                 self.mrt_resolve[i] = sg::make_image(&&{
                     .usage = { .resolve_attachment = true, .color_attachment = true },
-                    .width = width, .height = height, .sample_count = 1, .pixel_format = MRT_FORMATS[i],
+                    .width = width, .height = height, .sample_count = 1, .pixel_format = mrt_format(i),
                 });
                 self.mrt_resolve_view[i] = sg::make_view(&&{ .resolve_attachment = { .image = self.mrt_resolve[i] } });
                 shown = self.mrt_resolve[i];
@@ -875,7 +885,7 @@ fn SgPipeline get_pipeline(Side side, bool transparent, bool wireframe, RenderTa
         desc.color_count = 1 + MRT_COUNT;
         for (int i = 0; i < MRT_COUNT; i++)
         {
-            desc.colors[i + 1].pixel_format = MRT_FORMATS[i];
+            desc.colors[i + 1].pixel_format = mrt_format(i);
             // what can be seen through leaves the normal, motion and light of what is behind it
             if (kind == DEPTH || transparent) desc.colors[i + 1].write_mask = NONE;
         }
