@@ -197,7 +197,8 @@ fn bool Raycaster.near_sphere(&self, Vector3 center, float radius, HitSink* sink
 
 fn void Raycaster.intersect_mesh(&self, Mesh* m, HitSink* sink) {
     BufferGeometry* g = m.geometry;
-    if (!g || g.indices.len() < 3) return;
+    // (lines are not hit: their indices are no triangles)
+    if (!g || g.indices.len() < 3 || m.is_line()) return;
     if (g.bounds_radius == 0) g.compute_bounding_sphere();
     Side side = m.material ? m.material.side : FRONT_SIDE;
     if (!m.instance_data.len()) {

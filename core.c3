@@ -112,6 +112,7 @@ fn Object3D* Object3D.clone(&self) {
     if (self.kind == MESH && ((Mesh*)self).instance_data.len() == 0) {
         Mesh* from = (Mesh*)self;
         copy = mesh(from.geometry, from.material);
+        ((Mesh*)copy).draw_mode = from.draw_mode;
     } else {
         copy = group();
     }
@@ -390,10 +391,23 @@ fn Scene* scene() {
 // Mesh
 // ----------------------------------------------------------------------------
 
+// How a mesh's indices are drawn: as triangles, or as lines (Line, LineSegments, LineLoop).
+enum DrawMode {
+    TRIANGLES,
+    // each two indices a segment (three's LineSegments)
+    LINE_SEGMENTS,
+    // each index joined to the next (three's Line)
+    LINE_STRIP,
+    // the same, and the last back to the first (three's LineLoop)
+    LINE_LOOP,
+}
+
 struct Mesh {
     inline Object3D object;
     BufferGeometry* geometry;
     Material* material;
+    // TRIANGLES, except for lines (see line())
+    DrawMode draw_mode;
     // Instancing (see InstancedMesh): 12 floats per instance, the rows of a 3x4 matrix.
     List{float} instance_data;
     int instance_count;
@@ -481,6 +495,46 @@ fn Mesh* mesh(BufferGeometry* geometry, Material* material = null) {
     m.material = material ? material : (Material*)mesh_basic_material();
     return m;
 }
+
+fn bool Mesh.is_line(&self) => self.draw_mode != TRIANGLES;
+
+// ----------------------------------------------------------------------------
+// Lines
+// ----------------------------------------------------------------------------
+
+// Lines through the geometry's points in index order, like THREE.Line (LineSegments: a
+// segment for each two indices; LineLoop: closed). As in WebGL, they are a pixel wide
+// whatever the material says. Use line_basic_material: lines are not lit, cast no shadows,
+// add nothing to radiance cascades and are not hit by a Raycaster.
+struct Line {
+    inline Mesh mesh;
+}
+
+struct LineSegments {
+    inline Line line;
+}
+
+struct LineLoop {
+    inline Line line;
+}
+
+fn Mesh* new_line(BufferGeometry* geometry, Material* material, DrawMode mode) @local {
+    Mesh* m = mesh(geometry, material ?: (Material*)line_basic_material());
+    m.draw_mode = mode;
+    return m;
+}
+
+fn Line* line(BufferGeometry* geometry, Material* material = null) => (Line*)new_line(geometry, material, LINE_STRIP);
+
+fn LineSegments* line_segments(
+    BufferGeometry* geometry,
+    Material* material = null
+) => (LineSegments*)new_line(geometry, material, LINE_SEGMENTS);
+
+fn LineLoop* line_loop(
+    BufferGeometry* geometry,
+    Material* material = null
+) => (LineLoop*)new_line(geometry, material, LINE_LOOP);
 
 // ----------------------------------------------------------------------------
 // Cameras
