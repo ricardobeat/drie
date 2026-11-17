@@ -79,6 +79,13 @@ struct Material
     // was on screen around it, more at a glancing angle. 0 = off, 1 = as a varnished surface
     // would; roughness blurs it.
     float ssr;
+    // how far (m) its reflected rays go looking for something: 0 = the renderer's reach
+    // (set_reflection_source). Short, only what stands on the surface is mirrored, and the rest
+    // is left to the environment map or the reflector
+    float ssr_reach;
+    // A Reflector whose plane the surface lies on: it mirrors that picture of the scene (see
+    // reflector.c3), and screen-space reflections (if on) only where they find something
+    Reflector* reflector;
     // Vertex colors are light baked into the geometry (from lamps that don't need to be real
     // lights) instead of a tint: they light the surface with this strength. 0 = off.
     float vertex_light;

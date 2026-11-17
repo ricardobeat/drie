@@ -302,6 +302,10 @@ struct Renderer
     // for every layer of leaves and blades, and no shader of the main pass discards (one that
     // can costs the GPU its early depth test). On by default.
     bool depth_prepass;
+    // Draws the shadow maps in render() (like three's shadowMap.autoUpdate). Off, a render uses
+    // the maps as the last one left them: for a second view of the same moment (a Reflector's),
+    // which would otherwise draw them all again from its own viewpoint. On by default.
+    bool shadow_map_auto_update;
     // ...for what covers at least this many pixels per triangle (about: its bounding sphere's
     // disk on the screen, over its triangles). Default 1.5.
     float depth_prepass_pixels;
@@ -314,6 +318,7 @@ struct Renderer
     // What materials with `ssr` reflect (see set_reflection_source).
     SgView ssr_color;
     SgView ssr_depth;
+    SgView ssr_back;
     Mat4 ssr_view_proj;
     float ssr_reach;
     bool ssr_linear;
@@ -328,11 +333,15 @@ struct Renderer
 // projection_matrix * matrix_world_inverse. Both the same size, row for row as rendered.
 // `reach` is how far a reflected ray is followed (m). Call it every frame before render();
 // clear_reflection_source() switches reflections off (for a render from another viewpoint).
-fn void Renderer.set_reflection_source(&self, SgView color, SgView depth, Mat4 view_proj, float reach = 12, bool linear = false)
+// `back` (optional) is render_back_faces' picture of the same frame: how thick things are, so a
+// reflected ray that passes behind something thin goes on to what is behind it.
+fn void Renderer.set_reflection_source(&self, SgView color, SgView depth, Mat4 view_proj, float reach = 12, bool linear = false,
+                                       SgView back = {})
 {
     self.ssr_linear = linear;
     self.ssr_color = color;
     self.ssr_depth = depth;
+    self.ssr_back = back;
     self.ssr_view_proj = view_proj;
     self.ssr_reach = reach;
     self.ssr_frame++;
@@ -342,6 +351,66 @@ fn void Renderer.clear_reflection_source(&self)
 {
     self.ssr_color = {};
     self.ssr_depth = {};
+    self.ssr_back = {};
+}
+
+// After render(): draws the back faces of the opaque, one-sided, solid things it drew into
+// `target` (an R16F target with a depth buffer, one sample, the size of the render): r = the
+// distance of the nearest back face from the camera's plane (m), 0 where there is none. Give it
+// to set_reflection_source next frame, so reflections know how thick things are.
+//   RenderTarget* back = three::render_target(w, h, 1, R16F);
+//   renderer.render(scene, camera); renderer.render_back_faces(back);
+fn void Renderer.render_back_faces(&self, RenderTarget* target)
+{
+    if (target.samples != 1 || target.pixel_format() != R16F || !target.depth_buffer) abort("three: back faces go into an R16F target with depth, one sample");
+    ulong pt = profile::start();
+    if (!state.back_pipeline.id)
+    {
+        state.back_pipeline = sg::make_pipeline(&&{
+            .shader = state.depth_shader,
+            .index_type = UINT32,
+            .cull_mode = FRONT,
+            .face_winding = CCW,
+            .layout = vertex_layout({ ATTR_THREE_POSITION, ATTR_THREE_NORMAL, ATTR_THREE_UV, ATTR_THREE_COLOR0,
+                                      ATTR_THREE_INST0, ATTR_THREE_INST1, ATTR_THREE_INST2 }),
+            .depth = { .pixel_format = DEPTH, .write_enabled = true, .compare = LESS_EQUAL },
+            .colors[0].pixel_format = R16F,
+            .label = "three-back-faces",
+        });
+    }
+    sg::begin_pass(&&{
+        .action = {
+            .colors[0] = { .load_action = CLEAR, .store_action = STORE, .clear_value = { 0, 0, 0, 0 } },
+            .depth = { .load_action = CLEAR, .clear_value = 1 },
+        },
+        .attachments = target.attachments(),
+        .label = "three-back-faces",
+    });
+    Mat4 view_proj = state.last_view_proj;
+    foreach (&item : state.opaque)
+    {
+        Material* mat = item.mesh.material;
+        // (what has holes or two sides has no inside to speak of)
+        if (mat.side != FRONT_SIDE || mat.wireframe || has_holes(item) || mat.screen_target) continue;
+        BufferGeometry* g = item.mesh.geometry;
+        sg::apply_pipeline(state.back_pipeline);
+        SgBindings bind = { .vertex_buffers[0] = g.vbuf, .index_buffer = g.ibuf };
+        bind_instances(&bind, item);
+        Vec4 inst_cull = cull_bind(&bind, item.job - 1);
+        Texture* map = ready(state.white);
+        bind.views[VIEW_TEX_MAP] = map.view;
+        bind.samplers[SMP_TEX_SMP] = map.sampler;
+        sg::apply_bindings(&bind);
+        VsParams vs = vs_params_of(item, view_proj, false);
+        vs.inst_cull = inst_cull;
+        sg::apply_uniforms(UB_VS_PARAMS, &&{ .ptr = &vs, .size = VsParams::size });
+        DepthFsParams fs = { .d_color = { 0, 0, 0, 1 } };
+        sg::apply_uniforms(UB_DEPTH_FS_PARAMS, &&{ .ptr = &fs, .size = DepthFsParams::size });
+        self.info.calls++;
+        draw_geometry(item, false);
+    }
+    sg::end_pass();
+    profile::stop("render: back faces", pt);
 }
 
 struct RenderInfo
@@ -498,6 +567,7 @@ fn Renderer* webgl_renderer(bool antialias = true, int width = 800, int height =
         .auto_time = true,
         .gpu_culling = true,
         .depth_prepass = true,
+        .shadow_map_auto_update = true,
         .depth_prepass_pixels = 1.5f,
         .max_lights = DEFAULT_MAX_LIGHTS,
         .shadow_atlas_capacity = DEFAULT_SHADOW_ATLAS_CAPACITY,
@@ -1650,6 +1720,9 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     bool ssr = r.ssr_color.id != 0 && r.ssr_depth.id != 0 && mat.ssr > 0;
     bind.views[VIEW_SSR_COLOR] = ssr ? r.ssr_color : ready(state.white).view;
     bind.views[VIEW_SSR_DEPTH] = ssr ? r.ssr_depth : ready(state.white).view;
+    bind.views[VIEW_SSR_BACK] = ssr && r.ssr_back.id ? r.ssr_back : ready(state.white).view;
+    Reflector* mirror = mat.reflector && mat.reflector.rendered && mat.reflector.target ? mat.reflector : null;
+    bind.views[VIEW_REFLECTOR_MAP] = mirror ? mirror.target.texture : ready(state.white).view;
     if (!state.clamp_sampler.id)
     {
         state.clamp_sampler = sg::make_sampler(&&{
@@ -1701,6 +1774,16 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     fs.frame_custom = r.custom;
     fs.ssr_view_proj = r.ssr_view_proj;
     fs.ssr_params = { ssr ? mat.ssr : 0, r.ssr_reach, (float)(r.ssr_frame % 64), depth_zero_to_one() ? 1 : 0 };
+    fs.ssr_thickness = { ssr && r.ssr_back.id ? 1 : 0, mat.ssr_reach > 0 ? mat.ssr_reach : r.ssr_reach, 0, 0 };
+    if (mirror)
+    {
+        fs.reflector_view_proj = mirror.view_proj;
+        fs.reflector_params = { mirror.strength, mirror.distortion, mirror.blur, 0 };
+    }
+    else
+    {
+        fs.reflector_params = {};
+    }
     float fog_mode = fs.fog_params.w;
     if (!mat.fog) fs.fog_params.w = 0;
     sg::apply_uniforms(UB_FS_PARAMS, &&{ .ptr = fs, .size = FsParams::size });
@@ -1873,14 +1956,14 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera)
     if (self.auto_time) self.time = (float)stm::sec(stm::since(state.start_ticks));
     self.info = {};
 
-    if (self.auto_aspect && camera.camera_type == PERSPECTIVE)
+    if (self.auto_aspect && camera.camera_type == PERSPECTIVE && !camera.custom_projection)
     {
         PerspectiveCamera* pc = (PerspectiveCamera*)camera;
         RenderTarget* rt = self.render_target;
         pc.aspect = rt ? (float)rt.width / rt.height : sapp::widthf() / sapp::heightf();
     }
     ulong pt = profile::start();
-    camera.update_projection_matrix();
+    if (!camera.custom_projection) camera.update_projection_matrix();
 
     if (!scene.no_matrix_world_update) scene.update_matrix_world();
     // cameras don't have to be part of the scene
@@ -1918,6 +2001,7 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera)
 
     profile::stop("render: matrices", pt);
     pt = profile::start();
+    state.last_view_proj = view_proj;
     state.opaque.clear();
     state.transparent.clear();
     state.casters.clear();
@@ -1942,8 +2026,10 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera)
     // view, say) must not reallocate it every frame
     ensure_shadow_map(caster ? caster.shadow.map_size : (state.shadow_size ?: 4));
     Mat4 caster_vp;
-    state.spot_casters.clear();
-    if (caster)
+    bool shadows = self.shadow_map_auto_update;
+    if (shadows) state.spot_casters.clear();
+    if (caster && !shadows) caster_vp = shadow_view_proj(caster);
+    if (caster && shadows)
     {
         caster_vp = shadow_view_proj(caster);
         Frustum light_frustum = frustum_from(caster_vp);
@@ -1952,9 +2038,12 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera)
     // the directional light's map is its own, so a sun and a spot light can both have shadows
     profile::stop("render: spot casters", pt);
     pt = profile::start();
-    DirectionalLight* sun = directional_shadow_light();
-    state.sun_caster = sun;
-    prepare_sun_shadow(scene, camera, sun);
+    DirectionalLight* sun = shadows ? directional_shadow_light() : state.sun_caster;
+    if (shadows)
+    {
+        state.sun_caster = sun;
+        prepare_sun_shadow(scene, camera, sun);
+    }
     profile::stop("render: sun casters", pt);
     pt = profile::start();
     // every view's instances culled at once, before the passes that draw them
@@ -1962,7 +2051,7 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera)
     profile::stop("render: cull dispatch", pt);
     pt = profile::start();
 
-    if (caster)
+    if (caster && shadows)
     {
         sg::begin_pass(&&{
             // depth is not stored by default: ask for it, the main pass samples this map
@@ -1976,10 +2065,10 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera)
     }
     profile::stop("render: spot shadow", pt);
     pt = profile::start();
-    draw_sun_shadow(sun);
+    if (shadows) draw_sun_shadow(sun);
     profile::stop("render: sun shadow", pt);
     pt = profile::start();
-    update_shadow_atlas(scene, camera);
+    if (shadows) update_shadow_atlas(scene, camera);
     profile::stop("render: spot atlas", pt);
     pt = profile::start();
     if (!state.no_irradiance) state.no_irradiance = irradiance_volume({ 0, 0, 0 }, { 1, 1, 1 }, 1);

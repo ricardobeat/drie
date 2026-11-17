@@ -233,6 +233,18 @@ These aren't in three.js:
   before, more at a glancing angle and blurred by its roughness (one noisy ray per pixel:
   follow it with a temporal filter). The application hands over the last frame's picture and
   depth every frame, after its own post-processing; see the function's comment for their layout.
+  `renderer.render_back_faces(target)` after `render()` records how thick things are, for
+  `set_reflection_source(..., back:)`: a ray that passes behind something thin goes on past it.
+  `material.ssr_reach` keeps a material's rays short (only what stands on the surface).
+- `reflector(normal, constant)` and `renderer.render_reflector(reflector, scene, camera)`: planar
+  reflections, like three's `Reflector`, for a flat surface that keeps its own material
+  (`material.reflector`). The scene is rendered again from the camera mirrored in the plane,
+  with what is behind the plane clipped by an oblique near plane (`camera.custom_projection`),
+  and the material mirrors that picture, moved by its normal map and blurred by its roughness.
+  It shows what the camera can't (the underside of a thing over the floor); it costs a second
+  render. With `ssr` on too, screen-space reflections add what they find close by.
+  `renderer.shadow_map_auto_update = false` (three's `shadowMap.autoUpdate`) renders with the
+  shadow maps as they are, as the reflector does.
 - `capture_environment(..., distance: &fn)`: with a ray caster of the application's, the map
   also stores how far away each direction's surface is (in its alpha). A box-projected glossy
   material then follows its reflected rays through the room as the map saw it, so that what
@@ -341,3 +353,9 @@ These aren't in three.js:
 `./build.sh shaders` in the application (`house`) to regenerate `shader.c3` (and `kernels.c3`
 from `kernels.glsl`, the compute shaders, `output.c3` and `gtao.c3` for the post-processing
 passes, and `taa.c3`), and any application shaders that include `shader_core.glsl`.
+
+## Tests
+
+`tests/reflections.c3` renders a scene made for reflections (a glossy floor, cubes floating
+over it, a thin panel, a wall) headless from a few low angles, with each kind of reflection side
+by side: `tests/run.sh reflections <the application's lib/> out.ppm`.
