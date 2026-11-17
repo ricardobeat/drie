@@ -15,6 +15,9 @@
 //   surface_hook(geo_n, base, rough, metal)  for lit materials, after the textures: changes
 //       the color (rgb, a = opacity), roughness and metalness. `geo_n` is the normal before
 //       the normal map; v_world_pos, v_uv, camera_pos... are there to read.
+//   normal_hook(geo_n, n)  for lit materials, after the normal map: changes the normal the
+//       surface is shaded with (and that the screen-space passes see). `geo_n` is the normal
+//       before the normal map, facing the camera.
 //   reflection_hook(dir, sky)  changes what an environment map (or glass's sky) reflects
 //       along `dir`.
 @header module three;
@@ -28,6 +31,7 @@ void vertex_hook(inout vec3 world, vec3 local, mat4 model) {}
 
 @block surface_hooks
 void surface_hook(vec3 geo_n, inout vec4 base, inout float rough, inout float metal) {}
+void normal_hook(vec3 geo_n, inout vec3 n) {}
 void reflection_hook(vec3 dir, inout vec3 sky) {}
 @end
 

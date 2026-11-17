@@ -1161,6 +1161,7 @@ void main() {
     g_dpdx = dFdx(v_world_pos);
     g_dpdy = dFdy(v_world_pos);
     if (tex_params.y != 0.0 && mode != 0) n = perturb_normal(n, tex_params.y);
+    if (mode != 0) normal_hook(geo_n, n);
 #ifdef MRT
     frag_normal.xy = pack_normal_octahedral(n);
 #endif
