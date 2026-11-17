@@ -1,4 +1,4 @@
-// three.js r187 examples/webgl_animation_keyframes.html: its script, unchanged.
+// three.js r187 examples/webgl_animation_keyframes.html
 
 import * as THREE from 'three';
 
