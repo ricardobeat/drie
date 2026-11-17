@@ -229,12 +229,13 @@ layout(binding=1) uniform fs_params {
                        //   16: vertex colors are baked light (emissive.w = strength), 32: screen-space map)
     vec4 mat_params;   // x = mode, y = roughness, z = metalness, w = shininess
     vec4 tex_params;   // x = has map, y = normal map scale (0 = none), z = has arm map, w = alpha test
-    vec4 env_params;   // x = has environment map, y = intensity, z = the scene's environment
-                       // lights the diffuse part too, from this mip level (0: it doesn't),
-                       // w = meters that alpha 1 of the map stands for (0: it holds no distances)
+    vec4 env_params;   // x = has environment map, y = intensity, z = 1: the scene's environment
+                       // lights the diffuse part too (env_sh), w = meters that alpha 1 of the
+                       // map stands for (0: it holds no distances)
     vec4 env_pos;      // where the map was captured, w = 1 for box projection
     vec4 env_box_min;  // the room the map shows, for box projection
     vec4 env_box_max;
+    vec4 env_sh[9];    // the scene's environment's irradiance, as Texture.env_sh (rgb)
     vec4 screen_params; // xy = 1 / render target size (screen-space map), z = LOD cross-fade (0..1),
                         //   w = 1 fading in, -1 fading out, 0 none
     vec4 cull_min;      // w = 1: fragments inside cull_min..cull_max are not drawn
@@ -1055,6 +1056,15 @@ vec2 env_uv(vec3 d) {
     return vec2(atan(d.z, d.x) * (0.5 * RECIPROCAL_PI) + 0.5, acos(clamp(d.y, -1.0, 1.0)) * RECIPROCAL_PI);
 }
 
+// The light the scene's environment puts on a surface facing n: env_sh's 9 spherical
+// harmonics, in the order of texture.c3's sh_basis.
+vec3 env_irradiance(vec3 n) {
+    vec3 e = env_sh[0].rgb + env_sh[1].rgb * n.y + env_sh[2].rgb * n.z + env_sh[3].rgb * n.x
+           + env_sh[4].rgb * (n.x * n.y) + env_sh[5].rgb * (n.y * n.z) + env_sh[6].rgb * (3.0 * n.z * n.z - 1.0)
+           + env_sh[7].rgb * (n.x * n.z) + env_sh[8].rgb * (n.x * n.x - n.y * n.y);
+    return max(e, vec3(0.0));
+}
+
 // The map being read: the material's own (g_env_layer < 0), or a layer of the scene's probes.
 float g_env_layer;
 vec4 g_env_pos;      // as env_pos
@@ -1296,9 +1306,8 @@ void main() {
         if (mode == 3) diffuse_color *= (1.0 - g_metal);
 
         vec3 sky_light = ambient.rgb + mix(hemi_ground.rgb, hemi_sky.rgb, 0.5 * n.y + 0.5);
-        // the scene's environment (Scene.environment): the light from all around n, from a
-        // level of the map blurry enough to stand for it
-        if (env_params.z > 0.0) sky_light += PI * env_params.y * textureLod(sampler2D(tex_env, env_smp), env_uv(n), env_params.z).rgb;
+        // the scene's environment (Scene.environment): the light from all around n
+        if (env_params.z > 0.0) sky_light += env_params.y * env_irradiance(n);
         float gi_fade;
         vec3 gi = gi_irradiance(n, gi_fade);
         vec3 irradiance = gi_min.w > 1.5 ? mix(sky_light, gi, gi_fade) : sky_light + gi * gi_fade;

@@ -53,6 +53,11 @@ struct Texture
     // For an environment map captured with distances (Renderer.capture_environment): alpha 1
     // stands for this many meters from where it was captured. 0: no distances.
     float env_distance_range;
+    // As Scene.environment, the light it puts on a surface facing each way: its irradiance in
+    // spherical harmonics (env_sh_irradiance), worked out at the upload of a 2:1
+    // (longitude/latitude) image.
+    Vector3[9] env_sh;
+    bool has_env_sh;
     // GPU state, created lazily on first render.
     SgImage image;
     SgView view;
@@ -343,6 +348,12 @@ fn void Texture.upload_float(&self)
         .wrap_u = sg_wrap(self.wrap_s),
         .wrap_v = sg_wrap(self.wrap_t),
     });
+    if (self.width == 2 * self.height)
+    {
+        int l = env_sh_level(widths[:count]);
+        self.env_sh = env_sh_irradiance(levels[l], {}, widths[l], heights[l], false);
+        self.has_env_sh = true;
+    }
     for (int i = 1; i < count; i++) mem::free(levels[i].ptr);
     mem::free(self.float_pixels.ptr);
     self.float_pixels = {};
@@ -449,6 +460,15 @@ fn void Texture.upload(&self)
         .wrap_v = sg_wrap(self.wrap_t),
         .max_anisotropy = count > 1 ? (uint)math::clamp(self.anisotropy, 1, 16) : 1,
     });
+    if (self.width == 2 * self.height)
+    {
+        int[16] widths;
+        for (int i = 0; i < count; i++) widths[i] = math::max(self.width >> i, 1);
+        int l = env_sh_level(widths[:count]);
+        self.env_sh = env_sh_irradiance({}, levels[l], widths[l], math::max(self.height >> l, 1),
+                                        self.color_space == SRGB_COLOR_SPACE);
+        self.has_env_sh = true;
+    }
     for (int i = 1; i < count; i++) mem::free(levels[i].ptr);
     self.average_color();
     mem::free(self.pixels.ptr);
@@ -466,4 +486,114 @@ fn void Texture.dispose(&self)
     self.image = {};
     self.sampler = {};
     self.uploaded = false;
+}
+
+// The mip level to work out env_sh from: the largest at most 128 pixels wide, which still holds
+// all of the image's light (each level averages the one above).
+fn int env_sh_level(int[] widths) @local
+{
+    for (int i = 0; i < widths.len; i++)
+    {
+        if (widths[i] <= 128) return i;
+    }
+    return widths.len - 1;
+}
+
+// The 9 spherical harmonics up to band 2 at direction d, without their constants (those are in
+// the coefficients). The shader's env_irradiance evaluates the same 9.
+fn void sh_basis(Vector3 d, float[9]* b) @local
+{
+    *b = { 1, d.y, d.z, d.x, d.x * d.y, d.y * d.z, 3 * d.z * d.z - 1, d.x * d.z, d.x * d.x - d.y * d.y };
+}
+
+// Constants of the real spherical harmonics in sh_basis' order, and the cosine lobe's factor per
+// band (Ramamoorthi & Hanrahan 2001, "An Efficient Representation for Irradiance Environment Maps").
+const float[9] SH_K = { 0.282095f, 0.488603f, 0.488603f, 0.488603f, 1.092548f, 1.092548f, 0.315392f, 1.092548f, 0.546274f };
+const float[9] SH_BAND = { 0, 1, 1, 1, 2, 2, 2, 2, 2 };
+const float[3] SH_COSINE = { PI, 2 * PI / 3, PI / 4 };
+
+// The irradiance of a longitude/latitude image of radiance (rows as uploaded: the first at the
+// top, y up), as 9 coefficients c with irradiance(n) = sum c[i] * basis_i(n): the radiance
+// projected onto spherical harmonics up to band 2, convolved with the cosine lobe, and windowed
+// as little as keeps it from going negative where a small, bright light (a sun) would otherwise
+// ring on the far side (Sloan 2017, "Deringing Spherical Harmonics"). Pixels are `floats` (RGBA,
+// linear) or `bytes` (RGBA8, sRGB when `srgb`).
+fn Vector3[9] env_sh_irradiance(float[] floats, char[] bytes, int w, int h, bool srgb)
+{
+    Vector3[9] l;
+    float[9] b;
+    for (int y = 0; y < h; y++)
+    {
+        float phi = ((float)y + 0.5f) / h * PI;
+        float sin_phi = math::sin(phi);
+        float d_omega = (2 * PI / w) * (PI / h) * sin_phi;
+        for (int x = 0; x < w; x++)
+        {
+            float theta = (((float)x + 0.5f) / w - 0.5f) * 2 * PI;
+            Vector3 d = { math::cos(theta) * sin_phi, math::cos(phi), math::sin(theta) * sin_phi };
+            sz i = ((sz)y * w + x) * 4;
+            Vector3 c;
+            if (floats.len)
+            {
+                c = { floats[i], floats[i + 1], floats[i + 2] };
+            }
+            else
+            {
+                c = { bytes[i] / 255.0f, bytes[i + 1] / 255.0f, bytes[i + 2] / 255.0f };
+                if (srgb) c = { srgb_to_linear(c.x), srgb_to_linear(c.y), srgb_to_linear(c.z) };
+            }
+            sh_basis(d, &b);
+            for (int k = 0; k < 9; k++) l[k] += c * (b[k] * SH_K[k] * d_omega);
+        }
+    }
+    // irradiance, with the basis' constants folded in so the shader only sums
+    Vector3[9] e;
+    for (int k = 0; k < 9; k++) e[k] = l[k] * (SH_COSINE[(int)SH_BAND[k]] * SH_K[k]);
+    if (sh_min(e) >= 0) return e;
+    // the least windowing, 1 / (1 + lambda * l^2 (l + 1)^2) for band l, that leaves no direction negative
+    float lo = 0;
+    float hi = 1;
+    while (sh_min(sh_window(e, hi)) < 0 && hi < 1e6f) hi *= 4;
+    for (int i = 0; i < 24; i++)
+    {
+        float mid = (lo + hi) / 2;
+        if (sh_min(sh_window(e, mid)) < 0)
+        {
+            lo = mid;
+        }
+        else
+        {
+            hi = mid;
+        }
+    }
+    return sh_window(e, hi);
+}
+
+fn Vector3[9] sh_window(Vector3[9] e, float lambda) @local
+{
+    Vector3[9] out;
+    for (int k = 0; k < 9; k++)
+    {
+        float band = SH_BAND[k];
+        out[k] = e[k] / (1 + lambda * band * band * (band + 1) * (band + 1));
+    }
+    return out;
+}
+
+// The smallest value of any channel over 512 directions spread evenly over the sphere.
+fn float sh_min(Vector3[9] e) @local
+{
+    float lowest = 1e30f;
+    float[9] b;
+    for (int i = 0; i < 512; i++)
+    {
+        float y = 1 - (i + 0.5f) / 256;
+        float r = math::sqrt(math::max(0.0f, 1 - y * y));
+        float a = i * 2.39996323f;
+        sh_basis({ math::cos(a) * r, y, math::sin(a) * r }, &b);
+        Vector3 v;
+        for (int k = 0; k < 9; k++) v += e[k] * b[k];
+        lowest = math::min(lowest, math::min(v.x, math::min(v.y, v.z)));
+    }
+    return lowest;
 }
