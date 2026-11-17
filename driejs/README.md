@@ -36,9 +36,9 @@ It also measures the per-frame CPU work three.js does in JS before a renderer dr
 | `lib/draco.c3l` | DRACOLoader's decoder: libdraco, linked statically from Homebrew (`brew install draco` to build) |
 
 boomkat needs commit `92c6f2ea` or later: before it, a derived class's constructor with a
-non-literal default parameter threw, and three.js failed while loading. The `jit` branch
-(`d226d129`) predates it; the JIT columns are that branch with `92c6f2ea` cherry-picked.
-`--jit` is the baseline tier, `--opt` adds the optimizing tier.
+non-literal default parameter threw, and three.js failed while loading. driejs builds on the
+`jit` branch, with both JIT tiers on (boomkat's `--jit`); the `boomkat` column is main,
+interpreted.
 
 drie-js needs `--script` and the `now` and `updateMatrixWorld` natives in its `src/main.c3`,
 and `MAX_OBJECTS` above 22000 for the 20000-mesh scene.
@@ -69,31 +69,31 @@ culling.
 
 ## Results
 
-Apple Silicon, macOS, 2026-11-16. Milliseconds per frame.
+Apple Silicon, macOS, 2026-11-17 (c3c 0.8.6; boomkat main `eb5e17f1`, jit `c8ec5308`; node
+24.13, bun 1.3.13). Milliseconds per frame. `driejs` is boomkat's `jit` branch with both JIT
+tiers, as driejs runs a script (`BOOMKAT=<a jit build> just bench boomkat-jit`); `boomkat` is
+main without a JIT.
 
-| Case | N | drie (C3) | drie-js | node | bun | node --jitless | boomkat | boomkat --jit | boomkat --opt |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| transforms: all moving | 1000 | 0.028 | 0.385 | 0.073 | 0.065 | 1.65 | 2.05 | 1.22 | 0.638 |
-| | 5000 | 0.136 | 1.98 | 0.449 | 0.331 | 8.63 | 8.64 | 6.86 | 4.54 |
-| | 20000 | 0.599 | 8.92 | 4.59 | 3.54 | 46.7 | 41.8 | 34.6 | 24.4 |
-| transforms: nothing moving | 1000 | 0.007 | 0.348 | 0.037 | 0.040 | 1.30 | 1.03 | 0.688 | 0.136 |
-| | 5000 | 0.036 | 1.75 | 0.229 | 0.217 | 6.68 | 5.38 | 3.60 | 0.850 |
-| | 20000 | 0.155 | 7.43 | 1.53 | 2.34 | 30.9 | 24.9 | 18.1 | 6.72 |
-| transforms: frozen | 1000 | 0.000 | | 0.009 | 0.007 | 0.063 | 0.071 | 0.036 | 0.019 |
-| | 5000 | 0.000 | | 0.047 | 0.038 | 0.308 | 0.355 | 0.177 | 0.095 |
-| | 20000 | 0.001 | | 0.205 | 0.232 | 2.06 | 2.05 | 1.04 | 0.696 |
-| render list (incl. nothing moving) | 1000 | | | 0.166 | 0.128 | 3.12 | 2.91 | 1.93 | 0.946 |
-| | 5000 | | | 0.827 | 0.676 | 16.7 | 15.0 | 10.7 | 6.08 |
-| | 20000 | | | 5.25 | 5.70 | 84.3 | 66.1 | 49.3 | 29.8 |
-| sync: copy matrixWorld out | 1000 | | | 0.025 | 0.018 | 0.055 | 0.375 | 0.370 | 0.375 |
-| | 5000 | | | 0.139 | 0.095 | 0.326 | 1.92 | 1.91 | 1.99 |
-| | 20000 | | | 0.756 | 1.12 | 3.02 | 10.5 | 11.1 | 10.4 |
-| animation: 60-bone characters | 10 | | | 0.150 | 0.130 | 2.63 | 4.40 | 3.86 | 3.05 |
-| | 50 | | | 0.813 | 0.772 | 13.3 | 23.9 | 20.6 | 16.8 |
-| raycast: 8k triangles | 1 | | | 0.262 | 0.215 | 9.67 | 13.4 | 5.39 | 3.66 |
-
-drie-js's "all moving" splits into `pushTransform` (JS, native calls) and drie's
-`update_matrix_world` (C): at 20000, 6.83 ms and 0.14 ms.
+| Case | N | drie (C3) | driejs | node --jitless | boomkat | node | bun |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| transforms: all moving | 1000 | 0.030 | 0.315 | 1.50 | 1.43 | 0.070 | 0.059 |
+|  | 5000 | 0.178 | 1.55 | 7.46 | 6.97 | 0.366 | 0.316 |
+|  | 20000 | 0.698 | 7.68 | 32.7 | 28.1 | 2.79 | 1.42 |
+| transforms: nothing moving | 1000 | 0.006 | 0.141 | 1.22 | 1.06 | 0.035 | 0.036 |
+|  | 5000 | 0.032 | 0.708 | 6.02 | 5.07 | 0.198 | 0.193 |
+|  | 20000 | 0.136 | 3.09 | 24.3 | 20.5 | 1.44 | 0.922 |
+| transforms: frozen | 1000 | 0.000 | 0.019 | 0.059 | 0.057 | 0.009 | 0.006 |
+|  | 5000 | 0.000 | 0.094 | 0.291 | 0.280 | 0.045 | 0.034 |
+|  | 20000 | 0.001 | 0.408 | 1.16 | 1.12 | 0.182 | 0.150 |
+| render list (incl. nothing moving) | 1000 |  | 0.904 | 2.81 | 2.76 | 0.159 | 0.116 |
+|  | 5000 |  | 4.94 | 14.9 | 13.9 | 0.739 | 0.599 |
+|  | 20000 |  | 21.2 | 59.6 | 58.8 | 3.96 | 3.19 |
+| sync: copy matrixWorld out | 1000 |  | 0.058 | 0.051 | 0.069 | 0.025 | 0.016 |
+|  | 5000 |  | 0.295 | 0.299 | 0.343 | 0.134 | 0.084 |
+|  | 20000 |  | 1.22 | 1.08 | 1.41 | 0.585 | 0.370 |
+| animation: 60-bone characters | 10 |  | 1.09 | 2.34 | 2.27 | 0.148 | 0.116 |
+|  | 50 |  | 5.43 | 11.7 | 11.5 | 0.723 | 0.586 |
+| raycast: 8k triangles | 1 |  | 2.45 | 8.12 | 10.5 | 0.218 | 0.268 |
 
 drie's frozen case is a flag check per group: its `matrix_world_auto_update = false` skips the
 subtree, and its transforms are only recomputed for what moved.
