@@ -10,10 +10,11 @@
 // reads them every frame), and shadows: castShadow and receiveShadow, and a directional
 // light's shadow, as drie's one sun shadow of a single box (its shadow.camera's half width).
 // InstancedMesh's matrices, SkinnedMesh (three poses the skeleton, drie moves the vertices),
-// and scene.environment from js/pmrem.js's PMREMGenerator.
+// Line, LineSegments and LineLoop (a pixel wide, as in WebGL; LineDashedMaterial draws them
+// solid), and scene.environment from js/pmrem.js's PMREMGenerator.
 //
 // Not mirrored yet: changes to a material's textures or flags without `needsUpdate`, geometry
-// groups and draw ranges, lines, points, sprites, morph targets, spot and point light shadows,
+// groups and draw ranges, points, sprites, morph targets, spot and point light shadows,
 // aoMap, lightMap, normal, roughness and metalness maps, an emissiveMap that isn't the map,
 // render targets and post-processing.
 import { Color, Matrix4 } from "../vendor/three.core.js";
@@ -157,6 +158,7 @@ export class DrieRenderer {
 		this.info.render.frame++;
 		this.info.render.calls = N.info(this._id, 0);
 		this.info.render.triangles = N.info(this._id, 1);
+		this.info.render.lines = N.info(this._id, 2);
 		if (profile) profileEnd = lap(4, t);
 	}
 
@@ -248,7 +250,7 @@ export class DrieRenderer {
 			this._scene.visited++;
 			this._record(id, shown, o.matrixWorld.elements);
 			if (o.isSky) this._sky(o);
-			else if (o.isMesh) this._refresh(o, frame);
+			else if (o.isMesh || o.isLine) this._refresh(o, frame);
 			if (o.isInstancedMesh) this._instances(o);
 			if (o.isSkinnedMesh && shown) this._skin(o, frame);
 			if (o.children.length !== 0) this._walk(o, shown, sceneId, frame);
@@ -274,7 +276,7 @@ export class DrieRenderer {
 		if (o.isSky) {
 			// three's Sky shader, as drie's own Sky (its ShaderMaterial can't be drawn as it is)
 			id = N.sky();
-		} else if (o.isMesh) {
+		} else if (o.isMesh || o.isLine) {
 			id = this._newMesh(o, this._geometry(o.geometry, this._frame), this._material(o.material, this._frame));
 			o.__drieGeometry = o.geometry.__drie;
 			o.__drieMaterial = (Array.isArray(o.material) ? o.material[0] : o.material).__drie;
@@ -299,6 +301,7 @@ export class DrieRenderer {
 	}
 
 	_newMesh(o, g, m) {
+		if (o.isLine) return N.line(g, m, o.isLineSegments ? 1 : o.isLineLoop ? 3 : 2);
 		if (o.isInstancedMesh) {
 			o.__drieInstances = undefined;
 			return N.instancedMesh(g, m, o.count);

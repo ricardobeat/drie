@@ -68,6 +68,7 @@ three.js API coverage:
 | --- | --- | --- |
 | Scene & Cameras | ✅ | `Object3D`, `Group`, `Scene`, `PerspectiveCamera`, `OrthographicCamera` |
 | Meshes & LOD | ✅ | `Mesh`, `InstancedMesh`, `Lod` |
+| Lines | ✅ | `Line`, `LineSegments`, `LineLoop`, `LineBasic` material; `LineDashed` ❌ |
 | Geometry | ✅ | `box`, `plane`, `sphere`, `cylinder`, `cone`, `torus`, `lathe`, `buffer_geometry`, `merge` |
 | Materials | ✅ | `MeshBasic`, `MeshLambert`, `MeshPhong`, `MeshStandard`, `MeshNormal`, parallax mapping (`parallaxUV`), shader hooks (`onBeforeCompile`) |
 | Textures | ✅ | `load_texture` (PNG/JPEG), `data_texture`, `canvas_texture`, mipmaps, anisotropy |
@@ -91,6 +92,7 @@ three.js API coverage:
 - Colors are plain sRGB hex `uint`s, not `Color` objects.
 - Rotations are XYZ Euler only (no quaternions or `rotation.order`).
 - No animation clips. Point lights cast no shadows.
+- Lines are a pixel wide (as in WebGL), cast no shadows, and are not hit by `Raycaster`.
 - `Raycaster` collects hits into a list you pass in (three's `optionalTarget`) and gives
   `normal` in world space.
 - `InstancedMesh` grows: `add_instance(matrix)` appends, `set_matrix_at(index, matrix)` changes one.

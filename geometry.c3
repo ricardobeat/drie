@@ -19,6 +19,10 @@ struct BufferGeometry {
     SgBuffer ibuf;
     SgBuffer wire_ibuf;
     uint wire_count;
+    // a Line's or LineLoop's segments (see upload_lines), and which of the two
+    SgBuffer line_ibuf;
+    uint line_count;
+    bool line_loop;
     uint index_count;
     bool uploaded;
     // Bounding sphere in local space, computed on upload (or by compute_bounding_sphere).
@@ -281,14 +285,46 @@ fn void BufferGeometry.upload_wire(&self) {
     );
 }
 
+// Builds the segment index buffer of a Line (each index joined to the next) or, with `loop`,
+// of a LineLoop (and the last back to the first). Called by the renderer; LineSegments draw
+// the indices as they are.
+fn void BufferGeometry.upload_lines(&self, bool loop) {
+    if (self.line_ibuf.id && self.line_loop == loop) return;
+    if (self.line_ibuf.id) sg::destroy_buffer(self.line_ibuf);
+    self.line_ibuf = { };
+    self.line_loop = loop;
+    List{uint} pairs;
+    defer pairs.free();
+    sz n = self.indices.len();
+    for (sz i = 0; i + 1 < n; i++) {
+        pairs.push(self.indices[i]);
+        pairs.push(self.indices[i + 1]);
+    }
+    if (loop && n > 2) {
+        pairs.push(self.indices[n - 1]);
+        pairs.push(self.indices[0]);
+    }
+    self.line_count = (uint)pairs.len();
+    if (!self.line_count) return;
+    self.line_ibuf = sg::make_buffer(
+        &&{
+            .usage = { .index_buffer = true },
+            .data = { .ptr = pairs.entries, .size = (usz)pairs.len() * uint::size },
+        }
+    );
+}
+
 // Frees GPU buffers. Geometry is re-uploaded if rendered again.
 fn void BufferGeometry.dispose(&self) {
     if (self.vbuf.id) sg::destroy_buffer(self.vbuf);
     if (self.ibuf.id) sg::destroy_buffer(self.ibuf);
     if (self.wire_ibuf.id) sg::destroy_buffer(self.wire_ibuf);
+    if (self.line_ibuf.id) sg::destroy_buffer(self.line_ibuf);
     self.vbuf = { };
     self.ibuf = { };
     self.wire_ibuf = { };
+    self.line_ibuf = { };
+    self.line_count = 0;
     self.uploaded = false;
 }
 

@@ -138,6 +138,9 @@ struct MeshStandardMaterial {
 struct MeshNormalMaterial {
     inline Material material;
 }
+struct LineBasicMaterial {
+    inline Material material;
+}
 
 fn void Material.init_base(
     &self,
@@ -180,6 +183,23 @@ fn MeshBasicMaterial* mesh_basic_material(
 ) {
     MeshBasicMaterial* m = mem::new(MeshBasicMaterial);
     m.init_base(BASIC, color, opacity, transparent, side, wireframe, fog);
+    m.vertex_colors = vertex_colors;
+    m.map = map;
+    return m;
+}
+
+// For lines (Line, LineSegments, LineLoop): unlit, flat color, like three's LineBasicMaterial.
+// Its linewidth has no counterpart: lines are a pixel wide, as in WebGL.
+fn LineBasicMaterial* line_basic_material(
+    Color color = 0xffffff,
+    float opacity = 1,
+    bool transparent = false,
+    bool fog = true,
+    bool vertex_colors = false,
+    Texture* map = null
+) {
+    LineBasicMaterial* m = mem::new(LineBasicMaterial);
+    m.init_base(BASIC, color, opacity, transparent, FRONT_SIDE, false, fog);
     m.vertex_colors = vertex_colors;
     m.map = map;
     return m;

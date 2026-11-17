@@ -631,6 +631,22 @@ fn void h_mesh(JsCtx ctx, void* udata)
     ctx.ret_number(reg_object((Object3D*)drie::mesh(g, get_material(num_arg(ctx, 1, -1)))));
 }
 
+// line(geometry, material, mode): a drie Line; mode 1 LineSegments, 2 Line, 3 LineLoop
+fn void h_line(JsCtx ctx, void* udata)
+{
+    BufferGeometry* g = get_geometry(num_arg(ctx, 0, -1));
+    if (g == null) { ctx.throw_error(TYPE, "line: invalid geometry"); return; }
+    Material* m = get_material(num_arg(ctx, 1, -1));
+    Object3D* o;
+    switch ((int)num_arg(ctx, 2, 2))
+    {
+        case 1: o = (Object3D*)drie::line_segments(g, m);
+        case 3: o = (Object3D*)drie::line_loop(g, m);
+        default: o = (Object3D*)drie::line(g, m);
+    }
+    ctx.ret_number(reg_object(o));
+}
+
 // skinnedMesh(geometry, material): a drie SkinnedMesh, posed by `skin`
 fn void h_skinned_mesh(JsCtx ctx, void* udata)
 {
@@ -824,11 +840,17 @@ fn void h_set_size(JsCtx ctx, void* udata)
     if (r) r.set_size((int)num_arg(ctx, 1, r.width), (int)num_arg(ctx, 2, r.height));
 }
 
+// info(renderer, what): what the last render drew, 0 draw calls, 1 triangles, 2 line segments
 fn void h_info(JsCtx ctx, void* udata)
 {
     Renderer* r = get_renderer(num_arg(ctx, 0, -1));
     if (r == null) { ctx.ret_number(0); return; }
-    ctx.ret_number((int)num_arg(ctx, 1, 0) == 0 ? r.info.calls : r.info.triangles);
+    switch ((int)num_arg(ctx, 1, 0))
+    {
+        case 0: ctx.ret_number(r.info.calls);
+        case 1: ctx.ret_number(r.info.triangles);
+        default: ctx.ret_number(r.info.lines);
+    }
 }
 
 // Milliseconds from an arbitrary start (boomkat has no `performance`).
@@ -1136,6 +1158,7 @@ fn int main(String[] args)
     reg(natives, "material", &h_material, 17);
     reg(natives, "materialUpdate", &h_material_update, 9);
     reg(natives, "mesh", &h_mesh, 2);
+    reg(natives, "line", &h_line, 3);
     reg(natives, "add", &h_add, 2);
     reg(natives, "sync", &h_sync, 2);
     reg(natives, "background", &h_background, 2);

@@ -438,7 +438,7 @@ fn void Renderer.render_back_faces(&self, RenderTarget* target) {
     foreach (&item : state.opaque) {
         Material* mat = item.mesh.material;
         // (what has holes or two sides has no inside to speak of)
-        if (mat.side != FRONT_SIDE || mat.wireframe || has_holes(item) || mat.screen_target) continue;
+        if (mat.side != FRONT_SIDE || draws_lines(item) || has_holes(item) || mat.screen_target) continue;
         BufferGeometry* g = item.mesh.geometry;
         sg::apply_pipeline(state.back_pipeline);
         SgBindings bind = { .vertex_buffers[0] = g.vbuf, .index_buffer = g.ibuf };
@@ -463,6 +463,8 @@ fn void Renderer.render_back_faces(&self, RenderTarget* target) {
 struct RenderInfo {
     int calls;
     int triangles;
+    // line segments (Line, LineSegments, LineLoop)
+    int lines;
     int shadow_calls;
     int shadow_triangles;
 }
@@ -1229,10 +1231,12 @@ fn void collect(
             if (!m.geometry || !m.material || !m.material.visible) break;
             // a Reflector's own surfaces are not in its picture
             if (state.renderer.reflecting && m.material.reflector == state.renderer.reflecting) break;
-            if (shadow_pass && (!m.cast_shadow || m.material.transparent)) break;
+            if (shadow_pass && (!m.cast_shadow || m.material.transparent || m.is_line())) break;
             if (shadow_pass && state.skip_instanced && m.instance_data.len() > 0) break;
             BufferGeometry* g = m.geometry;
             if (!g.uploaded && g.indices.len() == 0) break;
+            // a line needs two points
+            if (m.is_line() && g.indices.len() < 2) break;
             g.upload();
             Vector3 center = g.bounds_center;
             float radius = g.bounds_radius;
@@ -1694,15 +1698,43 @@ fn Vec4 uv_transform(Material* mat) @local {
 
 fn Vec4 sway_params(Material* mat) @local => { state.renderer.time, mat.sway, mat.sway_speed, 0 };
 
-// Draws `m`'s geometry; with item.job, as many instances as its cull asks for.
-fn int draw_geometry(DrawItem* item, bool wireframe) @local {
+// Whether `item` is drawn as lines: a wireframe material, or a Line.
+fn bool draws_lines(DrawItem* item) @local => item.mesh.material.wireframe || item.mesh.is_line();
+
+// The index buffer `item` is drawn from (as lines with `lines`, see draws_lines), and how
+// many of its indices.
+fn SgBuffer index_buffer_of(DrawItem* item, bool lines, int* count) @local {
     Mesh* m           = item.mesh;
     BufferGeometry* g = m.geometry;
-    int instances     = m.instance_data.len() > 0 ? m.instance_count : 1;
+    switch {
+        case m.draw_mode == LINE_STRIP || m.draw_mode == LINE_LOOP:
+            g.upload_lines(m.draw_mode == LINE_LOOP);
+            *count = (int)g.line_count;
+            return g.line_ibuf;
+        case m.draw_mode == LINE_SEGMENTS:
+            // a last index without a partner is no segment
+            *count = (int)g.index_count & ~1;
+            return g.ibuf;
+        case lines:
+            g.upload_wire();
+            *count = (int)g.wire_count;
+            return g.wire_ibuf;
+        default:
+            *count = (int)g.index_count;
+            return g.ibuf;
+    }
+}
+
+// Draws `m`'s geometry; with item.job, as many instances as its cull asks for. Returns the
+// triangles drawn, or the segments for a Line.
+fn int draw_geometry(DrawItem* item, bool lines) @local {
+    Mesh* m       = item.mesh;
+    int instances = m.instance_data.len() > 0 ? m.instance_count : 1;
     if (item.job) instances = cull_draw_count(item.job - 1);
-    int elements = wireframe ? (int)g.wire_count : (int)g.index_count;
+    int elements;
+    (void)index_buffer_of(item, lines, &elements);
     sg::draw(0, elements, instances);
-    return elements / 3 * instances;
+    return elements / (m.is_line() ? 2 : 3) * instances;
 }
 
 fn float alpha_test_of(Material* mat) @local => state.renderer.prof_no_alpha_test ? 0 : mat.alpha_test;
@@ -1718,7 +1750,7 @@ fn bool has_holes(DrawItem* item) @local {
 // and enough pixels per triangle that shading them once saves more than drawing its
 // triangles twice costs (a far tree is mostly triangles, a meadow mostly pixels).
 fn bool prepassed(DrawItem* item) @local {
-    if (item.mesh.material.wireframe || !has_holes(item)) return false;
+    if (draws_lines(item) || !has_holes(item)) return false;
     if (state.prepass_focal <= 0) return true;
     Mesh* m       = item.mesh;
     int instances = m.instance_data.len() > 0 ? m.instance_count : 1;
@@ -1790,20 +1822,22 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     Mesh* m           = item.mesh;
     Material* mat     = m.material;
     BufferGeometry* g = m.geometry;
-    if (mat.wireframe) g.upload_wire();
-    Renderer* r = state.renderer;
+    bool lines        = draws_lines(item);
+    int elements;
+    SgBuffer indices  = index_buffer_of(item, lines, &elements);
+    Renderer* r       = state.renderer;
 
     Texture* map = ready(mat.map);
     if (mat.screen_target) map = state.white;
     float alpha_test = alpha_test_of(mat);
     sg::apply_pipeline(
-        get_pipeline(mat.side, mat.transparent, mat.wireframe, r.render_target, alpha_test > 0, mat.blending, kind)
+        get_pipeline(mat.side, mat.transparent, lines, r.render_target, alpha_test > 0, mat.blending, kind)
     );
     // the prepass has cut it out already (the shader takes a negative threshold as "covered")
     if (kind == PRETESTED && alpha_test > 0) alpha_test = -1;
     SgBindings bind = {
         .vertex_buffers[0] = g.vbuf,
-        .index_buffer = mat.wireframe ? g.wire_ibuf : g.ibuf,
+        .index_buffer = indices,
     };
     bind_instances(&bind, item);
     Vec4 inst_cull = cull_bind(&bind, item.job - 1);
@@ -1922,7 +1956,12 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     fs.fog_params.w = fog_mode;
 
     r.info.calls++;
-    r.info.triangles += draw_geometry(item, mat.wireframe);
+    int drawn = draw_geometry(item, lines);
+    if (m.is_line()) {
+        r.info.lines += drawn;
+    } else {
+        r.info.triangles += drawn;
+    }
 }
 
 fn void draw_shadow_item(DrawItem* item, Mat4 light_vp) @local {
@@ -2298,7 +2337,7 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera) {
     pt = profile::start();
     foreach (&item : state.opaque) {
         DrawKind kind = SOLID;
-        if (item.mesh.material.wireframe || has_holes(item)) kind = prepass && prepassed(item) ? PRETESTED : CUT;
+        if (draws_lines(item) || has_holes(item)) kind = prepass && prepassed(item) ? PRETESTED : CUT;
         draw_item(item, view_proj, &fs, kind);
     }
     profile::stop("render: main opaque", pt);
