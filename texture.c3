@@ -29,6 +29,11 @@ struct Texture
     int height;
     // RGBA8 pixels, top row first. Freed after the upload to the GPU.
     char[] pixels;
+    // Like three's texture.flipY: the image goes to the GPU bottom row first, so uv (0, 0) is
+    // its bottom left corner, as drie's geometries (three's) expect. On for load_texture and
+    // decode_texture (three's TextureLoader); off for data textures and glTF's images, whose
+    // uv (0, 0) is the top left. Read at the upload.
+    bool flip_y;
     ColorSpace color_space;
     Wrapping wrap_s;
     Wrapping wrap_t;
@@ -101,20 +106,22 @@ fn void CanvasTexture.begin(&self, Color clear = 0x000000)
 
 fn void CanvasTexture.end(&self) => sg::end_pass();
 
-// Decodes a PNG or JPEG held in memory.
-fn Texture*? decode_texture(char[] encoded, ColorSpace color_space = SRGB_COLOR_SPACE)
+// Decodes a PNG or JPEG held in memory (see Texture.flip_y).
+fn Texture*? decode_texture(char[] encoded, ColorSpace color_space = SRGB_COLOR_SPACE, bool flip_y = true)
 {
     CInt w;
     CInt h;
     char* px = imageio::decode(encoded.ptr, (usz)encoded.len, &w, &h);
     if (!px) return io::FILE_NOT_VALID~;
     defer imageio::free_pixels(px);
-    return data_texture(px[:(sz)w * h * 4], w, h, color_space);
+    Texture* t = data_texture(px[:(sz)w * h * 4], w, h, color_space);
+    t.flip_y = flip_y;
+    return t;
 }
 
-// Loads a PNG or JPEG file, like `new THREE.TextureLoader().load(path)`.
+// Loads a PNG or JPEG file, like `new THREE.TextureLoader().load(path)` (see Texture.flip_y).
 // A missing or broken file logs a message and gives a magenta placeholder.
-fn Texture* load_texture(String path, ColorSpace color_space = SRGB_COLOR_SPACE)
+fn Texture* load_texture(String path, ColorSpace color_space = SRGB_COLOR_SPACE, bool flip_y = true)
 {
     char[]? data = file::load(mem, path);
     if (catch err = data)
@@ -123,7 +130,7 @@ fn Texture* load_texture(String path, ColorSpace color_space = SRGB_COLOR_SPACE)
         return data_texture({ 255, 0, 255, 255 }, 1, 1, color_space);
     }
     defer mem::free(data.ptr);
-    Texture*? t = decode_texture(data, color_space);
+    Texture*? t = decode_texture(data, color_space, flip_y);
     if (catch err = t)
     {
         io::eprintfn("three: cannot decode texture '%s'", path);
@@ -177,6 +184,23 @@ fn char[] downsample(char[] src, int w, int h, int nw, int nh) @local
     return dst;
 }
 
+// Turns an RGBA8 image upside down, in place.
+fn void flip_rows(char[] px, int width, int height) @local
+{
+    sz row = (sz)width * 4;
+    if (px.len < row * height) return;
+    char[] tmp = mem::new_array(char, row);
+    defer mem::free(tmp.ptr);
+    for (sz y = 0; y < height / 2; y++)
+    {
+        char[] a = px[y * row:row];
+        char[] b = px[((sz)height - 1 - y) * row:row];
+        tmp[..] = a[..];
+        a[..] = b[..];
+        b[..] = tmp[..];
+    }
+}
+
 // Uploads the pixels (and mipmaps) to the GPU. Called by the renderer.
 fn void Texture.upload(&self)
 {
@@ -200,6 +224,7 @@ fn void Texture.upload(&self)
         self.uploaded = true;
         return;
     }
+    if (self.flip_y) flip_rows(self.pixels, self.width, self.height);
     SgImageDesc desc = {
         .width = self.width,
         .height = self.height,
