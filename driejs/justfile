@@ -2,7 +2,7 @@
 # boomkat comes from its jit branch, fetched from c3.ricar.do into lib/boomkat.c3l (project.json).
 
 libs := "--libdir lib --libdir ../lib --lib sokol --lib drie"
-macos := if os() == "macos" { "--macos-min-version 14.0" } else { "" }
+macos := if os() == "macos" { "--macos-min-version 15.0" } else { "" }
 
 # three.js: its npm package (build/ and examples/jsm) and, for the demos' models and textures,
 # its examples at the same release. To update it, change these and the sha256s below.
@@ -73,7 +73,7 @@ wamr:
     [ -d third_party/wamr ] || git clone -q --depth 1 --branch WAMR-2.4.5 \
         https://github.com/bytecodealliance/wasm-micro-runtime.git third_party/wamr
     cmake -S third_party/wamr/product-mini/platforms/$platform -B third_party/wamr-build \
-        -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0 -DWAMR_BUILD_TARGET=$target \
+        -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_DEPLOYMENT_TARGET=15.0 -DWAMR_BUILD_TARGET=$target \
         -DWAMR_BUILD_INTERP=1 -DWAMR_BUILD_FAST_INTERP=1 -DWAMR_BUILD_AOT=0 -DWAMR_BUILD_JIT=0 \
         -DWAMR_BUILD_FAST_JIT=0 -DWAMR_BUILD_LIBC_BUILTIN=0 -DWAMR_BUILD_LIBC_WASI=0 \
         -DWAMR_BUILD_SIMD=0 -DWAMR_BUILD_BULK_MEMORY=1 -DWAMR_BUILD_REF_TYPES=1 \
@@ -101,8 +101,10 @@ draco:
         cp -r "$prefix/include" third_party/draco/include
         cp -r "$prefix/lib" third_party/draco/lib ;;
     *)
+        lib=$(find /usr/lib /usr/local/lib -name libdraco.a 2>/dev/null | head -1)
+        if [ -z "$lib" ]; then echo "libdraco.a not found: install libdraco-dev" >&2; exit 1; fi
         ln -sfn /usr/include third_party/draco/include
-        ln -sfn "$(dirname "$(find /usr/lib /usr/local/lib -name libdraco.a 2>/dev/null | head -1)")" third_party/draco/lib ;;
+        ln -sfn "$(dirname "$lib")" third_party/draco/lib ;;
     esac
 
 # three.js into vendor/: three.core.js, three.module.js, and examples/jsm as jsm/ (three/addons/...)
