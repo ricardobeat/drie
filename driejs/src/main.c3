@@ -344,7 +344,9 @@ fn void h_texture(JsCtx ctx, void* udata)
 }
 
 // material(kind, color, emissive, specular, shininess, roughness, metalness, opacity,
-//          transparent, side, wireframe, map, vertexColors)
+//          transparent, side, wireframe, map, vertexColors, alphaTest, colorScale,
+//          mapEmissive, emissiveIntensity, transmission, thickness, ior, dispersion,
+//          attenuationColor, attenuationDistance)
 // kind: 0 basic, 1 lambert, 2 phong, 3 standard, 4 normal
 fn void h_material(JsCtx ctx, void* udata)
 {
@@ -383,11 +385,18 @@ fn void h_material(JsCtx ctx, void* udata)
     m.color_scale = (float)num_arg(ctx, 14, 1);
     m.map_emissive = bool_arg(ctx, 15, false);
     m.emissive_intensity = (float)num_arg(ctx, 16, 1);
+    m.transmission = (float)num_arg(ctx, 17, 0);
+    m.thickness = (float)num_arg(ctx, 18, 0);
+    m.ior = (float)num_arg(ctx, 19, 1.5);
+    m.dispersion = (float)num_arg(ctx, 20, 0);
+    m.attenuation_color = color_of(num_arg(ctx, 21, 0xffffff));
+    m.attenuation_distance = (float)num_arg(ctx, 22, 0);
     ctx.ret_number(@reg(materials, m, MATERIAL_BASE));
 }
 
 // materialUpdate(material, color, emissive, specular, shininess, roughness, metalness,
-// opacity): what three takes from a material every frame, when it changed.
+// opacity, colorScale, transmission, thickness, ior, dispersion, attenuationColor,
+// attenuationDistance): what three takes from a material every frame, when it changed.
 fn void h_material_update(JsCtx ctx, void* udata)
 {
     Material* m = get_material(num_arg(ctx, 0, -1));
@@ -400,6 +409,12 @@ fn void h_material_update(JsCtx ctx, void* udata)
     m.metalness = (float)num_arg(ctx, 6, 0);
     m.opacity = (float)num_arg(ctx, 7, 1);
     m.color_scale = (float)num_arg(ctx, 8, 1);
+    m.transmission = (float)num_arg(ctx, 9, 0);
+    m.thickness = (float)num_arg(ctx, 10, 0);
+    m.ior = (float)num_arg(ctx, 11, 1.5);
+    m.dispersion = (float)num_arg(ctx, 12, 0);
+    m.attenuation_color = color_of(num_arg(ctx, 13, 0xffffff));
+    m.attenuation_distance = (float)num_arg(ctx, 14, 0);
 }
 
 // shadow(object, cast, receive)
@@ -1132,8 +1147,8 @@ fn int main(String[] args)
     reg(natives, "lightTarget", &h_light_target, 1);
     reg(natives, "geometry", &h_geometry, 7);
     reg(natives, "texture", &h_texture, 10);
-    reg(natives, "material", &h_material, 17);
-    reg(natives, "materialUpdate", &h_material_update, 9);
+    reg(natives, "material", &h_material, 23);
+    reg(natives, "materialUpdate", &h_material_update, 15);
     reg(natives, "mesh", &h_mesh, 2);
     reg(natives, "add", &h_add, 2);
     reg(natives, "sync", &h_sync, 2);
