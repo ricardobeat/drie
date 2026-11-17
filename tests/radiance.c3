@@ -3,7 +3,7 @@
 // cascades in its place (sky, lamp and cubes bouncing); the cascades with the lamp and the sky
 // off, so that only the cubes' glow lights the room.
 //
-//   tests/run.sh radiance <libdir> [out.ppm]
+//   just test radiance [out.ppm]
 module radiance_test;
 import drie, drie::postprocessing, sokol, readback;
 import std::io, std::math, std::io::file;

@@ -5,10 +5,13 @@ Runs three.js code on drie: three.js itself (`vendor/three.core.js`, unmodified)
 imports `three` and `three/addons/...` as it would in a browser.
 
 ```sh
-./build.sh                                  # build out/driejs
-./build.sh run demos/webgl_geometries.js    # build and run it in a window
-out/driejs --frames 3 --png shot.png demos/webgl_geometries.js   # offscreen
+just build                                  # build out/driejs
+just run demos/webgl_geometries.js          # build and run it in a window
+just run --frames 3 --png shot.png demos/webgl_geometries.js   # offscreen
+just bench node                             # the benchmark on one runtime (`just` lists them)
 ```
+
+From drie's folder, the same recipes are `just driejs::build` and so on.
 
 Run it from this folder: `three` and the addons are read from `js/` and `vendor/` under the
 working directory.
@@ -22,14 +25,14 @@ It also measures the per-frame CPU work three.js does in JS before a renderer dr
 
 | Path | What |
 |---|---|
-| `vendor/` | three.js r187 from npm (`three@0.187.0`, checked against a sha256 in `build.sh`), fetched by `build.sh` when missing: `three.core.js` (core without WebGLRenderer), `three.module.js`, and `examples/jsm` as `jsm/` for `three/addons/...`. Unmodified, not in git |
-| `demos/` | three.js examples as scripts (`demos/src/` has their pages); their models and textures are fetched by `build.sh` from three.js r187, each checked against a sha256, and are not in git |
+| `vendor/` | three.js r187 from npm (`three@0.187.0`, checked against a sha256 in the `justfile`), fetched by `just build` when missing: `three.core.js` (core without WebGLRenderer), `three.module.js`, and `examples/jsm` as `jsm/` for `three/addons/...`. Unmodified, not in git |
+| `demos/` | three.js examples as scripts (`demos/src/` has their pages); their models and textures are fetched by `just build` from three.js r187, each checked against a sha256, and are not in git |
 | `bench/three_bench.js` | the benchmark, for boomkat, node and bun |
 | `bench/drie_bench.c3` | its transform cases in drie, natively |
 | `bench/driejs_bench.js` | its transform cases in [drie-js](../../drie-js), whose three.js-shaped API pushes transforms to drie |
-| `bench/run.sh` | `./bench/run.sh [boomkat\|boomkat-jit\|boomkat-opt\|node\|node-jitless\|bun\|drie\|drie-js\|all]` |
+| `just bench` | `just bench [boomkat\|boomkat-jit\|boomkat-opt\|node\|node-jitless\|bun\|drie\|drie-js\|all]` |
 | `lib/` | `drie.c3l` is this repository (`../..`); sokol, readback, imageio and gamectl are symlinked from `../../house/lib` |
-| `lib/wamr.c3l`, `js/wasm.js` | `WebAssembly`, on [WAMR](https://github.com/bytecodealliance/wasm-micro-runtime) 2.4.5's fast interpreter, which `build.sh` fetches into `third_party/` and builds |
+| `lib/wamr.c3l`, `js/wasm.js` | `WebAssembly`, on [WAMR](https://github.com/bytecodealliance/wasm-micro-runtime) 2.4.5's fast interpreter, which `just build` fetches into `third_party/` and builds |
 | `lib/draco.c3l` | DRACOLoader's decoder: libdraco, linked statically from Homebrew (`brew install draco` to build) |
 
 boomkat needs commit `92c6f2ea` or later: before it, a derived class's constructor with a

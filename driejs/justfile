@@ -1,0 +1,111 @@
+# driejs: three.js code running on drie, in boomkat (see README.md). `just` lists the recipes.
+# boomkat comes from its jit branch, ../../boomkat/.worktrees/jit (project.json).
+
+libs := "--libdir lib --lib sokol --lib readback --lib imageio --lib gamectl --lib drie"
+macos := if os() == "macos" { "--macos-min-version 14.0" } else { "" }
+
+# three.js: its npm package (build/ and examples/jsm) and, for the demos' models and textures,
+# its examples at the same release. To update it, change these and the sha256s below.
+three_version := "0.187.0"
+three_tag := "r187"
+three_sha256 := "ff540832ded0cfe919764d24a3d88f3e2a05f23303f876423e4f893841e90728"
+examples := "https://raw.githubusercontent.com/mrdoob/three.js/" + three_tag + "/examples"
+
+[private]
+default:
+    @just --list
+
+# build out/driejs
+build: deps
+    c3c build driejs {{libs}} --lib draco --lib wamr {{macos}}
+
+# build, then run: `just run demos/webgl_geometries.js`, `just run --frames 3 --png shot.png demos/x.js`
+run +args: build
+    out/driejs {{args}}
+
+# BOOMKAT=path overrides ../../boomkat/out/boomkat (the -jit and -opt runs pass --jit and --opt:
+# point it at a build of the jit branch).
+[doc("the benchmark on one runtime (drie, drie-js, node, bun, node-jitless, boomkat, boomkat-jit, boomkat-opt) or all")]
+bench which="all":
+    #!/bin/sh
+    set -e
+    run() {
+        echo "== $1"
+        case $1 in
+        drie)
+            mkdir -p build
+            c3c compile -O3 {{macos}} {{libs}} bench/drie_bench.c3 -o build/drie_bench > /dev/null
+            build/drie_bench ;;
+        drie-js) (cd ../../drie-js && out/drie_js --script ../drie/driejs/bench/driejs_bench.js) ;;
+        node) node bench/three_bench.js ;;
+        node-jitless) node --jitless bench/three_bench.js ;;
+        bun) bun bench/three_bench.js ;;
+        boomkat) "${BOOMKAT:-../../boomkat/out/boomkat}" bench/three_bench.js ;;
+        boomkat-jit) "${BOOMKAT:-../../boomkat/out/boomkat}" --jit bench/three_bench.js ;;
+        boomkat-opt) "${BOOMKAT:-../../boomkat/out/boomkat}" --opt bench/three_bench.js ;;
+        *) echo "no benchmark called $1" >&2; exit 1 ;;
+        esac
+    }
+    if [ "{{which}}" = all ]; then
+        for r in drie drie-js node bun node-jitless boomkat; do run $r; done
+    else
+        run "{{which}}"
+    fi
+
+# fetch and build what the build needs (only what is missing)
+deps: wamr three assets
+
+# WAMR 2.4.5 (WebAssembly for js/wasm.js): its fast interpreter, as a static library
+[private]
+wamr:
+    #!/bin/sh
+    set -e
+    [ -f third_party/wamr-build/libiwasm.a ] && exit 0
+    [ -d third_party/wamr ] || git clone -q --depth 1 --branch WAMR-2.4.5 \
+        https://github.com/bytecodealliance/wasm-micro-runtime.git third_party/wamr
+    cmake -S third_party/wamr/product-mini/platforms/darwin -B third_party/wamr-build \
+        -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0 -DWAMR_BUILD_TARGET=AARCH64 \
+        -DWAMR_BUILD_INTERP=1 -DWAMR_BUILD_FAST_INTERP=1 -DWAMR_BUILD_AOT=0 -DWAMR_BUILD_JIT=0 \
+        -DWAMR_BUILD_FAST_JIT=0 -DWAMR_BUILD_LIBC_BUILTIN=0 -DWAMR_BUILD_LIBC_WASI=0 \
+        -DWAMR_BUILD_SIMD=0 -DWAMR_BUILD_BULK_MEMORY=1 -DWAMR_BUILD_REF_TYPES=1 \
+        -DWAMR_BUILD_MULTI_MODULE=0 > /dev/null
+    cmake --build third_party/wamr-build --target vmlib -j8 > /dev/null
+
+# three.js into vendor/: three.core.js, three.module.js, and examples/jsm as jsm/ (three/addons/...)
+[private]
+three:
+    #!/bin/sh
+    set -e
+    [ -f vendor/three.core.js ] && [ -d vendor/jsm ] && exit 0
+    tgz=third_party/three-{{three_version}}.tgz
+    {{just_executable()}} fetch https://registry.npmjs.org/three/-/three-{{three_version}}.tgz {{three_sha256}} $tgz
+    mkdir -p third_party/three-{{three_version}} vendor
+    tar -xzf $tgz -C third_party/three-{{three_version}} \
+        package/LICENSE package/build/three.core.js package/build/three.module.js package/examples/jsm
+    src=third_party/three-{{three_version}}/package
+    cp $src/LICENSE $src/build/three.core.js $src/build/three.module.js vendor/
+    [ -d vendor/jsm ] || cp -R $src/examples/jsm vendor/jsm
+
+# the demos' models and textures, from three.js's examples
+[private]
+assets: \
+    (asset "textures/uv_grid_opengl.jpg" "909d9a1eb2a5d5de9d221a5e8de4e9119d409decddf522d48896bd51523d354d") \
+    (asset "models/gltf/LittlestTokyo.glb" "8375c2aa6808e28ad1cb9c0d43e1513f57ffd7865244bf66bbbd5bb0e907e06d") \
+    (asset "models/gltf/collision-world.glb" "07524c7fd5829c6dc354d0b129f78943c47a8737d141496c6d611f5ee2d00864")
+
+[private]
+asset path sha256: (fetch examples + "/" + path sha256 "demos/" + path)
+
+# downloads url to file unless it is there, and stops if its sha256 is not the one given
+[private]
+fetch url sha256 file:
+    #!/bin/sh
+    set -e
+    [ -f "{{file}}" ] && exit 0
+    mkdir -p "$(dirname "{{file}}")"
+    curl -fsSL -o "{{file}}.part" "{{url}}"
+    if [ "$(shasum -a 256 "{{file}}.part" | cut -d' ' -f1)" != "{{sha256}}" ]; then
+        echo "{{file}}: its sha256 is not the one in the justfile ({{url}})" >&2
+        exit 1
+    fi
+    mv "{{file}}.part" "{{file}}"

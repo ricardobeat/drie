@@ -1,6 +1,6 @@
 // The transform cases of three_bench.js in drie, natively: the work drie-js does in C today.
 //
-//   ./bench/run.sh drie
+//   just bench drie
 module drie_bench;
 import drie, std::io, std::time, std::math;
 
