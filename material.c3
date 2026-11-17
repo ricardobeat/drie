@@ -42,6 +42,12 @@ struct Material
     bool depth_write;
     Color emissive;
     float emissive_intensity;
+    // The color map glows too: emissive * emissive_intensity is multiplied by it (three's
+    // emissiveMap, when it is the same image as the map).
+    bool map_emissive;
+    // Multiplies `color`, for colors brighter than white (a three Color can hold any number;
+    // drie's has 8 bits a channel). 0 counts as 1.
+    float color_scale;
     // Phong
     Color specular;
     float shininess;
