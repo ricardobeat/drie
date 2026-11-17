@@ -1,6 +1,6 @@
 // Materials. Constructors take named arguments, mirroring three's parameter objects:
-//   three::mesh_standard_material(color: 0x44aa88, roughness: 0.4)
-module three;
+//   drie::mesh_standard_material(color: 0x44aa88, roughness: 0.4)
+module drie;
 
 enum Side
 {

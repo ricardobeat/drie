@@ -20,7 +20,8 @@
 //       before the normal map, facing the camera.
 //   reflection_hook(dir, sky)  changes what an environment map (or glass's sky) reflects
 //       along `dir`.
-@header module three;
+@header module drie::shaders;
+@header import drie;
 
 @ctype mat4 Mat4
 @ctype vec4 Vec4

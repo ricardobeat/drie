@@ -1,7 +1,7 @@
 // The screen the window is on (display.c): how much brighter than SDR white it can show
 // (EDR headroom, macOS) and whether it shows Display P3's colors. Elsewhere it is taken to be
 // an SDR sRGB screen.
-module three;
+module drie;
 import sokol;
 import std::math;
 

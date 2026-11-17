@@ -5,7 +5,7 @@
 // plus a snapshot of the game state every `key_interval` seconds. Seeking back loads the
 // snapshot before the target and replays the frames after it; seeking forward just replays.
 //
-//   alias GameTimeline = three::timeline::Timeline{MyInput, MyState};
+//   alias GameTimeline = drie::timeline::Timeline{MyInput, MyState};
 //   GameTimeline tl;
 //   tl.init(&step, &save, &load, length: 30);
 //   ...every frame: tl.advance(input, dt);       // records and steps
@@ -14,7 +14,7 @@
 //
 // `step` is told when it is replaying, so it can leave out side effects that should only
 // happen once (sounds, logging).
-module three::timeline <Input, State>;
+module drie::timeline <Input, State>;
 import std::collections::list;
 
 alias StepFn = fn void(Input* input, float dt, bool replay);

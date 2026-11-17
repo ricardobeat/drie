@@ -10,8 +10,8 @@
 // With `keys` on (the default) the pad also sends key events, so menus (menu.c3) and keyboard
 // code work with it unchanged: the d-pad sends the arrow keys, cross / A sends enter,
 // circle / B backspace, and options / menu escape.
-module three::input;
-import gamectl, sokol, three, three::ui;
+module drie::input;
+import gamectl, sokol, drie, drie::ui;
 import std::math;
 
 const uint PAD_SOUTH = 1 << 0;   // cross / A
@@ -80,11 +80,11 @@ fn void dead_zone(float* x, float* y) @local
 fn void pad_key(KeyCode key, bool down) @local
 {
     SappEvent e = { .type = down ? KEY_DOWN : KEY_UP, .key_code = key };
-    three::send_event(&e);
+    drie::send_event(&e);
 }
 
-// Reads the controller before every frame (see three::add_frame_hook).
-fn void register_input() @init @local => three::add_frame_hook(&poll_gamepad);
+// Reads the controller before every frame (see drie::add_frame_hook).
+fn void register_input() @init @local => drie::add_frame_hook(&poll_gamepad);
 
 fn void poll_gamepad() @local
 {

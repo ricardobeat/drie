@@ -1,56 +1,14 @@
-// Clock and OrbitControls.
-module three;
-import std::math;
-import sokol;
-
-// ----------------------------------------------------------------------------
-// Clock
-// ----------------------------------------------------------------------------
-
-struct Clock
-{
-    ulong start_time;
-    ulong old_time;
-    double elapsed_time;
-    bool running;
-}
-
-bool stm_ready @local;
-
-fn Clock clock()
-{
-    if (!stm_ready)
-    {
-        stm::setup();
-        stm_ready = true;
-    }
-    ulong now = stm::now();
-    return { .start_time = now, .old_time = now, .running = true };
-}
-
-// Seconds since the last call to get_delta (or since the clock was created).
-fn double Clock.get_delta(&self)
-{
-    if (!self.running) return 0;
-    ulong now = stm::now();
-    double diff = stm::sec(stm::diff(now, self.old_time));
-    self.old_time = now;
-    self.elapsed_time += diff;
-    return diff;
-}
-
-// Total seconds the clock has been running.
-fn double Clock.get_elapsed_time(&self)
-{
-    self.get_delta();
-    return self.elapsed_time;
-}
-
-// ----------------------------------------------------------------------------
-// OrbitControls
+// OrbitControls, like three's (three/addons/controls/OrbitControls.js):
 //   left drag: rotate, right drag (or shift + left): pan, scroll: zoom.
 //   Call controls.update() every frame, like in three.
-// ----------------------------------------------------------------------------
+//
+//   import drie::controls;
+//   OrbitControls* c = controls::orbit_controls(camera);
+module drie::controls;
+import std::math, std::collections::list;
+import sokol, drie;
+// Every OrbitControls made, fed the window's events by one listener.
+List{OrbitControls*} all @local;
 
 struct OrbitControls
 {
@@ -97,26 +55,27 @@ fn OrbitControls* orbit_controls(Camera* camera)
         .min_distance = 0,
         .max_distance = 1e30,
         .min_polar_angle = 0,
-        .max_polar_angle = PI,
+        .max_polar_angle = drie::PI,
         .auto_rotate_speed = 2,
         .scale = 1,
     };
-    register_controls(c);
+    if (!all.len()) drie::add_event_listener(&on_event);
+    all.push(c);
     return c;
 }
 
 fn void OrbitControls.pan(&self, float dx, float dy)
 {
-    Mat4 m = self.camera.matrix_world;
+    drie::Mat4 m = self.camera.matrix_world;
     Vector3 right = { m[0][0], m[0][1], m[0][2] };
     Vector3 up = { m[1][0], m[1][1], m[1][2] };
-    float h = window_height();
+    float h = drie::window_height();
     float world_per_pixel;
     if (self.camera.camera_type == PERSPECTIVE)
     {
         PerspectiveCamera* pc = (PerspectiveCamera*)self.camera;
         float dist = (self.camera.position - self.target).length();
-        world_per_pixel = 2 * dist * math::tan(pc.fov * DEG2RAD / 2) / h;
+        world_per_pixel = 2 * dist * math::tan(pc.fov * drie::DEG2RAD / 2) / h;
     }
     else
     {
@@ -146,11 +105,11 @@ fn void OrbitControls.handle_event(&self, SappEvent* e)
             float dpi = sapp::dpi_scale();
             float dx = e.mouse_dx / dpi;
             float dy = e.mouse_dy / dpi;
-            float h = window_height();
+            float h = drie::window_height();
             if (self.rotating)
             {
-                self.delta_theta -= 2 * PI * dx / h * self.rotate_speed;
-                self.delta_phi -= 2 * PI * dy / h * self.rotate_speed;
+                self.delta_theta -= 2 * drie::PI * dx / h * self.rotate_speed;
+                self.delta_phi -= 2 * drie::PI * dy / h * self.rotate_speed;
             }
             else if (self.panning)
             {
@@ -171,18 +130,18 @@ fn void OrbitControls.update(&self)
     Camera* cam = self.camera;
     if (self.auto_rotate && !self.rotating)
     {
-        self.delta_theta -= 2 * PI / 60 / 60 * self.auto_rotate_speed;
+        self.delta_theta -= 2 * drie::PI / 60 / 60 * self.auto_rotate_speed;
     }
 
     Vector3 offset = cam.position - self.target;
     float radius = offset.length();
     float theta = math::atan2(offset.x, offset.z);
-    float phi = radius > 0 ? math::acos(clamp(offset.y / radius, -1, 1)) : 0;
+    float phi = radius > 0 ? math::acos(drie::clamp(offset.y / radius, -1, 1)) : 0;
 
     float damp = self.enable_damping ? self.damping_factor : 1;
     theta += self.delta_theta * damp;
     phi += self.delta_phi * damp;
-    phi = clamp(phi, math::max(self.min_polar_angle, 1e-6f), math::min(self.max_polar_angle, PI - 1e-6f));
+    phi = drie::clamp(phi, math::max(self.min_polar_angle, 1e-6f), math::min(self.max_polar_angle, drie::PI - 1e-6f));
 
     if (cam.camera_type == ORTHOGRAPHIC)
     {
@@ -190,7 +149,7 @@ fn void OrbitControls.update(&self)
     }
     else
     {
-        radius = clamp(radius * self.scale, self.min_distance, self.max_distance);
+        radius = drie::clamp(radius * self.scale, self.min_distance, self.max_distance);
     }
 
     self.target += self.pan_offset * damp;
@@ -215,4 +174,9 @@ fn void OrbitControls.update(&self)
         self.pan_offset = { 0, 0, 0 };
     }
     self.scale = 1;
+}
+
+fn void on_event(SappEvent* e) @local
+{
+    foreach (c : all) c.handle_event(e);
 }

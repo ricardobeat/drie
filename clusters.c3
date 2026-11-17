@@ -8,7 +8,7 @@
 // spheres and fills the clusters and the index list, the two buffers the fragment shader
 // reads. cluster_lights_gpu (the default where there are compute shaders) does it in a compute
 // shader (cluster_cs in kernels.glsl), cluster_lights_cpu on the CPU, with the same result.
-module three;
+module drie;
 import std::collections::list, std::math, std::io;
 import sokol;
 
@@ -155,7 +155,7 @@ List{LightRange} cluster_ranges @local;
 fn bool cluster_lights_gpu(ClusterGrid* grid, LightBounds[] points, LightBounds[] spots, ClusterOutput* out)
 {
     if (!compute_supported() || !out.gpu_clusters) return cluster_lights_cpu(grid, points, spots, out);
-    if (!cluster_kernel) cluster_kernel = compute_pass(cluster_shader_desc(sg::query_backend()), "three-clusters");
+    if (!cluster_kernel) cluster_kernel = compute_pass(shaders::cluster_shader_desc(sg::query_backend()), "drie-clusters");
     cluster_ranges.allocator = mem;
     cluster_ranges.clear();
     sz total;
@@ -184,11 +184,11 @@ fn bool cluster_lights_gpu(ClusterGrid* grid, LightBounds[] points, LightBounds[
         .cl_grid = { CLUSTER_X, CLUSTER_Y, CLUSTER_Z, CLUSTER_COUNT },
     };
     ComputePass* k = cluster_kernel;
-    k.set_buffer(VIEW_CLUSTER_RANGES, out.gpu_ranges);
-    k.set_buffer(VIEW_CLUSTER_LIST, out.gpu_clusters);
-    k.set_buffer(VIEW_CLUSTER_LIGHT_LIST, out.gpu_indices);
-    k.set_uniforms(UB_CLUSTER_PARAMS, &p, ClusterParams::size);
-    begin_compute("three-clusters");
+    k.set_buffer(shaders::VIEW_CLUSTER_RANGES, out.gpu_ranges);
+    k.set_buffer(shaders::VIEW_CLUSTER_LIST, out.gpu_clusters);
+    k.set_buffer(shaders::VIEW_CLUSTER_LIGHT_LIST, out.gpu_indices);
+    k.set_uniforms(shaders::UB_CLUSTER_PARAMS, &p, ClusterParams::size);
+    begin_compute("drie-clusters");
     k.dispatch(1);
     end_compute();
     return true;
@@ -308,7 +308,7 @@ fn void LightBuffer.write(&self, void* data, sz bytes)
         self.buffer = sg::make_buffer(&&{
             .usage = { .storage_buffer = true, .write_transient = true },
             .size = cap,
-            .label = "three-lights",
+            .label = "drie-lights",
         });
         self.view = sg::make_view(&&{ .storage_buffer = { .buffer = self.buffer } });
     }
@@ -397,9 +397,9 @@ fn void LightData.upload(&self, ClusterGrid* grid, ClusterAssignFn assign, bool 
     if (self.used >= self.sets.len())
     {
         LightBufferSet* n = mem::new(LightBufferSet);
-        n.gpu_clusters = { .label = "three-clusters" };
-        n.gpu_indices = { .label = "three-cluster-lights" };
-        n.gpu_ranges = { .cpu_write = true, .label = "three-cluster-ranges" };
+        n.gpu_clusters = { .label = "drie-clusters" };
+        n.gpu_indices = { .label = "drie-cluster-lights" };
+        n.gpu_ranges = { .cpu_write = true, .label = "drie-cluster-ranges" };
         n.check_clusters.allocator = mem;
         n.check_indices.allocator = mem;
         n.check_slot = -1;
@@ -425,7 +425,7 @@ fn void LightData.upload(&self, ClusterGrid* grid, ClusterAssignFn assign, bool 
         if (s.check_slot < 0) s.check_slot = readback_slot();
         if (s.check_slot2 < 0) s.check_slot2 = readback_slot();
         // (an empty compute pass, just to track the buffers in)
-        begin_compute("three-clusters-check");
+        begin_compute("drie-clusters-check");
         s.check_pending = s.gpu_clusters.track(s.check_slot) && s.gpu_indices.track(s.check_slot2);
         end_compute();
     }
@@ -444,7 +444,7 @@ fn void LightBufferSet.compare_with_gpu(&self)
     if (!read_back(self.check_slot, c.ptr, nc * (sz)GpuLightCluster::size, true)
         || !read_back(self.check_slot2, ix.ptr, ni * (sz)GpuLightIndex::size, true))
     {
-        io::eprintn("three: check_compute: could not read the clusters back");
+        io::eprintn("drie: check_compute: could not read the clusters back");
         return;
     }
     int bad_clusters;
@@ -462,7 +462,7 @@ fn void LightBufferSet.compare_with_gpu(&self)
     if (bad_clusters || bad_entries)
     {
         lights_gpu.check_failures++;
-        io::eprintfn("three: check_compute: GPU clusters differ from the CPU's: %d of %d clusters, %d of %d entries",
+        io::eprintfn("drie: check_compute: GPU clusters differ from the CPU's: %d of %d clusters, %d of %d entries",
                      bad_clusters, nc, bad_entries, ni);
     }
 }
@@ -470,19 +470,19 @@ fn void LightBufferSet.compare_with_gpu(&self)
 fn void LightData.bind(&self, SgBindings* bind)
 {
     LightBufferSet* s = self.current;
-    bind.views[VIEW_DIR_LIGHTS] = s.dirs.view;
-    bind.views[VIEW_POINT_LIGHTS] = s.points.view;
-    bind.views[VIEW_SPOT_LIGHTS] = s.spots.view;
-    bind.views[VIEW_SPOT_SHADOWS] = s.shadows.view;
-    bind.views[VIEW_LIGHT_CLUSTERS] = s.on_gpu ? s.gpu_clusters.view : s.clusters.view;
-    bind.views[VIEW_LIGHT_INDICES] = s.on_gpu ? s.gpu_indices.view : s.indices.view;
+    bind.views[shaders::VIEW_DIR_LIGHTS] = s.dirs.view;
+    bind.views[shaders::VIEW_POINT_LIGHTS] = s.points.view;
+    bind.views[shaders::VIEW_SPOT_LIGHTS] = s.spots.view;
+    bind.views[shaders::VIEW_SPOT_SHADOWS] = s.shadows.view;
+    bind.views[shaders::VIEW_LIGHT_CLUSTERS] = s.on_gpu ? s.gpu_clusters.view : s.clusters.view;
+    bind.views[shaders::VIEW_LIGHT_INDICES] = s.on_gpu ? s.gpu_indices.view : s.indices.view;
 }
 
 // Room for one more light of a kind, up to Renderer.max_lights (a one-time warning past it).
 fn bool LightData.room(&self, sz count, int cap)
 {
     if (cap <= 0 || count < cap) return true;
-    if (!self.warned) io::eprintfn("three: more than %d lights of one kind (Renderer.max_lights), the rest are left out", cap);
+    if (!self.warned) io::eprintfn("drie: more than %d lights of one kind (Renderer.max_lights), the rest are left out", cap);
     self.warned = true;
     return false;
 }

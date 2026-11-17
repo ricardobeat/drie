@@ -9,7 +9,7 @@
 //
 // <libdir> holds drie.c3l and what it needs (the game's lib/).
 module reflections_test;
-import three, three::postprocessing, sokol, readback;
+import drie, drie::postprocessing, sokol, readback;
 import std::io, std::math, std::io::file;
 
 const int W = 480;
@@ -49,32 +49,32 @@ RenderTarget* toned;
 GTAOPass* ao;
 TAAPass* taa;
 OutputPass* output;
-three::Mat4 prev_view_proj;
+drie::Mat4 prev_view_proj;
 MeshStandardMaterial* wood;
 Reflector* mirror;
 
 fn void build_scene()
 {
-    scene = three::scene();
+    scene = drie::scene();
     scene.background = 0x10131a;
-    scene.add(three::hemisphere_light(0x8090b0, 0x302820, 0.6));
-    PointLight* lamp = three::point_light(0xffe0b0, 6, 0, 2);
+    scene.add(drie::hemisphere_light(0x8090b0, 0x302820, 0.6));
+    PointLight* lamp = drie::point_light(0xffe0b0, 6, 0, 2);
     lamp.position.set(-1.0f, 2.2f, 1.0f);
     scene.add(lamp);
 
     // the glossy floor, 6 x 6 m, one-sided: no back face anywhere near it
-    wood = three::mesh_standard_material(color: 0x6a3a1c, roughness: 0.18);
+    wood = drie::mesh_standard_material(color: 0x6a3a1c, roughness: 0.18);
     wood.ssr = 1;
-    Mesh* floor = three::mesh(three::plane_geometry(6, 6), wood);
-    floor.rotation.x = -three::PI / 2;
+    Mesh* floor = drie::mesh(drie::plane_geometry(6, 6), wood);
+    floor.rotation.x = -drie::PI / 2;
     scene.add(floor);
 
     // a thick wall behind (a box), and a thin one-sided panel standing on the floor
-    MeshStandardMaterial* plaster = three::mesh_standard_material(color: 0xb0a890, roughness: 0.9);
-    Mesh* wall = three::mesh(three::box_geometry(6, 2.5f, 0.2f), plaster);
+    MeshStandardMaterial* plaster = drie::mesh_standard_material(color: 0xb0a890, roughness: 0.9);
+    Mesh* wall = drie::mesh(drie::box_geometry(6, 2.5f, 0.2f), plaster);
     wall.position.set(0, 1.25f, -1.6f);
     scene.add(wall);
-    Mesh* panel = three::mesh(three::plane_geometry(0.8f, 1.2f), plaster);
+    Mesh* panel = drie::mesh(drie::plane_geometry(0.8f, 1.2f), plaster);
     panel.position.set(-1.3f, 0.6f, -0.6f);
     panel.rotation.y = 0.5f;
     scene.add(panel);
@@ -82,21 +82,21 @@ fn void build_scene()
     // emissive cubes floating at two heights (as the house's color test), a white one far over
     // white, and a dull cube standing on the floor
     Color[6] colors = { 0xff3010, 0xff8a10, 0xf0e030, 0x40d040, 0x30d0c0, 0x2030ff };
-    BufferGeometry* cube = three::box_geometry(0.16f, 0.16f, 0.16f);
+    BufferGeometry* cube = drie::box_geometry(0.16f, 0.16f, 0.16f);
     foreach (i, c : colors)
     {
         float x = -0.6f + (float)i * 0.24f;
-        Mesh* top = three::mesh(cube, three::mesh_lambert_material(color: 0x000000, emissive: c, emissive_intensity: 2));
+        Mesh* top = drie::mesh(cube, drie::mesh_lambert_material(color: 0x000000, emissive: c, emissive_intensity: 2));
         top.position.set(x, 0.75f, 0);
         scene.add(top);
-        Mesh* low = three::mesh(cube, three::mesh_lambert_material(color: 0x000000, emissive: c, emissive_intensity: 0.5f));
+        Mesh* low = drie::mesh(cube, drie::mesh_lambert_material(color: 0x000000, emissive: c, emissive_intensity: 0.5f));
         low.position.set(x, 0.45f, 0);
         scene.add(low);
     }
-    Mesh* white = three::mesh(cube, three::mesh_lambert_material(color: 0x000000, emissive: 0xffffff, emissive_intensity: 10));
+    Mesh* white = drie::mesh(cube, drie::mesh_lambert_material(color: 0x000000, emissive: 0xffffff, emissive_intensity: 10));
     white.position.set(0.1f, 1.1f, -0.2f);
     scene.add(white);
-    Mesh* block = three::mesh(three::box_geometry(0.4f, 0.4f, 0.4f), three::mesh_standard_material(color: 0x707a88, roughness: 0.6));
+    Mesh* block = drie::mesh(drie::box_geometry(0.4f, 0.4f, 0.4f), drie::mesh_standard_material(color: 0x707a88, roughness: 0.6));
     block.position.set(1.1f, 0.2f, -0.5f);
     scene.add(block);
 }
@@ -127,22 +127,22 @@ fn void frame(View* v, int mode, bool reset)
     taa.render(scene_rt);
     output.set_source(taa.texture());
     output.render(toned);
-    three::commit();
+    drie::commit();
     prev_view_proj = camera.projection_matrix.mul(camera.matrix_world_inverse);
 }
 
 fn int main(String[] args)
 {
     String out_path = args.len > 1 ? args[1] : "reflections.ppm";
-    renderer = three::webgl_renderer(antialias: false, width: W, height: H);
+    renderer = drie::webgl_renderer(antialias: false, width: W, height: H);
     renderer.init_headless();
     renderer.tone_mapping = ACES_FILMIC_TONE_MAPPING;
     build_scene();
-    mirror = three::reflector({ 0, 1, 0 }, 0);
-    camera = three::perspective_camera(55, (float)W / H, 0.05f, 40);
-    scene_rt = three::render_target(W, H, 1, RGBA16F, mrt: true);
-    back_rt = three::render_target(W, H, 1, R16F);
-    toned = three::render_target(W, H, 1, RGBA8, false);
+    mirror = drie::reflector({ 0, 1, 0 }, 0);
+    camera = drie::perspective_camera(55, (float)W / H, 0.05f, 40);
+    scene_rt = drie::render_target(W, H, 1, RGBA16F, mrt: true);
+    back_rt = drie::render_target(W, H, 1, R16F);
+    toned = drie::render_target(W, H, 1, RGBA8, false);
     ao = postprocessing::gtao_pass(camera);
     taa = postprocessing::taa_pass();
     output = postprocessing::output_pass(renderer);

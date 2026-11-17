@@ -1,9 +1,9 @@
-# three.c3
+# drie
 
 A small three.js-style scene graph on top of sokol, written in C3.
 
 ```c3
-import three;
+import drie;
 
 Renderer* renderer;
 Scene* scene;
@@ -12,14 +12,14 @@ Mesh* cube;
 
 fn void main()
 {
-    renderer = three::webgl_renderer(antialias: true);
-    scene = three::scene();
-    camera = three::perspective_camera(75, three::window_aspect(), 0.1, 1000);
+    renderer = drie::webgl_renderer(antialias: true);
+    scene = drie::scene();
+    camera = drie::perspective_camera(75, drie::window_aspect(), 0.1, 1000);
     camera.position.z = 5;
 
-    cube = three::mesh(three::box_geometry(1, 1, 1), three::mesh_standard_material(color: 0x00ff00));
+    cube = drie::mesh(drie::box_geometry(1, 1, 1), drie::mesh_standard_material(color: 0x00ff00));
     scene.add(cube);
-    scene.add(three::ambient_light(0xffffff, 0.5));
+    scene.add(drie::ambient_light(0xffffff, 0.5));
 
     renderer.set_animation_loop(&animate);
 }
@@ -36,25 +36,25 @@ fn void animate(double time)
 
 | three.js | three.c3 |
 | --- | --- |
-| `new THREE.Mesh(geo, mat)` | `three::mesh(geo, mat)` |
-| `new THREE.BoxGeometry(1, 2, 3)` | `three::box_geometry(1, 2, 3)` |
-| `new THREE.MeshStandardMaterial({ color: 0xff0000, roughness: 0.5 })` | `three::mesh_standard_material(color: 0xff0000, roughness: 0.5)` |
+| `new THREE.Mesh(geo, mat)` | `drie::mesh(geo, mat)` |
+| `new THREE.BoxGeometry(1, 2, 3)` | `drie::box_geometry(1, 2, 3)` |
+| `new THREE.MeshStandardMaterial({ color: 0xff0000, roughness: 0.5 })` | `drie::mesh_standard_material(color: 0xff0000, roughness: 0.5)` |
 | `THREE.DoubleSide` | `DOUBLE_SIDE` |
-| `Math.PI` | `three::PI` |
+| `Math.PI` | `drie::PI` |
 | `mesh.position.set(1, 2, 3)` | same |
 | `mesh.rotation.y += 0.1` | same |
 | `obj.lookAt(0, 0, 0)` | `obj.look_at(0, 0, 0)` |
 | `scene.add(obj)` / `group.remove(obj)` | same |
 | `scene.background = new THREE.Color(0x111111)` | `scene.background = 0x111111` |
-| `scene.fog = new THREE.Fog(color, near, far)` | `scene.fog = three::fog(color, near, far)` |
+| `scene.fog = new THREE.Fog(color, near, far)` | `scene.fog = drie::fog(color, near, far)` |
 | `renderer.setAnimationLoop(fn)` | `renderer.set_animation_loop(&fn)` (opens the window, blocks) |
-| `new OrbitControls(camera, dom)` | `three::orbit_controls(camera)` |
-| `new THREE.Clock()` / `clock.getDelta()` | `three::clock()` / `clock.get_delta()` |
-| `color.setHSL(h, s, l)` | `three::hsl(h, s, l)` |
-| `window.innerWidth / window.innerHeight` | `three::window_aspect()` |
-| `window.addEventListener('keydown', fn)` | `three::add_event_listener(&fn)` (raw sokol events) |
+| `new OrbitControls(camera, dom)` | `controls::orbit_controls(camera)` (`drie::controls`) |
+| `new THREE.Clock()` / `clock.getDelta()` | `drie::clock()` / `clock.get_delta()` |
+| `color.setHSL(h, s, l)` | `drie::hsl(h, s, l)` |
+| `window.innerWidth / window.innerHeight` | `drie::window_aspect()` |
+| `window.addEventListener('keydown', fn)` | `drie::add_event_listener(&fn)` (raw sokol events) |
 
-Rules of thumb: `camelCase` becomes `snake_case`, `new THREE.X(...)` becomes `three::x(...)`,
+Rules of thumb: `camelCase` becomes `snake_case`, `new THREE.X(...)` becomes `drie::x(...)`,
 and parameter objects become named arguments.
 
 ## What's there
@@ -65,23 +65,23 @@ and parameter objects become named arguments.
   and `matrixWorldAutoUpdate`: with the second off the scene's update leaves that object and
   everything under it alone, so a big world that stands still costs nothing per frame (place
   it once with `update_matrix_world()` first).
-- **Skeletons:** `Bone`, `Skeleton`, `SkinnedMesh` (`three::bone()`, `three::skeleton(bones)`,
-  `three::skinned_mesh(geometry, material)`, `mesh.bind(skeleton)`). Skin weights are set on the
+- **Skeletons:** `Bone`, `Skeleton`, `SkinnedMesh` (`drie::bone()`, `drie::skeleton(bones)`,
+  `drie::skinned_mesh(geometry, material)`, `mesh.bind(skeleton)`). Skin weights are set on the
   geometry with `set_skin`, `set_skin_blend` and `skin_range`. Vertices are skinned on the CPU:
   pose the bones, then call `mesh.update()` once per frame. glTF skins and animation clips are
   not loaded. See `skeleton.c3`.
 - **Geometry:** `box`, `plane`, `sphere`, `cylinder`, `cone`, `torus`, `lathe` (a profile of
   (radius, height) points turned around the y axis, like `THREE.LatheGeometry`), plus custom geometry via
-  `three::buffer_geometry(positions, indices)` (normals are computed for you), or built up with
+  `drie::buffer_geometry(positions, indices)` (normals are computed for you), or built up with
   `add_vertex`, `merge` and `compute_vertex_normals`
 - **Materials:** `MeshBasicMaterial`, `MeshLambertMaterial`, `MeshPhongMaterial`,
   `MeshStandardMaterial`, `MeshNormalMaterial`, with `opacity`/`transparent`, `side`, `wireframe`,
   `emissive`, `fog`, `map`, `normal_map` + `normal_scale`, `alpha_test`
-- **Textures:** `three::load_texture(path)` (PNG and JPEG), `three::data_texture(rgba, w, h)`,
-  `three::canvas_texture(w, h)` (a texture you draw into with sokol between `.begin()` and `.end()`,
+- **Textures:** `drie::load_texture(path)` (PNG and JPEG), `drie::data_texture(rgba, w, h)`,
+  `drie::canvas_texture(w, h)` (a texture you draw into with sokol between `.begin()` and `.end()`,
   for screens in the scene; like a render target's `.texture`),
   with mipmaps and anisotropic filtering. Pass `NO_COLOR_SPACE` for data such as normal maps.
-- **Models:** `three::load_gltf(path)` reads binary glTF (`.glb`) with its materials and
+- **Models:** `loaders::load_gltf(path)` (`drie::loaders`, like three's addons/loaders) reads binary glTF (`.glb`) with its materials and
   textures; `model.get("name")` finds a node.
 - **Lights:** `AmbientLight`, `HemisphereLight`, `DirectionalLight`, `PointLight`, `SpotLight`, as
   many as you like (clustered, see below). Intensities and color handling follow modern three.js (r155+): sRGB hex
@@ -94,8 +94,8 @@ and parameter objects become named arguments.
   directional light (the first that casts) has a map of its own at the same time, in cascades
   (see below).
 - **Fog:** `Fog` (linear) and `FogExp2`
-- **Controls:** `OrbitControls` (left drag rotates, right drag or shift+drag pans, scroll zooms, damping, auto-rotate)
-- **Raycasting** (`raycaster.c3`), like three's `Raycaster`: `three::raycaster(origin,
+- **Controls:** `OrbitControls` in `drie::controls` (left drag rotates, right drag or shift+drag pans, scroll zooms, damping, auto-rotate)
+- **Raycasting** (`raycaster.c3`), like three's `Raycaster`: `drie::raycaster(origin,
   direction)`, `set_from_camera({ x, y }, camera)` with x and y from -1 to 1, then
   `intersect_object(object, &list)` / `intersect_objects(objects, &list)`, which add
   `Intersection`s (`distance`, `point`, `object`, `face`, `face_index`, `uv`, `normal`,
@@ -104,7 +104,7 @@ and parameter objects become named arguments.
   `Lod` that the ray's origin would see are tested, after their bounding spheres, following the
   material's `side`. `near`, `far` and `visible_only` limit what counts. As in three, every
   triangle of a mesh the ray comes near is tested; there is no acceleration structure.
-- **Post-processing** (`three::postprocessing`, like three's addons of that name):
+- **Post-processing** (`drie::postprocessing`, like three's addons of that name):
   `EffectComposer`, `RenderPass` and `ShaderPass`. A `ShaderPass` is a fullscreen shader of
   yours (a sokol-shdc `@vs`/`@fs` program whose vertex shader makes a triangle from
   `gl_VertexIndex`), drawn with `pass.render(target)` (null: the window), over a target's picture
@@ -127,36 +127,36 @@ and parameter objects become named arguments.
   builds up from frame to frame. `effect_composer(renderer)` with `add_pass()` and `render()`
   chains passes as three's does: a `ShaderPass` gets the picture of the pass before at its
   `input_view`, and the last pass draws into the window. See `postprocessing.c3`.
-- **Menus** (`three::ui`, not in three.js; `menu.locked = true` leaves the toggle key to the
+- **Menus** (`drie::ui`, not in three.js; `menu.locked = true` leaves the toggle key to the
   game for a while): `ui::menu(title, handler)` makes a game menu that
   opens with escape and takes the keyboard and mouse while open (key releases still reach the
   game). Items are actions or pages; the handler gets `OPEN`, `CLOSE`, `SELECT`, `CONFIRM` and
   `BACK`. With `overlay = true` it is drawn with a plain built-in look over the finished frame
   (`render()` to the window and `end_screen()` do it; a game whose last pass is its own calls
-  `three::draw_overlays()` in it). Otherwise draw it yourself from its fields, inside the
+  `drie::draw_overlays()` in it). Otherwise draw it yourself from its fields, inside the
   picture if you like. `ui::screen_fade` fades to and from black with a callback at the end.
   `ui::setup()` sets up sokol_debugtext and sokol_gl once, for games that draw text of their
   own too. `ui::touch_controls()` are on-screen sticks and buttons for phones and tablets.
-- **Game controllers** (`three::input`, macOS GameController framework, needs `--lib gamectl`):
+- **Game controllers** (`drie::input`, macOS GameController framework, needs `--lib gamectl`):
   `input::gamepad()` has the sticks (dead zone removed), triggers and buttons (`PAD_*`, with
   `pressed()` / `released()` for this frame). The renderer polls it before every frame, and
   by default the d-pad, cross / A, circle / B and options also send arrow, enter, backspace
   and escape key events, so menus and keyboard code work with a controller unchanged.
-- **Rewind** (`three::timeline`): `Timeline{Input, State}` records each frame's input and snapshots
+- **Rewind** (`drie::timeline`): `Timeline{Input, State}` records each frame's input and snapshots
   the state a few times a second; `seek()` goes back by loading a snapshot and replaying the
   input after it. Needs a deterministic step function.
 - **Renderer:** render targets, tone mapping, frustum culling, and `renderer.info`
   (draw calls and triangles of the last frame, shadow pass counted separately).
-  `three::render_target(w, h, samples, format, depth_buffer)` takes three's `type`/`format` and
+  `drie::render_target(w, h, samples, format, depth_buffer)` takes three's `type`/`format` and
   `depthBuffer` options as a sokol pixel format and a flag; passes can use any format.
   A scene is rendered into RGBA8 (tone mapped and sRGB, ready to show) or, like three's
   `HalfFloatType` targets, into RGBA16F, where it stays in linear light (a lamp brighter than
   white keeps its brightness through blurs, reflections and blending) until an `OutputPass`
   tone maps it. `renderer.tone_mapping` takes three's tone mappings (`LINEAR_`, `REINHARD_`,
   `CINEON_`, `ACES_FILMIC_`, `AGX_` and `NEUTRAL_TONE_MAPPING`) with `tone_mapping_exposure`;
-  `three::tone_map(color, mode, exposure)` does the same on the CPU. Shaders of your own can
+  `drie::tone_map(color, mode, exposure)` does the same on the CPU. Shaders of your own can
   `@include tonemapping.glsl` and use `tone_map()`, `linear_to_srgb()` and `srgb_to_linear()`.
-  With `mrt: true` (`three::render_target(w, h, 4, RGBA16F, mrt: true)`, like three's
+  With `mrt: true` (`drie::render_target(w, h, 4, RGBA16F, mrt: true)`, like three's
   `scenePass.setMRT(mrt({ output, normal, velocity }))`) the main pass also writes
   `normal_texture` (world-space normals after normal maps, in two channels, packed like
   three's `packNormalToOctahedral`), `velocity_texture` (motion vectors: uv now minus uv a
@@ -164,14 +164,17 @@ and parameter objects become named arguments.
   shares of each pixel's light that are indirect diffuse and indirect specular, then its
   roughness and metalness), for temporal filters, motion blur, ambient occlusion and other
   screen-space effects.
-- **Profiling** (`three::profile`): `profile::enabled = true`, then `profile::start()` /
+- **Profiling** (`drie::profile`): `profile::enabled = true`, then `profile::start()` /
   `profile::stop(name, t)` around stages and `profile::report(frames)`. The renderer times its
   own stages this way.
 
-The parts that are not in three.js are submodules: `three::ui`, `three::input`,
-`three::profile`, `three::timeline`, plus `three::postprocessing` after three's addons.
-`import three` imports them too. `ui` and `input` hook into the renderer when the program
-starts (`three::add_frame_hook`, `add_event_filter`, `add_overlay`), which an application can
+What three.js keeps in its addons is in submodules named after their folders:
+`drie::controls` (OrbitControls), `drie::loaders` (glTF), `drie::objects` (Sky) and
+`drie::postprocessing`. The parts that are not in three.js are submodules too: `drie::ui`,
+`drie::input`, `drie::profile`, `drie::timeline`. The shaders sokol-shdc generates are in
+`drie::shaders`.
+`import drie` imports them too. `ui` and `input` hook into the renderer when the program
+starts (`drie::add_frame_hook`, `add_event_filter`, `add_overlay`), which an application can
 use as well.
 
 ## Extensions
@@ -229,12 +232,12 @@ These aren't in three.js:
 - `scene.irradiance`: an `IrradianceVolume`, a grid of probes holding light that has bounced
   around a room. Lit materials inside its box receive it on top of the scene's lights. The
   engine stores and samples the probes; what goes into them is up to you (see `irradiance.c3`).
-- `scene.reflection_probes`: `ReflectionProbes` (`three::reflection_probes()`, `probes.add(map,
+- `scene.reflection_probes`: `ReflectionProbes` (`drie::reflection_probes()`, `probes.add(map,
   position, box_min, box_max)`), like three's scene-level reflection probes: an environment map
   per room, kept as the layers of one array texture. A material with `env_probes` set mirrors,
   at each of its points, the map of the box that point is in (box-projected, cross-faded where
   boxes meet, with a probe without a box for everywhere else), whichever room the camera is in.
-- `scene.radiance`: `RadianceCascades` (`three::radiance_cascades(min, max)`, `radiance.c3`):
+- `scene.radiance`: `RadianceCascades` (`drie::radiance_cascades(min, max)`, `radiance.c3`):
   bounced light and the glow of emissive things inside a box, traced anew on the GPU every
   frame (`rc.update(scene)` before `render`). Radiance cascades on a grid of probes, their
   rays marched through a voxel copy of the scene (`rc.voxelize(scene)`); the scene's point and
@@ -278,14 +281,14 @@ These aren't in three.js:
   clusters too; the per-pixel fallback's glow loops over every light. Storage buffers need GL 4.3 for a GL
   backend (Metal and D3D11 have them).
 - Compute shaders (`compute.c3`), after three.js's WebGPU `renderer.compute()` and storage
-  buffers. `three::storage_buffer(size)` makes a buffer that kernels read and write
+  buffers. `drie::storage_buffer(size)` makes a buffer that kernels read and write
   (`cpu_write: true` for one the CPU fills with `write()` once a frame), and
-  `three::compute_pass(my_shader_desc(sg::query_backend()))` a kernel written in GLSL with
+  `drie::compute_pass(my_shader_desc(sg::query_backend()))` a kernel written in GLSL with
   sokol-shdc's `@cs` (see `kernels.glsl`). Bind with `pass.set_buffer(VIEW_X, buffer)` and
   `pass.set_uniforms(UB_X, &params, Params::size)`, then `renderer.compute(pass, groups_x)`
   (or `begin_compute()`, several `pass.dispatch(x, y, z)`, `end_compute()`). Outside of
   `render()`. Results come back to the CPU without stalling: `buffer.track(slot)` (slots from
-  `three::readback_slot()`) queues a copy, and `three::read_back(slot, out, bytes)` returns it
+  `drie::readback_slot()`) queues a copy, and `drie::read_back(slot, out, bytes)` returns it
   once the GPU has got there, a frame or two later (`wait: true` waits, after the frame is
   committed).
 - GPU instance culling (`culling.c3`, `renderer.gpu_culling`, on by default): an
@@ -307,19 +310,19 @@ These aren't in three.js:
   at least `renderer.depth_prepass_pixels` (default 1.5) pixels per triangle: a far-off tree
   is mostly triangles and is cheaper drawn once.
 - `renderer.check_compute`: also computes on the CPU what the compute shaders do (clusters,
-  instance culls) and prints where they differ; `three::print_compute_checks()` sums it up.
+  instance culls) and prints where they differ; `drie::print_compute_checks()` sums it up.
 - `material.blending = ADDITIVE_BLENDING`, like three's `AdditiveBlending`: a see-through
   material's pixels are added to what is behind them (flames, glows).
 - `object.render_order`, like three's `renderOrder`: among see-through meshes, higher ones are
   drawn later whatever their distance (a film of dirt over a pane of glass).
 - `renderer.lod_scale`: multiplies every `Lod` distance, to keep detail further out.
-- `three::fog_exp(color, density)`: plain exponential fog, `exp(-density * distance)`.
+- `drie::fog_exp(color, density)`: plain exponential fog, `exp(-density * distance)`.
 - `fog.light_scatter`: point and spot lights light up the fog around them, and are dimmed by it
   on their way to surfaces. The fog then has no single color, so the renderer draws a backdrop
   sphere just inside the camera's far plane to carry it where there is no geometry.
 - Volumetric fog (`VolumetricFog`, after three's `webgpu_volume_lighting`): every `Fog` has its
   settings inline (`fog.light_scatter`, `height_*`, clear box, `sun_*`, `noise_*`,
-  `resolution`, `slices`, `volumetric`); `three::volumetric_fog(color, density)` makes one.
+  `resolution`, `slices`, `volumetric`); `drie::volumetric_fog(color, density)` makes one.
   With `fog.volumetric` on (default) and something to scatter (`light_scatter`, `sun_shafts`
   or `noise_amount` above 0), a compute pass (`fog.c3`, `fog_cs` in `kernels.glsl`) marches a
   froxel grid before the main pass: `resolution` of the picture's pixels across and up
@@ -337,7 +340,7 @@ These aren't in three.js:
 - `geometry.box_project_uv(tiles_per_unit)`: texture coordinates from world-space position, for
   tiling a texture over walls and floors without stretching.
 - `renderer.init_headless()`: sets up rendering without a window, for tests and screenshots.
-  Render to a `RenderTarget` and call `three::commit()` at the end of the frame.
+  Render to a `RenderTarget` and call `drie::commit()` at the end of the frame.
 - `renderer.time` drives `sway`. It follows the clock unless `renderer.auto_time` is off.
 - Shader hooks, compiled in (three's `onBeforeCompile` works on shader text at run time; sokol
   compiles shaders ahead). An application with surface effects of its own builds its own copy

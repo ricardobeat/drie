@@ -1,5 +1,5 @@
 // Renderer: owns the window and the GPU, draws a Scene from a Camera.
-module three;
+module drie;
 import std::collections::list, std::sort, std::io, std::math;
 import sokol, readback;
 
@@ -81,7 +81,7 @@ fn SgPixelFormat mrt_format(int i) @local
 // The picture as a Texture, for any material's map, like three's `renderTarget.texture`: a
 // screen in the scene showing what another camera sees, say. It follows set_size. Call it
 // once the target has a size.
-//   RenderTarget* feed = three::render_target(256, 144);
+//   RenderTarget* feed = drie::render_target(256, 144);
 //   screen_material.map = feed.as_map();
 //   renderer.set_render_target(feed); renderer.render(scene, other_camera);
 fn Texture* RenderTarget.as_map(&self)
@@ -108,11 +108,11 @@ fn Texture* RenderTarget.as_map(&self)
 
 // samples > 1 renders with MSAA and resolves into `texture`. A target for post-processing
 // passes takes a format of its own (RGBA16F, RG16F, R16F...) and no depth buffer:
-//   three::render_target(w, h, format: RGBA16F, depth_buffer: false)
+//   drie::render_target(w, h, format: RGBA16F, depth_buffer: false)
 // A scene rendered into an RGBA16F target keeps its light as it is, brighter than white where
 // it is (see OutputPass in postprocessing.c3), and with `mrt` it also writes its normals and
 // motion (see RenderTarget.mrt):
-//   three::render_target(w, h, 4, RGBA16F, mrt: true)
+//   drie::render_target(w, h, 4, RGBA16F, mrt: true)
 // Must be called after the window opened.
 fn RenderTarget* render_target(int width, int height, int samples = 1, SgPixelFormat format = RGBA8, bool depth_buffer = true,
                                bool mrt = false)
@@ -194,7 +194,7 @@ fn void RenderTarget.set_size(&self, int width, int height, int samples = 1)
     self.overlay_view = sg::make_view(&&{ .color_attachment = { .image = self.texture_image } });
     if (self.mrt)
     {
-        if (!self.is_linear()) abort("three: a render target with MRT must be RGBA16F");
+        if (!self.is_linear()) abort("drie: a render target with MRT must be RGBA16F");
         for (int i = 0; i < MRT_COUNT; i++)
         {
             self.mrt_color[i] = sg::make_image(&&{
@@ -370,11 +370,11 @@ fn void Renderer.clear_reflection_source(&self)
 // `target` (an R16F target with a depth buffer, one sample, the size of the render): r = the
 // distance of the nearest back face from the camera's plane (m), 0 where there is none. Give it
 // to set_reflection_source next frame, so reflections know how thick things are.
-//   RenderTarget* back = three::render_target(w, h, 1, R16F);
+//   RenderTarget* back = drie::render_target(w, h, 1, R16F);
 //   renderer.render(scene, camera); renderer.render_back_faces(back);
 fn void Renderer.render_back_faces(&self, RenderTarget* target)
 {
-    if (target.samples != 1 || target.pixel_format() != R16F || !target.depth_buffer) abort("three: back faces go into an R16F target with depth, one sample");
+    if (target.samples != 1 || target.pixel_format() != R16F || !target.depth_buffer) abort("drie: back faces go into an R16F target with depth, one sample");
     ulong pt = profile::start();
     if (!state.back_pipeline.id)
     {
@@ -383,11 +383,11 @@ fn void Renderer.render_back_faces(&self, RenderTarget* target)
             .index_type = UINT32,
             .cull_mode = FRONT,
             .face_winding = CCW,
-            .layout = vertex_layout({ ATTR_THREE_POSITION, ATTR_THREE_NORMAL, ATTR_THREE_UV, ATTR_THREE_COLOR0,
-                                      ATTR_THREE_INST0, ATTR_THREE_INST1, ATTR_THREE_INST2 }),
+            .layout = vertex_layout({ shaders::ATTR_THREE_POSITION, shaders::ATTR_THREE_NORMAL, shaders::ATTR_THREE_UV, shaders::ATTR_THREE_COLOR0,
+                                      shaders::ATTR_THREE_INST0, shaders::ATTR_THREE_INST1, shaders::ATTR_THREE_INST2 }),
             .depth = { .pixel_format = DEPTH, .write_enabled = true, .compare = LESS_EQUAL },
             .colors[0].pixel_format = R16F,
-            .label = "three-back-faces",
+            .label = "drie-back-faces",
         });
     }
     sg::begin_pass(&&{
@@ -396,7 +396,7 @@ fn void Renderer.render_back_faces(&self, RenderTarget* target)
             .depth = { .load_action = CLEAR, .clear_value = 1 },
         },
         .attachments = target.attachments(),
-        .label = "three-back-faces",
+        .label = "drie-back-faces",
     });
     Mat4 view_proj = state.last_view_proj;
     foreach (&item : state.opaque)
@@ -410,14 +410,14 @@ fn void Renderer.render_back_faces(&self, RenderTarget* target)
         bind_instances(&bind, item);
         Vec4 inst_cull = cull_bind(&bind, item.job - 1);
         Texture* map = ready(state.white);
-        bind.views[VIEW_TEX_MAP] = map.view;
-        bind.samplers[SMP_TEX_SMP] = map.sampler;
+        bind.views[shaders::VIEW_TEX_MAP] = map.view;
+        bind.samplers[shaders::SMP_TEX_SMP] = map.sampler;
         sg::apply_bindings(&bind);
         VsParams vs = vs_params_of(item, view_proj, false);
         vs.inst_cull = inst_cull;
-        sg::apply_uniforms(UB_VS_PARAMS, &&{ .ptr = &vs, .size = VsParams::size });
+        sg::apply_uniforms(shaders::UB_VS_PARAMS, &&{ .ptr = &vs, .size = VsParams::size });
         DepthFsParams fs = { .d_color = { 0, 0, 0, 1 } };
-        sg::apply_uniforms(UB_DEPTH_FS_PARAMS, &&{ .ptr = &fs, .size = DepthFsParams::size });
+        sg::apply_uniforms(shaders::UB_DEPTH_FS_PARAMS, &&{ .ptr = &fs, .size = DepthFsParams::size });
         self.info.calls++;
         draw_geometry(item, false);
     }
@@ -512,7 +512,6 @@ struct RendererState @local
     List{DrawItem}[4] sun_casters;
     List{Light*} lights;
     List{EventListener} listeners;
-    List{OrbitControls*} controls;
     ulong start_ticks;
     // Bound where a material has no texture.
     Texture* white;
@@ -573,7 +572,7 @@ struct RendererState @local
 
 RendererState state @local;
 
-fn Renderer* webgl_renderer(bool antialias = true, int width = 800, int height = 600, String title = "three")
+fn Renderer* webgl_renderer(bool antialias = true, int width = 800, int height = 600, String title = "drie")
 {
     Renderer* r = mem::new(Renderer);
     *r = {
@@ -605,7 +604,6 @@ fn Renderer* webgl_renderer(bool antialias = true, int width = 800, int height =
     state.atlas_pending.allocator = mem;
     lights_gpu.init_lists();
     state.listeners.allocator = mem;
-    state.controls.allocator = mem;
     return r;
 }
 
@@ -708,12 +706,12 @@ fn void setup_gfx(SgEnvironment environment) @local
     state.start_ticks = stm::now();
     MaterialShaders s = state.renderer ? state.renderer.shaders : {};
     SgBackend backend = sg::query_backend();
-    state.shader = sg::make_shader(&&(s.main ? s.main(backend) : three_shader_desc(backend)));
-    state.opaque_shader = sg::make_shader(&&(s.opaque ? s.opaque(backend) : three_opaque_shader_desc(backend)));
-    state.depth_shader = sg::make_shader(&&(s.depth ? s.depth(backend) : depth_shader_desc(backend)));
-    state.shadow_shader = sg::make_shader(&&(s.shadow ? s.shadow(backend) : shadow_shader_desc(backend)));
-    state.mrt_shader = sg::make_shader(&&(s.main_mrt ? s.main_mrt(backend) : three_mrt_shader_desc(backend)));
-    state.opaque_mrt_shader = sg::make_shader(&&(s.opaque_mrt ? s.opaque_mrt(backend) : three_opaque_mrt_shader_desc(backend)));
+    state.shader = sg::make_shader(&&(s.main ? s.main(backend) : shaders::three_shader_desc(backend)));
+    state.opaque_shader = sg::make_shader(&&(s.opaque ? s.opaque(backend) : shaders::three_opaque_shader_desc(backend)));
+    state.depth_shader = sg::make_shader(&&(s.depth ? s.depth(backend) : shaders::depth_shader_desc(backend)));
+    state.shadow_shader = sg::make_shader(&&(s.shadow ? s.shadow(backend) : shaders::shadow_shader_desc(backend)));
+    state.mrt_shader = sg::make_shader(&&(s.main_mrt ? s.main_mrt(backend) : shaders::three_mrt_shader_desc(backend)));
+    state.opaque_mrt_shader = sg::make_shader(&&(s.opaque_mrt ? s.opaque_mrt(backend) : shaders::three_opaque_mrt_shader_desc(backend)));
     state.white = data_texture({ 255, 255, 255, 255 }, 1, 1, NO_COLOR_SPACE);
     float[12] identity = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0 };
     state.identity_instance = sg::make_buffer(&&{ .data = { .ptr = &identity, .size = identity.len * float::size } });
@@ -730,7 +728,7 @@ fn void on_init() @local
 
 // Sets up the GPU without opening a window (Metal on macOS, D3D11 on Windows), for rendering into
 // RenderTargets from scripts, tests or on a machine without a display. Use instead of
-// set_animation_loop: call render() with a render target set, then three::commit().
+// set_animation_loop: call render() with a render target set, then drie::commit().
 fn void Renderer.init_headless(&self)
 {
     state.renderer = self;
@@ -739,7 +737,7 @@ fn void Renderer.init_headless(&self)
 
 // What runs around the frame besides the application: before it (reading a game controller),
 // on the window's events before the listeners (menus that take the input), and over the
-// picture in the window (menus, fades). three::input and three::ui hook in this way, and an
+// picture in the window (menus, fades). drie::input and drie::ui hook in this way, and an
 // application can too.
 alias FrameHook = fn void();
 alias EventFilter = fn bool(Event* e);
@@ -801,15 +799,9 @@ fn void on_event(SappEvent* e) @local
         sapp::toggle_fullscreen();
         return;
     }
-    // an open menu takes the input (three::ui), for one
+    // an open menu takes the input (drie::ui), for one
     foreach (f : state.event_filters) if (f(e)) return;
-    foreach (c : state.controls) c.handle_event(e);
     foreach (l : state.listeners) l(e);
-}
-
-fn void register_controls(OrbitControls* c)
-{
-    state.controls.push(c);
 }
 
 fn SgVertexLayoutState vertex_layout(int[7] attrs) @local
@@ -844,8 +836,8 @@ fn SgPipeline get_pipeline(Side side, bool transparent, bool wireframe, RenderTa
                            Blending blending = NORMAL_BLENDING, DrawKind kind = CUT) @local
 {
     int target = rt ? (rt.samples > 1 ? 2 : 1) + (rt.mrt ? 4 : (rt.is_linear() ? 2 : 0)) : 0;
-    if (rt && rt.samples != 1 && rt.samples != 4) abort("three: render targets support 1 or 4 samples");
-    if (rt && rt.pixel_format() != RGBA8 && !rt.is_linear()) abort("three: a scene renders into RGBA8 or RGBA16F");
+    if (rt && rt.samples != 1 && rt.samples != 4) abort("drie: render targets support 1 or 4 samples");
+    if (rt && rt.pixel_format() != RGBA8 && !rt.is_linear()) abort("drie: a scene renders into RGBA8 or RGBA16F");
     int samples = rt ? rt.samples : sapp::sample_count();
     // after the prepass, the coverage of the cut-out's edge is in the depth buffer's samples
     bool a2c = alpha_test && !transparent && samples > 1 && kind != PRETESTED;
@@ -874,14 +866,14 @@ fn SgPipeline get_pipeline(Side side, bool transparent, bool wireframe, RenderTa
         .primitive_type = wireframe ? LINES : TRIANGLES,
         .cull_mode = wireframe ? NONE : cull,
         .face_winding = CCW,
-        .layout = vertex_layout({ ATTR_THREE_POSITION, ATTR_THREE_NORMAL, ATTR_THREE_UV, ATTR_THREE_COLOR0,
-                                  ATTR_THREE_INST0, ATTR_THREE_INST1, ATTR_THREE_INST2 }),
+        .layout = vertex_layout({ shaders::ATTR_THREE_POSITION, shaders::ATTR_THREE_NORMAL, shaders::ATTR_THREE_UV, shaders::ATTR_THREE_COLOR0,
+                                  shaders::ATTR_THREE_INST0, shaders::ATTR_THREE_INST1, shaders::ATTR_THREE_INST2 }),
         .depth = {
             .write_enabled = !transparent && kind != PRETESTED,
             .compare = kind == PRETESTED ? SgCompareFunc.EQUAL : SgCompareFunc.LESS_EQUAL,
         },
         .alpha_to_coverage_enabled = a2c,
-        .label = kind == DEPTH ? "three-depth-prepass" : "three-pipeline",
+        .label = kind == DEPTH ? "drie-depth-prepass" : "drie-pipeline",
     };
     if (kind == DEPTH) desc.colors[0].write_mask = NONE;
     if (rt)
@@ -911,7 +903,7 @@ fn SgPipeline get_pipeline(Side side, bool transparent, bool wireframe, RenderTa
         };
     }
     *pip = sg::make_pipeline(&desc);
-    if (!pip.id) abort("three: sokol's pipeline pool is full (pipeline_pool_size in setup_gfx)");
+    if (!pip.id) abort("drie: sokol's pipeline pool is full (pipeline_pool_size in setup_gfx)");
     return *pip;
 }
 
@@ -922,8 +914,8 @@ fn SgPipeline get_shadow_pipeline() @local
         .shader = state.shadow_shader,
         .index_type = UINT32,
         .cull_mode = NONE,
-        .layout = vertex_layout({ ATTR_SHADOW_POSITION, ATTR_SHADOW_NORMAL, ATTR_SHADOW_UV, ATTR_SHADOW_COLOR0,
-                                  ATTR_SHADOW_INST0, ATTR_SHADOW_INST1, ATTR_SHADOW_INST2 }),
+        .layout = vertex_layout({ shaders::ATTR_SHADOW_POSITION, shaders::ATTR_SHADOW_NORMAL, shaders::ATTR_SHADOW_UV, shaders::ATTR_SHADOW_COLOR0,
+                                  shaders::ATTR_SHADOW_INST0, shaders::ATTR_SHADOW_INST1, shaders::ATTR_SHADOW_INST2 }),
         .depth = {
             .pixel_format = DEPTH,
             .write_enabled = true,
@@ -932,7 +924,7 @@ fn SgPipeline get_shadow_pipeline() @local
         .color_count = 0,
         .colors[0].pixel_format = NONE,
         .sample_count = 1,
-        .label = "three-shadow-pipeline",
+        .label = "drie-shadow-pipeline",
     });
     return state.shadow_pipeline;
 }
@@ -946,13 +938,13 @@ fn void clear_atlas_tile() @local
             .shader = state.shadow_shader,
             .index_type = UINT32,
             .cull_mode = NONE,
-            .layout = vertex_layout({ ATTR_SHADOW_POSITION, ATTR_SHADOW_NORMAL, ATTR_SHADOW_UV, ATTR_SHADOW_COLOR0,
-                                      ATTR_SHADOW_INST0, ATTR_SHADOW_INST1, ATTR_SHADOW_INST2 }),
+            .layout = vertex_layout({ shaders::ATTR_SHADOW_POSITION, shaders::ATTR_SHADOW_NORMAL, shaders::ATTR_SHADOW_UV, shaders::ATTR_SHADOW_COLOR0,
+                                      shaders::ATTR_SHADOW_INST0, shaders::ATTR_SHADOW_INST1, shaders::ATTR_SHADOW_INST2 }),
             .depth = { .pixel_format = DEPTH, .write_enabled = true, .compare = ALWAYS },
             .color_count = 0,
             .colors[0].pixel_format = NONE,
             .sample_count = 1,
-            .label = "three-atlas-tile-clear",
+            .label = "drie-atlas-tile-clear",
         });
         state.tile_quad = plane_geometry(2, 2);
     }
@@ -962,8 +954,8 @@ fn void clear_atlas_tile() @local
     SgBindings bind = { .vertex_buffers[0] = g.vbuf, .vertex_buffers[1] = state.identity_instance, .index_buffer = g.ibuf };
     Vec4 inst_cull = cull_bind(&bind, -1);
     Texture* white = ready(state.white);
-    bind.views[VIEW_S_MAP] = white.view;
-    bind.samplers[SMP_S_SMP] = white.sampler;
+    bind.views[shaders::VIEW_S_MAP] = white.view;
+    bind.samplers[shaders::SMP_S_SMP] = white.sampler;
     sg::apply_bindings(&bind);
     // the quad's x and y as they are, at depth 1 (clip z = w: the far plane in both of the
     // depth ranges)
@@ -972,9 +964,9 @@ fn void clear_atlas_tile() @local
     to_far[3][2] = 1;
     ShadowVsParams vs = { .s_view_proj = to_far, .s_model = mat4_identity(), .s_uv_transform = { 1, 1, 0, 0 },
                           .s_inst_cull = inst_cull };
-    sg::apply_uniforms(UB_SHADOW_VS_PARAMS, &&{ .ptr = &vs, .size = ShadowVsParams::size });
+    sg::apply_uniforms(shaders::UB_SHADOW_VS_PARAMS, &&{ .ptr = &vs, .size = ShadowVsParams::size });
     ShadowFsParams fs;
-    sg::apply_uniforms(UB_SHADOW_FS_PARAMS, &&{ .ptr = &fs, .size = ShadowFsParams::size });
+    sg::apply_uniforms(shaders::UB_SHADOW_FS_PARAMS, &&{ .ptr = &fs, .size = ShadowFsParams::size });
     sg::draw(0, (int)g.index_count, 1);
     sg::apply_pipeline(get_shadow_pipeline());
 }
@@ -1107,7 +1099,7 @@ fn void update_shadow_atlas(Scene* scene, Camera* camera) @local
     sg::begin_pass(&&{
         .action = { .depth = { .load_action = all ? CLEAR : LOAD, .store_action = STORE, .clear_value = 1 } },
         .attachments = { .depth_stencil = state.atlas_attachment },
-        .label = "three-spot-atlas",
+        .label = "drie-spot-atlas",
     });
     sg::apply_pipeline(get_shadow_pipeline());
     for (int i = 0; i < count; i++)
@@ -1384,7 +1376,7 @@ fn void draw_sun_shadow(DirectionalLight* sun) @local
         // depth is not stored by default: ask for it, the main pass samples this map
         .action = { .depth = { .load_action = CLEAR, .store_action = STORE, .clear_value = 1 } },
         .attachments = { .depth_stencil = state.sun_attachment },
-        .label = "three-sun-cascades",
+        .label = "drie-sun-cascades",
     });
     sg::apply_pipeline(get_shadow_pipeline());
     for (int i = 0; i < math::max(n, 1); i++)
@@ -1735,12 +1727,12 @@ fn void draw_depth_item(DrawItem* item, Mat4 view_proj) @local
     bind_instances(&bind, item);
     Vec4 inst_cull = cull_bind(&bind, item.job - 1);
     Texture* map = ready(mat.map);
-    bind.views[VIEW_TEX_MAP] = map.view;
-    bind.samplers[SMP_TEX_SMP] = map.sampler;
+    bind.views[shaders::VIEW_TEX_MAP] = map.view;
+    bind.samplers[shaders::SMP_TEX_SMP] = map.sampler;
     sg::apply_bindings(&bind);
     VsParams vs = vs_params_of(item, view_proj, false);
     vs.inst_cull = inst_cull;
-    sg::apply_uniforms(UB_VS_PARAMS, &&{ .ptr = &vs, .size = VsParams::size });
+    sg::apply_uniforms(shaders::UB_VS_PARAMS, &&{ .ptr = &vs, .size = VsParams::size });
     DepthFsParams fs = {
         .d_color = { 0, 0, 0, mat.opacity },
         .d_params = { mat.map ? 1 : 0, alpha_test, mat.vertex_colors ? 1 : 0, 0 },
@@ -1748,7 +1740,7 @@ fn void draw_depth_item(DrawItem* item, Mat4 view_proj) @local
         .d_cull_min = { ...r.cull_box_min, r.cull_box ? 1 : 0 },
         .d_cull_max = { ...r.cull_box_max, 0 },
     };
-    sg::apply_uniforms(UB_DEPTH_FS_PARAMS, &&{ .ptr = &fs, .size = DepthFsParams::size });
+    sg::apply_uniforms(shaders::UB_DEPTH_FS_PARAMS, &&{ .ptr = &fs, .size = DepthFsParams::size });
     r.info.calls++;
     draw_geometry(item, false);
 }
@@ -1773,31 +1765,31 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     };
     bind_instances(&bind, item);
     Vec4 inst_cull = cull_bind(&bind, item.job - 1);
-    bind.views[VIEW_TEX_MAP] = map.view;
-    bind.views[VIEW_TEX_NORMAL] = ready(mat.normal_map).view;
-    bind.views[VIEW_TEX_ARM] = ready(mat.arm_map).view;
+    bind.views[shaders::VIEW_TEX_MAP] = map.view;
+    bind.views[shaders::VIEW_TEX_NORMAL] = ready(mat.normal_map).view;
+    bind.views[shaders::VIEW_TEX_ARM] = ready(mat.arm_map).view;
     // (the parallax map: white, none, where the material has none)
-    bind.views[VIEW_TEX_PARALLAX] = ready(mat.parallax_map).view;
-    bind.views[VIEW_SHADOW_MAP] = state.shadow_view;
-    bind.views[VIEW_SHADOW_ATLAS] = state.atlas_view;
-    bind.views[VIEW_SUN_SHADOW] = state.sun_view;
-    bind.views[VIEW_FOG_VOLUME] = state.fog_view;
+    bind.views[shaders::VIEW_TEX_PARALLAX] = ready(mat.parallax_map).view;
+    bind.views[shaders::VIEW_SHADOW_MAP] = state.shadow_view;
+    bind.views[shaders::VIEW_SHADOW_ATLAS] = state.atlas_view;
+    bind.views[shaders::VIEW_SUN_SHADOW] = state.sun_view;
+    bind.views[shaders::VIEW_FOG_VOLUME] = state.fog_view;
     bool ssr = r.ssr_color.id != 0 && r.ssr_depth.id != 0 && mat.ssr > 0;
-    bind.views[VIEW_SSR_COLOR] = ssr ? r.ssr_color : ready(state.white).view;
-    bind.views[VIEW_SSR_DEPTH] = ssr ? r.ssr_depth : ready(state.white).view;
-    bind.views[VIEW_SSR_BACK] = ssr && r.ssr_back.id ? r.ssr_back : ready(state.white).view;
+    bind.views[shaders::VIEW_SSR_COLOR] = ssr ? r.ssr_color : ready(state.white).view;
+    bind.views[shaders::VIEW_SSR_DEPTH] = ssr ? r.ssr_depth : ready(state.white).view;
+    bind.views[shaders::VIEW_SSR_BACK] = ssr && r.ssr_back.id ? r.ssr_back : ready(state.white).view;
     Reflector* mirror = mat.reflector && mat.reflector.rendered && mat.reflector.target ? mat.reflector : null;
-    bind.views[VIEW_REFLECTOR_MAP] = mirror ? mirror.target.texture : ready(state.white).view;
+    bind.views[shaders::VIEW_REFLECTOR_MAP] = mirror ? mirror.target.texture : ready(state.white).view;
     if (!state.clamp_sampler.id)
     {
         state.clamp_sampler = sg::make_sampler(&&{
             .min_filter = LINEAR, .mag_filter = LINEAR, .wrap_u = CLAMP_TO_EDGE, .wrap_v = CLAMP_TO_EDGE,
         });
     }
-    bind.samplers[SMP_SSR_SMP] = state.clamp_sampler;
-    bind.views[VIEW_TEX_GI] = state.irradiance.view;
-    bind.views[VIEW_RC_PROBES] = state.radiance_view;
-    bind.samplers[SMP_GI_SMP] = state.irradiance.sampler;
+    bind.samplers[shaders::SMP_SSR_SMP] = state.clamp_sampler;
+    bind.views[shaders::VIEW_TEX_GI] = state.irradiance.view;
+    bind.views[shaders::VIEW_RC_PROBES] = state.radiance_view;
+    bind.samplers[shaders::SMP_GI_SMP] = state.irradiance.sampler;
     // the scene's environment lights the standard materials without a map of their own
     Texture* env_map = mat.env_map;
     float env_intensity = mat.env_intensity > 0 ? mat.env_intensity : 1;
@@ -1815,13 +1807,13 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
         env_diffuse = true;
         foreach (i, c : env_map.env_sh) fs.env_sh[i] = { ...c, 0 };
     }
-    bind.views[VIEW_TEX_ENV] = env.view;
-    bind.samplers[SMP_ENV_SMP] = env.sampler;
-    bind.samplers[SMP_TEX_SMP] = (mat.map ?: (mat.normal_map ?: (mat.arm_map ?: state.white))).sampler;
+    bind.views[shaders::VIEW_TEX_ENV] = env.view;
+    bind.samplers[shaders::SMP_ENV_SMP] = env.sampler;
+    bind.samplers[shaders::SMP_TEX_SMP] = (mat.map ?: (mat.normal_map ?: (mat.arm_map ?: state.white))).sampler;
     if (mat.screen_target)
     {
-        bind.views[VIEW_TEX_MAP] = mat.screen_target.texture;
-        bind.samplers[SMP_TEX_SMP] = state.white.sampler;
+        bind.views[shaders::VIEW_TEX_MAP] = mat.screen_target.texture;
+        bind.samplers[shaders::SMP_TEX_SMP] = state.white.sampler;
     }
     if (!state.no_probes.id)
     {
@@ -1832,15 +1824,15 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     }
     // the scene's reflection probes, for a material that mirrors them
     bool probes = !mat.env_map && mat.env_probes && state.probes_view.id;
-    bind.views[VIEW_TEX_PROBES] = state.probes_view.id ? state.probes_view : state.no_probes;
-    if (probes) bind.samplers[SMP_ENV_SMP] = state.probes_sampler;
-    bind.samplers[SMP_SHADOW_SMP] = state.shadow_sampler;
+    bind.views[shaders::VIEW_TEX_PROBES] = state.probes_view.id ? state.probes_view : state.no_probes;
+    if (probes) bind.samplers[shaders::SMP_ENV_SMP] = state.probes_sampler;
+    bind.samplers[shaders::SMP_SHADOW_SMP] = state.shadow_sampler;
     lights_gpu.bind(&bind);
     sg::apply_bindings(&bind);
 
     VsParams vs = vs_params_of(item, view_proj);
     vs.inst_cull = inst_cull;
-    sg::apply_uniforms(UB_VS_PARAMS, &&{ .ptr = &vs, .size = VsParams::size });
+    sg::apply_uniforms(shaders::UB_VS_PARAMS, &&{ .ptr = &vs, .size = VsParams::size });
 
     int flags = (mat.vertex_colors ? 1 : 0) | (mat.foliage ? 2 : 0) | (m.receive_shadow ? 4 : 0) | (mat.glass ? 8 : 0)
               | (mat.vertex_light > 0 ? 16 : 0) | (mat.screen_target ? 32 : 0) | (mat.map_emissive ? 64 : 0);
@@ -1882,7 +1874,7 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     }
     float fog_mode = fs.fog_params.w;
     if (!mat.fog) fs.fog_params.w = 0;
-    sg::apply_uniforms(UB_FS_PARAMS, &&{ .ptr = fs, .size = FsParams::size });
+    sg::apply_uniforms(shaders::UB_FS_PARAMS, &&{ .ptr = fs, .size = FsParams::size });
     fs.fog_params.w = fog_mode;
 
     r.info.calls++;
@@ -1900,8 +1892,8 @@ fn void draw_shadow_item(DrawItem* item, Mat4 light_vp) @local
     };
     bind_instances(&bind, item);
     Vec4 inst_cull = cull_bind(&bind, item.job - 1);
-    bind.views[VIEW_S_MAP] = map.view;
-    bind.samplers[SMP_S_SMP] = map.sampler;
+    bind.views[shaders::VIEW_S_MAP] = map.view;
+    bind.samplers[shaders::SMP_S_SMP] = map.sampler;
     sg::apply_bindings(&bind);
     ShadowVsParams vs = {
         .s_view_proj = light_vp,
@@ -1912,9 +1904,9 @@ fn void draw_shadow_item(DrawItem* item, Mat4 light_vp) @local
         .s_material_custom = mat.custom,
         .s_frame_custom = state.renderer.custom,
     };
-    sg::apply_uniforms(UB_SHADOW_VS_PARAMS, &&{ .ptr = &vs, .size = ShadowVsParams::size });
+    sg::apply_uniforms(shaders::UB_SHADOW_VS_PARAMS, &&{ .ptr = &vs, .size = ShadowVsParams::size });
     ShadowFsParams fs = { .s_params = { mat.map && !state.renderer.prof_no_alpha_test ? mat.alpha_test : 0, mat.opacity, 0, 0 } };
-    sg::apply_uniforms(UB_SHADOW_FS_PARAMS, &&{ .ptr = &fs, .size = ShadowFsParams::size });
+    sg::apply_uniforms(shaders::UB_SHADOW_FS_PARAMS, &&{ .ptr = &fs, .size = ShadowFsParams::size });
     state.renderer.info.shadow_calls++;
     state.renderer.info.shadow_triangles += draw_geometry(item, false);
 }
@@ -2154,7 +2146,7 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera)
             // depth is not stored by default: ask for it, the main pass samples this map
             .action = { .depth = { .load_action = CLEAR, .store_action = STORE, .clear_value = 1 } },
             .attachments = { .depth_stencil = state.shadow_attachment },
-            .label = "three-spot-shadow",
+            .label = "drie-spot-shadow",
         });
         sg::apply_pipeline(get_shadow_pipeline());
         foreach (&item : state.spot_casters) draw_shadow_item(item, caster_vp);
@@ -2170,7 +2162,7 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera)
     pt = profile::start();
     if (!state.no_irradiance) state.no_irradiance = irradiance_volume({ 0, 0, 0 }, { 1, 1, 1 }, 1);
     state.irradiance = scene.irradiance ?: state.no_irradiance;
-    if (!state.no_radiance) state.no_radiance = storage_buffer(6 * 16, label: "three-rc-none");
+    if (!state.no_radiance) state.no_radiance = storage_buffer(6 * 16, label: "drie-rc-none");
     state.radiance_view = scene.radiance ? scene.radiance.irradiance_buf.view : state.no_radiance.view;
     state.irradiance.upload();
 
@@ -2197,7 +2189,7 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera)
                 .clear_value = { clear.x, clear.y, clear.z, scene.background ? 1.0f : self.clear_alpha },
             },
         },
-        .label = "three-main",
+        .label = "drie-main",
     };
     if (self.render_target)
     {
@@ -2243,12 +2235,12 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera)
     pt = profile::start();
     draw_backdrop(scene, camera, view_proj, &fs);
     if (!self.prof_no_transparent) foreach (&item : state.transparent) draw_item(item, view_proj, &fs);
-    // menus and fades on top (three::ui)
+    // menus and fades on top (drie::ui)
     if (!self.render_target) draw_overlays();
     sg::end_pass();
     profile::stop("render: main transparent", pt);
     // When rendering to the window, finish the frame. With a render target, the caller
-    // usually runs more passes (post-processing) and must call three::commit() at the end.
+    // usually runs more passes (post-processing) and must call drie::commit() at the end.
     if (!self.render_target) sg::commit();
 }
 

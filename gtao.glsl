@@ -8,8 +8,8 @@
 //                         that darkens the pixel's indirect diffuse light by the visibility and
 //                         its indirect specular light by the specular occlusion (Lagarde's);
 //                         multiplied into the picture by the pipeline's blending
-@header module three::postprocessing;
-@header import three;
+@header module drie::postprocessing;
+@header import drie;
 
 @ctype vec4 Vec4
 

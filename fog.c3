@@ -8,7 +8,7 @@
 // Unlike a fog pass over the finished picture this needs no depth buffer (the scene is drawn
 // in one pass, with no depth before it), it lands before tone mapping, which the lit shader
 // does itself, and see-through surfaces get the fog in front of them too.
-module three;
+module drie;
 import std::math;
 import sokol;
 
@@ -67,7 +67,7 @@ fn FogVolume* fog_volume_for(int cells_x, int cells_y, int slices) @local
     v.image = sg::make_image(&&{
         .usage = { .storage_image = true },
         .width = cells_x * per_row, .height = cells_y * rows, .pixel_format = RGBA16F,
-        .label = "three-fog-volume",
+        .label = "drie-fog-volume",
     });
     v.storage = sg::make_view(&&{ .storage_image = { .image = v.image } });
     v.texture = sg::make_view(&&{ .texture = { .image = v.image } });
@@ -93,8 +93,8 @@ fn SgView update_fog_volume(Scene* scene, Camera* camera, FsParams* p, int width
     Fog* f = scene.fog;
     if (!fog_pass.shader.id)
     {
-        fog_pass.shader = sg::make_shader(&&fog_shader_desc(sg::query_backend()));
-        fog_pass.pipeline = sg::make_pipeline(&&{ .compute = true, .shader = fog_pass.shader, .label = "three-fog" });
+        fog_pass.shader = sg::make_shader(&&shaders::fog_shader_desc(sg::query_backend()));
+        fog_pass.pipeline = sg::make_pipeline(&&{ .compute = true, .shader = fog_pass.shader, .label = "drie-fog" });
     }
     float res = f.resolution > 0 ? math::min(f.resolution, 1.0f) : 0.125f;
     int cx = math::max((int)math::ceil((float)width * res), 1);
@@ -138,22 +138,22 @@ fn SgView update_fog_volume(Scene* scene, Camera* camera, FsParams* p, int width
     c.vf_cascade_params = p.dir_cascade_params;
 
     SgBindings bind;
-    bind.views[VIEW_VF_OUT] = v.storage;
-    bind.views[VIEW_VF_SPOT_MAP] = views.spot_map;
-    bind.views[VIEW_VF_SPOT_ATLAS] = views.spot_atlas;
-    bind.views[VIEW_VF_SUN_MAP] = views.sun_map;
-    bind.samplers[SMP_VF_SHADOW_SMP] = views.sampler;
+    bind.views[shaders::VIEW_VF_OUT] = v.storage;
+    bind.views[shaders::VIEW_VF_SPOT_MAP] = views.spot_map;
+    bind.views[shaders::VIEW_VF_SPOT_ATLAS] = views.spot_atlas;
+    bind.views[shaders::VIEW_VF_SUN_MAP] = views.sun_map;
+    bind.samplers[shaders::SMP_VF_SHADOW_SMP] = views.sampler;
     LightBufferSet* s = lights_gpu.current;
-    bind.views[VIEW_VF_POINTS] = s.points.view;
-    bind.views[VIEW_VF_SPOTS] = s.spots.view;
-    bind.views[VIEW_VF_SHADOWS] = s.shadows.view;
-    bind.views[VIEW_VF_LIGHT_CLUSTERS] = s.on_gpu ? s.gpu_clusters.view : s.clusters.view;
-    bind.views[VIEW_VF_LIGHT_INDICES] = s.on_gpu ? s.gpu_indices.view : s.indices.view;
+    bind.views[shaders::VIEW_VF_POINTS] = s.points.view;
+    bind.views[shaders::VIEW_VF_SPOTS] = s.spots.view;
+    bind.views[shaders::VIEW_VF_SHADOWS] = s.shadows.view;
+    bind.views[shaders::VIEW_VF_LIGHT_CLUSTERS] = s.on_gpu ? s.gpu_clusters.view : s.clusters.view;
+    bind.views[shaders::VIEW_VF_LIGHT_INDICES] = s.on_gpu ? s.gpu_indices.view : s.indices.view;
 
-    sg::begin_pass(&&{ .compute = true, .label = "three-fog" });
+    sg::begin_pass(&&{ .compute = true, .label = "drie-fog" });
     sg::apply_pipeline(fog_pass.pipeline);
     sg::apply_bindings(&bind);
-    sg::apply_uniforms(UB_FOG_CS_PARAMS, &&{ .ptr = &c, .size = FogCsParams::size });
+    sg::apply_uniforms(shaders::UB_FOG_CS_PARAMS, &&{ .ptr = &c, .size = FogCsParams::size });
     sg::dispatch((cx + 7) / 8, (cy + 7) / 8, 1);
     sg::end_pass();
 

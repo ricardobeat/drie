@@ -1,5 +1,5 @@
-module three::postprocessing;
-import three;
+module drie::postprocessing;
+import drie;
 import sokol;
 /*
     #version:1# (machine generated, don't edit!)

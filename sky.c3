@@ -1,7 +1,7 @@
 // Like THREE's Sky (examples/jsm/objects/Sky.js, r187): Preetham's daylight sky with its sun
 // disc and a layer of cloud, on a dome around the camera. The parameters are three's uniforms.
 //
-//     Sky* sky = three::sky();
+//     Sky* sky = objects::sky();
 //     sky.rayleigh = 3;
 //     sky.sun_position = { -0.8, 0.19, 0.56 };
 //     scene.add(sky);
@@ -11,8 +11,8 @@
 // three's shader runs per pixel; here the same equations fill an equirectangular HDR texture
 // (update(), whenever a parameter changed) that the dome shows with a MeshBasicMaterial. three
 // draws its dome on the far plane whatever its size; follow() puts this one just inside it.
-module three;
-import std::math;
+module drie::objects;
+import std::math, drie;
 
 struct Sky
 {
@@ -51,8 +51,8 @@ fn Sky* sky(int resolution = 1024)
     Sky* s = mem::new(Sky);
     s.init(MESH);
     s.instance_data.allocator = mem;
-    s.geometry = sphere_geometry(1, 64, 32);
-    MeshBasicMaterial* m = mesh_basic_material(side: BACK_SIDE, fog: false);
+    s.geometry = drie::sphere_geometry(1, 64, 32);
+    MeshBasicMaterial* m = drie::mesh_basic_material(side: BACK_SIDE, fog: false);
     m.depth_write = false;
     s.material = m;
     s.frustum_culled = false;
@@ -116,10 +116,10 @@ fn void Sky.update(&self)
     for (int y = 0; y < h; y++)
     {
         // the sphere's uv.y is 1 at the top (y up), which samples the last row
-        float theta = (1 - ((float)y + 0.5f) / h) * (float)PI;
+        float theta = (1 - ((float)y + 0.5f) / h) * (float)drie::PI;
         for (int x = 0; x < w; x++)
         {
-            float phi = ((float)x + 0.5f) / w * 2 * (float)PI;
+            float phi = ((float)x + 0.5f) / w * 2 * (float)drie::PI;
             Vector3 d = { -math::cos(phi) * math::sin(theta), math::cos(theta), math::sin(phi) * math::sin(theta) };
             Vector3 c = sky_color(&p, &light, d);
             sz o = ((sz)y * w + x) * 4;
@@ -129,7 +129,7 @@ fn void Sky.update(&self)
             pixels[o + 3] = 1;
         }
     }
-    Texture* t = float_texture(pixels, w, h);
+    Texture* t = drie::float_texture(pixels, w, h);
     t.wrap_t = CLAMP_TO_EDGE_WRAPPING;
     Material* m = self.material;
     if (m.map) m.map.dispose();
@@ -219,7 +219,7 @@ fn float sky_fbm(float[<2>] p, float drift) @local
 
 fn Vector3 sky_color(SkyParams* p, SkyLight* l, Vector3 dir) @local
 {
-    const float PI_F = (float)PI;
+    const float PI_F = (float)drie::PI;
     // optical length, cut off at 90 degrees to avoid the formula's singularity
     float zenith_angle = math::acos(math::max(0.0f, dir.y));
     float inverse = 1 / (math::cos(zenith_angle) + 0.15f * math::pow(93.885f - zenith_angle * 180 / PI_F, -1.253f));

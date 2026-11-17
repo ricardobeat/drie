@@ -13,17 +13,17 @@
 // Instance matrices of all instanced meshes live in one buffer (the arena), uploaded when it
 // changes; a mesh whose instances change after their first upload (set_matrix_at every frame)
 // gets a buffer of its own instead and is not culled per instance.
-module three;
+module drie;
 import std::collections::list, std::math, std::io;
 import sokol;
 
 // Meshes with fewer instances than this are drawn whole.
-const int CULL_MIN_INSTANCES = 8;
+const int CULL_MIN_INSTANCES @private = 8;
 // Renders per frame that can cull (each needs buffers and readback slots of its own).
-const int CULL_MAX_SETS = 16;
+const int CULL_MAX_SETS @private = 16;
 
 // Views of one render: the camera and the shadow maps drawn with it.
-const int CULL_MAX_VIEWS = 8;
+const int CULL_MAX_VIEWS @private = 8;
 
 struct InstanceArena @private
 {
@@ -91,7 +91,7 @@ fn void upload_instances_gpu(Mesh* m) @private
 // The arena's GPU buffer, uploaded if it changed.
 fn StorageBuffer* arena_buffer() @private
 {
-    if (!arena.buffer) arena.buffer = storage_buffer(16, false, true, "three-instances");
+    if (!arena.buffer) arena.buffer = storage_buffer(16, false, true, "drie-instances");
     if (arena.dirty)
     {
         arena.dirty = false;
@@ -183,12 +183,12 @@ fn void cull_begin(bool enabled, bool check) @private
     if (cull.used >= cull.sets.len())
     {
         CullSet* s = mem::new(CullSet);
-        s.jobs = storage_buffer(16, true, false, "three-cull-jobs");
-        s.planes = storage_buffer(16, true, false, "three-cull-planes");
-        s.visible = storage_buffer(16, false, false, "three-cull-visible");
+        s.jobs = storage_buffer(16, true, false, "drie-cull-jobs");
+        s.planes = storage_buffer(16, true, false, "drie-cull-planes");
+        s.visible = storage_buffer(16, false, false, "drie-cull-visible");
         for (int i = 0; i < 3; i++)
         {
-            s.counts[i] = storage_buffer(16, false, false, "three-cull-counts");
+            s.counts[i] = storage_buffer(16, false, false, "drie-cull-counts");
             s.slots[i] = readback_slot();
             s.infos[i].allocator = mem;
         }
@@ -252,19 +252,19 @@ fn void cull_dispatch() @private
 {
     if (!cull.active || !cull.jobs.len()) return;
     CullSet* s = cull.current;
-    if (!cull.kernel) cull.kernel = compute_pass(cull_shader_desc(sg::query_backend()), "three-cull");
+    if (!cull.kernel) cull.kernel = compute_pass(shaders::cull_shader_desc(sg::query_backend()), "drie-cull");
     s.jobs.write(cull.jobs.entries, cull.jobs.len() * CullJob::size);
     s.planes.write(&cull.planes, (sz)cull.views * 6 * (sz)CullPlane::size);
     s.visible.ensure(cull.visible_total * CullIndex::size);
     StorageBuffer* counts = s.counts[cull.ring];
     counts.ensure(cull.jobs.len() * CullIndex::size);
     ComputePass* k = cull.kernel;
-    k.set_buffer(VIEW_CULL_JOBS, s.jobs);
-    k.set_buffer(VIEW_CULL_PLANES, s.planes);
-    k.set_buffer(VIEW_CULL_INSTANCES, arena_buffer());
-    k.set_buffer(VIEW_CULL_VISIBLE, s.visible);
-    k.set_buffer(VIEW_CULL_COUNTS, counts);
-    begin_compute("three-cull");
+    k.set_buffer(shaders::VIEW_CULL_JOBS, s.jobs);
+    k.set_buffer(shaders::VIEW_CULL_PLANES, s.planes);
+    k.set_buffer(shaders::VIEW_CULL_INSTANCES, arena_buffer());
+    k.set_buffer(shaders::VIEW_CULL_VISIBLE, s.visible);
+    k.set_buffer(shaders::VIEW_CULL_COUNTS, counts);
+    begin_compute("drie-cull");
     k.dispatch((int)cull.jobs.len());
     s.tracked[cull.ring] = counts.track(s.slots[cull.ring]);
     end_compute();
@@ -313,15 +313,15 @@ fn Vec4 cull_bind(SgBindings* bind, int job) @private
     if (job < 0 || !cull.active)
     {
         StorageBuffer* dummy = arena_buffer();
-        bind.views[VIEW_INST_ROWS] = dummy.view;
-        bind.views[VIEW_INST_VISIBLE] = dummy.view;
-        bind.views[VIEW_INST_COUNTS] = dummy.view;
+        bind.views[shaders::VIEW_INST_ROWS] = dummy.view;
+        bind.views[shaders::VIEW_INST_VISIBLE] = dummy.view;
+        bind.views[shaders::VIEW_INST_COUNTS] = dummy.view;
         return { 0, 0, 0, 0 };
     }
     CullSet* s = cull.current;
-    bind.views[VIEW_INST_ROWS] = arena_buffer().view;
-    bind.views[VIEW_INST_VISIBLE] = s.visible.view;
-    bind.views[VIEW_INST_COUNTS] = s.counts[cull.ring].view;
+    bind.views[shaders::VIEW_INST_ROWS] = arena_buffer().view;
+    bind.views[shaders::VIEW_INST_VISIBLE] = s.visible.view;
+    bind.views[shaders::VIEW_INST_COUNTS] = s.counts[cull.ring].view;
     return { 1, (float)cull.jobs[job].range[2], (float)job, 0 };
 }
 
@@ -385,7 +385,7 @@ fn void cull_compare(CullSet* s, int r) @private
     if (bad)
     {
         cull.check_failures++;
-        io::eprintfn("three: check_compute: GPU culling differs from the CPU's in %d of %d jobs (by up to %d instances)",
+        io::eprintfn("drie: check_compute: GPU culling differs from the CPU's in %d of %d jobs (by up to %d instances)",
                      bad, s.infos[r].len(), worst);
     }
 }
@@ -393,7 +393,7 @@ fn void cull_compare(CullSet* s, int r) @private
 // Renderer.check_compute: how the comparisons went, on stderr.
 fn void print_compute_checks()
 {
-    io::eprintfn("three: check_compute: %d cluster grids compared (%d differed), %d culled draws compared (%d frames differed); "
+    io::eprintfn("drie: check_compute: %d cluster grids compared (%d differed), %d culled draws compared (%d frames differed); "
                  "%d draws asked for fewer instances than their cull kept (%d instances left out for a frame)",
                  lights_gpu.checks, lights_gpu.check_failures, cull.checks, cull.check_failures, cull.short_draws, cull.short_instances);
 }
