@@ -518,6 +518,24 @@ struct LineLoop {
     inline Line line;
 }
 
+// For dashes (line_dashed_material), like three's computeLineDistances: each point's distance
+// along the line, in the order of the geometry's points (as three, which wants a geometry
+// without indices). For LineSegments, each segment carries on from the end of the one
+// before. Kept in the vertex normals' x: lines have no normals.
+fn Line* Line.compute_line_distances(&self) {
+    BufferGeometry* g = self.geometry;
+    uint n            = g.vertex_count();
+    float d           = 0;
+    for (uint i = 0; i < n; i++) {
+        bool starts_segment = self.draw_mode == LINE_SEGMENTS && i % 2 == 0;
+        if (i > 0 && !starts_segment) d += (g.get_position(i) - g.get_position(i - 1)).length();
+        g.vertices[(sz)i * FLOATS_PER_VERTEX + 3] = d;
+    }
+    // uploaded again on the next render
+    g.uploaded = false;
+    return self;
+}
+
 fn Mesh* new_line(BufferGeometry* geometry, Material* material, DrawMode mode) @local {
     Mesh* m = mesh(geometry, material ?: (Material*)line_basic_material());
     m.draw_mode = mode;

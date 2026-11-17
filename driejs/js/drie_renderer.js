@@ -10,8 +10,8 @@
 // reads them every frame), and shadows: castShadow and receiveShadow, and a directional
 // light's shadow, as drie's one sun shadow of a single box (its shadow.camera's half width).
 // InstancedMesh's matrices, SkinnedMesh (three poses the skeleton, drie moves the vertices),
-// Line, LineSegments and LineLoop (a pixel wide, as in WebGL; LineDashedMaterial draws them
-// solid), and scene.environment from js/pmrem.js's PMREMGenerator.
+// Line, LineSegments and LineLoop (a pixel wide, as in WebGL) with LineBasicMaterial and
+// LineDashedMaterial, and scene.environment from js/pmrem.js's PMREMGenerator.
 //
 // Not mirrored yet: changes to a material's textures or flags without `needsUpdate`, geometry
 // groups and draw ranges, points, sprites, morph targets, spot and point light shadows,
@@ -83,10 +83,22 @@ function floats(attribute, size) {
 	return out;
 }
 
+// Changes when an attribute changes, is added or is removed (computeLineDistances adds one).
 function attributeVersions(geometry) {
 	let v = geometry.index ? geometry.index.version : 0;
-	for (const name in geometry.attributes) v += geometry.attributes[name].version;
-	return v;
+	let count = 0;
+	for (const name in geometry.attributes) {
+		v += geometry.attributes[name].version;
+		count++;
+	}
+	return v + count * 1e9;
+}
+
+// A line's distances along it (computeLineDistances), as drie keeps them: in the normals' x.
+function lineDistanceNormals(attribute) {
+	const out = new Float32Array(attribute.count * 3);
+	for (let i = 0; i < attribute.count; i++) out[i * 3] = attribute.getX(i);
+	return out;
 }
 
 export class DrieRenderer {
@@ -445,7 +457,8 @@ export class DrieRenderer {
 				for (let c = 0; c < 4; c++) joints[i * 4 + c] = a.skinIndex.getComponent(i, c);
 			}
 		}
-		geometry.__drie = N.geometry(floats(a.position, 3), floats(a.normal, 3), floats(a.uv, 2), color,
+		const normals = a.normal ? floats(a.normal, 3) : a.lineDistance ? lineDistanceNormals(a.lineDistance) : null;
+		geometry.__drie = N.geometry(floats(a.position, 3), normals, floats(a.uv, 2), color,
 			geometry.index ? geometry.index.array : null, joints, floats(a.skinWeight, 4));
 		geometry.__drieVersion = version;
 		return geometry.__drie;
@@ -484,6 +497,7 @@ export class DrieRenderer {
 		material.__drieVersion = material.version;
 		material.__drieMap = map;
 		material.__drieValues = null;
+		material.__drieDash = undefined;
 		this._materialValues(material);
 		return material.__drie;
 	}
@@ -491,6 +505,13 @@ export class DrieRenderer {
 	// Colors and numbers that three reads into uniforms every frame, so changing them needs
 	// no needsUpdate: sent to drie when they differ from the last frame.
 	_materialValues(material) {
+		if (material.isLineDashedMaterial) {
+			const dash = `${material.dashSize} ${material.gapSize} ${material.scale}`;
+			if (material.__drieDash !== dash) {
+				material.__drieDash = dash;
+				N.lineDash(material.__drie, material.dashSize, material.gapSize, material.scale);
+			}
+		}
 		const c = material.color;
 		const e = material.emissive;
 		const s = material.specular;

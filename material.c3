@@ -110,6 +110,12 @@ struct Material {
     // Wind: sideways movement in meters per meter of height above the model's origin, and its speed.
     float sway;
     float sway_speed;
+    // Dashed lines (line_dashed_material): dashes of dash_size with gaps of gap_size, in units
+    // of the distances along the line (Line.compute_line_distances) times dash_scale. Solid
+    // when either size is 0.
+    float dash_size;
+    float gap_size;
+    float dash_scale;
     // For the application's own shader hooks (Renderer.shaders, see shader.glsl), which read
     // them as `material_custom[0]` and `[1]`. The engine's own shader ignores them.
     Vec4[2] custom;
@@ -139,6 +145,9 @@ struct MeshNormalMaterial {
     inline Material material;
 }
 struct LineBasicMaterial {
+    inline Material material;
+}
+struct LineDashedMaterial {
     inline Material material;
 }
 
@@ -202,6 +211,27 @@ fn LineBasicMaterial* line_basic_material(
     m.init_base(BASIC, color, opacity, transparent, FRONT_SIDE, false, fog);
     m.vertex_colors = vertex_colors;
     m.map = map;
+    return m;
+}
+
+// A dashed line_basic_material, like three's LineDashedMaterial (defaults as three's). The
+// line needs its distances: call compute_line_distances() on it.
+fn LineDashedMaterial* line_dashed_material(
+    Color color = 0xffffff,
+    float dash_size = 3,
+    float gap_size = 1,
+    float scale = 1,
+    float opacity = 1,
+    bool transparent = false,
+    bool fog = true,
+    bool vertex_colors = false
+) {
+    LineDashedMaterial* m = mem::new(LineDashedMaterial);
+    m.init_base(BASIC, color, opacity, transparent, FRONT_SIDE, false, fog);
+    m.vertex_colors = vertex_colors;
+    m.dash_size = dash_size;
+    m.gap_size = gap_size;
+    m.dash_scale = scale;
     return m;
 }
 

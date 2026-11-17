@@ -68,7 +68,7 @@ three.js API coverage:
 | --- | --- | --- |
 | Scene & Cameras | ✅ | `Object3D`, `Group`, `Scene`, `PerspectiveCamera`, `OrthographicCamera` |
 | Meshes & LOD | ✅ | `Mesh`, `InstancedMesh`, `Lod` |
-| Lines | ✅ | `Line`, `LineSegments`, `LineLoop`, `LineBasic` material; `LineDashed` ❌ |
+| Lines | ✅ | `Line`, `LineSegments`, `LineLoop`, `LineBasic` and `LineDashed` materials |
 | Geometry | ✅ | `box`, `plane`, `sphere`, `cylinder`, `cone`, `torus`, `lathe`, `buffer_geometry`, `merge` |
 | Materials | ✅ | `MeshBasic`, `MeshLambert`, `MeshPhong`, `MeshStandard`, `MeshNormal`, parallax mapping (`parallaxUV`), shader hooks (`onBeforeCompile`) |
 | Textures | ✅ | `load_texture` (PNG/JPEG), `data_texture`, `canvas_texture`, mipmaps, anisotropy |
