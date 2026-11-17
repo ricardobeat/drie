@@ -29,6 +29,12 @@ struct Texture
     int height;
     // RGBA8 pixels, top row first. Freed after the upload to the GPU.
     char[] pixels;
+    // The image's average color in linear light, once average_color() has worked it out.
+    Vector3 average;
+    bool has_average;
+    // Or RGBA in linear light, for images brighter than 1 (an environment captured with hdr):
+    // RGBA16F on the GPU, like three's DataTexture with HalfFloatType. Freed after the upload.
+    float[] float_pixels;
     // Like three's texture.flipY: the image goes to the GPU bottom row first, so uv (0, 0) is
     // its bottom left corner, as drie's geometries (three's) expect. On for load_texture and
     // decode_texture (three's TextureLoader); off for data textures and glTF's images, whose
@@ -201,11 +207,167 @@ fn void flip_rows(char[] px, int width, int height) @local
     }
 }
 
+// Halves an RGBA float image with a box filter.
+fn float[] downsample_float(float[] src, int w, int h, int nw, int nh) @local
+{
+    float[] dst = mem::new_array(float, (sz)nw * nh * 4);
+    for (int y = 0; y < nh; y++)
+    {
+        for (int x = 0; x < nw; x++)
+        {
+            for (int c = 0; c < 4; c++)
+            {
+                float sum = 0;
+                for (int j = 0; j < 2; j++)
+                {
+                    for (int i = 0; i < 2; i++)
+                    {
+                        int sx = math::min(x * 2 + i, w - 1);
+                        int sy = math::min(y * 2 + j, h - 1);
+                        sum += src[((sz)sy * w + sx) * 4 + c];
+                    }
+                }
+                dst[((sz)y * nw + x) * 4 + c] = sum / 4;
+            }
+        }
+    }
+    return dst;
+}
+
+// IEEE half floats, as RGBA16F stores them (rounded to nearest; too large becomes infinity,
+// too small zero).
+fn ushort float_to_half(float f)
+{
+    uint x = bitcast(f, uint);
+    uint sign = (x >> 16) & 0x8000;
+    int e = (int)((x >> 23) & 0xff) - 127 + 15;
+    uint m = x & 0x7fffff;
+    if (e >= 31) return (ushort)(sign | ((x & 0x7fffffff) > 0x7f800000 ? 0x7e00 : 0x7c00));
+    if (e <= 0)
+    {
+        if (e < -10) return (ushort)sign;
+        m |= 0x800000;
+        uint shift = (uint)(14 - e);
+        uint half_m = m >> shift;
+        if ((m >> (shift - 1)) & 1) half_m++;
+        return (ushort)(sign | half_m);
+    }
+    uint h = sign | ((uint)e << 10) | (m >> 13);
+    if (m & 0x1000) h++;
+    return (ushort)h;
+}
+
+fn float half_to_float(ushort h)
+{
+    uint sign = ((uint)h & 0x8000) << 16;
+    uint e = ((uint)h >> 10) & 0x1f;
+    uint m = (uint)h & 0x3ff;
+    if (e == 0)
+    {
+        float v = (float)m / 16777216.0f;
+        return sign ? -v : v;
+    }
+    if (e == 31) return bitcast(sign | 0x7f800000 | (m << 13), float);
+    return bitcast(sign | ((e + 112) << 23) | (m << 13), float);
+}
+
+// Uploads float_pixels (and its mipmaps) as RGBA16F.
+fn void Texture.upload_float(&self)
+{
+    float[][16] levels;
+    int[16] widths;
+    int[16] heights;
+    int count = 1;
+    if (self.flip_y)
+    {
+        sz row = (sz)self.width * 4;
+        for (sz y = 0; y < self.height / 2; y++)
+        {
+            for (sz i = 0; i < row; i++)
+            {
+                @swap(self.float_pixels[y * row + i], self.float_pixels[((sz)self.height - 1 - y) * row + i]);
+            }
+        }
+    }
+    levels[0] = self.float_pixels;
+    widths[0] = self.width;
+    heights[0] = self.height;
+    if (self.generate_mipmaps)
+    {
+        while ((widths[count - 1] > 1 || heights[count - 1] > 1) && count < 12)
+        {
+            widths[count] = math::max(widths[count - 1] / 2, 1);
+            heights[count] = math::max(heights[count - 1] / 2, 1);
+            levels[count] = downsample_float(levels[count - 1], widths[count - 1], heights[count - 1], widths[count], heights[count]);
+            count++;
+        }
+    }
+    sz total;
+    for (int i = 0; i < count; i++) total += levels[i].len;
+    ushort[] all = mem::new_array(ushort, total);
+    defer mem::free(all.ptr);
+    sz at;
+    for (int i = 0; i < count; i++)
+    {
+        foreach (v : levels[i]) all[at++] = float_to_half(v);
+    }
+    self.image = sg::make_image(&&{
+        .width = self.width,
+        .height = self.height,
+        .pixel_format = RGBA16F,
+        .num_mipmaps = count,
+        .data = { .ptr = all.ptr, .size = (usz)total * 2 },
+    });
+    self.view = sg::make_view(&&{ .texture = { .image = self.image } });
+    self.sampler = sg::make_sampler(&&{
+        .min_filter = LINEAR,
+        .mag_filter = LINEAR,
+        .mipmap_filter = count > 1 ? SgFilter.LINEAR : SgFilter.NEAREST,
+        .wrap_u = sg_wrap(self.wrap_s),
+        .wrap_v = sg_wrap(self.wrap_t),
+    });
+    for (int i = 1; i < count; i++) mem::free(levels[i].ptr);
+    mem::free(self.float_pixels.ptr);
+    self.float_pixels = {};
+    self.uploaded = true;
+}
+
+// The image's average color in linear light (from every 7th pixel), for whoever needs one
+// color for a whole surface (RadianceCascades' voxels). White for a texture without pixels.
+fn Vector3 Texture.average_color(&self)
+{
+    if (self.has_average) return self.average;
+    self.average = { 1, 1, 1 };
+    sz count = self.pixels.len / 4;
+    if (count > 0)
+    {
+        Vector3 sum;
+        int n = 0;
+        bool srgb = self.color_space == SRGB_COLOR_SPACE;
+        for (sz i = 0; i < count; i += 7)
+        {
+            char[] px = self.pixels[i * 4 : 3];
+            Vector3 c = { px[0] / 255.0f, px[1] / 255.0f, px[2] / 255.0f };
+            if (srgb) c = { srgb_to_linear(c.x), srgb_to_linear(c.y), srgb_to_linear(c.z) };
+            sum += c;
+            n++;
+        }
+        self.average = sum / (float)n;
+    }
+    self.has_average = true;
+    return self.average;
+}
+
 // Uploads the pixels (and mipmaps) to the GPU. Called by the renderer.
 fn void Texture.upload(&self)
 {
     if (self.uploaded) return;
     self.dispose();
+    if (self.float_pixels.len)
+    {
+        self.upload_float();
+        return;
+    }
     if (self.render_target)
     {
         self.image = sg::make_image(&&{
@@ -271,6 +433,7 @@ fn void Texture.upload(&self)
         .max_anisotropy = count > 1 ? (uint)math::clamp(self.anisotropy, 1, 16) : 1,
     });
     for (int i = 1; i < count; i++) mem::free(levels[i].ptr);
+    self.average_color();
     mem::free(self.pixels.ptr);
     self.pixels = {};
     self.uploaded = true;
