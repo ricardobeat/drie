@@ -147,6 +147,11 @@ and parameter objects become named arguments.
   `CINEON_`, `ACES_FILMIC_`, `AGX_` and `NEUTRAL_TONE_MAPPING`) with `tone_mapping_exposure`;
   `three::tone_map(color, mode, exposure)` does the same on the CPU. Shaders of your own can
   `@include tonemapping.glsl` and use `tone_map()`, `linear_to_srgb()` and `srgb_to_linear()`.
+  With `mrt: true` (`three::render_target(w, h, 4, RGBA16F, mrt: true)`, like three's
+  `scenePass.setMRT(mrt({ output, normal, velocity }))`) the main pass also writes
+  `normal_texture` (world-space normals after normal maps, roughness in alpha) and
+  `velocity_texture` (motion vectors: uv now minus uv a frame ago, from the camera, each mesh's
+  matrix and wind sway), for temporal filters, motion blur and screen-space effects.
 - **Profiling** (`three::profile`): `profile::enabled = true`, then `profile::start()` /
   `profile::stop(name, t)` around stages and `profile::report(frames)`. The renderer times its
   own stages this way.

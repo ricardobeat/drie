@@ -86,6 +86,11 @@ layout(binding=0) uniform vs_params {
     vec4 inst_cull;     // see fetch_instance
     vec4 vs_material_custom[2];
     vec4 vs_frame_custom[2];
+    // motion vectors, for a render with MRT: where the vertex was a frame ago
+    mat4 prev_view_proj;
+    mat4 prev_model;
+    vec4 motion;        // x = 0: as if nothing moved, 1: only the camera moved, 2: the mesh may have
+                        //   moved or sways too; y = the last frame's sway time
 };
 
 @include_block vertex_common
@@ -95,6 +100,8 @@ out vec3 v_normal;
 out vec2 v_uv;
 out vec3 v_color;
 out float v_alpha;
+out vec4 v_clip;
+out vec4 v_prev_clip;
 
 void main() {
     if (!fetch_instance(inst_cull)) {
@@ -104,7 +111,9 @@ void main() {
         v_uv = vec2(0.0);
         v_color = vec3(0.0);
         v_alpha = 0.0;
-        gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+        v_clip = vec4(2.0, 2.0, 2.0, 1.0);
+        v_prev_clip = v_clip;
+        gl_Position = v_clip;
         return;
     }
     vec3 ip = instance_point(position);
@@ -114,6 +123,7 @@ void main() {
     material_custom[1] = vs_material_custom[1];
     frame_custom[0] = vs_frame_custom[0];
     frame_custom[1] = vs_frame_custom[1];
+    vec3 swayed = wp.xyz;
     vertex_hook(wp.xyz, ip, model);
     v_world_pos = wp.xyz;
     v_normal = (normal_mat * vec4(instance_dir(normal), 0.0)).xyz;
@@ -121,6 +131,17 @@ void main() {
     v_color = color0.rgb;
     v_alpha = color0.a;
     gl_Position = view_proj * wp;
+    v_clip = gl_Position;
+    v_prev_clip = gl_Position;
+    if (motion.x > 1.5) {
+        // the same vertex, placed and swayed as it was a frame ago (instances are taken to
+        // stand still, and the hook to have moved it as far as it does now)
+        vec4 pp = prev_model * vec4(ip, 1.0);
+        pp.xyz = apply_sway(pp.xyz, ip.y, vec4(motion.y, sway.yzw)) + (wp.xyz - swayed);
+        v_prev_clip = prev_view_proj * pp;
+    } else if (motion.x > 0.5) {
+        v_prev_clip = prev_view_proj * wp;
+    }
 }
 @end
 
@@ -299,8 +320,16 @@ in vec3 v_normal;
 in vec2 v_uv;
 in vec3 v_color;
 in float v_alpha;
+in vec4 v_clip;
+in vec4 v_prev_clip;
 
-out vec4 frag_color;
+layout(location=0) out vec4 frag_color;
+#ifdef MRT
+// Renderer.render into a target with MRT (RenderTarget.mrt): the surface's normal in world
+// space (a = roughness), and how far it moved across the picture since the last frame.
+layout(location=1) out vec4 frag_normal;
+layout(location=2) out vec4 frag_velocity;
+#endif
 
 const float PI = 3.14159265359;
 const float RECIPROCAL_PI = 0.31830988618;
@@ -851,6 +880,17 @@ void main() {
     int mode = int(mat_params.x);
     int fl = flags();
     bool foliage = (fl & 2) != 0;
+#ifdef MRT
+    {
+        // in the picture's texture coordinates, row 0 where the target's first row is
+        vec2 now = v_clip.xy / v_clip.w;
+        vec2 was = v_prev_clip.xy / max(v_prev_clip.w, 1e-5);
+        vec2 d = (now - was) * 0.5;
+        if (ssr_params.w > 0.5) d.y = -d.y;
+        frag_velocity = vec4(d, 0.0, 1.0);
+        frag_normal = vec4(normalize(v_normal), mat_params.y);
+    }
+#endif
 
 #ifndef NO_DISCARD
     if (cull_min.w > 0.5 && all(greaterThan(v_world_pos, cull_min.xyz)) && all(lessThan(v_world_pos, cull_max.xyz))) discard;
@@ -900,6 +940,9 @@ void main() {
     g_dpdx = dFdx(v_world_pos);
     g_dpdy = dFdy(v_world_pos);
     if (tex_params.y != 0.0 && mode != 0) n = perturb_normal(n, tex_params.y);
+#ifdef MRT
+    frag_normal.xyz = n;
+#endif
 
     g_rough = mat_params.y;
     g_metal = mat_params.z;
@@ -912,6 +955,9 @@ void main() {
     }
 
     if (mode != 0) surface_hook(geo_n, g_base, g_rough, g_metal);
+#ifdef MRT
+    frag_normal.w = g_rough;
+#endif
 
     vec3 outc;
     vec3 spec = vec3(0.0);
@@ -1094,6 +1140,18 @@ void main() {
 @include_block fs_main
 @end
 
+// The same two, also writing the normal and the motion (RenderTarget.mrt)
+@fs fs_mrt
+#define MRT
+@include_block fs_main
+@end
+
+@fs fs_opaque_mrt
+#define NO_DISCARD
+#define MRT
+@include_block fs_main
+@end
+
 // The depth prepass (renderer.c3, Renderer.depth_prepass): depth only, for what has holes in
 // it (alpha tested, LOD cross-fades, the cull box). The main pass then draws those with
 // fs_opaque and an EQUAL depth test, so that no shader of the main pass discards (a shader
@@ -1115,6 +1173,8 @@ in vec3 v_normal;
 in vec2 v_uv;
 in vec3 v_color;
 in float v_alpha;
+in vec4 v_clip;
+in vec4 v_prev_clip;
 
 out vec4 frag_color;
 
@@ -1141,11 +1201,13 @@ void main() {
         alpha = min(alpha, 1.0);
     }
     // for alpha to coverage; nothing is written
-    frag_color = vec4(v_normal * 0.0 + v_color * 0.0 + v_world_pos * 0.0, alpha);
+    frag_color = vec4(v_normal * 0.0 + v_color * 0.0 + v_world_pos * 0.0 + (v_clip.xyz + v_prev_clip.xyz) * 0.0, alpha);
 }
 @end
 
 @program three vs fs
 @program three_opaque vs fs_opaque
+@program three_mrt vs fs_mrt
+@program three_opaque_mrt vs fs_opaque_mrt
 @program depth vs depth_fs
 @program shadow shadow_vs shadow_fs
