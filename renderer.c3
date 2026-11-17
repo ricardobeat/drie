@@ -861,10 +861,10 @@ fn SgPipeline get_pipeline(
     int target = rt ? (rt.samples > 1 ? 2 : 1) + (rt.mrt ? 4 : (rt.is_linear() ? 2 : 0)) : 0;
     if (rt && rt.samples != 1 && rt.samples != 4) abort("drie: render targets support 1 or 4 samples");
     if (rt && rt.pixel_format() != RGBA8 && !rt.is_linear()) abort("drie: a scene renders into RGBA8 or RGBA16F");
-    int samples     = rt ? rt.samples : sapp::sample_count();
+    int samples   = rt ? rt.samples : sapp::sample_count();
     // after the prepass, the coverage of the cut-out's edge is in the depth buffer's samples
-    bool a2c        = alpha_test && !transparent && samples > 1 && kind != PRETESTED;
-    bool additive   = transparent && blending == ADDITIVE_BLENDING;
+    bool a2c      = alpha_test && !transparent && samples > 1 && kind != PRETESTED;
+    bool additive = transparent && blending == ADDITIVE_BLENDING;
     SgPipeline* pip = &state.pipelines[kind.ordinal][side.ordinal][transparent ? (additive ? 2 : 1)
         : 0][wireframe ? 1 : 0][target][a2c ? 1 : 0];
     if (pip.id) return *pip;
@@ -1002,8 +1002,8 @@ fn void clear_atlas_tile() @local {
         .vertex_buffers[1] = state.identity_instance,
         .index_buffer = g.ibuf
     };
-    Vec4 inst_cull  = cull_bind(&bind, -1);
-    Texture* white  = ready(state.white);
+    Vec4 inst_cull = cull_bind(&bind, -1);
+    Texture* white = ready(state.white);
     bind.views[shaders::VIEW_S_MAP] = white.view;
     bind.samplers[shaders::SMP_S_SMP] = white.sampler;
     sg::apply_bindings(&bind);
