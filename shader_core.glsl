@@ -845,18 +845,43 @@ vec3 planar_reflection(vec3 n, vec3 v, float rough, out float found) {
 const int SSR_STEPS = 40;
 const float SSR_MAX_STEP_PX = 6.0;
 
+// how much of a rough surface's lobe the ray itself is sent through (the inner part, by
+// chance: the frames add up to it); the rest is blurred from what the ray finds. All of it by
+// chance makes a small bright thing into a patch of sparks.
+const float SSR_LOBE_SHARE = 0.45;
+const float SSR_BLUR = 0.28;
+
+// A microfacet normal of a GGX surface as the eye sees them (the distribution of visible
+// normals, Heitz 2018), in the surface's own frame (z = its normal); ve = towards the eye.
+vec3 ggx_visible_normal(vec3 ve, float alpha, vec2 u) {
+    vec3 vh = normalize(vec3(alpha * ve.xy, ve.z));
+    float lensq = dot(vh.xy, vh.xy);
+    vec3 t1 = lensq > 1e-8 ? vec3(-vh.y, vh.x, 0.0) * inversesqrt(lensq) : vec3(1.0, 0.0, 0.0);
+    vec3 t2 = cross(vh, t1);
+    float rad = sqrt(u.x);
+    float phi = 2.0 * PI * u.y;
+    float a = rad * cos(phi);
+    float b = rad * sin(phi);
+    float half_z = 0.5 * (1.0 + vh.z);
+    b = (1.0 - half_z) * sqrt(max(1.0 - a * a, 0.0)) + half_z * b;
+    vec3 nh = a * t1 + b * t2 + sqrt(max(1.0 - a * a - b * b, 0.0)) * vh;
+    return normalize(vec3(alpha * nh.xy, max(nh.z, 1e-4)));
+}
+
 vec3 screen_reflection(vec3 n, vec3 geo_n, vec3 v, float rough, out float found) {
     found = 0.0;
     vec2 seed = gl_FragCoord.xy + ssr_params.z * vec2(47.0, 17.0);
     float n1 = ssr_noise(seed);
     float n2 = ssr_noise(seed + vec2(31.7, 11.3));
-    vec3 r = reflect(-v, n);
-    vec3 t1 = normalize(cross(r, abs(r.y) < 0.9 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0)));
-    vec3 t2 = cross(r, t1);
     float turn = n1 * 2.0 * PI;
-    // (a quarter of the cone by sending the ray astray, the rest by blurring what it finds:
-    // all of it by chance makes a small bright thing into a patch of sparks)
-    r = normalize(r + (t1 * cos(turn) + t2 * sin(turn)) * sqrt(n2) * rough * rough * 0.125);
+    // the ray mirrors off one of the surface's microfacets, picked as the eye meets them: a
+    // rough floor draws a light out into a streak towards the eye, as a real one does
+    float alpha = rough * rough;
+    vec3 tx = normalize(cross(abs(n.y) < 0.9 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0), n));
+    vec3 ty = cross(n, tx);
+    vec3 ve = normalize(vec3(dot(v, tx), dot(v, ty), max(dot(v, n), 0.05)));
+    vec3 h = ggx_visible_normal(ve, alpha, vec2(n2 * SSR_LOBE_SHARE, n1));
+    vec3 r = reflect(-v, normalize(tx * h.x + ty * h.y + n * h.z));
     if (dot(r, geo_n) < 0.02) return vec3(0.0);
 
     vec3 origin = v_world_pos + geo_n * 0.02;
@@ -895,7 +920,7 @@ vec3 screen_reflection(vec3 n, vec3 geo_n, vec3 v, float rough, out float found)
             // what a rough surface mirrors is spread over a disc that grows with the way the
             // ray went: a few taps over it, turned differently at every pixel
             vec2 size = vec2(textureSize(sampler2D(ssr_color, ssr_smp), 0));
-            float spread = rough * rough * 0.4 * hi / max(s.z, 0.1);
+            float spread = alpha * SSR_BLUR * hi / max(s.z, 0.1);
             vec2 radius = vec2(spread * size.y / size.x, spread);
             vec3 sum = vec3(0.0);
             for (int k = 0; k < 8; k++) {
