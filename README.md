@@ -118,7 +118,11 @@ and parameter objects become named arguments.
   depth and normals of a target rendered with `mrt`, it darkens only the light that came in
   indirectly (the target's `indirect_texture`), as three's WebGPU renderer does with an `ao`
   context, with specular occlusion on reflections; `ao.render(scene_target)` after the scene,
-  or after a `RenderPass` with `mrt` set in a composer.
+  or after a `RenderPass` with `mrt` set in a composer. `taa_pass()` is temporal
+  antialiasing: `taa.jitter(camera)` shifts the camera by a fraction of a pixel each frame
+  (`camera.jitter`, Halton 2, 3, left out of the motion vectors) and `taa.render(scene_target)`
+  blends the new frame into the history found again with the motion vectors (variance
+  clipping in YCoCg, a Catmull-Rom history, Karis weighting); the result is `taa.texture()`.
   The composer's buffers are RGBA16F by default, as three's are. `ping_pong(w, h, format)` is a pair of targets for what
   builds up from frame to frame. `effect_composer(renderer)` with `add_pass()` and `render()`
   chains passes as three's does: a `ShaderPass` gets the picture of the pass before at its
@@ -336,4 +340,4 @@ These aren't in three.js:
 `shader_core.glsl` is the material shader; `shader.glsl` includes it with empty hooks. Run
 `./build.sh shaders` in the application (`house`) to regenerate `shader.c3` (and `kernels.c3`
 from `kernels.glsl`, the compute shaders, `output.c3` and `gtao.c3` for the post-processing
-passes), and any application shaders that include `shader_core.glsl`.
+passes, and `taa.c3`), and any application shaders that include `shader_core.glsl`.

@@ -616,3 +616,107 @@ fn void gtao_pass_render(Pass* pass, EffectComposer* composer, RenderTarget* wri
     GTAOPass* self = (GTAOPass*)pass;
     self.render(read);
 }
+
+// Temporal antialiasing, like three's TAARenderPass but over time instead of in one frame:
+// the camera is shifted by a fraction of a pixel each frame (jitter()), and render() blends
+// each new frame of a target rendered with MRT into the frames before, found again with the
+// target's motion vectors. The result (linear light, as the target's) is in texture().
+//
+//   TAAPass* taa = postprocessing::taa_pass();
+//   // each frame:
+//   taa.jitter(camera);                 // before rendering
+//   renderer.set_render_target(scene_rt); renderer.render(scene, camera);
+//   taa.render(scene_rt);
+//   output.set_source(taa.texture());
+struct TAAPass
+{
+    inline Pass pass;
+    // the share of each new frame in the average: less is smoother and slower to follow
+    float blend;
+    // how far the history may stray from the new frame's neighbourhood, in standard
+    // deviations of its colors: more keeps more of it (smoother, more ghosting)
+    float clip_width;
+    // the Halton sequence's length: the number of shifts the camera goes round
+    int jitter_samples;
+    // start over with the next frame (after a cut, or when the camera jumps)
+    bool reset;
+    PingPong history;
+    ShaderPass resolve;
+    int frame;
+}
+
+fn TAAPass* taa_pass()
+{
+    TAAPass* p = mem::new(TAAPass);
+    *p = { .render_fn = &taa_pass_render, .enabled = true, .needs_swap = false, .blend = 0.1, .clip_width = 1.25,
+           .jitter_samples = 8, .reset = true };
+    p.resolve.init(taa_shader_desc(sg::query_backend()), "three-taa");
+    p.resolve.set_sampler(SMP_TAA_SMP, linear_sampler());
+    p.resolve.set_sampler(SMP_TAA_POINT_SMP, nearest_sampler());
+    return p;
+}
+
+// The i-th number of the Halton sequence of `base`, in 0..1.
+fn float halton(int i, int base)
+{
+    float f = 1;
+    float r = 0;
+    while (i > 0)
+    {
+        f /= base;
+        r += f * (i % base);
+        i /= base;
+    }
+    return r;
+}
+
+// Shifts the camera for the next frame (Halton 2, 3: within half a pixel of the middle).
+fn void TAAPass.jitter(&self, Camera* camera)
+{
+    int i = self.frame % self.jitter_samples + 1;
+    camera.jitter = { halton(i, 2) - 0.5f, halton(i, 3) - 0.5f };
+}
+
+// Blends what `target` (rendered with MRT, with the jittered camera) shows now into the history.
+fn void TAAPass.render(&self, RenderTarget* target)
+{
+    if (!target.mrt) abort("three: TAAPass needs a target with MRT (for its motion vectors)");
+    if (!self.history.targets[0]) self.history = ping_pong(target.width, target.height, RGBA16F);
+    RenderTarget* h = self.history.read();
+    if (h.width != target.width || h.height != target.height)
+    {
+        self.history.set_size(target.width, target.height);
+        self.reset = true;
+    }
+    ShaderPass* r = &self.resolve;
+    r.set_texture(VIEW_TAA_CURRENT, target.texture);
+    r.set_texture(VIEW_TAA_HISTORY, self.history.read().texture);
+    r.set_texture(VIEW_TAA_VELOCITY, target.velocity_texture);
+    TaaParams p = {
+        .size = { target.width, target.height, self.reset ? 1 : 0, self.blend },
+        .tune = { self.clip_width, 0, 0, 0 },
+    };
+    r.set_uniforms(UB_TAA_PARAMS, &p);
+    r.render(self.history.write());
+    self.history.swap();
+    self.reset = false;
+    self.frame++;
+}
+
+// The antialiased picture, after render().
+fn SgView TAAPass.texture(&self) => self.history.read().texture;
+
+fn void TAAPass.dispose(&self)
+{
+    self.resolve.dispose();
+    foreach (t : self.history.targets) if (t) t.dispose();
+}
+
+// In an EffectComposer, after a RenderPass with `mrt` set (call jitter() before the composer
+// renders): the next pass reads the antialiased picture.
+fn void taa_pass_render(Pass* pass, EffectComposer* composer, RenderTarget* write, RenderTarget* read, float delta) @local
+{
+    TAAPass* self = (TAAPass*)pass;
+    self.render(read);
+    composer.read_buffer = self.history.read();
+}

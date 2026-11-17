@@ -540,6 +540,10 @@ struct Camera
     Mat4 motion_prev;
     Mat4 motion_cur;
     int motion_frame;
+    // A shift of the whole picture by a fraction of a pixel (in pixels of the target), for
+    // temporal antialiasing (TAAPass sets it each frame), like the jitter three's TAA gives with
+    // setViewOffset. Motion vectors leave it out.
+    Vector2 jitter;
 }
 
 struct PerspectiveCamera
