@@ -11,7 +11,9 @@ just run --frames 3 --png shot.png demos/webgl_geometries.js   # offscreen
 just bench node                             # the benchmark on one runtime (`just` lists them)
 ```
 
-From drie's folder, the same recipes are `just driejs::build` and so on.
+From drie's folder, the same recipes are `just driejs::build` and so on. boomkat's `jit` branch
+is a dependency in `project.json`, fetched from `https://c3.ricar.do/github.com:ricardobeat/boomkat@jit`
+into `lib/boomkat.c3l` the first time you build (delete that folder to fetch it again).
 
 Run it from this folder: `three` and the addons are read from `js/` and `vendor/` under the
 working directory.
