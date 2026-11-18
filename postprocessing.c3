@@ -759,7 +759,9 @@ fn void TAAPass.jitter(&self, Camera* camera) {
 }
 
 // Blends what `target` (rendered with MRT, with the jittered camera) shows now into the history.
-fn void TAAPass.render(&self, RenderTarget* target) {
+// With `color`, that picture instead, on the target's motion vectors: what came of the target's
+// after a pass of its own (a stochastic depth of field, whose noise the average evens out).
+fn void TAAPass.render(&self, RenderTarget* target, SgView color = {}) {
     if (!target.mrt) abort("drie: TAAPass needs a target with MRT (for its motion vectors)");
     if (!self.history.targets[0]) self.history = ping_pong(target.width, target.height, RGBA16F);
     RenderTarget* h = self.history.read();
@@ -768,7 +770,7 @@ fn void TAAPass.render(&self, RenderTarget* target) {
         self.reset = true;
     }
     ShaderPass* r = &self.resolve;
-    r.set_texture(VIEW_TAA_CURRENT, target.texture);
+    r.set_texture(VIEW_TAA_CURRENT, color.id ? color : target.texture);
     r.set_texture(VIEW_TAA_HISTORY, self.history.read().texture);
     r.set_texture(VIEW_TAA_VELOCITY, target.velocity_texture);
     TaaParams p = {
