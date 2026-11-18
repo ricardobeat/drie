@@ -82,7 +82,7 @@ three.js API coverage:
 | Renderer | ✅ | `render_target`, tone mapping, frustum culling, `renderer.info`, MRT, compute passes |
 | Shadows | ⚠️ | `DirectionalLight` (CSM) and `SpotLight` (1 live + cached atlas); `PointLight` ❌ |
 | Skeletons | ⚠️ | `Bone`, `Skeleton`, `SkinnedMesh` (CPU skinning); animation clips ❌ |
-| glTF (`drie::loaders`) | ⚠️ | `.glb` meshes, materials (with `KHR_materials_*` transmission, volume, ior, dispersion, specular, emissive_strength, clearcoat, sheen, iridescence), textures on either uv set; `KHR_texture_transform`, skins & animations ❌ |
+| glTF (`drie::loaders`) | ⚠️ | `.glb` and `.gltf` on [cgltf](https://github.com/jkuhlmann/cgltf): meshes (sparse and quantized accessors, two uv sets), materials (with `KHR_materials_*` transmission, volume, ior, dispersion, specular, emissive_strength, clearcoat, sheen, iridescence, unlit), textures (embedded, files or `data:` URIs, their samplers, either uv set, `KHR_texture_transform`); skins, animations, morph targets, cameras, lights, Draco ❌ |
 | Quaternions / Animation | ❌ | XYZ Euler rotations only; no animation clips |
 | Sky | ✅ | `Sky` (`drie::objects`) |
 
@@ -267,12 +267,23 @@ TBD. Currently the demo, with all advanced features on, runs at 40-60FPS on a Ma
 post-processing passes), `radiance_cs.c3` and `vsm.c3` (the variance shadow maps' blur). An application with its own copy of the material
 shader generates it into its own sources, and regenerates it whenever `shader_core.glsl` changes.
 
+## cgltf
+
+The glTF loader (`gltf.c3`) reads files with [cgltf](https://github.com/jkuhlmann/cgltf) 1.15
+(MIT), vendored as `third_party/cgltf/cgltf.h` and compiled by `platform/cgltf.c`. Its C3
+binding, `generated/cgltf.c3`, is made with [bindgen.c3l](../bindgen.c3l) (`just bindings`;
+`just bindgen=path bindings` for a checkout elsewhere), which also checks that every struct of
+the binding has C's size, alignment and field offsets (`third_party/cgltf/layout.py`).
+
 ## Tests
 
 - `just test reflections`: `tests/reflections.c3` renders a scene made for reflections from different angles
 - `just test radiance`: `tests/radiance.c3` renders the same scene lit by its hemisphere light, by `RadianceCascades`,
 and by them with only the glowing cubes
 - `just test vsm`: `tests/vsm.c3` renders three's `webgl_shadowmap_vsm` scene with PCF and with variance shadow maps
+- `just test gltf`: `tests/gltf.c3` loads Khronos's TextureTransformTest (`tests/assets`, CC0) and renders its
+`KHR_texture_transform` checks: every arrow should point at a green mark
+- `just test physical`: `tests/physical.c3` renders iridescence, a clear coat, sheen and double-sided glass side by side
 
 ## Justfile
 

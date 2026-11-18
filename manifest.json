@@ -9,7 +9,8 @@
         "sokol"
     ],
     "c-sources": [
-        "display.c"
+        "display.c",
+        "platform/cgltf.c"
     ],
     "targets": {
         "macos-aarch64": {

@@ -8,6 +8,8 @@ mod driejs
 # Another: `just libdir=path test radiance`.
 libdir := "lib"
 libs := "--libdir " + libdir + " --lib sokol"
+# where bindgen.c3l is (the folder holding bindgen.c3l/), for `just bindings`
+bindgen := "../bindgen.c3l"
 macos := if os() == "macos" { "--macos-min-version 15.0" } else { "" }
 
 # the sources c3fmt formats: the hand written ones at the top. The sokol-shdc generated
@@ -29,6 +31,21 @@ test name *args:
     mkdir -p tests/build
     c3c compile {{macos}} {{libs}} --lib drie tests/{{name}}.c3 -o tests/build/{{name}}
     tests/build/{{name}} {{args}}
+
+# regenerate generated/cgltf.c3, the binding of cgltf (third_party/cgltf/cgltf.h), with
+# bindgen.c3l: `just bindgen=path bindings` for another checkout of it
+bindings:
+    mkdir -p build/cgltf
+    c3c compile --libdir {{bindgen}} --lib bindgen third_party/cgltf/bind.c3 -o build/cgltf/bind
+    build/cgltf/bind third_party/cgltf/cgltf.h generated/cgltf.c3
+    # the structs' layout in C and in the binding, compared (layout.py)
+    {{bindgen}}/tools/bgdump third_party/cgltf/cgltf.h {{ if os() == "macos" { "-I$(xcrun --show-sdk-path)/usr/include" } else { "-I/usr/include" } }} > build/cgltf/dump.txt
+    python3 third_party/cgltf/layout.py build/cgltf/dump.txt build/cgltf
+    cc -Ithird_party/cgltf build/cgltf/layout.c -o build/cgltf/layout_c
+    c3c compile -O0 build/cgltf/layout.c3 generated/cgltf.c3 -o build/cgltf/layout_c3 > /dev/null
+    build/cgltf/layout_c > build/cgltf/layout_c.txt
+    build/cgltf/layout_c3 > build/cgltf/layout_c3.txt
+    diff build/cgltf/layout_c.txt build/cgltf/layout_c3.txt && echo "cgltf.c3: the layout of $(grep -c '^cgltf' build/cgltf/layout_c.txt) structs matches C"
 
 # regenerate generated/*.c3 from the .glsl files with sokol-shdc (sokol-tools)
 shaders:

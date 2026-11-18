@@ -539,10 +539,21 @@ export class DrieRenderer {
 			if (!image.width || !image.height) return -1;
 			texture.__drie = N.floatTexture(source, image.width, image.height, flipY);
 		} else {
-			texture.__drie = N.texture(source, texture.colorSpace === "srgb", texture.wrapS, texture.wrapT,
-				texture.anisotropy, texture.repeat.x, texture.repeat.y, texture.offset.x, texture.offset.y, flipY,
-				texture.rotation, texture.center.x, texture.center.y, canvas ? canvas.width : 0,
-				canvas ? canvas.height : 0, texture.magFilter === NearestFilter, texture.channel ?? 0);
+			// Clones of one image (three's texture.clone(), as GLTFLoader makes for
+			// KHR_texture_transform and texCoord) share its upload: drie's Texture.clone
+			const images = canvas || !texture.source ? null : (texture.source.__drieImages ??= new Map());
+			const key = `${texture.colorSpace === "srgb"} ${flipY} ${texture.source?.version}`;
+			const shown = images?.get(key);
+			if (shown !== undefined) {
+				texture.__drie = N.textureClone(shown, texture.repeat.x, texture.repeat.y, texture.offset.x,
+					texture.offset.y, texture.rotation, texture.center.x, texture.center.y, texture.channel ?? 0);
+			} else {
+				texture.__drie = N.texture(source, texture.colorSpace === "srgb", texture.wrapS, texture.wrapT,
+					texture.anisotropy, texture.repeat.x, texture.repeat.y, texture.offset.x, texture.offset.y, flipY,
+					texture.rotation, texture.center.x, texture.center.y, canvas ? canvas.width : 0,
+					canvas ? canvas.height : 0, texture.magFilter === NearestFilter, texture.channel ?? 0);
+				images?.set(key, texture.__drie);
+			}
 		}
 		texture.__drieVersion = texture.version;
 		return texture.__drie;
