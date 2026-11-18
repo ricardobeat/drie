@@ -125,7 +125,7 @@ Features not in three.js:
 | **Room Reflection Probes** | Box-projected, cross-faded room probes |
 | **GPU Culling** | Depth pre-pass and GPU instanced culling |
 | **Light Radius** | Softer close-range falloff on point and spot lights |
-| **Material Extensions** | Foliage wind sway, glass viewer silhouette |
+| **Material Extensions** | Foliage wind sway, glass viewer silhouette, refraction with dispersion |
 | **UI, Input & Tooling** | Menus, macOS GameController support, deterministic timeline rewind, profiling |
 
 ### Materials & Geometry
@@ -134,6 +134,7 @@ Features not in three.js:
 - **Parallax occlusion mapping:** `material.parallax_map` with shadowing from the first directional light.
 - **Foliage & wind sway:** `material.foliage` enables two-sided wrapped lighting for alpha-tested foliage, animated with `sway`, `sway_speed`, and `renderer.time`.
 - **Glass & viewer silhouette:** `material.glass` preserves reflections regardless of opacity; `material.reflect_viewer` darkens glass reflections with a soft silhouette at the camera.
+- **Transmission & dispersion:** `material.transmission` shows what stands behind a surface, refracted through `thickness` meters of it at `ior`; `dispersion` bends each color channel by its own index of refraction, fringing edges with rainbow colors, and `attenuation_color` / `attenuation_distance` tint the light as it crosses (Beer's law).
 - **Additive blending & draw order:** `material.blending = ADDITIVE_BLENDING` for transparent materials and `object.render_order` for explicit draw order, as in three.js.
 - **World-space box UVs:** `geometry.box_project_uv(tiles_per_unit)` generates box-projected UVs.
 
@@ -144,6 +145,7 @@ Features not in three.js:
 | --- | --- | --- |
 | Parallax | `material.parallax_map`, `parallax_scale`, `parallax_distance`, `parallax_shadow` | Shadowing uses the first directional light |
 | Foliage | `material.foliage`, `material.sway`, `sway_speed`, `renderer.time`, `renderer.auto_time` | `auto_time` drives `sway` animation |
+| Transmission & dispersion | `material.transmission`, `thickness` (m), `ior`, `dispersion`, `attenuation_color`, `attenuation_distance` | Costs a second pass over the opaque scene; loaded from `KHR_materials_transmission` / `_volume` / `_ior` / `_dispersion`; `just test dispersion` |
 
 </details>
 

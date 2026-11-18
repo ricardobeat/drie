@@ -226,11 +226,13 @@ layout(binding=20) uniform texture2D ssr_back;    // r = the nearest back face's
 layout(binding=23) uniform texture2DArray tex_probes; // the scene's reflection probes (reflection_probes.c3)
 layout(binding=24) uniform texture2D tex_parallax; // Material.parallax_map: the surface's height, 1 = top
 layout(binding=19) uniform texture2D fog_volume; // volumetric fog: the froxel grid (fog.c3, fog_cs in kernels.glsl)
+layout(binding=25) uniform texture2D tex_transmission; // the scene behind the transmission materials
 layout(binding=0) uniform sampler tex_smp;
 layout(binding=1) uniform sampler shadow_smp;
 layout(binding=2) uniform sampler env_smp;
 layout(binding=3) uniform sampler gi_smp;
 layout(binding=4) uniform sampler ssr_smp;
+layout(binding=5) uniform sampler transmission_smp;
 
 layout(binding=1) uniform fs_params {
     vec4 color;        // linear rgb, a = opacity
@@ -303,6 +305,10 @@ layout(binding=1) uniform fs_params {
     vec4 parallax_params;      // Material.parallax_map: x = depth (m; 0: none), y = distance (m) where
                                //   it has faded out, z = self-shadowing toward the sun (0..1)
     vec4 line_dash;            // dashed lines: x = dash length, y = dash + gap, z = scale, w = 1: dashed
+    vec4 transmission_params;  // Material.transmission: x = IOR, y = thickness (m), z = dispersion,
+                               //   w = attenuation distance (m; 0: the volume does not tint)
+    vec4 transmission_color;   // linear rgb = the color the volume tints light toward, a = how much
+                               //   of what is behind shows through (0: off)
 };
 
 // Lights live in storage buffers, as many as there are. Point and spot lights are sorted into
@@ -1198,6 +1204,49 @@ vec3 env_reflection(vec3 d, float rough, vec3 facing) {
     return result;
 }
 
+// One channel of the light that comes through a transmission material: a ray bent by `ior`,
+// followed through `thickness` meters of the volume, projected onto the transmission picture
+// (three's getIBLVolumeRefraction). It is tinted per channel (Beer's law), which is what makes
+// dispersion visible: each channel is bent by a slightly different IOR.
+float transmission_ray(
+    vec3 n, vec3 v, vec3 world_pos, float rough, float ior, float thickness,
+    float attenuation_distance, float attenuation, int channel
+) {
+    vec3 ray = refract(-v, n, 1.0 / ior);
+    // total internal reflection: nothing of what is behind the surface comes through
+    if (dot(ray, ray) < 1e-4) return 0.0;
+    vec3 exit = world_pos + normalize(ray) * thickness;
+    vec4 clip = cluster_view_proj * vec4(exit, 1.0);
+    vec2 uv = (clip.xy / max(abs(clip.w), 1e-5)) * 0.5 + 0.5;
+    // (the picture's row 0 is its top where the target's is, as for the reflection source)
+    if (ssr_params.w > 0.5) uv.y = 1.0 - uv.y;
+    // a rough surface scatters the refracted rays: a few taps stand in for three's mip level
+    vec2 texel = screen_params.xy * (1.0 + 8.0 * rough);
+    vec4 c = texture(sampler2D(tex_transmission, transmission_smp), uv) * 0.5;
+    c += texture(sampler2D(tex_transmission, transmission_smp), uv + vec2(texel.x, texel.y)) * 0.25;
+    c += texture(sampler2D(tex_transmission, transmission_smp), uv - vec2(texel.x, texel.y)) * 0.25;
+    float s = channel == 0 ? c.r : (channel == 1 ? c.g : c.b);
+    if (attenuation_distance > 0.0) {
+        s *= exp(-max(-log(max(attenuation, 1e-4)), 1e-4) * thickness / attenuation_distance);
+    }
+    return s;
+}
+
+// The light from behind a transmission material, split into its channels: each is bent with its
+// own IOR (`dispersion` spreads them), so edges fringe with rainbow colors.
+vec3 refracted_light(vec3 n, vec3 v, vec3 world_pos, float rough) {
+    float ior = transmission_params.x > 0.0 ? transmission_params.x : 1.5;
+    float thickness = max(transmission_params.y, 0.0);
+    float spread = (ior - 1.0) * 0.025 * transmission_params.z;
+    vec3 iors = vec3(ior - spread, ior, ior + spread);
+    vec3 att = max(transmission_color.rgb, vec3(1e-4));
+    return vec3(
+        transmission_ray(n, v, world_pos, rough, iors.x, thickness, transmission_params.w, att.r, 0),
+        transmission_ray(n, v, world_pos, rough, iors.y, thickness, transmission_params.w, att.g, 1),
+        transmission_ray(n, v, world_pos, rough, iors.z, thickness, transmission_params.w, att.b, 2)
+    );
+}
+
 void main() {
     int mode = int(mat_params.x);
     int fl = flags();
@@ -1408,6 +1457,7 @@ void main() {
         alpha = a;
     } else {
         vec3 env_term = vec3(0.0);
+        vec3 mirror_term = vec3(0.0);
         if (env_params.x > 0.5 && mode != 1) {
             // reflections of the surroundings, fading as the surface gets rougher
             float nov = clamp(dot(n, v), 0.0, 1.0);
@@ -1443,7 +1493,7 @@ void main() {
                 strength = max(strength, ssr_params.x);
             }
             // where something was found, it takes the place of the surroundings' map
-            vec3 mirror_term = mirrored * (found * fresnel * strength * ao);
+            mirror_term = mirrored * (found * fresnel * strength * ao);
             env_term *= 1.0 - clamp(found * strength, 0.0, 1.0);
             outc += mirror_term;
             ind_s += mirror_term;
@@ -1451,6 +1501,16 @@ void main() {
         outc += env_term;
         ind_s += env_term;
         outc += spec;
+        // transmission (Material.transmission): what is behind the surface, refracted through
+        // the volume, takes the place of its diffuse light; highlights and reflections stay
+        if (mode == 3 && transmission_color.a > 0.0) {
+            float nov = clamp(dot(n, v), 0.0, 1.0);
+            vec3 f0 = mix(vec3(0.04), g_base.rgb, g_metal);
+            vec3 fresnel = f0 + (max(vec3(1.0 - g_rough), f0) - f0) * pow(1.0 - nov, 5.0);
+            vec3 refracted = refracted_light(n, v, v_world_pos, g_rough) * (1.0 - fresnel);
+            vec3 highlights = spec + env_term + mirror_term;
+            outc = mix(max(outc - highlights, vec3(0.0)), refracted, transmission_color.a) + highlights;
+        }
     }
 
     int fog_mode = int(fog_params.w);
