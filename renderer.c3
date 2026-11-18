@@ -2279,6 +2279,9 @@ fn void transmission_levels(int width, int height) @local {
             .width = width,
             .height = height,
             .num_mipmaps = levels,
+            // (an attachment's sample count defaults to the window's, and an MSAA image can't
+            // have mips)
+            .sample_count = 1,
             .pixel_format = RGBA16F,
             .label = "drie-transmission-mips",
         }
