@@ -526,6 +526,16 @@ struct VsmMaps @local {
     int height;
 }
 
+// A light map being baked (Renderer.render_bake): the objects are drawn into it at their uv1,
+// with `pipeline`, and read the last map from `prev`.
+struct BakeState @local {
+    bool on;
+    SgPipeline pipeline;
+    SgView prev;
+    int width;
+    int height;
+}
+
 struct Frustum @private {
     Vec4[5] planes;
 }
@@ -630,6 +640,12 @@ struct RendererState @local {
     int atlas_rows;
     // the lights that want a tile, while updating it
     List{Light*} atlas_pending;
+    // a bake's lights (render_bake) have the tiles after the main render's: how many tiles
+    // each wants, and how big
+    int atlas_main_count;
+    int atlas_main_tile;
+    int atlas_bake_count;
+    int atlas_bake_tile;
     // each tile's view-projection when it was last drawn (directional lights' boxes may follow
     // the camera: the lookups must use the box the map was drawn for)
     Mat4[MAX_ATLAS_TILES] atlas_view_proj;
@@ -670,6 +686,13 @@ struct RendererState @local {
     SgSampler mip_sampler;
     // the scene's background_texture, drawn as a sphere around the camera
     Mesh* background;
+    // baking a light map (render_bake): what it draws with, the objects that cast the shadows
+    // (not in the bake's scene of lights), and its pipelines: [VSM][RGBA32F]
+    BakeState bake;
+    Object3D*[] caster_roots;
+    SgPipeline[2][2] bake_pipelines;
+    SgShader seam_shader;
+    SgPipeline[2] seam_pipelines;
 }
 
 RendererState state @local;
@@ -1324,25 +1347,51 @@ fn Mat4 light_view_proj(Light* l, Camera* camera, bool relative = false) @local 
 // Draws the atlas's tiles: those of the spot lights with shadow.auto_update off that ask for
 // it, or whose tile has changed hands, then those of the shadowed directional lights besides
 // the sun (state.sun_caster), every frame unless their shadow.auto_update is off too.
-fn void update_shadow_atlas(Scene* scene, Camera* camera) @local {
+// `bake` (render_bake): the tiles of all of the bake's shadowed lights, spot and directional,
+// drawn every time after the main render's, which are left as they are (unless the atlas is
+// new: then the main render draws its own again). The atlas is made big enough for both, so
+// that neither makes it anew for the other.
+fn void update_shadow_atlas(Scene* scene, Camera* camera, bool bake = false) @local {
     state.atlas_pending.clear();
     int tile = 4;
+    int keep;
+    if (bake) {
+        // the main render's tiles, kept (null: none to keep)
+        keep = state.atlas_main_count;
+        for (int i = 0; i < keep; i++) {
+            state.atlas_pending.push(i < state.atlas_lights.len() ? state.atlas_lights[i] : null);
+        }
+    }
     foreach (l : state.lights) {
         if (l.light_type != SPOT || !l.cast_shadow || !l.visible || l.intensity <= 0) continue;
         SpotLight* sl = (SpotLight*)l;
-        if (sl.shadow.auto_update || state.atlas_pending.len() >= MAX_ATLAS_TILES) continue;
+        if ((sl.shadow.auto_update && !bake) || state.atlas_pending.len() >= MAX_ATLAS_TILES) continue;
         state.atlas_pending.push(sl);
         tile = math::max(tile, sl.shadow.map_size);
     }
     int statics = (int)state.atlas_pending.len();
+    if (bake) statics = keep;
     foreach (l : state.lights) {
         if (l.light_type != DIRECTIONAL || !l.cast_shadow || !l.visible || l.intensity <= 0) continue;
         if (l == state.sun_caster || state.atlas_pending.len() >= MAX_ATLAS_TILES) continue;
         state.atlas_pending.push(l);
         tile = math::max(tile, ((DirectionalLight*)l).shadow.map_size);
     }
-    int count    = (int)state.atlas_pending.len();
-    int capacity = math::min(math::max(state.renderer.shadow_atlas_capacity, count, 1), MAX_ATLAS_TILES);
+    int count = (int)state.atlas_pending.len();
+    int wanted;
+    if (bake) {
+        state.atlas_bake_count = count - keep;
+        state.atlas_bake_tile = tile;
+        tile = math::max(tile, state.atlas_main_tile);
+        wanted = count;
+        if (count == keep) return;
+    } else {
+        state.atlas_main_count = count;
+        state.atlas_main_tile = tile;
+        tile = math::max(tile, state.atlas_bake_tile);
+        wanted = count + state.atlas_bake_count;
+    }
+    int capacity = math::min(math::max(state.renderer.shadow_atlas_capacity, wanted, 1), MAX_ATLAS_TILES);
     // keep the atlas while nothing uses it: the lights may only be switched off for a moment
     if (!count && state.atlas_tile) return;
     int old_tile = state.atlas_tile;
@@ -1353,16 +1402,19 @@ fn void update_shadow_atlas(Scene* scene, Camera* camera) @local {
     // ...and new moments for VSM
     bool vsm = vsm_on();
     if (vsm && ensure_vsm(&state.vsm_atlas, tile * state.atlas_columns, tile * state.atlas_rows)) all = true;
+    // (a bake can't draw the main render's tiles: they are gone)
+    if (bake && all) for (int i = 0; i < keep; i++) state.atlas_pending[i] = null;
     // a tile is drawn again for a light that asks for it, that it newly belongs to, or a
-    // directional light's that is updated every frame
+    // directional light's that is updated every frame (a bake's: every time)
     bool[MAX_ATLAS_TILES] redraw;
     int redraws;
     int static_redraws;
     for (int i = 0; i < count; i++) {
-        Light* l        = state.atlas_pending[i];
+        Light* l = state.atlas_pending[i];
+        if (!l || (bake && i < keep)) continue;
         LightShadow* sh = light_shadow(l);
         bool moved      = i >= state.atlas_lights.len() || state.atlas_lights[i] != l;
-        if (all || moved || sh.needs_update || (i >= statics && sh.auto_update)) {
+        if (all || moved || sh.needs_update || (i >= statics && sh.auto_update) || bake) {
             redraw[i] = true;
             redraws++;
             if (i < statics) static_redraws++;
@@ -1370,7 +1422,7 @@ fn void update_shadow_atlas(Scene* scene, Camera* camera) @local {
     }
     if (!redraws) return;
     // most of the drawn-once ones: clear all of it, as a pass does
-    if (static_redraws * 2 > statics) all = true;
+    if (static_redraws * 2 > statics && !bake) all = true;
     state.atlas_lights.clear();
     foreach (l : state.atlas_pending) state.atlas_lights.push(l);
     Vector3 camera_pos = camera.matrix_world.get_position();
@@ -1384,8 +1436,8 @@ fn void update_shadow_atlas(Scene* scene, Camera* camera) @local {
     );
     sg::apply_pipeline(get_shadow_pipeline());
     for (int i = 0; i < count; i++) {
-        if (!all && !redraw[i]) continue;
-        Light* l        = state.atlas_pending[i];
+        Light* l = state.atlas_pending[i];
+        if (!l || (!all && !redraw[i])) continue;
         LightShadow* sh = light_shadow(l);
         sh.needs_update = false;
         Mat4 light_vp = light_view_proj(l, camera);
@@ -1393,7 +1445,7 @@ fn void update_shadow_atlas(Scene* scene, Camera* camera) @local {
         Frustum light_frustum = frustum_from(light_vp);
         state.casters.clear();
         state.skip_instanced = sh.skip_instanced;
-        collect(scene, camera.matrix_world_inverse, &light_frustum, camera_pos, true);
+        collect_casters(scene, camera, &light_frustum);
         state.skip_instanced = false;
         int columns = state.atlas_columns;
         sg::apply_viewport((i % columns) * tile, (i / columns) * tile, tile, tile, top_left);
@@ -1413,7 +1465,7 @@ fn void update_shadow_atlas(Scene* scene, Camera* camera) @local {
         VsmTile[MAX_ATLAS_TILES] tiles;
         int n;
         for (int i = 0; i < count; i++) {
-            if (!all && !redraw[i]) continue;
+            if (!state.atlas_pending[i] || (!all && !redraw[i])) continue;
             LightShadow* sh = light_shadow(state.atlas_pending[i]);
             int columns     = state.atlas_columns;
             tiles[n++] = { (i % columns) * tile, (i / columns) * tile, tile, sh.radius, sh.blur_samples };
@@ -1561,7 +1613,8 @@ fn Mat4 directional_shadow_view_proj(DirectionalLight* d, Camera* camera, int si
     Vector3 dir    = (d.matrix_world.get_position() - target).normalize();
     float extent   = math::max(d.shadow_extent, 0.1f);
     Vector3 center = target;
-    if (d.shadow_follow) {
+    // (a bake's box stays where the light points: the camera has nothing to do with it)
+    if (d.shadow_follow && !state.bake.on) {
         Vector3 at    = camera.matrix_world.get_position();
         Mat4 cw       = camera.matrix_world;
         Vector3 ahead = { -cw[2][0], 0, -cw[2][2] };
@@ -1708,7 +1761,7 @@ fn void gather_casters(
 ) @local {
     state.casters.clear();
     state.skip_instanced = skip_instanced;
-    collect(scene, camera.matrix_world_inverse, frustum, camera.matrix_world.get_position(), true);
+    collect_casters(scene, camera, frustum);
     state.skip_instanced = false;
     out.clear();
     int view = cull_view(frustum);
@@ -1717,6 +1770,17 @@ fn void gather_casters(
         out.push(item);
     }
     state.casters.clear();
+}
+
+// Adds the shadow casters inside `frustum` to state.casters: the scene's, or a bake's objects
+// (state.caster_roots).
+fn void collect_casters(Scene* scene, Camera* camera, Frustum* frustum) @local {
+    Vector3 from = camera.matrix_world.get_position();
+    if (!state.bake.on) {
+        collect(scene, camera.matrix_world_inverse, frustum, from, true);
+        return;
+    }
+    foreach (o : state.caster_roots) collect(o, camera.matrix_world_inverse, frustum, from, true);
 }
 
 // Clip space -> shadow map uv (v points down outside of GL) and 0..1 depth.
@@ -2143,6 +2207,7 @@ fn VsParams vs_params_of(DrawItem* item, Mat4 view_proj, bool normals = true) @l
         bool moved = m.motion_prev != m.motion_cur || (mat.sway > 0 && state.motion_prev_time != state.motion_time);
         vs.motion = { moved ? 2 : 1, state.motion_prev_time, state.motion_jitter.x, state.motion_jitter.y };
     }
+    if (state.bake.on) vs.bake = { 1, depth_zero_to_one() ? 1 : 0, 0, 0 };
     return vs;
 }
 
@@ -2189,7 +2254,8 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     if (mat.screen_target) map = state.white;
     float alpha_test = alpha_test_of(mat);
     sg::apply_pipeline(
-        get_pipeline(mat.side, mat.transparent, lines, r.render_target, alpha_test > 0, mat.blending, kind)
+        state.bake.on ? state.bake.pipeline
+            : get_pipeline(mat.side, mat.transparent, lines, r.render_target, alpha_test > 0, mat.blending, kind)
     );
     // the prepass has cut it out already (the shader takes a negative threshold as "covered")
     if (kind == PRETESTED && alpha_test > 0) alpha_test = -1;
@@ -2266,6 +2332,8 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     bind.views[shaders::VIEW_FOG_VOLUME] = state.fog_view;
     bool ssr = r.ssr_color.id != 0 && r.ssr_depth.id != 0 && mat.ssr > 0;
     bind.views[shaders::VIEW_SSR_COLOR] = ssr ? r.ssr_color : ready(state.white).view;
+    // (a bake's last light map, see render_bake)
+    if (state.bake.on) bind.views[shaders::VIEW_SSR_COLOR] = state.bake.prev;
     bind.views[shaders::VIEW_SSR_DEPTH] = ssr ? r.ssr_depth : ready(state.white).view;
     bind.views[shaders::VIEW_SSR_BACK] = ssr && r.ssr_back.id ? r.ssr_back : ready(state.white).view;
     Reflector* mirror = mat.reflector && mat.reflector.rendered && mat.reflector.target ? mat.reflector : null;
@@ -2339,7 +2407,9 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
                     : 0) | (mat.vertex_light > 0 ? 16 : 0) | (mat.screen_target ? 32 : 0) | (mat.map_emissive ? 64 : 0);
     fs.color = { ...color_to_linear(mat.color) * (mat.color_scale > 0 ? mat.color_scale : 1), mat.opacity };
     fs.emissive = { ...color_to_linear(mat.emissive) * mat.emissive_intensity, mat.vertex_light };
-    if (r.render_target) {
+    if (state.bake.on) {
+        fs.screen_params = { 1.0f / state.bake.width, 1.0f / state.bake.height, item.fade, item.fade_dir };
+    } else if (r.render_target) {
         fs.screen_params = { 1.0f / r.render_target.width, 1.0f / r.render_target.height, item.fade, item.fade_dir };
     } else {
         fs.screen_params = { 1.0f / sapp::widthf(), 1.0f / sapp::heightf(), item.fade, item.fade_dir };
@@ -2793,6 +2863,86 @@ fn void render_transmission(Renderer* r, Scene* scene, Camera* camera, Mat4 view
 // A transmission material: it shows the picture of what is behind it (render_transmission).
 fn bool refracts(DrawItem* item) @local => item.mesh.material.transmission > 0 && item.mesh.material.type == STANDARD;
 
+// The shadow maps of a render: gathers the casters of the spot light's map and of the sun's
+// cascades, culls their instances, and draws those maps and the atlas's tiles (all with
+// Renderer.shadow_map_auto_update; without, makes sure that the maps the shaders read exist).
+// Returns the spot light with the map of its own.
+// `bake` (render_bake): the bake's shadowed lights only get tiles of the atlas (the spot
+// light's and the sun's maps stay the main render's), their casters state.caster_roots.
+fn SpotLight* prepare_and_draw_shadows(Scene* scene, Camera* camera, bool bake = false) @local {
+    ulong pt          = profile::start();
+    // shadow map of the shadow casting spot light
+    SpotLight* caster = bake ? null : shadow_light();
+    // without a caster keep whatever map there is: renders that switch shadows off (a portal
+    // view, say) must not reallocate it every frame
+    ensure_shadow_map(caster ? caster.shadow.map_size : (state.shadow_size ?: 4));
+    Mat4 caster_vp;
+    bool shadows = state.renderer.shadow_map_auto_update || bake;
+    if (shadows) state.spot_casters.clear();
+    if (caster && !shadows) caster_vp = shadow_view_proj(caster);
+    if (caster && shadows) {
+        caster_vp = shadow_view_proj(caster);
+        Frustum light_frustum = frustum_from(caster_vp);
+        gather_casters(scene, camera, &light_frustum, caster.shadow.skip_instanced, &state.spot_casters);
+    }
+    // the directional light's map is its own, so a sun and a spot light can both have shadows
+    profile::stop("render: spot casters", pt);
+    pt = profile::start();
+    DirectionalLight* sun = shadows ? directional_shadow_light() : state.sun_caster;
+    if (bake) sun = null;
+    if (shadows && !bake) {
+        state.sun_caster = sun;
+        prepare_sun_shadow(scene, camera, sun);
+    }
+    profile::stop("render: sun casters", pt);
+    pt = profile::start();
+    // every view's instances culled at once, before the passes that draw them
+    cull_dispatch();
+    profile::stop("render: cull dispatch", pt);
+    pt = profile::start();
+
+    if (caster && shadows) {
+        profile::begin_pass(
+            &&{ // depth is not stored by default: ask for it, the main pass samples this map
+                .action = { .depth = { .load_action = CLEAR, .store_action = STORE, .clear_value = 1 } },
+                .attachments = { .depth_stencil = state.shadow_attachment },
+                .label = "drie-spot-shadow",
+            }
+        );
+        sg::apply_pipeline(get_shadow_pipeline());
+        Mat4 caster_rel    = shadow_view_proj(caster, true);
+        Vector3 caster_pos = caster.matrix_world.get_position();
+        foreach (&item : state.spot_casters) draw_shadow_item(item, caster_rel, caster_pos);
+        sg::end_pass();
+        if (vsm_on()) {
+            int size = state.shadow_size;
+            ensure_vsm(&state.vsm_spot, size, size);
+            VsmTile[1] tiles = { { 0, 0, size, caster.shadow.radius, caster.shadow.blur_samples } };
+            vsm_blur(&state.vsm_spot, state.shadow_view, &tiles, false);
+        }
+    }
+    profile::stop("render: spot shadow", pt);
+    pt = profile::start();
+    if (shadows && !bake) draw_sun_shadow(sun);
+    profile::stop("render: sun shadow", pt);
+    pt = profile::start();
+    if (shadows) update_shadow_atlas(scene, camera, bake);
+    // a render that draws no shadow maps (a reflector's, reusing the last frame's) can come
+    // before any that does: the shaders still sample the maps, so they must exist
+    if (!shadows || bake) {
+        ensure_sun_map(state.sun_size ?: 4);
+        if (!state.atlas_tile) ensure_shadow_atlas(4, 1);
+    }
+    // VSM's moments, the size of the depth maps (the main pass binds them all)
+    if (vsm_on()) {
+        ensure_vsm(&state.vsm_spot, state.shadow_size, state.shadow_size);
+        ensure_vsm(&state.vsm_sun, state.sun_size, state.sun_size);
+        ensure_vsm(&state.vsm_atlas, state.atlas_tile * state.atlas_columns, state.atlas_tile * state.atlas_rows);
+    }
+    profile::stop("render: spot atlas", pt);
+    return caster;
+}
+
 // Draws the scene from the camera's point of view. Call once per frame from the animation loop.
 fn void Renderer.render(&self, Scene* scene, Camera* camera) {
     if (!state.gfx_ready) return;
@@ -2864,76 +3014,8 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera) {
     foreach (&item : state.opaque) item.job = cull_job(item.mesh, view) + 1;
     foreach (&item : state.transparent) item.job = cull_job(item.mesh, view) + 1;
     profile::stop("render: sort + jobs", pt);
-    pt = profile::start();
 
-    // shadow map of the shadow casting spot light
-    SpotLight* caster = shadow_light();
-    // without a caster keep whatever map there is: renders that switch shadows off (a portal
-    // view, say) must not reallocate it every frame
-    ensure_shadow_map(caster ? caster.shadow.map_size : (state.shadow_size ?: 4));
-    Mat4 caster_vp;
-    bool shadows = self.shadow_map_auto_update;
-    if (shadows) state.spot_casters.clear();
-    if (caster && !shadows) caster_vp = shadow_view_proj(caster);
-    if (caster && shadows) {
-        caster_vp = shadow_view_proj(caster);
-        Frustum light_frustum = frustum_from(caster_vp);
-        gather_casters(scene, camera, &light_frustum, caster.shadow.skip_instanced, &state.spot_casters);
-    }
-    // the directional light's map is its own, so a sun and a spot light can both have shadows
-    profile::stop("render: spot casters", pt);
-    pt = profile::start();
-    DirectionalLight* sun = shadows ? directional_shadow_light() : state.sun_caster;
-    if (shadows) {
-        state.sun_caster = sun;
-        prepare_sun_shadow(scene, camera, sun);
-    }
-    profile::stop("render: sun casters", pt);
-    pt = profile::start();
-    // every view's instances culled at once, before the passes that draw them
-    cull_dispatch();
-    profile::stop("render: cull dispatch", pt);
-    pt = profile::start();
-
-    if (caster && shadows) {
-        profile::begin_pass(
-            &&{ // depth is not stored by default: ask for it, the main pass samples this map
-                .action = { .depth = { .load_action = CLEAR, .store_action = STORE, .clear_value = 1 } },
-                .attachments = { .depth_stencil = state.shadow_attachment },
-                .label = "drie-spot-shadow",
-            }
-        );
-        sg::apply_pipeline(get_shadow_pipeline());
-        Mat4 caster_rel    = shadow_view_proj(caster, true);
-        Vector3 caster_pos = caster.matrix_world.get_position();
-        foreach (&item : state.spot_casters) draw_shadow_item(item, caster_rel, caster_pos);
-        sg::end_pass();
-        if (vsm_on()) {
-            int size = state.shadow_size;
-            ensure_vsm(&state.vsm_spot, size, size);
-            VsmTile[1] tiles = { { 0, 0, size, caster.shadow.radius, caster.shadow.blur_samples } };
-            vsm_blur(&state.vsm_spot, state.shadow_view, &tiles, false);
-        }
-    }
-    profile::stop("render: spot shadow", pt);
-    pt = profile::start();
-    if (shadows) draw_sun_shadow(sun);
-    profile::stop("render: sun shadow", pt);
-    pt = profile::start();
-    if (shadows) update_shadow_atlas(scene, camera);
-    // a render that draws no shadow maps (a reflector's, reusing the last frame's) can come
-    // before any that does: the shaders still sample the maps, so they must exist
-    if (!shadows) {
-        ensure_sun_map(state.sun_size ?: 4);
-        if (!state.atlas_tile) ensure_shadow_atlas(4, 1);
-    }
-    // VSM's moments, the size of the depth maps (the main pass binds them all)
-    if (vsm_on()) {
-        ensure_vsm(&state.vsm_spot, state.shadow_size, state.shadow_size);
-        ensure_vsm(&state.vsm_sun, state.sun_size, state.sun_size);
-        ensure_vsm(&state.vsm_atlas, state.atlas_tile * state.atlas_columns, state.atlas_tile * state.atlas_rows);
-    }
-    profile::stop("render: spot atlas", pt);
+    SpotLight* caster = prepare_and_draw_shadows(scene, camera);
     pt = profile::start();
     if (!state.no_irradiance) state.no_irradiance = irradiance_volume({ 0, 0, 0 }, { 1, 1, 1 }, 1);
     state.irradiance = scene.irradiance ?: state.no_irradiance;
@@ -3026,6 +3108,176 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera) {
     // When rendering to the window, finish the frame. With a render target, the caller
     // usually runs more passes (post-processing) and must call drie::commit() at the end.
     if (!self.render_target) profile::commit();
+}
+
+// A light map's pipeline for the bake's objects (render_bake): the material shader into
+// `format`, no depth, no culling (the uv unwrap decides which way a face turns), no blending.
+fn SgPipeline bake_pipeline(SgPixelFormat format) @local {
+    bool vsm        = vsm_on();
+    SgPipeline* pip = &state.bake_pipelines[vsm ? 1 : 0][format == RGBA32F ? 1 : 0];
+    if (pip.id) return *pip;
+    *pip = sg::make_pipeline(
+        &&{
+            .shader = vsm ? state.vsm_shader : state.opaque_shader,
+            .index_type = UINT32,
+            .cull_mode = NONE,
+            .layout = vertex_layout(
+                {
+                    shaders::ATTR_THREE_POSITION,
+                    shaders::ATTR_THREE_NORMAL,
+                    shaders::ATTR_THREE_UV,
+                    shaders::ATTR_THREE_COLOR0,
+                    shaders::ATTR_THREE_UV1,
+                    shaders::ATTR_THREE_INST0,
+                    shaders::ATTR_THREE_INST1,
+                    shaders::ATTR_THREE_INST2
+                }
+            ),
+            .depth.pixel_format = NONE,
+            .colors[0].pixel_format = format,
+            .sample_count = 1,
+            .label = "drie-bake",
+        }
+    );
+    return *pip;
+}
+
+// Draws the seams' pass of a bake (lightmap.glsl): the whole map from `prev`'s neighbours.
+fn void draw_bake_seams(SgPixelFormat format, SgView prev, int width, int height) @local {
+    if (!state.seam_shader.id) state.seam_shader = sg::make_shader(&&shaders::lm_seam_shader_desc(sg::query_backend()));
+    SgPipeline* pip = &state.seam_pipelines[format == RGBA32F ? 1 : 0];
+    if (!pip.id) {
+        *pip = sg::make_pipeline(
+            &&{
+                .shader = state.seam_shader,
+                .depth.pixel_format = NONE,
+                .colors[0].pixel_format = format,
+                .sample_count = 1,
+                .label = "drie-bake-seams",
+            }
+        );
+    }
+    sg::apply_pipeline(*pip);
+    SgBindings bind;
+    bind.views[shaders::VIEW_LM_PREV] = prev;
+    bind.samplers[shaders::SMP_LM_SMP] = state.clamp_sampler;
+    sg::apply_bindings(&bind);
+    shaders::LmParams p = { .lm_size = { 1.0f / width, 1.0f / height, 0.5f / width, 0 } };
+    sg::apply_uniforms(shaders::UB_LM_PARAMS, &&{ .ptr = &p, .size = shaders::LmParams::size });
+    sg::draw(0, 3, 1);
+}
+
+// The lights under `obj`, into state.lights.
+fn void collect_lights(Object3D* obj) @local {
+    if (!obj.visible) return;
+    if (obj.kind == LIGHT) state.lights.push((Light*)obj);
+    foreach (c : obj.children) collect_lights(c);
+}
+
+// Bakes light into a light map, as three's ProgressiveLightMap does (see lightmap.c3, which
+// calls it): each mesh of `objects` is drawn with `material` where its uv1 is in `target`
+// (RGBA32F or RGBA16F, without depth), lit by the lights of `lights` and shadowed by
+// `objects`, and blended into what `prev` (the last map, the size of `target`) has there:
+// 1 / blend_window of the new light. With `seams` the whole map first takes the average of
+// its neighbours in `prev`, which spreads the islands' light past their edges; without it
+// starts black. `camera` is where the highlights are seen from.
+// It is not a render: info, time, the motion vectors' and the reflections' frames are left
+// alone, and it needs no commit of its own (call it before render() in a frame).
+fn void Renderer.render_bake(
+    &self,
+    Scene* lights,
+    Camera* camera,
+    Object3D*[] objects,
+    Material* material,
+    RenderTarget* target,
+    SgView prev,
+    float blend_window = 100,
+    bool seams = true
+) {
+    if (!state.gfx_ready) return;
+    RenderInfo info          = self.info;
+    bool motion              = state.motion;
+    Scene* scene             = state.scene;
+    IrradianceVolume* volume = state.irradiance;
+    SgView radiance          = state.radiance_view;
+    SgView fog               = state.fog_view;
+    SgView probes            = state.probes_view;
+    SgSampler probes_sampler = state.probes_sampler;
+    DirectionalLight* sun    = state.sun_caster;
+    state.motion = false;
+
+    if (!camera.custom_projection) camera.update_projection_matrix();
+    if (!camera.parent) camera.update_matrix_world();
+    camera.matrix_world_inverse = camera.matrix_world.invert();
+    if (!lights.no_matrix_world_update) lights.update_matrix_world();
+    state.lights.clear();
+    collect_lights(lights);
+    state.bake = { .on = true, .prev = prev, .width = target.width, .height = target.height };
+    state.bake.pipeline = bake_pipeline(target.pixel_format());
+    state.caster_roots = objects;
+    state.sun_caster = null;
+    cull_begin(false, false);
+    prepare_and_draw_shadows(lights, camera, true);
+
+    if (!state.no_irradiance) state.no_irradiance = irradiance_volume({ 0, 0, 0 }, { 1, 1, 1 }, 1);
+    state.irradiance = lights.irradiance ?: state.no_irradiance;
+    if (!state.no_radiance) state.no_radiance = storage_buffer(6 * 16, label: "drie-rc-none");
+    if (lights.radiance) lights.radiance.upload();
+    state.radiance_view = lights.radiance ? lights.radiance.irradiance_buf.view : state.no_radiance.view;
+    state.irradiance.upload();
+    state.scene = lights;
+    FsParams fs = build_light_params(lights, camera, null);
+    // linear light, as it is; nothing cut away
+    fs.output_params = { 1, 0, 0, 0 };
+    fs.cull_min.w = 0;
+    fs.bake_params = { 1, 1 / math::max(blend_window, 1e-6f), 0, 0 };
+    state.fog_view = ready(state.white).view;
+    if (!state.clamp_sampler.id) {
+        state.clamp_sampler = sg::make_sampler(
+            &&{
+                .min_filter = LINEAR,
+                .mag_filter = LINEAR,
+                .wrap_u = CLAMP_TO_EDGE,
+                .wrap_v = CLAMP_TO_EDGE,
+            }
+        );
+    }
+
+    profile::begin_pass(
+        &&{
+            .action = { .colors[0] = { .load_action = CLEAR, .store_action = STORE, .clear_value = { 0, 0, 0, 1 } } },
+            .attachments = target.attachments(),
+            .label = "drie-bake",
+        }
+    );
+    if (seams) draw_bake_seams(target.pixel_format(), prev, target.width, target.height);
+    foreach (o : objects) {
+        if (o.kind != MESH || !o.visible) continue;
+        Mesh* m = (Mesh*)o;
+        if (!m.geometry || m.is_line()) continue;
+        BufferGeometry* g = m.geometry;
+        if (!g.uploaded && g.indices.len() == 0) continue;
+        g.upload();
+        if (m.instance_data.len() > 0) upload_instances_gpu(m);
+        Material* own = m.material;
+        m.material = material;
+        DrawItem item = { .mesh = m };
+        draw_item(&item, mat4_identity(), &fs, SOLID);
+        m.material = own;
+    }
+    sg::end_pass();
+
+    state.bake = { };
+    state.caster_roots = { };
+    state.sun_caster = sun;
+    state.motion = motion;
+    state.scene = scene;
+    state.irradiance = volume;
+    state.radiance_view = radiance;
+    state.fog_view = fog;
+    state.probes_view = probes;
+    state.probes_sampler = probes_sampler;
+    self.info = info;
 }
 
 // Ends the frame. Only needed when the last render() went to a render target.

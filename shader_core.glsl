@@ -99,6 +99,8 @@ layout(binding=0) uniform vs_params {
     vec4 motion;        // x = 0: as if nothing moved, 1: only the camera moved, 2: the mesh may have
                         //   moved or sways too; y = the last frame's sway time; zw = the camera's
                         //   jitter (in clip space, per unit of w), left out of the motion
+    vec4 bake;          // x = 1: baking a light map (lightmap.c3): drawn where v_uv1 is in it,
+                        //   y = 1: the target's row 0 is its top (texel row r at v = (r + 0.5) / size)
 };
 
 @include_block vertex_common
@@ -149,6 +151,10 @@ void main() {
     v_clip = gl_Position;
     v_clip.xy -= motion.zw * v_clip.w;
     v_prev_clip = v_clip;
+    if (bake.x > 0.5) {
+        gl_Position = vec4(2.0 * uv1.x - 1.0, bake.y > 0.5 ? 1.0 - 2.0 * uv1.y : 2.0 * uv1.y - 1.0, 0.0, 1.0);
+        return;
+    }
     if (motion.x > 1.5) {
         // the same vertex, placed and swayed as it was a frame ago (instances are taken to
         // stand still, and the hook to have moved it as far as it does now)
@@ -347,6 +353,8 @@ layout(binding=1) uniform fs_params {
                                //   z, w = its thinnest and thickest (nm)
     vec4 light_map_params;     // x = Material.light_map_intensity
     vec4 shadow_ext;           // x = the shadow casting directional light's shadow.bias (VSM)
+    vec4 bake_params;          // baking a light map (lightmap.c3): x = 1, y = the new sample's
+                               //   share (1 / blend window); ssr_color holds the last map
     vec4 uv_rel[16];           // per map slot (0: tex_normal, 1: tex_arm, 2..7: tex_ext0..5), its uv
                                //   from the color map's (g_uv; each texture has its own
                                //   transform, three's texture.matrix): two rows, as uv_transform;
@@ -1720,8 +1728,10 @@ void main() {
     }
 #endif
 
+    // (baking: the faces as the uv unwrap turned them, all front)
+    bool baking = bake_params.x > 0.5;
     vec3 n = normalize(v_normal);
-    if (!gl_FrontFacing && !foliage) n = -n;
+    if (!gl_FrontFacing && !foliage && !baking) n = -n;
     vec3 geo_n = n;
     g_dpdx = dFdx(v_world_pos);
     g_dpdy = dFdy(v_world_pos);
@@ -1883,13 +1893,19 @@ void main() {
             int k = sun_cascade(dot(v_world_pos - camera_pos.xyz, dir_cascade_fwd.xyz));
             if (k >= 0) outc = mix(outc, k == 0 ? vec3(1.0, 0.0, 0.0) : (k == 1 ? vec3(0.0, 1.0, 0.0) : (k == 2 ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 1.0, 0.0))), 0.5);
         }
-        // the point and spot lights that reach this fragment's cluster
-        uvec4 range = clusters[cluster_of(v_world_pos)].range;
-        int first = int(range.x);
-        int npoint = int(range.y);
-        int nspot = int(range.z);
+        // the point and spot lights that reach this fragment's cluster (baking: all of them,
+        // the clusters are the camera's)
+        int first = 0;
+        int npoint = int(counts.y);
+        int nspot = int(counts.z);
+        if (!baking) {
+            uvec4 range = clusters[cluster_of(v_world_pos)].range;
+            first = int(range.x);
+            npoint = int(range.y);
+            nspot = int(range.z);
+        }
         for (int k = 0; k < npoint; k++) {
-            gpu_point_light pl = points[cluster_lights[first + k].index];
+            gpu_point_light pl = points[baking ? uint(k) : cluster_lights[first + k].index];
             vec3 lv = pl.pos.xyz - v_world_pos;
             float d = length(lv);
             // a light source with a size: falloff softens up close instead of blowing out
@@ -1900,7 +1916,7 @@ void main() {
             outc += direct(mode, n, v, lv / d, d, radiance, diffuse_color, spec);
         }
         for (int k = 0; k < nspot; k++) {
-            int i = int(cluster_lights[first + npoint + k].index);
+            int i = baking ? k : int(cluster_lights[first + npoint + k].index);
             vec3 lv = spots[i].pos.xyz - v_world_pos;
             float d = length(lv);
             // out of the light's reach
@@ -2078,6 +2094,12 @@ void main() {
     }
 
     outc = max(outc, vec3(0.0));
+    if (baking) {
+        // the light map: the new sample blended into the last map's texel, in linear light
+        vec3 prev = texture(sampler2D(ssr_color, ssr_smp), v_uv1).rgb;
+        frag_color = vec4(mix(prev, min(outc, vec3(60000.0)), bake_params.y), 1.0);
+        return;
+    }
 #ifdef MRT
     {
         const vec3 lw = vec3(0.2126, 0.7152, 0.0722);
