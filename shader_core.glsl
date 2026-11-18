@@ -5,7 +5,6 @@ in vec3 normal;
 in vec2 uv;
 in vec4 color0;
 in vec2 uv1;      // the second uv set (glTF's TEXCOORD_1, three's uv1), zeros without one
-in vec4 tangent;  // the tangents (BufferGeometry.tangents: glTF's TANGENT), zeros without them
 // Rows of the per-instance 3x4 matrix (identity for plain meshes).
 in vec4 inst0;
 in vec4 inst1;
@@ -78,7 +77,10 @@ vec4 frame_custom[2];
 @include_block vertex_hooks
 @end
 
-@vs vs
+// The main vertex shader, as vs, and as vs_tangent (TANGENT) for geometries with tangents
+// (three's USE_TANGENT): the attribute and what it hands the fragment shader cost every vertex
+// drawn, so the others go without.
+@block vs_main
 layout(binding=0) uniform vs_params {
     // world -> clip space, measured from view_origin: gl_Position = view_proj * (world - origin).
     // Far from the world's origin (a farm 6 km out) a plain view_proj * world loses the depth:
@@ -105,12 +107,17 @@ layout(binding=0) uniform vs_params {
 };
 
 @include_block vertex_common
+#ifdef TANGENT
+in vec4 tangent;  // the tangents (BufferGeometry.tangents: glTF's TANGENT)
+#endif
 
 out vec3 v_world_pos;
 out vec3 v_normal;
 out vec2 v_uv;
 out vec2 v_uv1;
-out vec4 v_tangent;   // the tangent in the world, w = the bitangent's sign (zeros: none)
+#ifdef TANGENT
+out vec4 v_tangent;   // the tangent in the world, w = the bitangent's sign
+#endif
 out vec3 v_color;
 out float v_alpha;
 out vec4 v_clip;
@@ -127,7 +134,9 @@ void main() {
         v_normal = vec3(0.0, 1.0, 0.0);
         v_uv = vec2(0.0);
         v_uv1 = vec2(0.0);
+#ifdef TANGENT
         v_tangent = vec4(0.0);
+#endif
         v_color = vec3(0.0);
         v_alpha = 0.0;
         v_clip = vec4(2.0, 2.0, 2.0, 1.0);
@@ -148,8 +157,10 @@ void main() {
     v_normal = (normal_mat * vec4(instance_dir(normal), 0.0)).xyz;
     v_uv = vec2(dot(uv_transform[0].xyz, vec3(uv, 1.0)), dot(uv_transform[1].xyz, vec3(uv, 1.0)));
     v_uv1 = uv1;
+#ifdef TANGENT
     // (a direction along the surface: the model matrix's, as three's)
     v_tangent = vec4((model * vec4(instance_dir(tangent.xyz), 0.0)).xyz, tangent.w);
+#endif
     v_color = color0.rgb;
     v_alpha = color0.a;
     gl_Position = view_proj * vec4(wp.xyz - view_origin.xyz, 1.0);
@@ -170,6 +181,15 @@ void main() {
         v_prev_clip = prev_view_proj * wp;
     }
 }
+@end
+
+@vs vs
+@include_block vs_main
+@end
+
+@vs vs_tangent
+#define TANGENT
+@include_block vs_main
 @end
 
 @vs shadow_vs
@@ -441,7 +461,9 @@ in vec3 v_world_pos;
 in vec3 v_normal;
 in vec2 v_uv;
 in vec2 v_uv1;
+#ifdef TANGENT
 in vec4 v_tangent;
+#endif
 in vec3 v_color;
 in float v_alpha;
 in vec4 v_clip;
@@ -1337,6 +1359,8 @@ void tangent_frame(vec3 n, vec2 duv1, vec2 duv2, out vec3 t, out vec3 b) {
     // a back face (its normal turned to the camera): the frame turned over too, as three's
     // tbn *= faceDirection
     bool back = dot(n, v_normal) < 0.0;
+#ifdef TANGENT
+    // (a vertex without one, all zeros: the frame from the uv instead)
     if (dot(v_tangent.xyz, v_tangent.xyz) > 0.0) {
         vec3 vn = normalize(v_normal);
         t = normalize(v_tangent.xyz);
@@ -1347,6 +1371,7 @@ void tangent_frame(vec3 n, vec2 duv1, vec2 duv2, out vec3 t, out vec3 b) {
         }
         return;
     }
+#endif
     vec3 dp2perp = cross(g_dpdy, n);
     vec3 dp1perp = cross(n, g_dpdx);
     t = dp2perp * duv1.x + dp1perp * duv2.x;
@@ -2268,12 +2293,38 @@ void main() {
 @include_block fs_main
 @end
 
+// The geometries with tangents (vs_tangent): the four that can cut holes, the opaque ones'
+// draws too (each variant is a few MB of generated code)
+@fs fs_tangent
+#define TANGENT
+@include_block fs_main
+@end
+
+@fs fs_mrt_tangent
+#define TANGENT
+#define MRT
+@include_block fs_main
+@end
+
+@fs fs_vsm_tangent
+#define TANGENT
+#define VSM
+@include_block fs_main
+@end
+
+@fs fs_mrt_vsm_tangent
+#define TANGENT
+#define MRT
+#define VSM
+@include_block fs_main
+@end
+
 // The depth prepass (renderer.c3, Renderer.depth_prepass): depth only, for what has holes in
 // it (alpha tested, LOD cross-fades, the cull box). The main pass then draws those with
 // fs_opaque and an EQUAL depth test, so that no shader of the main pass discards (a shader
 // that can discard costs the GPU its early depth test, whatever it draws). Cuts out exactly
 // what fs does.
-@fs depth_fs
+@block depth_main
 layout(binding=0) uniform texture2D tex_map;
 layout(binding=0) uniform sampler tex_smp;
 layout(binding=1) uniform depth_fs_params {
@@ -2288,7 +2339,9 @@ in vec3 v_world_pos;
 in vec3 v_normal;
 in vec2 v_uv;
 in vec2 v_uv1;
+#ifdef TANGENT
 in vec4 v_tangent;
+#endif
 in vec3 v_color;
 in float v_alpha;
 in vec4 v_clip;
@@ -2321,9 +2374,24 @@ void main() {
     }
     // for alpha to coverage (the depth prepass writes no color); r = the distance from the
     // camera's plane, for Renderer.render_back_faces
-    frag_color = vec4(v_clip.w + (v_normal + v_color + v_world_pos + v_clip.xyz + v_prev_clip.xyz).x * 0.0
+    float unread = 0.0;
+#ifdef TANGENT
+    unread = v_tangent.x * 0.0;
+#endif
+    frag_color = vec4(v_clip.w + unread + (v_normal + v_color + v_world_pos + v_clip.xyz + v_prev_clip.xyz).x * 0.0
         + v_line_distance * 0.0, 0.0, 0.0, alpha);
 }
+@end
+
+@fs depth_fs
+@include_block depth_main
+@end
+
+// The same for geometries with tangents: the main pass tests against the depth of this pass
+// with EQUAL, which needs the same vertex shader (one compiled apart can place them a hair off)
+@fs depth_tangent_fs
+#define TANGENT
+@include_block depth_main
 @end
 
 @program three vs fs
@@ -2332,5 +2400,10 @@ void main() {
 @program three_opaque_mrt vs fs_opaque_mrt
 @program three_vsm vs fs_vsm
 @program three_mrt_vsm vs fs_mrt_vsm
+@program three_tangent vs_tangent fs_tangent
+@program three_mrt_tangent vs_tangent fs_mrt_tangent
+@program three_vsm_tangent vs_tangent fs_vsm_tangent
+@program three_mrt_vsm_tangent vs_tangent fs_mrt_vsm_tangent
 @program depth vs depth_fs
+@program depth_tangent vs_tangent depth_tangent_fs
 @program shadow shadow_vs shadow_fs
