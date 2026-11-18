@@ -70,9 +70,9 @@ three.js API coverage:
 | Meshes & LOD | ✅ | `Mesh`, `InstancedMesh`, `Lod` |
 | Lines | ✅ | `Line`, `LineSegments`, `LineLoop`, `LineBasic` and `LineDashed` materials |
 | Geometry | ✅ | `box`, `plane`, `sphere`, `cylinder`, `cone`, `torus`, `lathe`, `buffer_geometry`, `merge` |
-| Materials | ✅ | `MeshBasic`, `MeshLambert`, `MeshPhong`, `MeshStandard`, `MeshNormal`, `MeshPhysical` (transmission, volume, IOR, dispersion, specular, clearcoat, sheen, iridescence; no anisotropy), parallax mapping (`parallaxUV`), shader hooks (`onBeforeCompile`) |
+| Materials | ✅ | `MeshBasic`, `MeshLambert`, `MeshPhong`, `MeshStandard`, `MeshNormal`, `MeshPhysical` (transmission, volume, IOR, dispersion, specular, clearcoat, sheen, iridescence; no anisotropy), parallax mapping (`parallaxUV`), `depthTest` / `depthWrite`, shader hooks (`onBeforeCompile`) |
 | Textures | ✅ | `load_texture` (PNG/JPEG), `data_texture`, `canvas_texture`, mipmaps, anisotropy, `repeat` / `offset` / `rotation` / `center` per map, `channel` (a geometry's second uv set, `uv1`), `nearest` (three's `NearestFilter` magnification) |
-| Lights | ✅ | `AmbientLight`, `HemisphereLight`, `DirectionalLight`, `PointLight`, `SpotLight` |
+| Lights | ✅ | `AmbientLight`, `HemisphereLight`, `DirectionalLight`, `PointLight`, `SpotLight`; light maps (`lightMap`, `lightMapIntensity`), `ProgressiveLightMap` |
 | Lighting addons | ✅ | Clustered forward lighting (`ClusteredLighting`), irradiance volume (`LightProbeGrid`) |
 | Reflections | ✅ | Box-projected env maps, `CubeCamera` capture, SSR (`SSRNode`), planar `Reflector` |
 | Fog | ✅ | `Fog`, `FogExp2` |
@@ -80,7 +80,7 @@ three.js API coverage:
 | Raycasting | ✅ | `Raycaster` against `Mesh`, `InstancedMesh`, `Lod` (per-triangle) |
 | Post-processing | ✅ | `EffectComposer`, `RenderPass`, `ShaderPass`, `output_pass`, `gtao_pass`, `taa_pass` |
 | Renderer | ✅ | `render_target`, tone mapping, frustum culling, `renderer.info`, MRT, compute passes |
-| Shadows | ⚠️ | `DirectionalLight` (CSM) and `SpotLight` (1 live + cached atlas); `PointLight` ❌ |
+| Shadows | ⚠️ | `DirectionalLight` (the first: CSM; every other one: a tile of the shadow atlas) and `SpotLight` (1 live + cached atlas); PCF and VSM (`VSMShadowMap`); `PointLight` ❌ |
 | Skeletons | ⚠️ | `Bone`, `Skeleton`, `SkinnedMesh` (CPU skinning); animation clips ❌ |
 | glTF (`drie::loaders`) | ⚠️ | `.glb` and `.gltf` on [cgltf](https://github.com/jkuhlmann/cgltf): meshes (sparse and quantized accessors, two uv sets), materials (with `KHR_materials_*` transmission, volume, ior, dispersion, specular, emissive_strength, clearcoat, sheen, iridescence, unlit), textures (embedded, files or `data:` URIs, their samplers, either uv set, `KHR_texture_transform`); skins, animations, morph targets, cameras, lights, Draco ❌ |
 | Quaternions / Animation | ❌ | XYZ Euler rotations only; no animation clips |
@@ -91,7 +91,15 @@ three.js API coverage:
 - Named arguments must be in declaration order (a C3 rule). For example, `color:` comes before `roughness:`.
 - Colors are plain sRGB hex `uint`s, not `Color` objects.
 - Rotations are XYZ Euler only (no quaternions or `rotation.order`).
-- No animation clips. Point lights cast no shadows.
+- No animation clips. Point lights cast no shadows (with PCF or VSM).
+- Shadow lookups are pushed off the surface along its normal (`shadow.normal_bias`, scaled by
+  the slope and, for spot lights, the distance), with VSM too; `shadow.bias` is used by VSM only.
+- Only the first directional light gets cascades; every other shadowed one gets one box
+  (`shadow_extent`) in a tile of the shadow atlas, redrawn every frame unless
+  `shadow.auto_update` is off.
+- `ProgressiveLightMap` keeps its lights in a scene of its own (`plm.scene`), not in the main
+  scene, and bakes the objects where they are (three's moves them into a bake scene);
+  call `plm.update(camera)` before `render()`.
 - Lines are a pixel wide (as in WebGL), cast no shadows, and are not hit by `Raycaster`.
 - `Raycaster` collects hits into a list you pass in (three's `optionalTarget`) and gives
   `normal` in world space.
@@ -120,7 +128,7 @@ Features not in three.js:
 | Feature | Summary |
 | --- | --- |
 | **Radiance Cascades GI** | Real-time GPU global illumination and emissive bounce (`scene.radiance`) |
-| **Cached Shadow Atlas** | Static spot-light shadow caching in a shared atlas |
+| **Cached Shadow Atlas** | Static spot-light shadow caching in a shared atlas, which also holds the boxes of extra shadowed directional lights |
 | **Volumetric Fog** | Compute-marched froxel fog with light scatter, sun shafts, 3D noise, and clear boxes |
 | **Room Reflection Probes** | Box-projected, cross-faded room probes |
 | **GPU Culling** | Depth pre-pass and GPU instanced culling |
@@ -137,6 +145,7 @@ Features not in three.js:
 - **Transmission & dispersion:** `material.transmission` shows what stands behind a surface, refracted through `thickness` meters of it at `ior` and blurred by its roughness; `dispersion` bends each color channel by its own index of refraction, fringing edges with rainbow colors, and `attenuation_color` / `attenuation_distance` tint the light as it crosses (Beer's law). `specular_color` / `specular_intensity` tint and scale what a dielectric reflects (KHR_materials_specular). Double-sided glass shows its own far side through the near one.
 - **Clearcoat, sheen & iridescence:** `material.clearcoat` lays a thin clear varnish over the surface, with its own `clearcoat_roughness` and normal map (car paint, lacquer); `sheen` / `sheen_color` / `sheen_roughness` give cloth its soft glow at glancing angles (velvet, fabric); `iridescence` is a thin film (soap bubbles, oil) whose colors come from its thickness, `iridescence_thickness_min` to `_max` nanometers, and `iridescence_ior`. They are three's `MeshPhysicalMaterial` layers, from its shader code.
 - **Alpha and emissive maps:** `material.alpha_map` (green: how opaque) and `emissive_map` (tints `emissive`).
+- **Depth test & write:** `material.depth_test` / `depth_write` (three.js `depthTest` / `depthWrite`); a material that isn't tested or doesn't write depth stays out of the depth pre-pass.
 - **Additive blending & draw order:** `material.blending = ADDITIVE_BLENDING` for transparent materials and `object.render_order` for explicit draw order, as in three.js.
 - **World-space box UVs:** `geometry.box_project_uv(tiles_per_unit)` generates box-projected UVs.
 
@@ -160,7 +169,10 @@ A material's maps besides `map`, `normal_map` and `arm_map` share six texture sl
 
 - **Light source radius:** `light.radius` softens close-range falloff on point and spot lights; `spot_light.specular_radius` controls reflection highlight size.
 - **Cached static shadows:** `light.shadow.auto_update = false` (three.js `shadow.autoUpdate`) caches static shadow maps in the shared atlas (`renderer.shadow_atlas_capacity`).
-- **Variance shadow maps:** `renderer.shadow_type = VSM` (three.js `VSMShadowMap`) blurs each map into its moments (`shadow.radius`, `shadow.blur_samples`, `shadow.bias`).
+- **Variance shadow maps:** `renderer.shadow_type = VSM` (three.js `VSMShadowMap`; default `PCF`, three's `PCFSoftShadowMap`) blurs each spot and directional map into its moments (`shadow.radius`, `shadow.blur_samples`, `shadow.bias`), in RG32F where the GPU can draw and filter it, else RG16F.
+- **Several shadowed directional lights:** as in three.js, every directional light can cast a shadow: the first is the cascaded sun, each other one a box (`light.shadow_extent`) in a tile of the shadow atlas.
+- **Light maps:** `material.light_map` and `light_map_intensity` (three.js `lightMap`, `lightMapIntensity`) add baked light to the indirect irradiance, read from the uv set of the texture's `channel` (`1`: the geometry's `uv1`).
+- **Progressive light maps** (`lightmap.c3`): `drie::progressive_lightmap(renderer, res)` (three.js `ProgressiveLightMap`) bakes light into the objects' `uv1` a little at a time, from lights that may move (jittered, they give soft shadows); `renderer.render_bake` draws the samples.
 - **Cascaded shadow maps:** `DirectionalLight` supports 1–4 texel-snapped cascades with blending and debug visualization.
 - **Irradiance volume** (`irradiance.c3`): `scene.irradiance` (`IrradianceVolume`) probe grid for user-populated indirect bounce light.
 - **Radiance Cascades GI** (`radiance.c3`): `scene.radiance` (`RadianceCascades`) computes real-time GPU GI and emissive bounce, replacing ambient/hemisphere lights and `scene.irradiance` inside its box.
@@ -172,6 +184,10 @@ A material's maps besides `map`, `normal_map` and `arm_map` share six texture sl
 | --- | --- | --- |
 | Light radius | `light.radius`, `spot_light.specular_radius` | `specular_radius` defaults to `radius` when `0` |
 | Static shadow atlas | `light.shadow.auto_update = false`, `light.shadow.needs_update = true` | Set `needs_update = true` to redraw |
+| Shadow filtering | `renderer.shadow_type` (`PCF`, `VSM`), `light.shadow.radius` (`2`), `shadow.blur_samples` (`8`, VSM's blur taps), `shadow.bias` (`0`, VSM only; PCF uses `shadow.normal_bias`) | Point lights cast no shadows with either |
+| Shadow atlas capacity | `renderer.shadow_atlas_capacity` (`8`) | Tiles the atlas has room for at first: one per spot light with `shadow.auto_update = false` and per shadowed directional light besides the first; grows to what they need, up to 64 |
+| Light maps | `material.light_map` (`texture.channel = 1` for `uv1`), `material.light_map_intensity` | For `BASIC`, the map replaces the indirect light of 1 (as map / PI) |
+| Progressive light map | `drie::progressive_lightmap(renderer, res)` (`1024`), `plm.scene.add(light)`, `plm.add_objects(objects, pack:)`, `plm.update(camera, blend_window:, blur_edges:)` (`100`, `true`), `plm.texture(i)`, `plm.show_debug(visible)`, `plm.dispose()` | `add_objects` sets `light_map = texture(1)`, shadows on, and packs their `uv` into `uv1` (potpack; `pack: false` keeps your `uv1`); lights passed to it go to `plm.scene`; call `update` before `render()` |
 | Cascaded shadows | `light.shadow.cascades` (`4`, 1..4), `shadow.max_distance` (`150`), `shadow.split_lambda` (`0.7`), `shadow.cascade_blend` (`0.1`), `renderer.debug_cascades` | With `cascades = 1`, uses `light.shadow_extent` and optional `light.shadow_follow = true` |
 | Radiance Cascades | `drie::radiance_cascades(min, max)`, `rc.voxelize(scene)`, `rc.update(scene)` | Assigned to `scene.radiance` |
 
@@ -264,7 +280,7 @@ TBD. Currently the demo, with all advanced features on, runs at 40-60FPS on a Ma
 `shader_core.glsl` is the material shader; `shader.glsl` includes it with empty hooks. Run
 `just shaders` (sokol-shdc, from sokol-tools) to regenerate `generated/shader.c3`, and with it
 `kernels.c3` (the compute shaders, from `kernels.glsl`), `output.c3`, `gtao.c3` and `taa.c3` (the
-post-processing passes), `radiance_cs.c3` and `vsm.c3` (the variance shadow maps' blur). An application with its own copy of the material
+post-processing passes), `radiance_cs.c3`, `vsm.c3` (the variance shadow maps' blur) and `lightmap.c3` (the progressive light map's seams pass); the recipe then fixes sokol-shdc's storage image slot constants with macOS `sed -i ''`. An application with its own copy of the material
 shader generates it into its own sources, and regenerates it whenever `shader_core.glsl` changes.
 
 ## cgltf
@@ -280,7 +296,10 @@ the binding has C's size, alignment and field offsets (`third_party/cgltf/layout
 - `just test reflections`: `tests/reflections.c3` renders a scene made for reflections from different angles
 - `just test radiance`: `tests/radiance.c3` renders the same scene lit by its hemisphere light, by `RadianceCascades`,
 and by them with only the glowing cubes
-- `just test vsm`: `tests/vsm.c3` renders three's `webgl_shadowmap_vsm` scene with PCF and with variance shadow maps
+- `just test vsm`: `tests/vsm.c3` renders three's `webgl_shadowmap_vsm` scene (a torus for the knot) with PCF and with variance shadow maps
+- `just test lightmap`: `tests/lightmap.c3` checks light maps on `BASIC` and Phong materials, and a map on `uv1`
+- `just test shadows`: `tests/shadows.c3` lights a box with two shadowed directional lights from either side
+- `just test bake`: `tests/bake.c3` bakes a floor and a box with `ProgressiveLightMap`, with PCF and VSM: lit floor, dark shadow, soft edges from a jittered light, the seams' pass
 - `just test gltf`: `tests/gltf.c3` loads Khronos's TextureTransformTest (`tests/assets`, CC0) and renders its
 `KHR_texture_transform` checks: every arrow should point at a green mark
 - `just test physical`: `tests/physical.c3` renders iridescence, a clear coat, sheen and double-sided glass side by side
