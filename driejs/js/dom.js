@@ -135,13 +135,89 @@ class ImageBitmap {
 	}
 }
 
-// A canvas's 2D context as UltraHDRLoader uses it: drawImage of an ImageBitmap (stretched to
-// any size, bilinear) and getImageData. Its pixels are made when the canvas's size is first
-// drawn at.
+// A CSS color as fillStyle takes it: a name, #rgb, #rrggbb, rgb() or rgba(); [r, g, b, a] in 0..255.
+const COLOR_NAMES = { black: "#000", white: "#fff", red: "#f00", green: "#008000", blue: "#00f", gray: "#808080", grey: "#808080", transparent: "rgba(0,0,0,0)" };
+function cssColor(text) {
+	text = String(text).trim().toLowerCase();
+	text = COLOR_NAMES[text] ?? text;
+	if (text[0] === "#") {
+		let h = text.slice(1);
+		if (h.length === 3 || h.length === 4) h = [...h].map((c) => c + c).join("");
+		const n = parseInt(h.slice(0, 6), 16);
+		return [n >> 16 & 255, n >> 8 & 255, n & 255, h.length === 8 ? parseInt(h.slice(6), 16) : 255];
+	}
+	const m = /^rgba?\(([^)]*)\)$/.exec(text);
+	if (m) {
+		const v = m[1].split(/[\s,\/]+/).filter((x) => x).map(Number);
+		return [v[0], v[1], v[2], v.length > 3 ? (v[3] <= 1 ? v[3] * 255 : v[3]) : 255].map((x) => Math.max(0, Math.min(255, Math.round(x))));
+	}
+	throw new Error(`driejs: the color ${text} is not supported`);
+}
+
+// A canvas's 2D context as three's examples use it: drawImage of an ImageBitmap (stretched to
+// any size, bilinear; UltraHDRLoader), getImageData, and filling rectangles and circles
+// (fillStyle, fillRect, beginPath, arc of a whole circle, fill: generated textures). Its pixels
+// are made when the canvas's size is first drawn at; shapes are not antialiased.
 class Context2D {
 	constructor(canvas) {
 		this.canvas = canvas;
 		this._pixels = null;
+		this._fill = [0, 0, 0, 255];
+		this._fillStyle = "#000000";
+		this._circles = [];
+	}
+	get fillStyle() {
+		return this._fillStyle;
+	}
+	set fillStyle(value) {
+		this._fillStyle = value;
+		this._fill = cssColor(value);
+	}
+	// (source-over: alpha 255 replaces, anything less blends)
+	_plot(data, i, alpha) {
+		const [r, g, b, a] = this._fill;
+		const k = (a / 255) * alpha;
+		if (k >= 1) {
+			data[i] = r;
+			data[i + 1] = g;
+			data[i + 2] = b;
+			data[i + 3] = 255;
+			return;
+		}
+		data[i] += (r - data[i]) * k;
+		data[i + 1] += (g - data[i + 1]) * k;
+		data[i + 2] += (b - data[i + 2]) * k;
+		data[i + 3] += (255 - data[i + 3]) * k;
+	}
+	fillRect(x, y, width, height) {
+		const target = this._buffer();
+		const x0 = Math.max(0, Math.round(x));
+		const y0 = Math.max(0, Math.round(y));
+		const x1 = Math.min(target.width, Math.round(x + width));
+		const y1 = Math.min(target.height, Math.round(y + height));
+		for (let py = y0; py < y1; py++) {
+			for (let px = x0; px < x1; px++) this._plot(target.data, (py * target.width + px) * 4, 1);
+		}
+	}
+	beginPath() {
+		this._circles = [];
+	}
+	arc(x, y, radius, start, end) {
+		if (Math.abs(end - start) < Math.PI * 2 - 1e-6) throw new Error("driejs: only arcs of whole circles are supported");
+		this._circles.push([x, y, radius]);
+	}
+	fill() {
+		const target = this._buffer();
+		for (const [cx, cy, r] of this._circles) {
+			// the pixels whose centers are inside
+			for (let py = Math.max(0, Math.floor(cy - r)); py < Math.min(target.height, Math.ceil(cy + r)); py++) {
+				for (let px = Math.max(0, Math.floor(cx - r)); px < Math.min(target.width, Math.ceil(cx + r)); px++) {
+					const dx = px + 0.5 - cx;
+					const dy = py + 0.5 - cy;
+					if (dx * dx + dy * dy <= r * r) this._plot(target.data, (py * target.width + px) * 4, 1);
+				}
+			}
+		}
 	}
 	_buffer() {
 		const { width, height } = this.canvas;

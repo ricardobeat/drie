@@ -3,9 +3,10 @@
 //   scene.add(model.scene);
 // Supported: node hierarchy, triangle meshes (positions, normals, uvs, vertex colors),
 // metallic-roughness materials with base color / normal / occlusion-roughness-metal textures,
-// occlusion textures, alpha modes, double sided materials, and the transmission / volume / ior /
-// dispersion / specular extensions (see Material.transmission and specular_color). Not supported: skins, animations, cameras, sparse
-// accessors.
+// occlusion and emissive textures, alpha modes, double sided materials, and the transmission /
+// volume / ior / dispersion / specular / clearcoat / sheen / iridescence / emissive_strength
+// extensions (see Material.transmission, specular_color, clearcoat, sheen and iridescence). Not
+// supported: skins, animations, cameras, sparse accessors.
 module drie::loaders;
 import std::io, std::math, std::encoding::json, std::collections::object, std::collections::list;
 import drie;
@@ -29,7 +30,7 @@ struct GltfReader @local {
     String dir;
     GltfModel* model;
     // one per glTF image and color space: [image][srgb ? 0 : 1]
-    List{Texture*[2]} textures;
+    List{Texture*[4]} textures;
     List{BufferGeometry*[]} geometries;
 }
 
@@ -110,7 +111,9 @@ fn Texture*? GltfReader.texture(&self, Object* info, ColorSpace space) {
     Object* tex     = self.json.get("textures")!.get_at(info.get_int("index")!);
     int image_index = tex.get_int("source")!;
     while (self.textures.len() <= image_index) self.textures.push({ });
-    int slot = space == SRGB_COLOR_SPACE ? 0 : 1;
+    // (one Texture per color space and uv set: an image read with both sets loads twice)
+    int channel = info.has_key("texCoord") && info.get_int("texCoord")! == 1 ? 1 : 0;
+    int slot = (space == SRGB_COLOR_SPACE ? 0 : 1) + channel * 2;
     if (self.textures[image_index][slot]) return self.textures[image_index][slot];
     Object* image = self.json.get("images")!.get_at(image_index);
     Texture* t;
@@ -125,6 +128,7 @@ fn Texture*? GltfReader.texture(&self, Object* info, ColorSpace space) {
         if (offset + len > self.bin.len) return GLTF_INVALID~;
         t = drie::decode_texture(self.bin[offset:len], space, flip_y: false)!;
     }
+    t.channel = (char)channel;
     self.textures[image_index][slot] = t;
     return t;
 }
@@ -171,6 +175,7 @@ fn Material*? GltfReader.material(&self, Object* m) {
     if (try e = child(m, "emissiveFactor")) {
         mat.emissive = linear_color((float)e.get_float_at(0)!, (float)e.get_float_at(1)!, (float)e.get_float_at(2)!);
     }
+    if (try t = child(m, "emissiveTexture")) mat.emissive_map = self.texture(t, SRGB_COLOR_SPACE)!;
     if (m.has_key("alphaMode")) {
         String mode = m.get_string("alphaMode")!;
         if (mode == "MASK") mat.alpha_test = num(m, "alphaCutoff", 0.5f);
@@ -206,6 +211,40 @@ fn Material*? GltfReader.material(&self, Object* m) {
             if (try tt = child(sp, "specularColorTexture")) mat.specular_color_map = self.texture(tt, SRGB_COLOR_SPACE)!;
         }
         if (try d = child(ext, "KHR_materials_dispersion")) mat.dispersion = num(d, "dispersion", 0);
+        if (try e = child(ext, "KHR_materials_emissive_strength")) mat.emissive_intensity = num(e, "emissiveStrength", 1);
+        // a varnish over it
+        if (try cc = child(ext, "KHR_materials_clearcoat")) {
+            mat.clearcoat = num(cc, "clearcoatFactor", 0);
+            mat.clearcoat_roughness = num(cc, "clearcoatRoughnessFactor", 0);
+            if (try tt = child(cc, "clearcoatTexture")) mat.clearcoat_map = self.texture(tt, NO_COLOR_SPACE)!;
+            if (try tt = child(cc, "clearcoatRoughnessTexture")) mat.clearcoat_roughness_map = self.texture(tt, NO_COLOR_SPACE)!;
+            if (try tt = child(cc, "clearcoatNormalTexture")) {
+                mat.clearcoat_normal_map = self.texture(tt, NO_COLOR_SPACE)!;
+                float scale = num(tt, "scale", 1);
+                mat.clearcoat_normal_scale = { scale, scale };
+            }
+        }
+        // cloth's fibers
+        if (try sh = child(ext, "KHR_materials_sheen")) {
+            mat.sheen = 1;
+            if (try c = child(sh, "sheenColorFactor")) {
+                mat.sheen_color = { (float)c.get_float_at(0)!, (float)c.get_float_at(1)!, (float)c.get_float_at(2)! };
+            }
+            mat.sheen_roughness = num(sh, "sheenRoughnessFactor", 0);
+            if (try tt = child(sh, "sheenColorTexture")) mat.sheen_color_map = self.texture(tt, SRGB_COLOR_SPACE)!;
+            if (try tt = child(sh, "sheenRoughnessTexture")) mat.sheen_roughness_map = self.texture(tt, NO_COLOR_SPACE)!;
+        }
+        // a thin film's rainbow
+        if (try ir = child(ext, "KHR_materials_iridescence")) {
+            mat.iridescence = num(ir, "iridescenceFactor", 0);
+            mat.iridescence_ior = num(ir, "iridescenceIor", 1.3f);
+            mat.iridescence_thickness_min = num(ir, "iridescenceThicknessMinimum", 100);
+            mat.iridescence_thickness_max = num(ir, "iridescenceThicknessMaximum", 400);
+            if (try tt = child(ir, "iridescenceTexture")) mat.iridescence_map = self.texture(tt, NO_COLOR_SPACE)!;
+            if (try tt = child(ir, "iridescenceThicknessTexture")) {
+                mat.iridescence_thickness_map = self.texture(tt, NO_COLOR_SPACE)!;
+            }
+        }
     }
     return mat;
 }
@@ -216,9 +255,11 @@ fn BufferGeometry*? GltfReader.geometry(&self, Object* primitive) {
     Accessor pos  = self.accessor(attrs.get_int("POSITION")!)!;
     Accessor normal;
     Accessor uv;
+    Accessor uv1;
     Accessor color;
     if (attrs.has_key("NORMAL")) normal = self.accessor(attrs.get_int("NORMAL")!)!;
     if (attrs.has_key("TEXCOORD_0")) uv = self.accessor(attrs.get_int("TEXCOORD_0")!)!;
+    if (attrs.has_key("TEXCOORD_1")) uv1 = self.accessor(attrs.get_int("TEXCOORD_1")!)!;
     if (attrs.has_key("COLOR_0")) color = self.accessor(attrs.get_int("COLOR_0")!)!;
 
     BufferGeometry* g = mem::new(BufferGeometry);
@@ -232,6 +273,10 @@ fn BufferGeometry*? GltfReader.geometry(&self, Object* primitive) {
         Vector3 c = color.ptr ? (Vector3) { color.value(i, 0), color.value(i, 1), color.value(i, 2) }
             : (Vector3) { 1, 1, 1 };
         g.add_vertex(p, n, t, c);
+        if (uv1.ptr) {
+            g.uv1.push(uv1.value(i, 0));
+            g.uv1.push(uv1.value(i, 1));
+        }
     }
     if (primitive.has_key("indices")) {
         Accessor idx = self.accessor(primitive.get_int("indices")!)!;

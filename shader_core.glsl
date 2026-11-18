@@ -4,6 +4,7 @@ in vec3 position;
 in vec3 normal;
 in vec2 uv;
 in vec4 color0;
+in vec2 uv1;      // the second uv set (glTF's TEXCOORD_1, three's uv1), zeros without one
 // Rows of the per-instance 3x4 matrix (identity for plain meshes).
 in vec4 inst0;
 in vec4 inst1;
@@ -86,7 +87,8 @@ layout(binding=0) uniform vs_params {
     vec4 view_origin;   // xyz: the camera's position
     mat4 model;
     mat4 normal_mat;
-    vec4 uv_transform;  // xy = repeat, zw = offset
+    vec4 uv_transform[2]; // the color map's uv transform (three's texture.matrix): u' = dot(row 0,
+                          //   (u, v, 1)), v' = dot(row 1, (u, v, 1))
     vec4 sway;          // see apply_sway
     vec4 inst_cull;     // see fetch_instance
     vec4 vs_material_custom[2];
@@ -104,6 +106,7 @@ layout(binding=0) uniform vs_params {
 out vec3 v_world_pos;
 out vec3 v_normal;
 out vec2 v_uv;
+out vec2 v_uv1;
 out vec3 v_color;
 out float v_alpha;
 out vec4 v_clip;
@@ -119,6 +122,7 @@ void main() {
         v_world_pos = vec3(0.0);
         v_normal = vec3(0.0, 1.0, 0.0);
         v_uv = vec2(0.0);
+        v_uv1 = vec2(0.0);
         v_color = vec3(0.0);
         v_alpha = 0.0;
         v_clip = vec4(2.0, 2.0, 2.0, 1.0);
@@ -137,7 +141,8 @@ void main() {
     vertex_hook(wp.xyz, ip, model);
     v_world_pos = wp.xyz;
     v_normal = (normal_mat * vec4(instance_dir(normal), 0.0)).xyz;
-    v_uv = uv * uv_transform.xy + uv_transform.zw;
+    v_uv = vec2(dot(uv_transform[0].xyz, vec3(uv, 1.0)), dot(uv_transform[1].xyz, vec3(uv, 1.0)));
+    v_uv1 = uv1;
     v_color = color0.rgb;
     v_alpha = color0.a;
     gl_Position = view_proj * vec4(wp.xyz - view_origin.xyz, 1.0);
@@ -161,7 +166,7 @@ layout(binding=0) uniform shadow_vs_params {
     mat4 s_view_proj;   // world - s_origin -> the light's clip space (see vs_params)
     vec4 s_origin;      // xyz: the light's position (0 for the sun's orthographic maps)
     mat4 s_model;
-    vec4 s_uv_transform;
+    vec4 s_uv_transform[2]; // as uv_transform
     vec4 s_sway;
     vec4 s_inst_cull;
     vec4 s_material_custom[2];
@@ -186,9 +191,9 @@ void main() {
     frame_custom[0] = s_frame_custom[0];
     frame_custom[1] = s_frame_custom[1];
     vertex_hook(wp.xyz, ip, s_model);
-    v_uv = uv * s_uv_transform.xy + s_uv_transform.zw;
+    v_uv = vec2(dot(s_uv_transform[0].xyz, vec3(uv, 1.0)), dot(s_uv_transform[1].xyz, vec3(uv, 1.0)));
     // keep the unused attributes alive so both programs share one vertex layout
-    v_uv += (normal.xy + color0.xy) * 0.0;
+    v_uv += (normal.xy + color0.xy + uv1) * 0.0;
     gl_Position = s_view_proj * vec4(wp.xyz - s_origin.xyz, 1.0);
 }
 @end
@@ -227,11 +232,14 @@ layout(binding=23) uniform texture2DArray tex_probes; // the scene's reflection 
 layout(binding=24) uniform texture2D tex_parallax; // Material.parallax_map: the surface's height, 1 = top
 layout(binding=19) uniform texture2D fog_volume; // volumetric fog: the froxel grid (fog.c3, fog_cs in kernels.glsl)
 layout(binding=25) uniform texture2D tex_transmission; // the scene behind the transmission materials, with mip levels
-layout(binding=26) uniform texture2D tex_ao;          // Material.ao_map: r = ambient occlusion
-layout(binding=27) uniform texture2D tex_specular_color;     // Material.specular_color_map: rgb
-layout(binding=28) uniform texture2D tex_specular_intensity; // Material.specular_intensity_map: a
-layout(binding=29) uniform texture2D tex_transmission_map;   // Material.transmission_map: r
-layout(binding=30) uniform texture2D tex_thickness;   // Material.thickness_map: g
+// The material's other maps (ao_map, specular_color_map, clearcoat_map...): six slots they
+// share, which holds which in map_slots (see material_map)
+layout(binding=26) uniform texture2D tex_ext0;
+layout(binding=27) uniform texture2D tex_ext1;
+layout(binding=28) uniform texture2D tex_ext2;
+layout(binding=29) uniform texture2D tex_ext3;
+layout(binding=30) uniform texture2D tex_ext4;
+layout(binding=31) uniform texture2D tex_ext5;
 layout(binding=0) uniform sampler tex_smp;
 layout(binding=1) uniform sampler shadow_smp;
 layout(binding=2) uniform sampler env_smp;
@@ -316,11 +324,36 @@ layout(binding=1) uniform fs_params {
     vec4 transmission_color;   // linear rgb = the color the volume tints light toward, a = how much
                                //   of what is behind shows through (0: off)
     vec4 specular_params;      // Material.specular_color (linear rgb) and specular_intensity (a)
-    vec4 ext_params;           // x = the maps it has (1: ao, 2: specular color, 4: specular intensity,
-                               //   8: transmission, 16: thickness, 32: it is the scene's background),
-                               //   y = ao_intensity, z = the object's scale (for the thickness),
-                               //   w = the width of tex_transmission (pixels)
+    vec4 ext_params;           // x = 32: it is the scene's background, y = ao_intensity, z = the
+                               //   object's scale (for the thickness), w = the width of
+                               //   tex_transmission (pixels)
+    vec4 map_slots[4];         // which of tex_ext0..5 holds each of the maps (-1: none), by MAP_*
+    vec4 clearcoat_params;     // Material.clearcoat: x = strength (0: none), y = roughness,
+                               //   zw = clearcoat_normal_scale
+    vec4 sheen_params;         // Material.sheen_color * sheen (linear rgb; 0: none), a = sheen_roughness
+    vec4 iridescence_params;   // Material.iridescence: x = strength (0: none), y = the film's IOR,
+                               //   z, w = its thinnest and thickest (nm)
+    vec4 uv_rel[16];           // per map slot (0: tex_normal, 1: tex_arm, 2..7: tex_ext0..5), its uv
+                               //   from the color map's (g_uv; each texture has its own
+                               //   transform, three's texture.matrix): two rows, as uv_transform;
+                               //   the first's w = 1: from the second uv set instead (v_uv1)
 };
+
+// The maps in map_slots, and the channels each is read from (as three's)
+#define MAP_AO 0                    // r
+#define MAP_SPECULAR_COLOR 1        // rgb
+#define MAP_SPECULAR_INTENSITY 2    // a
+#define MAP_TRANSMISSION 3          // r
+#define MAP_THICKNESS 4             // g
+#define MAP_IRIDESCENCE 5           // r
+#define MAP_IRIDESCENCE_THICKNESS 6 // g
+#define MAP_CLEARCOAT 7             // r
+#define MAP_CLEARCOAT_ROUGHNESS 8   // g
+#define MAP_CLEARCOAT_NORMAL 9      // rgb
+#define MAP_SHEEN_COLOR 10          // rgb
+#define MAP_SHEEN_ROUGHNESS 11      // a
+#define MAP_ALPHA 12                // g
+#define MAP_EMISSIVE 13             // rgb
 
 // Lights live in storage buffers, as many as there are. Point and spot lights are sorted into
 // a grid of clusters (froxels: tiles of the screen, cut into slices of depth that grow
@@ -372,6 +405,7 @@ layout(binding=22) readonly buffer rc_probes { rc_probe rc_probe_data[]; };
 in vec3 v_world_pos;
 in vec3 v_normal;
 in vec2 v_uv;
+in vec2 v_uv1;
 in vec3 v_color;
 in float v_alpha;
 in vec4 v_clip;
@@ -432,12 +466,130 @@ float v_smith(float nov, float nol, float a) {
 
 int flags() { return int(specular.w + 0.5); }
 
+// Sheen (three's BRDF_Sheen): the Charlie distribution of fibers, and Neubelt's visibility.
+float d_charlie(float rough, float noh) {
+    float inv = 1.0 / (rough * rough);
+    float sin2h = max(1.0 - noh * noh, 0.0078125);
+    return (2.0 + inv) * pow(sin2h, inv * 0.5) / (2.0 * PI);
+}
+
+float v_neubelt(float nov, float nol) {
+    return clamp(1.0 / (4.0 * (nol + nov - nol * nov)), 0.0, 1.0);
+}
+
+// How much a sheen reflects of the light from all around (three's IBLSheenBRDF fit).
+float sheen_albedo(vec3 n, vec3 v, float rough) {
+    float nov = clamp(dot(n, v), 0.0, 1.0);
+    float r2 = rough * rough;
+    float inv = 1.0 / (rough + 0.1);
+    float a = -1.9362 + 1.0678 * rough + 0.4573 * r2 - 0.8469 * inv;
+    float b = -0.6014 + 0.5538 * rough - 0.4670 * r2 - 0.1255 * inv;
+    return clamp(exp(a * nov + b), 0.0, 1.0);
+}
+
+// Iridescence (KHR_materials_iridescence, three's evalIridescence: Belcour and Barla's thin
+// film): light reflected off the film's top and its bottom interferes, by wavelength.
+const mat3 XYZ_TO_REC709 = mat3(
+     3.2404542, -0.9692660,  0.0556434,
+    -1.5371385,  1.8760108, -0.2040259,
+    -0.4985314,  0.0415560,  1.0572252
+);
+
+vec3 fresnel0_to_ior(vec3 f0) {
+    vec3 s = sqrt(f0);
+    return (vec3(1.0) + s) / (vec3(1.0) - s);
+}
+
+vec3 ior_to_fresnel0(vec3 transmitted, float incident) {
+    vec3 r = (transmitted - vec3(incident)) / (transmitted + vec3(incident));
+    return r * r;
+}
+
+float ior_to_fresnel0(float transmitted, float incident) {
+    float r = (transmitted - incident) / (transmitted + incident);
+    return r * r;
+}
+
+// The XYZ sensitivity curves in Fourier space, at an optical path difference (nm)
+vec3 eval_sensitivity(float opd, vec3 shift) {
+    float phase = 2.0 * PI * opd * 1.0e-9;
+    vec3 val = vec3(5.4856e-13, 4.4201e-13, 5.2481e-13);
+    vec3 pos = vec3(1.6810e+06, 1.7953e+06, 2.2084e+06);
+    vec3 var = vec3(4.3278e+09, 9.3046e+09, 6.6121e+09);
+    vec3 xyz = val * sqrt(2.0 * PI * var) * cos(pos * phase + shift) * exp(-(phase * phase) * var);
+    xyz.x += 9.7470e-14 * sqrt(2.0 * PI * 4.5282e+09) * cos(2.2399e+06 * phase + shift[0]) * exp(-4.5282e+09 * (phase * phase));
+    xyz /= 1.0685e-7;
+    return XYZ_TO_REC709 * xyz;
+}
+
+float schlick(float f0, float f90, float c) {
+    return f0 + (f90 - f0) * pow(1.0 - c, 5.0);
+}
+
+vec3 schlick(vec3 f0, float f90, float c) {
+    return f0 + (vec3(f90) - f0) * pow(1.0 - c, 5.0);
+}
+
+vec3 eval_iridescence(float outside_ior, float eta2, float cos1, float thickness, vec3 base_f0) {
+    // (the film fades into the air as it thins out)
+    float film_ior = mix(outside_ior, eta2, smoothstep(0.0, 0.03, thickness));
+    float sin2_sq = (outside_ior / film_ior) * (outside_ior / film_ior) * (1.0 - cos1 * cos1);
+    float cos2_sq = 1.0 - sin2_sq;
+    // total internal reflection
+    if (cos2_sq < 0.0) return vec3(1.0);
+    float cos2 = sqrt(cos2_sq);
+    // the first interface
+    float r0 = ior_to_fresnel0(film_ior, outside_ior);
+    float r12 = schlick(r0, 1.0, cos1);
+    float t121 = 1.0 - r12;
+    float phi12 = film_ior < outside_ior ? PI : 0.0;
+    float phi21 = PI - phi12;
+    // the second
+    vec3 base_ior = fresnel0_to_ior(clamp(base_f0, 0.0, 0.9999));
+    vec3 r1 = ior_to_fresnel0(base_ior, film_ior);
+    vec3 r23 = schlick(r1, 1.0, cos2);
+    vec3 phi23 = vec3(base_ior.x < film_ior ? PI : 0.0, base_ior.y < film_ior ? PI : 0.0, base_ior.z < film_ior ? PI : 0.0);
+    // the phase shift
+    float opd = 2.0 * film_ior * thickness * cos2;
+    vec3 phi = vec3(phi21) + phi23;
+    vec3 r123 = clamp(r12 * r23, 1e-5, 0.9999);
+    vec3 sr123 = sqrt(r123);
+    vec3 rs = t121 * t121 * r23 / (vec3(1.0) - r123);
+    vec3 result = r12 + rs;
+    vec3 cm = rs - t121;
+    for (int m = 1; m <= 2; ++m) {
+        cm *= sr123;
+        result += cm * 2.0 * eval_sensitivity(float(m) * opd, float(m) * phi);
+    }
+    // (out of gamut colors come out negative)
+    return max(result, vec3(0.0));
+}
+
+// The reflectance head on that Schlick's approximation would take to reach f at this angle.
+vec3 schlick_to_f0(vec3 f, float f90, float c) {
+    float x = clamp(1.0 - c, 0.0, 1.0);
+    float x5 = clamp(x * x * x * x * x, 0.0, 0.9999);
+    return (f - vec3(f90) * x5) / (1.0 - x5);
+}
+
 vec4 g_base;      // rgb = albedo, a = alpha
 float g_rough;
 float g_metal;
 vec3 g_f0;        // a standard material's reflectance head on, and at a grazing angle
 float g_f90;      //   (from ior, specular_color and specular_intensity; set after the maps)
 float g_radius;   // source radius of the light being evaluated
+// three's MeshPhysicalMaterial layers, set after the maps (0: off): a clear coat over the
+// surface (its own normal and roughness), a sheen of fibers on it, a thin film's rainbow
+float g_clearcoat;
+float g_clearcoat_rough;
+vec3 g_clearcoat_n;
+vec3 g_clearcoat_direct;  // what the lights' highlights on the coat add up to
+vec3 g_sheen_color;
+float g_sheen_rough;
+vec3 g_sheen_light;       // the sheen's light, from the lights and all around
+float g_iridescence;
+vec3 g_iridescence_fresnel; // the film's reflectance toward the viewer
+vec3 g_iridescence_f0;      //   and head on
 vec3 g_dpdx;      // how the world position changes from one pixel to the next (taken where
 vec3 g_dpdy;      // the flow is uniform, for the shadows' tap counts)
 // Parallax occlusion mapping (Material.parallax_map). The material's maps are read at g_uv,
@@ -446,6 +598,8 @@ vec3 g_dpdy;      // the flow is uniform, for the shadows' tap counts)
 vec2 g_uv;
 vec2 g_duvdx;
 vec2 g_duvdy;
+vec2 g_duv1dx;    // and v_uv1's
+vec2 g_duv1dy;
 // how the uv changes per meter, along the surface (the cotangent frame, as in perturb_normal)
 vec3 g_parallax_gu;
 vec3 g_parallax_gv;
@@ -460,10 +614,30 @@ vec3 direct(int mode, vec3 n, vec3 v, vec3 l, float dist, vec3 radiance, vec3 di
     // thin leaves and blades: light wraps around and shines through
     float nol = foliage ? 0.35 + 0.65 * abs(ndl) : clamp(ndl, 0.0, 1.0);
     vec3 irradiance = nol * radiance;
+    vec3 h = normalize(l + v);
+    if (mode == 3) {
+        if (g_clearcoat > 0.0) {
+            // the coat's own highlight, off its own normal (f0 0.04: an IOR of 1.5)
+            vec3 cn = g_clearcoat_n;
+            float a = g_clearcoat_rough * g_clearcoat_rough;
+            float cnl = clamp(dot(cn, l), 0.0, 1.0);
+            float cnv = clamp(dot(cn, v), 1e-4, 1.0);
+            float cnh = clamp(dot(cn, h), 0.0, 1.0);
+            float f = schlick(0.04, 1.0, clamp(dot(v, h), 0.0, 1.0));
+            g_clearcoat_direct += cnl * radiance * f * v_smith(cnv, cnl, a) * d_ggx(cnh, a);
+        }
+        if (g_sheen_rough > 0.0) {
+            float snv = clamp(dot(n, v), 0.0, 1.0);
+            float snl = clamp(dot(n, l), 0.0, 1.0);
+            g_sheen_light += irradiance * g_sheen_color * d_charlie(g_sheen_rough, clamp(dot(n, h), 0.0, 1.0)) * v_neubelt(snv, snl);
+            // what the fibers take is not left for the surface under them
+            float albedo = max(sheen_albedo(n, v, g_sheen_rough), sheen_albedo(n, l, g_sheen_rough));
+            irradiance *= 1.0 - max(g_sheen_color.r, max(g_sheen_color.g, g_sheen_color.b)) * albedo;
+        }
+    }
     vec3 result = irradiance * diffuse_color * RECIPROCAL_PI;
     if (mode == 1) return result;
 
-    vec3 h = normalize(l + v);
     float noh = clamp(dot(n, h), 0.0, 1.0);
     float voh = clamp(dot(v, h), 0.0, 1.0);
     if (mode == 2) {
@@ -478,6 +652,7 @@ vec3 direct(int mode, vec3 n, vec3 v, vec3 l, float dist, vec3 radiance, vec3 di
         float norm = a / a_wide;
         float nov = clamp(abs(dot(n, v)), 1e-4, 1.0);
         vec3 fresnel = g_f0 + (vec3(g_f90) - g_f0) * pow(1.0 - voh, 5.0);
+        if (g_iridescence > 0.0) fresnel = mix(fresnel, g_iridescence_fresnel, g_iridescence);
         spec += irradiance * fresnel * v_smith(nov, nol, a_wide) * d_ggx(noh, a_wide) * norm * norm;
     }
     return result;
@@ -1003,20 +1178,52 @@ vec3 screen_reflection(vec3 n, vec3 geo_n, vec3 v, float rough, out float found)
     return vec3(0.0);
 }
 
+// A map slot's uv (see uv_rel), and how it changes from one pixel to the next.
+vec2 slot_uv(int slot) {
+    vec3 p = vec3(uv_rel[slot * 2].w > 0.5 ? v_uv1 : g_uv, 1.0);
+    return vec2(dot(uv_rel[slot * 2].xyz, p), dot(uv_rel[slot * 2 + 1].xyz, p));
+}
+
+vec2 slot_d(int slot, vec2 d) { return vec2(dot(uv_rel[slot * 2].xy, d), dot(uv_rel[slot * 2 + 1].xy, d)); }
+vec2 slot_dx(int slot) { return slot_d(slot, uv_rel[slot * 2].w > 0.5 ? g_duv1dx : g_duvdx); }
+vec2 slot_dy(int slot) { return slot_d(slot, uv_rel[slot * 2].w > 0.5 ? g_duv1dy : g_duvdy); }
+
+#define slot_texel(tex, slot) textureGrad(sampler2D(tex, tex_smp), slot_uv(slot), slot_dx(slot), slot_dy(slot))
+
 // Tangent-space normal mapping without vertex tangents (cotangent frame from screen derivatives).
-vec3 perturb_normal(vec3 n, float scale) {
-    vec3 t = textureGrad(sampler2D(tex_normal, tex_smp), g_uv, g_duvdx, g_duvdy).xyz * 2.0 - 1.0;  // (parallax: g_uv)
-    t.xy *= scale;
+// t: the map's texel, in -1..1; duv1, duv2: how the map's uv changes from one pixel to the next.
+vec3 perturb_with(vec3 n, vec3 t, vec2 duv1, vec2 duv2) {
     vec3 dp1 = dFdx(v_world_pos);
     vec3 dp2 = dFdy(v_world_pos);
-    vec2 duv1 = g_duvdx;
-    vec2 duv2 = g_duvdy;
     vec3 dp2perp = cross(dp2, n);
     vec3 dp1perp = cross(n, dp1);
     vec3 tangent = dp2perp * duv1.x + dp1perp * duv2.x;
     vec3 bitangent = dp2perp * duv1.y + dp1perp * duv2.y;
     float invmax = inversesqrt(max(max(dot(tangent, tangent), dot(bitangent, bitangent)), 1e-12));
     return normalize(tangent * invmax * t.x + bitangent * invmax * t.y + n * t.z);
+}
+
+vec3 perturb_normal(vec3 n, float scale) {
+    vec3 t = slot_texel(tex_normal, 0).xyz * 2.0 - 1.0;  // (parallax: g_uv)
+    t.xy *= scale;
+    return perturb_with(n, t, slot_dx(0), slot_dy(0));
+}
+
+// The material's map `role` (MAP_*) at g_uv, from the slot it is in; white without one.
+// (macros: a constant index into map_slots, which can't be indexed by a variable here)
+#define has_map(role) (map_slots[(role) / 4][(role) % 4] >= 0.0)
+#define material_map(role) ext_texel(int(map_slots[(role) / 4][(role) % 4]))
+// (its slot in uv_rel)
+#define map_uv_slot(role) (int(map_slots[(role) / 4][(role) % 4]) + 2)
+
+vec4 ext_texel(int slot) {
+    if (slot == 0) return slot_texel(tex_ext0, 2);
+    if (slot == 1) return slot_texel(tex_ext1, 3);
+    if (slot == 2) return slot_texel(tex_ext2, 4);
+    if (slot == 3) return slot_texel(tex_ext3, 5);
+    if (slot == 4) return slot_texel(tex_ext4, 6);
+    if (slot == 5) return slot_texel(tex_ext5, 7);
+    return vec4(1.0);
 }
 
 // The parallax map at uv.
@@ -1117,6 +1324,22 @@ float env_behind(vec3 q) {
     return len - env_texel(env_uv(q / len), 0.0).a * g_env_range;
 }
 
+// How widely a rough surface's reflection is blurred (radians, a gaussian's sigma), as three's
+// PMREM blurs it (its roughnessToMip and EXTRA_LOD_SIGMA): at roughness 0.21 and under, as
+// its cube map's mip levels of (1.16 * rough)^-2 texels across; above, its extra blurred
+// levels.
+float env_blur(float rough) {
+    if (rough >= 0.8) return mix(0.526, 0.582, (rough - 0.8) / 0.2);
+    if (rough >= 0.4) return mix(0.215, 0.526, (rough - 0.4) / 0.4);
+    if (rough >= 0.305) return mix(0.125, 0.215, (rough - 0.305) / 0.095);
+    if (rough >= 0.21) return mix(0.06, 0.125, (rough - 0.21) / 0.095);
+    return 1.37 * rough * rough;
+}
+
+// The mip level of an equirectangular map `width` texels around whose texels are about
+// `sigma` radians wide (a box of 2^lod texels, filtered, about the gaussian's width).
+float env_lod(float sigma, float width) { return max(log2(max(sigma * width / PI, 1e-6)), 0.0); }
+
 vec3 env_sample(vec3 d, float rough) {
     if (g_env_pos.w > 0.5) {
         vec3 inv = 1.0 / d;
@@ -1153,7 +1376,9 @@ vec3 env_sample(vec3 d, float rough) {
         }
         d = normalize(o + d * t);
     }
-    return env_texel(env_uv(d), rough * 7.0).rgb * env_params.y;
+    float width = g_env_layer < 0.0 ? float(textureSize(sampler2D(tex_env, env_smp), 0).x)
+        : float(textureSize(sampler2DArray(tex_probes, env_smp), 0).x);
+    return env_texel(env_uv(d), env_lod(env_blur(rough), width)).rgb * env_params.y;
 }
 
 @include_block surface_hooks
@@ -1162,6 +1387,14 @@ vec3 env_sample(vec3 d, float rough) {
 // map, or from the scene's reflection probes: the one whose box the point is in (or just
 // outside of, facing in: a window pane in the room's wall), cross-faded with its neighbour
 // over the blend width outside the box, and with the probe for everywhere else beyond that.
+// Where a rough surface's reflection mostly comes from: the mirror direction r, leaning towards
+// the normal as the surface gets rougher (the GGX lobe's dominant direction; three's
+// getIBLRadiance).
+vec3 dominant_reflection(vec3 r, vec3 n, float rough) {
+    float r2 = rough * rough;
+    return normalize(mix(r, n, r2 * r2));
+}
+
 vec3 env_reflection(vec3 d, float rough, vec3 facing) {
     g_env_layer = -1.0;
     g_env_pos = env_pos;
@@ -1355,6 +1588,8 @@ void main() {
     g_uv = v_uv;
     g_duvdx = dFdx(v_uv);
     g_duvdy = dFdy(v_uv);
+    g_duv1dx = dFdx(v_uv1);
+    g_duv1dy = dFdy(v_uv1);
     g_parallax_depth = 0.0;
     if (parallax_params.x > 0.0 && mode != 0) {
         vec3 pn = normalize(v_normal);
@@ -1368,6 +1603,8 @@ void main() {
         g_base *= texel;
         map_rgb = texel.rgb;
     }
+    // three's alphaMap: its green channel
+    if (has_map(MAP_ALPHA)) g_base.a *= material_map(MAP_ALPHA).g;
     float alpha = g_base.a;
     if ((fl & 1) != 0) alpha *= v_alpha;
 #ifdef NO_DISCARD
@@ -1407,15 +1644,15 @@ void main() {
     float ao = 1.0;
     int arm_bits = int(tex_params.z + 0.5);
     if (arm_bits != 0) {
-        vec3 arm = textureGrad(sampler2D(tex_arm, tex_smp), g_uv, g_duvdx, g_duvdy).rgb;  // (parallax: g_uv)
+        vec3 arm = slot_texel(tex_arm, 1).rgb;  // (parallax: g_uv)
         if ((arm_bits & 1) != 0) ao = arm.r;
         if ((arm_bits & 2) != 0) g_rough *= arm.g;
         if ((arm_bits & 4) != 0) g_metal *= arm.b;
     }
     int ext_bits = int(ext_params.x + 0.5);
-    if ((ext_bits & 1) != 0) {
+    if (has_map(MAP_AO)) {
         // three's aoMap and aoMapIntensity
-        float occlusion = textureGrad(sampler2D(tex_ao, tex_smp), g_uv, g_duvdx, g_duvdy).r;
+        float occlusion = material_map(MAP_AO).r;
         ao *= 1.0 + (occlusion - 1.0) * ext_params.y;
     }
 
@@ -1424,15 +1661,61 @@ void main() {
     // color and intensity (KHR_materials_specular); metals reflect their own color
     g_f0 = mix(vec3(0.04), g_base.rgb, g_metal);
     g_f90 = 1.0;
+    g_iridescence = 0.0;
+    g_clearcoat = 0.0;
+    g_clearcoat_direct = vec3(0.0);
+    g_sheen_rough = 0.0;
+    g_sheen_light = vec3(0.0);
     if (mode == 3) {
         float ior = transmission_params.x > 0.0 ? transmission_params.x : 1.5;
         float r0 = (ior - 1.0) / (ior + 1.0);
         vec3 tint = specular_params.rgb;
         float strength = specular_params.a;
-        if ((ext_bits & 2) != 0) tint *= textureGrad(sampler2D(tex_specular_color, tex_smp), g_uv, g_duvdx, g_duvdy).rgb;
-        if ((ext_bits & 4) != 0) strength *= textureGrad(sampler2D(tex_specular_intensity, tex_smp), g_uv, g_duvdx, g_duvdy).a;
-        g_f0 = mix(min(vec3(r0 * r0) * tint, vec3(1.0)) * strength, g_base.rgb, g_metal);
+        if (has_map(MAP_SPECULAR_COLOR)) tint *= material_map(MAP_SPECULAR_COLOR).rgb;
+        if (has_map(MAP_SPECULAR_INTENSITY)) strength *= material_map(MAP_SPECULAR_INTENSITY).a;
+        vec3 dielectric = min(vec3(r0 * r0) * tint, vec3(1.0)) * strength;
+        g_f0 = mix(dielectric, g_base.rgb, g_metal);
         g_f90 = mix(strength, 1.0, g_metal);
+        vec3 pv = normalize(camera_pos.xyz - v_world_pos);
+        float nov = clamp(dot(n, pv), 0.0, 1.0);
+        // iridescence (three's): the film's reflectance over a dielectric and over a metal
+        g_iridescence = iridescence_params.x;
+        if (g_iridescence > 0.0) {
+            if (has_map(MAP_IRIDESCENCE)) g_iridescence *= material_map(MAP_IRIDESCENCE).r;
+            float film = iridescence_params.w;
+            if (has_map(MAP_IRIDESCENCE_THICKNESS)) film = mix(iridescence_params.z, iridescence_params.w, material_map(MAP_IRIDESCENCE_THICKNESS).g);
+            g_iridescence = film == 0.0 ? 0.0 : clamp(g_iridescence, 0.0, 1.0);
+            if (g_iridescence > 0.0) {
+                vec3 over_dielectric = eval_iridescence(1.0, iridescence_params.y, nov, film, dielectric);
+                vec3 over_metal = eval_iridescence(1.0, iridescence_params.y, nov, film, g_base.rgb);
+                g_iridescence_fresnel = mix(over_dielectric, over_metal, g_metal);
+                g_iridescence_f0 = mix(schlick_to_f0(over_dielectric, 1.0, nov), schlick_to_f0(over_metal, 1.0, nov), g_metal);
+            }
+        }
+        // the clear coat: its strength and roughness, and its normal (the surface's own, under
+        // the normal map, or from its own map)
+        g_clearcoat = clearcoat_params.x;
+        if (g_clearcoat > 0.0) {
+            if (has_map(MAP_CLEARCOAT)) g_clearcoat *= material_map(MAP_CLEARCOAT).r;
+            g_clearcoat = clamp(g_clearcoat, 0.0, 1.0);
+            g_clearcoat_rough = clearcoat_params.y;
+            if (has_map(MAP_CLEARCOAT_ROUGHNESS)) g_clearcoat_rough *= material_map(MAP_CLEARCOAT_ROUGHNESS).g;
+            g_clearcoat_rough = clamp(g_clearcoat_rough, 0.045, 1.0);
+            g_clearcoat_n = geo_n;
+            if (has_map(MAP_CLEARCOAT_NORMAL)) {
+                vec3 t = material_map(MAP_CLEARCOAT_NORMAL).xyz * 2.0 - 1.0;
+                t.xy *= clearcoat_params.zw;
+                int cs = map_uv_slot(MAP_CLEARCOAT_NORMAL);
+                g_clearcoat_n = perturb_with(geo_n, t, slot_dx(cs), slot_dy(cs));
+            }
+        }
+        // the sheen (0 roughness: none)
+        if (any(greaterThan(sheen_params.rgb, vec3(0.0)))) {
+            g_sheen_color = sheen_params.rgb;
+            g_sheen_rough = clamp(sheen_params.a, 1e-4, 1.0);
+            if (has_map(MAP_SHEEN_COLOR)) g_sheen_color *= material_map(MAP_SHEEN_COLOR).rgb;
+            if (has_map(MAP_SHEEN_ROUGHNESS)) g_sheen_rough *= material_map(MAP_SHEEN_ROUGHNESS).a;
+        }
     }
 #ifdef MRT
     frag_indirect.ba = vec2(g_rough, g_metal);
@@ -1455,7 +1738,7 @@ void main() {
             // about `blurriness` radians wide)
             vec3 d = normalize(v_world_pos - camera_pos.xyz);
             float width = float(textureSize(sampler2D(tex_env, env_smp), 0).x);
-            float lod = g_rough > 0.0 ? max(log2(width * g_rough / PI), 0.0) : 0.0;
+            float lod = g_rough > 0.0 ? env_lod(g_rough, width) : 0.0;
             g_env_layer = -1.0;
             outc = env_texel(env_uv(d), lod).rgb * env_params.y;
         }
@@ -1480,6 +1763,11 @@ void main() {
             irradiance = mix(irradiance, rc, rc_fade);
         }
         outc = irradiance * diffuse_color * RECIPROCAL_PI * ao;
+        if (g_sheen_rough > 0.0) {
+            float albedo = sheen_albedo(n, v, g_sheen_rough);
+            g_sheen_light += irradiance * g_sheen_color * albedo * RECIPROCAL_PI;
+            outc *= 1.0 - max(g_sheen_color.r, max(g_sheen_color.g, g_sheen_color.b)) * albedo;
+        }
         ind_d = outc;
 
         int ndir = int(counts.x);
@@ -1531,7 +1819,10 @@ void main() {
         }
         spec *= ao;
         // Material.map_emissive: the color map glows too
-        outc += (fl & 64) != 0 ? emissive.rgb * map_rgb : emissive.rgb;
+        vec3 glow = (fl & 64) != 0 ? emissive.rgb * map_rgb : emissive.rgb;
+        // three's emissiveMap
+        if (has_map(MAP_EMISSIVE)) glow *= material_map(MAP_EMISSIVE).rgb;
+        outc += glow;
         // light baked into the vertex colors, as if from fixed lamps
         if (baked) {
             vec3 b = diffuse_color * v_color * emissive.w * ao;
@@ -1559,11 +1850,13 @@ void main() {
         if (env_params.x > 0.5 && mode != 1 && (ext_bits & 32) == 0) {
             // reflections of the surroundings, fading as the surface gets rougher
             float nov = clamp(dot(n, v), 0.0, 1.0);
-            vec3 fr = g_f0 + (max(vec3((1.0 - g_rough) * g_f90), g_f0) - g_f0) * pow(1.0 - nov, 5.0);
-            vec3 r = reflect(-v, n);
+            vec3 f0 = g_iridescence > 0.0 ? mix(g_f0, g_iridescence_f0, g_iridescence) : g_f0;
+            vec3 fr = f0 + (max(vec3((1.0 - g_rough) * g_f90), f0) - f0) * pow(1.0 - nov, 5.0);
+            vec3 r = dominant_reflection(reflect(-v, n), n, g_rough);
             vec3 env = env_reflection(r, g_rough, n);
             reflection_hook(r, env);
             env_term = env * fr;
+            if (g_sheen_rough > 0.0) env_term *= 1.0 - max(g_sheen_color.r, max(g_sheen_color.g, g_sheen_color.b)) * sheen_albedo(n, v, g_sheen_rough);
         }
         if (ssr_params.x > 0.0 || reflector_params.x > 0.0) {
             // the surface's sheen: a mirror image, strongest at a glancing angle
@@ -1602,12 +1895,32 @@ void main() {
         // the volume, takes the place of its diffuse light; highlights and reflections stay
         if (mode == 3 && transmission_color.a > 0.0) {
             float amount = transmission_color.a;
-            if ((ext_bits & 8) != 0) amount *= textureGrad(sampler2D(tex_transmission_map, tex_smp), g_uv, g_duvdx, g_duvdy).r;
+            if (has_map(MAP_TRANSMISSION)) amount *= material_map(MAP_TRANSMISSION).r;
             float thickness = max(transmission_params.y, 0.0);
-            if ((ext_bits & 16) != 0) thickness *= textureGrad(sampler2D(tex_thickness, tex_smp), g_uv, g_duvdx, g_duvdy).g;
+            if (has_map(MAP_THICKNESS)) thickness *= material_map(MAP_THICKNESS).g;
             vec3 refracted = refracted_light(n, v, v_world_pos, g_rough, g_base.rgb * (1.0 - g_metal), thickness);
             vec3 highlights = spec + env_term + mirror_term;
             outc = mix(max(outc - highlights, vec3(0.0)), refracted, amount) + highlights;
+        }
+        // the physical material's layers over it all: the sheen, then the clear coat, which
+        // lets through what it does not reflect (three's)
+        if (g_sheen_rough > 0.0) {
+            outc += g_sheen_light;
+            ind_s += g_sheen_light;
+        }
+        if (g_clearcoat > 0.0) {
+            vec3 cn = g_clearcoat_n;
+            vec3 coat = g_clearcoat_direct;
+            if (env_params.x > 0.5) {
+                vec3 r = dominant_reflection(reflect(-v, cn), cn, g_clearcoat_rough);
+                vec3 env = env_reflection(r, g_clearcoat_rough, cn);
+                reflection_hook(r, env);
+                vec3 reflected = env * environment_brdf(cn, v, vec3(0.04), 1.0, g_clearcoat_rough);
+                coat += reflected;
+                ind_s += reflected * g_clearcoat;
+            }
+            float f = schlick(0.04, 1.0, clamp(dot(cn, v), 0.0, 1.0));
+            outc = outc * (1.0 - g_clearcoat * f) + coat * g_clearcoat;
         }
     }
 
@@ -1729,6 +2042,7 @@ layout(binding=1) uniform depth_fs_params {
 in vec3 v_world_pos;
 in vec3 v_normal;
 in vec2 v_uv;
+in vec2 v_uv1;
 in vec3 v_color;
 in float v_alpha;
 in vec4 v_clip;

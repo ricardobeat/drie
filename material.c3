@@ -79,6 +79,10 @@ struct Material {
     float parallax_scale;
     float parallax_distance;
     float parallax_shadow;
+    // Opacity from the green channel of this map, times `opacity` (three's alphaMap).
+    Texture* alpha_map;
+    // What glows: emissive * emissive_intensity times this map's rgb (sRGB; three's emissiveMap).
+    Texture* emissive_map;
     // Discard pixels with alpha below this (0 = off). Cutout edges are antialiased with MSAA.
     float alpha_test;
     // Extensions:
@@ -111,6 +115,38 @@ struct Material {
     Vector3 specular_color;
     Texture* specular_color_map;
     Texture* specular_intensity_map;
+    // A clear coat over a standard material (KHR_materials_clearcoat, three's clearcoat): a
+    // varnish with highlights and reflections of its own, clearcoat_roughness rough (0.045 at
+    // the least), that lets through what it does not reflect. Its normal is the surface's own,
+    // without the normal_map, or from clearcoat_normal_map (scaled by clearcoat_normal_scale,
+    // x and y, as three's clearcoatNormalScale). 0 = none; times the red channel of
+    // clearcoat_map, and its roughness times the green of clearcoat_roughness_map.
+    float clearcoat;
+    float clearcoat_roughness;
+    Texture* clearcoat_map;
+    Texture* clearcoat_roughness_map;
+    Texture* clearcoat_normal_map;
+    Vector2 clearcoat_normal_scale;
+    // Sheen (KHR_materials_sheen, three's sheen): the soft glow at the edges of cloth, from
+    // fibers on the surface. sheen_color (linear, times the rgb of sheen_color_map, sRGB) times
+    // sheen is how much they reflect, sheen_roughness (times the alpha of sheen_roughness_map)
+    // how widely. 0 sheen or a black sheen_color = none.
+    float sheen;
+    Vector3 sheen_color;
+    float sheen_roughness;
+    Texture* sheen_color_map;
+    Texture* sheen_roughness_map;
+    // Iridescence (KHR_materials_iridescence, three's iridescence): a thin film on the surface,
+    // like soap or oil on water, whose reflections shift through rainbow colors with the angle.
+    // The film's IOR is iridescence_ior and it is iridescence_thickness_max nanometers thick,
+    // or with iridescence_thickness_map from _min (green 0) to _max (green 1). 0 = none; times
+    // the red channel of iridescence_map.
+    float iridescence;
+    float iridescence_ior;
+    float iridescence_thickness_min;
+    float iridescence_thickness_max;
+    Texture* iridescence_map;
+    Texture* iridescence_thickness_map;
     // How much the refraction differs across the red..blue channels (KHR_materials_dispersion):
     // each is bent with an IOR of `ior` + (ior - 1) * 0.025 * dispersion, so edges come out
     // fringed with rainbow colors. 0 = all wavelengths bent alike.
@@ -224,6 +260,11 @@ fn void Material.init_base(
     self.specular_intensity = 1;
     self.specular_color = { 1, 1, 1 };
     self.ao_intensity = 1;
+    self.clearcoat_normal_scale = { 1, 1 };
+    self.sheen_roughness = 1;
+    self.iridescence_ior = 1.3f;
+    self.iridescence_thickness_min = 100;
+    self.iridescence_thickness_max = 400;
 }
 
 // Unlit, flat color.
