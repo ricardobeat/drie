@@ -2266,6 +2266,7 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera) {
     if (!state.no_irradiance) state.no_irradiance = irradiance_volume({ 0, 0, 0 }, { 1, 1, 1 }, 1);
     state.irradiance = scene.irradiance ?: state.no_irradiance;
     if (!state.no_radiance) state.no_radiance = storage_buffer(6 * 16, label: "drie-rc-none");
+    if (scene.radiance) scene.radiance.upload();
     state.radiance_view = scene.radiance ? scene.radiance.irradiance_buf.view : state.no_radiance.view;
     state.irradiance.upload();
 
