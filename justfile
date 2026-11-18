@@ -52,6 +52,9 @@ shaders:
     for s in shader kernels output gtao taa radiance_cs vsm lightmap; do \
         sokol-shdc -i $s.glsl -o generated/$s.c3 -f sokol_c3 -l glsl430:hlsl5:metal_macos:metal_ios:metal_sim || exit 1; \
     done
+    # sokol-shdc's C3 output writes storage image view slots as `const int VIEW_X (0)`;
+    # rewrite them to `const int VIEW_X = 0;` (BSD sed -i '' syntax, macOS)
+    sed -i '' -E 's/^const int (VIEW_[A-Z0-9_]+) \(([0-9]+)\)$/const int \1 = \2;/' generated/*.c3
 
 # docs.html: the API of drie's modules, with their comments (docgen.py)
 docs:
