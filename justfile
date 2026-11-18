@@ -23,11 +23,12 @@ default:
 check:
     c3c compile-only {{libs}} --obj-out build/check *.c3 generated/*.c3 platform/*.c3
 
-# build and run a rendering test, headless: `just test radiance` writes tests/build/radiance.ppm
-test name out=("tests/build/" + name + ".ppm"):
+# build and run a rendering test, headless: `just test radiance` writes tests/build/radiance.png
+# (`just test radiance out.png --p3`: elsewhere, and in Display P3's colors)
+test name *args:
     mkdir -p tests/build
     c3c compile {{macos}} {{libs}} --lib drie tests/{{name}}.c3 -o tests/build/{{name}}
-    tests/build/{{name}} {{out}}
+    tests/build/{{name}} {{args}}
 
 # regenerate generated/*.c3 from the .glsl files with sokol-shdc (sokol-tools)
 shaders:
