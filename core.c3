@@ -723,6 +723,12 @@ struct LightShadow {
     float normal_bias;
     // Blur radius of the shadow edge in shadow map texels.
     float radius;
+    // Like three's shadow.bias: added to the depth looked up in the map (negative: lit more
+    // readily). Used with Renderer.shadow_type = VSM only (PCF has normal_bias). Default 0.
+    float bias;
+    // Like three's shadow.blurSamples: taps of VSM's blur across the 2 * radius texels.
+    // Default 8.
+    int blur_samples;
     // How dark the shadow is, 0..1, like three's LightShadow.intensity (r166+): 1 takes all
     // of the light away, 0.5 half of it. Default 1.
     float intensity;
@@ -805,7 +811,7 @@ fn DirectionalLight* directional_light(Color color = 0xffffff, float intensity =
     l.init_light(DIRECTIONAL, color, intensity);
     l.position = { 0, 1, 0 };
     l.target = object3d();
-    l.shadow = { .map_size = 2048, .normal_bias = 0.03f, .radius = 2, .intensity = 1, .near = 0.5f, .far = 300, .auto_update = true,
+    l.shadow = { .map_size = 2048, .normal_bias = 0.03f, .radius = 2, .blur_samples = 8, .intensity = 1, .near = 0.5f, .far = 300, .auto_update = true,
         .cascades = 4, .split_lambda = 0.7f, .max_distance = 150, .cascade_blend = 0.1f };
     l.shadow_extent = 30;
     return l;
@@ -840,6 +846,7 @@ fn SpotLight* spot_light(
         .map_size = 1024,
         .normal_bias = 0.006f,
         .radius = 2,
+        .blur_samples = 8,
         .intensity = 1,
         .near = 0.05f,
         .focus = 1,

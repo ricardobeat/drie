@@ -32,7 +32,7 @@ test name *args:
 
 # regenerate generated/*.c3 from the .glsl files with sokol-shdc (sokol-tools)
 shaders:
-    for s in shader kernels output gtao taa radiance_cs; do \
+    for s in shader kernels output gtao taa radiance_cs vsm; do \
         sokol-shdc -i $s.glsl -o generated/$s.c3 -f sokol_c3 -l glsl430:hlsl5:metal_macos:metal_ios:metal_sim || exit 1; \
     done
 
