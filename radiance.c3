@@ -60,6 +60,12 @@ struct RadianceCascades {
     Vector3 sky_color;
     Vector3 ground_color;
     bool sky_from_scene;
+    // The most a voxel glows (the brightest of r, g and b, linear; 0: no limit), set before
+    // voxelize(). A lamp's bulb made bright enough to burn out in the camera is only a voxel
+    // or two that most rays miss: whichever probes' rays find it light up and go dark again
+    // from frame to frame, patches of light that wander around the lamp. The lamp's own
+    // light (a PointLight or SpotLight) lights the room without that.
+    float max_glow;
     // Surfaces look the probes up this far off along their normal (m).
     float normal_offset;
     // two numbers per voxel: rgb8 color and bit 24 = solid; the glow as rgb8 with an exponent
@@ -219,6 +225,8 @@ fn void RadianceCascades.add_mesh(&self, Mesh* mesh, Vector3 albedo_scale = { 1,
     Vector3 albedo = color_to_linear(mat.color) * albedo_scale;
     if (mat.map) albedo = albedo * mat.map.average_color();
     Vector3 glow = color_to_linear(mat.emissive) * mat.emissive_intensity;
+    float brightest = math::max(glow.x, math::max(glow.y, glow.z));
+    if (self.max_glow > 0 && brightest > self.max_glow) glow = glow * (self.max_glow / brightest);
     if (mat.type == BASIC) {
         glow = albedo;
         albedo = { };
