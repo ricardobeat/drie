@@ -1958,7 +1958,7 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     // by role, in the order of the shader's MAP_*; one image in two roles takes one slot
     bool standard = mat.type == STANDARD;
     bool refracts = standard && mat.transmission > 0;
-    Texture*[14] roles = {
+    Texture*[15] roles = {
         standard && mat.ao_intensity != 0 ? mat.ao_map : null,
         standard ? mat.specular_color_map : null,
         standard ? mat.specular_intensity_map : null,
@@ -1973,6 +1973,7 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
         standard && mat.sheen > 0 ? mat.sheen_roughness_map : null,
         mat.alpha_map,
         mat.emissive_map,
+        mat.type != NORMAL ? mat.light_map : null,
     };
     Texture*[6] slots;
     int used;
@@ -2115,6 +2116,7 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     }
     fs.ext_params = { (float)ext_bits, mat.ao_intensity, scale, (float)state.transmission_width };
     fs.map_slots = map_slots;
+    fs.light_map_params = { mat.light_map_intensity, 0, 0, 0 };
     // each map's uv from the color map's
     Texture* base = uv_base(mat);
     Vec4[2] rel = uv_relative(base, mat.normal_map);

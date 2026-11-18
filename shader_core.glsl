@@ -333,6 +333,7 @@ layout(binding=1) uniform fs_params {
     vec4 sheen_params;         // Material.sheen_color * sheen (linear rgb; 0: none), a = sheen_roughness
     vec4 iridescence_params;   // Material.iridescence: x = strength (0: none), y = the film's IOR,
                                //   z, w = its thinnest and thickest (nm)
+    vec4 light_map_params;     // x = Material.light_map_intensity
     vec4 uv_rel[16];           // per map slot (0: tex_normal, 1: tex_arm, 2..7: tex_ext0..5), its uv
                                //   from the color map's (g_uv; each texture has its own
                                //   transform, three's texture.matrix): two rows, as uv_transform;
@@ -354,6 +355,7 @@ layout(binding=1) uniform fs_params {
 #define MAP_SHEEN_ROUGHNESS 11      // a
 #define MAP_ALPHA 12                // g
 #define MAP_EMISSIVE 13             // rgb
+#define MAP_LIGHT 14                // rgb
 
 // Lights live in storage buffers, as many as there are. Point and spot lights are sorted into
 // a grid of clusters (froxels: tiles of the screen, cut into slices of depth that grow
@@ -1732,6 +1734,8 @@ void main() {
 
     if (mode == 0) {
         outc = g_base.rgb;
+        // three's lightMap: the indirect light is the map's instead of 1
+        if (has_map(MAP_LIGHT)) outc *= material_map(MAP_LIGHT).rgb * light_map_params.x * RECIPROCAL_PI;
         if ((ext_bits & 32) != 0) {
             // the scene's background (Scene.background_texture): its map in the direction of the
             // view, blurred about as three's PMREM blurs it for backgroundBlurriness (a gaussian
@@ -1762,6 +1766,8 @@ void main() {
             vec3 rc = rc_irradiance(n, rc_fade);
             irradiance = mix(irradiance, rc, rc_fade);
         }
+        // three's lightMap: baked light, added to the indirect light
+        if (has_map(MAP_LIGHT)) irradiance += material_map(MAP_LIGHT).rgb * light_map_params.x;
         outc = irradiance * diffuse_color * RECIPROCAL_PI * ao;
         if (g_sheen_rough > 0.0) {
             float albedo = sheen_albedo(n, v, g_sheen_rough);
