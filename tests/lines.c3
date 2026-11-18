@@ -4,10 +4,10 @@
 // lines cast no shadow, that a Raycaster passes through them and that dashes leave gaps, then
 // renders the scene with and without its lines and saves both side by side.
 //
-//   just test lines [out.ppm]
+//   just test lines [out.png]
 module lines_test;
-import drie, sokol, drie::readback;
-import std::io, std::math, std::io::file, std::collections::list;
+import drie, drie::png, sokol, drie::readback;
+import std::io, std::math, std::collections::list;
 
 const int W = 480;
 const int H = 270;
@@ -131,7 +131,7 @@ fn void render_into(RenderTarget* target, char[] px)
 
 fn int main(String[] args)
 {
-    String out_path = args.len > 1 ? args[1] : "lines.ppm";
+    String out_path = args.len > 1 ? args[1] : "tests/build/lines.png";
     renderer = drie::renderer(antialias: true, width: W, height: H);
     renderer.init_headless();
     build_scene();
@@ -204,15 +204,11 @@ fn int main(String[] args)
             }
         }
     }
-    File? f = file::open(out_path, "wb");
-    if (catch err = f)
+    if (!png::write(out_path, sheet, W * 2, H, channels: 3))
     {
         io::printfn("could not write %s", out_path);
         return 1;
     }
-    defer (void)f.close();
-    (void)f.write(string::tformat("P6\n%d %d\n255\n", W * 2, H));
-    (void)f.write(sheet);
     io::printfn("saved %s: with lines, without", out_path);
     if (failures) io::printfn("%d FAILED", failures);
     return failures ? 1 : 0;

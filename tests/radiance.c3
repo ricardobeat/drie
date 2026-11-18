@@ -3,10 +3,10 @@
 // cascades in its place (sky, lamp and cubes bouncing); the cascades with the lamp and the sky
 // off, so that only the cubes' glow lights the room.
 //
-//   just test radiance [out.ppm]
+//   just test radiance [out.png] [--p3]     (--p3: in Display P3's colors)
 module radiance_test;
-import drie, drie::postprocessing, sokol, drie::readback;
-import std::io, std::math, std::io::file;
+import drie, drie::postprocessing, drie::png, sokol, drie::readback;
+import std::io, std::math;
 
 const int W = 480;
 const int H = 270;
@@ -120,7 +120,19 @@ fn void frame(View* v, int mode, bool reset)
 
 fn int main(String[] args)
 {
-    String out_path = args.len > 1 ? args[1] : "radiance.ppm";
+    String out_path = "tests/build/radiance.png";
+    bool p3;
+    foreach (arg : args[1..])
+    {
+        if (arg == "--p3")
+        {
+            p3 = true;
+        }
+        else
+        {
+            out_path = arg;
+        }
+    }
     renderer = drie::renderer(antialias: false, width: W, height: H);
     renderer.init_headless();
     renderer.tone_mapping = ACES_FILMIC_TONE_MAPPING;
@@ -134,6 +146,7 @@ fn int main(String[] args)
     ao = postprocessing::gtao_pass(camera);
     taa = postprocessing::taa_pass();
     output = postprocessing::output_pass(renderer);
+    if (p3) output.color_space = DISPLAY_P3_COLOR_SPACE;
 
     int cols = MODES;
     int sheet_w = W * cols;
@@ -160,15 +173,11 @@ fn int main(String[] args)
         }
         io::printfn("%d: %s", vi, v.name);
     }
-    File? f = file::open(out_path, "wb");
-    if (catch err = f)
+    if (!png::write(out_path, sheet, sheet_w, sheet_h, p3: p3, channels: 3))
     {
         io::printfn("could not write %s", out_path);
         return 1;
     }
-    defer (void)f.close();
-    (void)f.write(string::tformat("P6\n%d %d\n255\n", sheet_w, sheet_h));
-    (void)f.write(sheet);
     io::printfn("saved %s: columns hemisphere light, cascades, cascades lit by the cubes only", out_path);
     return 0;
 }

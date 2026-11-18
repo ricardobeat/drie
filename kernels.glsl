@@ -315,7 +315,7 @@ float vf_spot_lit(int s, vec3 p) {
     int si = int(spots[s].shadow.x);
     if (si < 0) return 1.0;
     vf_spot_shadow sh = spot_shadows[si];
-    vec4 sp = sh.mat * vec4(p, 1.0);
+    vec4 sp = sh.mat * vec4(p - spots[s].pos.xyz, 1.0);
     if (sp.w <= 0.0) return 1.0;
     vec3 c = sp.xyz / sp.w;
     if (c.x < 0.0 || c.x > 1.0 || c.y < 0.0 || c.y > 1.0 || c.z > 1.0) return 1.0;
