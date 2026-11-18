@@ -4,11 +4,15 @@
 // what it finds into a flat drie scene: each object gets a drie handle the first time it is
 // seen (meshes with their geometry and material, lights, cameras; anything else is an
 // empty group), then every frame one `sync` call hands drie all world matrices and
-// visibilities from a Float32Array, and drie renders.
+// visibilities from a Float32Array, and drie renders. An object on none of the camera's
+// layers is hidden (its children are not).
 //
 // Also mirrored: fog, tone mapping, the colors and numbers of materials and lights (three
-// reads them every frame), and shadows: castShadow and receiveShadow, and a directional
-// light's shadow, as drie's one sun shadow of a single box (its shadow.camera's half width).
+// reads them every frame), and shadows: castShadow and receiveShadow, renderer.shadowMap.type
+// (VSMShadowMap is drie's VSM, the others its PCF), and the shadows of directional lights
+// (each a single box, its shadow.camera's half width: the first is drie's sun shadow, the
+// others tiles of its shadow atlas) and spot lights, with their map size, near and far, radius,
+// intensity, normalBias, bias, blurSamples and a spot's focus.
 // InstancedMesh's matrices, SkinnedMesh (three poses the skeleton, drie moves the vertices),
 // Line, LineSegments and LineLoop (a pixel wide, as in WebGL) with LineBasicMaterial and
 // LineDashedMaterial, scene.environment from js/pmrem.js's PMREMGenerator or an
@@ -16,12 +20,14 @@
 // backgroundBlurriness and backgroundIntensity), and the maps of MeshStandardMaterial and
 // MeshPhysicalMaterial: normal, roughness, metalness and ao maps, and the physical material's
 // transmission (with its maps), volume, ior, dispersion and specular color and intensity (with
-// theirs).
+// theirs), clearcoat, sheen and iridescence. Any material's lightMap (on the first or the
+// second uv set: texture.channel) and lightMapIntensity, depthTest and depthWrite. Light maps
+// baked by js/progressive_lightmap.js's ProgressiveLightMap.
 //
 // Not mirrored yet: changes to a material's flags without `needsUpdate`, geometry groups and
-// draw ranges, points, sprites, morph targets, spot and point light shadows, lightMap, an
-// emissiveMap that isn't the map, clearcoat, sheen, iridescence and anisotropy, render targets
-// and post-processing.
+// draw ranges, renderOrder, toneMapped, points, sprites, morph targets, point light shadows,
+// an emissiveMap that isn't the map, anisotropy, render targets (getRenderTarget() is null,
+// setRenderTarget() does nothing) and post-processing.
 import { Color, EquirectangularReflectionMapping, EquirectangularRefractionMapping, Matrix4, NearestFilter } from "../vendor/three.core.js";
 import { setCanvas } from "./dom.js";
 
@@ -135,6 +141,7 @@ export class DrieRenderer {
 		// the state of the scene being mirrored (see _state)
 		this._scene = null;
 		this._toneMapping = null;
+		this._shadowType = null;
 	}
 
 	getPixelRatio() {
@@ -174,6 +181,15 @@ export class DrieRenderer {
 	getContext() {
 		return null;
 	}
+
+	// drie draws the scenes it is given into the window only: no render targets. Addons that
+	// put the current one aside and restore it (ProgressiveLightMap) get null, and setting one
+	// does nothing (js/progressive_lightmap.js bakes natively instead).
+	getRenderTarget() {
+		return null;
+	}
+
+	setRenderTarget() {}
 
 	compile() {}
 	dispose() {}
@@ -233,9 +249,15 @@ export class DrieRenderer {
 			this._exposure = this.toneMappingExposure;
 			N.toneMapping(this._id, this.toneMapping, this.toneMappingExposure);
 		}
+		if (this._shadowType !== this.shadowMap.type) {
+			this._shadowType = this.shadowMap.type;
+			N.shadowType(this._id, this.shadowMap.type);
+		}
 
 		this._count = 0;
 		state.visited = 0;
+		// (what the camera sees: an object on none of its layers is hidden, its children not)
+		this._layerMask = camera ? camera.layers.mask : 0xffffffff;
 		this._walk(scene, true, sceneId, frame);
 		if (profile) t = lap(1, t);
 
@@ -275,15 +297,16 @@ export class DrieRenderer {
 		for (let i = 0; i < children.length; i++) {
 			const o = children[i];
 			const shown = visible && o.visible;
+			const drawn = shown && (o.layers.mask & this._layerMask) !== 0;
 			let id = o.__drie;
 			if (id === undefined) id = this._create(o, sceneId);
 			o.__drieFrame = frame;
 			this._scene.visited++;
-			this._record(id, shown, o.matrixWorld.elements);
+			this._record(id, drawn, o.matrixWorld.elements);
 			if (o.isSky) this._sky(o);
-			else if (o.isMesh || o.isLine) this._refresh(o, frame);
+			else if (o.isMesh || o.isLine) this._refresh(o, frame, drawn);
 			if (o.isInstancedMesh) this._instances(o);
-			if (o.isSkinnedMesh && shown) this._skin(o, frame);
+			if (o.isSkinnedMesh && drawn) this._skin(o, frame);
 			if (o.children.length !== 0) this._walk(o, shown, sceneId, frame);
 		}
 	}
@@ -389,7 +412,7 @@ export class DrieRenderer {
 	}
 
 	// A mesh whose geometry or material changed (or was replaced) gets a new drie mesh.
-	_refresh(mesh, frame) {
+	_refresh(mesh, frame, drawn) {
 		const material = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material;
 		const g = this._geometry(mesh.geometry, frame);
 		const m = this._material(material, frame);
@@ -405,7 +428,7 @@ export class DrieRenderer {
 		N.add(this._sceneOf(mesh), id);
 		mesh.__drie = id;
 		mesh.__drieShadow = undefined;
-		this._record(id, mesh.visible, mesh.matrixWorld.elements);
+		this._record(id, drawn, mesh.matrixWorld.elements);
 		this._shadowFlags(mesh);
 	}
 
@@ -444,16 +467,18 @@ export class DrieRenderer {
 			}
 			N.lightUpdate(light.__drie, light.color.getHex(), light.intensity, ground ? ground.getHex() : 0);
 		}
-		if (!light.isDirectionalLight) return;
+		if (!light.isDirectionalLight && !light.isSpotLight) return;
 		const shadow = light.shadow;
 		const cam = shadow.camera;
 		const cast = this.shadowMap.enabled && light.castShadow;
-		const extent = Math.max(Math.abs(cam.right - cam.left), Math.abs(cam.top - cam.bottom)) / 2;
-		const key = cast ? `${shadow.mapSize.x} ${shadow.radius} ${cam.near} ${cam.far} ${extent} ${shadow.normalBias} ${shadow.intensity}` : "";
+		// (a spot light's shadow covers its cone: no box)
+		const extent = light.isDirectionalLight ? Math.max(Math.abs(cam.right - cam.left), Math.abs(cam.top - cam.bottom)) / 2 : 0;
+		const focus = shadow.focus ?? 1;
+		const key = cast ? `${shadow.mapSize.x} ${shadow.radius} ${cam.near} ${cam.far} ${extent} ${shadow.normalBias} ${shadow.intensity} ${shadow.bias} ${shadow.blurSamples} ${focus}` : "";
 		if (light.__drieShadowKey === key) return;
 		light.__drieShadowKey = key;
 		N.lightShadow(light.__drie, cast, shadow.mapSize.x, shadow.radius, cam.near, cam.far, extent, shadow.normalBias,
-			shadow.intensity ?? 1);
+			shadow.intensity ?? 1, shadow.bias, shadow.blurSamples ?? 8, focus);
 	}
 
 	_sceneOf(o) {
@@ -498,6 +523,8 @@ export class DrieRenderer {
 	// as GLTFLoader makes them), or a DataTexture of half floats or floats (an HDR image, as
 	// UltraHDRLoader and HDRLoader make them).
 	_texture(texture) {
+		// (a texture that drie made, as the light map of js/progressive_lightmap.js)
+		if (texture?.__drieNative !== undefined) return texture.__drieNative;
 		if (texture?.isCubeTexture) return this._cubeTexture(texture);
 		const image = texture?.image;
 		// (a canvas: the pixels its 2D context drew)
@@ -571,6 +598,25 @@ export class DrieRenderer {
 		N.materialMaps(material.__drie, ...maps);
 	}
 
+	// The light map and its intensity (a uniform in three: no needsUpdate), sent when they
+	// change.
+	_lightMap(material) {
+		const map = this._map(material.lightMap);
+		const intensity = material.lightMapIntensity ?? 1;
+		const key = `${map} ${intensity}`;
+		if (material.__drieLightMap === key) return;
+		material.__drieLightMap = key;
+		N.materialLightMap(material.__drie, map, intensity);
+	}
+
+	// depthTest and depthWrite (three sets them for each draw: no needsUpdate either).
+	_depth(material) {
+		const key = (material.depthTest === false ? 1 : 0) + (material.depthWrite === false ? 2 : 0);
+		if (material.__drieDepth === key) return;
+		material.__drieDepth = key;
+		N.materialDepth(material.__drie, material.depthTest !== false, material.depthWrite !== false);
+	}
+
 	// MeshPhysicalMaterial's clear coat, sheen and iridescence, sent when they change.
 	_layers(material) {
 		if (!material.isMeshPhysicalMaterial) return;
@@ -593,6 +639,8 @@ export class DrieRenderer {
 			this._materialValues(material);
 			this._maps(material);
 			this._layers(material);
+			this._lightMap(material);
+			this._depth(material);
 			return material.__drie;
 		}
 		const sc = material.specularColor;
@@ -615,9 +663,13 @@ export class DrieRenderer {
 		material.__drieDash = undefined;
 		material.__drieMaps = undefined;
 		material.__drieLayers = undefined;
+		material.__drieLightMap = undefined;
+		material.__drieDepth = undefined;
 		this._materialValues(material);
 		this._maps(material);
 		this._layers(material);
+		this._lightMap(material);
+		this._depth(material);
 		return material.__drie;
 	}
 

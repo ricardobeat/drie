@@ -19,6 +19,7 @@
 //   materials   2e6    ..
 //   textures    3e6    ..
 //   renderers   5e6    ..
+//   light maps  6e6    ..
 module main;
 
 import boomkat;
@@ -32,6 +33,7 @@ const double GEOMETRY_BASE = 1_000_000;
 const double MATERIAL_BASE = 2_000_000;
 const double TEXTURE_BASE = 3_000_000;
 const double RENDERER_BASE = 5_000_000;
+const double LIGHTMAP_BASE = 6_000_000;
 
 // one record of `sync`: handle, visible, then the 16 numbers of the world matrix
 const int SYNC_STRIDE = 18;
@@ -41,6 +43,7 @@ List{BufferGeometry*} geometries;
 List{Material*} materials;
 List{Texture*} textures;
 List{Renderer*} renderers;
+List{ProgressiveLightMap*} lightmaps;
 
 JsContext js;
 JsValue js_loop;
@@ -93,6 +96,7 @@ fn BufferGeometry* get_geometry(double id) => @get(geometries, id, GEOMETRY_BASE
 fn Material* get_material(double id) => @get(materials, id, MATERIAL_BASE);
 fn Texture* get_texture(double id) => @get(textures, id, TEXTURE_BASE);
 fn Renderer* get_renderer(double id) => @get(renderers, id, RENDERER_BASE);
+fn ProgressiveLightMap* get_lightmap(double id) => @get(lightmaps, id, LIGHTMAP_BASE);
 
 // ----------------------------------------------------------------------------
 // Arguments
@@ -739,25 +743,76 @@ fn void h_light_update(JsCtx ctx, void* udata)
     if (l.light_type == HEMISPHERE) ((HemisphereLight*)l).ground_color = color_of(num_arg(ctx, 3, 0));
 }
 
-// lightShadow(light, cast, mapSize, radius, near, far, extent, normalBias, intensity): a
-// directional light's shadow, as one box `extent` meters from its target to each side.
+// lightShadow(light, cast, mapSize, radius, near, far, extent, normalBias, intensity, bias,
+// blurSamples, focus): a directional or spot light's shadow. A directional light's is one box
+// `extent` meters from its target to each side (the first such light has drie's sun map, the
+// others a tile of the shadow atlas each); a spot light's covers its cone (its angle, `focus`
+// of it).
 fn void h_light_shadow(JsCtx ctx, void* udata)
 {
     Object3D* o = get_object(num_arg(ctx, 0, -1));
-    if (o == null || o.kind != LIGHT || ((Light*)o).light_type != DIRECTIONAL) return;
-    DirectionalLight* l = (DirectionalLight*)o;
+    if (o == null || o.kind != LIGHT) return;
+    Light* l = (Light*)o;
+    LightShadow* shadow;
+    switch (l.light_type)
+    {
+        case DIRECTIONAL:
+            DirectionalLight* d = (DirectionalLight*)l;
+            shadow = &d.shadow;
+            shadow.cascades = 1;
+            d.shadow_extent = (float)num_arg(ctx, 6, 5);
+        case SPOT:
+            shadow = &((SpotLight*)l).shadow;
+            shadow.focus = (float)num_arg(ctx, 11, 1);
+        default:
+            return;
+    }
     l.cast_shadow = bool_arg(ctx, 1, false);
-    l.shadow.map_size = (int)num_arg(ctx, 2, 512);
-    l.shadow.radius = (float)num_arg(ctx, 3, 1);
-    l.shadow.near = (float)num_arg(ctx, 4, 0.5);
-    l.shadow.far = (float)num_arg(ctx, 5, 500);
-    l.shadow.cascades = 1;
-    l.shadow_extent = (float)num_arg(ctx, 6, 5);
-    // three's normalBias is 0 unless set; drie's default keeps flat surfaces from shadowing
-    // themselves
+    shadow.map_size = (int)num_arg(ctx, 2, 512);
+    shadow.radius = (float)num_arg(ctx, 3, 1);
+    shadow.near = (float)num_arg(ctx, 4, 0.5);
+    shadow.far = (float)num_arg(ctx, 5, 500);
+    // three's normalBias is 0 unless set (three draws the back faces into the map instead);
+    // drie's default keeps flat surfaces from shadowing themselves in a scene in meters, and is
+    // at least a texel of a directional light's box in a larger one
     float normal_bias = (float)num_arg(ctx, 7, 0);
-    if (normal_bias != 0) l.shadow.normal_bias = normal_bias;
-    l.shadow.intensity = (float)num_arg(ctx, 8, 1);
+    if (normal_bias != 0) {
+        shadow.normal_bias = normal_bias;
+    } else if (l.light_type == DIRECTIONAL) {
+        float texel = 2 * ((DirectionalLight*)l).shadow_extent / math::max(shadow.map_size, 1);
+        shadow.normal_bias = math::max(0.03f, texel);
+    }
+    shadow.intensity = (float)num_arg(ctx, 8, 1);
+    shadow.bias = (float)num_arg(ctx, 9, 0);
+    shadow.blur_samples = math::max((int)num_arg(ctx, 10, 8), 1);
+}
+
+// shadowType(renderer, three's renderer.shadowMap.type): VSMShadowMap (3) is drie's VSM, the
+// others its PCF
+fn void h_shadow_type(JsCtx ctx, void* udata)
+{
+    Renderer* r = get_renderer(num_arg(ctx, 0, -1));
+    if (r == null) return;
+    r.shadow_type = (int)num_arg(ctx, 1, 1) == 3 ? ShadowType.VSM : ShadowType.PCF;
+}
+
+// materialLightMap(material, lightMap, lightMapIntensity): a texture handle or -1 (the uv set
+// is the texture's channel)
+fn void h_material_light_map(JsCtx ctx, void* udata)
+{
+    Material* m = get_material(num_arg(ctx, 0, -1));
+    if (m == null) { ctx.throw_error(TYPE, "materialLightMap: invalid material"); return; }
+    m.light_map = get_texture(num_arg(ctx, 1, -1));
+    m.light_map_intensity = (float)num_arg(ctx, 2, 1);
+}
+
+// materialDepth(material, depthTest, depthWrite)
+fn void h_material_depth(JsCtx ctx, void* udata)
+{
+    Material* m = get_material(num_arg(ctx, 0, -1));
+    if (m == null) { ctx.throw_error(TYPE, "materialDepth: invalid material"); return; }
+    m.depth_test = bool_arg(ctx, 1, true);
+    m.depth_write = bool_arg(ctx, 2, true);
 }
 
 // fog(scene, kind, color, near, far, density): kind 0 none, 1 linear, 2 exponential
@@ -1045,6 +1100,62 @@ fn void h_environment(JsCtx ctx, void* udata)
     captures.push({ t, (Scene*)o, { (float)num_arg(ctx, 1, 0), (float)num_arg(ctx, 2, 0), (float)num_arg(ctx, 3, 0) },
                     (float)num_arg(ctx, 4, 0.1), (float)num_arg(ctx, 5, 100) });
     ctx.ret_number(@reg(textures, t, TEXTURE_BASE));
+}
+
+// ----------------------------------------------------------------------------
+// Progressive light maps (js/progressive_lightmap.js)
+// ----------------------------------------------------------------------------
+
+// lightmap(renderer, res, scene): drie's ProgressiveLightMap, baked with the lights of
+// `scene` (the mirror of the three Scene that three's keeps its lights in). Needs the GPU:
+// called from the animation loop, not while the script loads.
+fn void h_lightmap(JsCtx ctx, void* udata)
+{
+    Renderer* r = get_renderer(num_arg(ctx, 0, -1));
+    Object3D* s = get_object(num_arg(ctx, 2, -1));
+    if (r == null || s == null || s.kind != SCENE) { ctx.throw_error(TYPE, "lightmap: invalid argument"); return; }
+    ProgressiveLightMap* p = drie::progressive_lightmap(r, (int)num_arg(ctx, 1, 1024));
+    // (the scene it made for its lights stays empty)
+    p.scene = (Scene*)s;
+    ctx.ret_number(@reg(lightmaps, p, LIGHTMAP_BASE));
+}
+
+// lightmapTexture(lightmap, i): a texture handle for its map i (0: the one showDebugLightmap
+// shows, 1: the objects' light map, on their uv1)
+fn void h_lightmap_texture(JsCtx ctx, void* udata)
+{
+    ProgressiveLightMap* p = get_lightmap(num_arg(ctx, 0, -1));
+    if (p == null) { ctx.throw_error(TYPE, "lightmapTexture: invalid light map"); return; }
+    ctx.ret_number(@reg(textures, p.texture((int)num_arg(ctx, 1, 0)), TEXTURE_BASE));
+}
+
+// lightmapObjects(lightmap, handles, count): the meshes baked into it, `count` object handles
+// from a Float32Array, in place of the last ones. Their uv1 is laid out already (three's
+// packing, done in JS).
+fn void h_lightmap_objects(JsCtx ctx, void* udata)
+{
+    ProgressiveLightMap* p = get_lightmap(num_arg(ctx, 0, -1));
+    float[] ids = floats_arg(ctx, 1);
+    usz count = (usz)num_arg(ctx, 2, 0);
+    if (p == null || count > ids.len) { ctx.throw_error(TYPE, "lightmapObjects: invalid argument"); return; }
+    List{Object3D*} found;
+    found.init(tmem);
+    for (usz i = 0; i < count; i++)
+    {
+        Object3D* o = get_object(ids[i]);
+        if (o != null) found.push(o);
+    }
+    p.objects.clear();
+    p.add_objects(found.array_view(), pack: false);
+}
+
+// lightmapUpdate(lightmap, camera, blendWindow, blurEdges): one more sample baked in
+fn void h_lightmap_update(JsCtx ctx, void* udata)
+{
+    ProgressiveLightMap* p = get_lightmap(num_arg(ctx, 0, -1));
+    Object3D* c = get_object(num_arg(ctx, 1, -1));
+    if (p == null || c == null || c.kind != CAMERA) { ctx.throw_error(TYPE, "lightmapUpdate: invalid argument"); return; }
+    p.update((Camera*)c, (float)num_arg(ctx, 2, 100), bool_arg(ctx, 3, true));
 }
 
 // sky(): a drie Sky, for three's Sky
@@ -1449,6 +1560,7 @@ fn int main(String[] args)
     materials.init(mem);
     textures.init(mem);
     renderers.init(mem);
+    lightmaps.init(mem);
     dracos.init(mem);
 
     start_clock = time::clock::now();
@@ -1482,6 +1594,9 @@ fn int main(String[] args)
     // and lil-gui's panel is not drawn at all
     js.define_module("three/addons/libs/lil-gui.module.min.js",
                      string::tformat("export * from \"%s/js/gui.js\";\nexport { default } from \"%s/js/gui.js\";\n", root, root))!!;
+    // three's ProgressiveLightMap draws with shaders of its own: this one has drie bake
+    js.define_module("three/addons/misc/ProgressiveLightMap.js",
+                     string::tformat("export * from \"%s/js/progressive_lightmap.js\";\n", root))!!;
 
     JsValue natives = js.object()!!;
     defer js.release(natives);
@@ -1520,7 +1635,14 @@ fn int main(String[] args)
     reg(natives, "stats", &h_stats, 6);
     reg(natives, "shadow", &h_shadow, 3);
     reg(natives, "lightUpdate", &h_light_update, 4);
-    reg(natives, "lightShadow", &h_light_shadow, 9);
+    reg(natives, "lightShadow", &h_light_shadow, 12);
+    reg(natives, "shadowType", &h_shadow_type, 2);
+    reg(natives, "materialLightMap", &h_material_light_map, 3);
+    reg(natives, "materialDepth", &h_material_depth, 3);
+    reg(natives, "lightmap", &h_lightmap, 3);
+    reg(natives, "lightmapObjects", &h_lightmap_objects, 3);
+    reg(natives, "lightmapUpdate", &h_lightmap_update, 4);
+    reg(natives, "lightmapTexture", &h_lightmap_texture, 2);
     reg(natives, "fog", &h_fog, 6);
     reg(natives, "toneMapping", &h_tone_mapping, 3);
     reg(natives, "fileSize", &h_file_size, 1);
