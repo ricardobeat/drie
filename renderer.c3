@@ -11,6 +11,8 @@ alias KeyCode = SappKeycode;
 // Defaults of Renderer.max_lights and Renderer.shadow_atlas_capacity.
 const int DEFAULT_MAX_LIGHTS            = 1024;
 const int DEFAULT_SHADOW_ATLAS_CAPACITY = 8;
+// The most tiles the shadow atlas has.
+const int MAX_ATLAS_TILES @local        = 64;
 
 // An offscreen image to render into, like three's WebGLRenderTarget.
 // Use `texture` (a sokol texture view) to sample the result in your own passes.
@@ -315,8 +317,9 @@ struct Renderer {
     // Extension: how many lights of each kind (directional, point, spot) a render takes at
     // most; the buffers that hold them grow up to it. 0 = no limit.
     int max_lights;
-    // Extension: how many spot lights with shadow.auto_update off get a tile in the shadow
-    // atlas (the atlas has max(4, sqrt(n)) columns of tiles).
+    // Extension: how many tiles the shadow atlas has room for at first: one per spot light with
+    // shadow.auto_update off, and per shadowed directional light besides the first; it grows to
+    // what they need, up to 64 (the atlas has max(4, sqrt(n)) columns of tiles).
     int shadow_atlas_capacity;
     // Extension: sorts the lights into clusters (see clusters.c3). null: in a compute shader
     // (cluster_lights_gpu), or on the CPU without them.
@@ -575,17 +578,21 @@ struct RendererState @local {
     SgSampler shadow_sampler;
     SgSampler clamp_sampler;
     int shadow_size;
-    // The shadow maps that are drawn once, a tile per light.
+    // The shadow maps that are drawn once (spot lights with shadow.auto_update off), and those
+    // of the shadowed directional lights besides the sun: a tile per light.
     SgImage atlas_image;
     SgView atlas_attachment;
     SgView atlas_view;
     int atlas_tile;
     // the lights in it, in the order of their tiles, and its grid
-    List{SpotLight*} atlas_lights;
+    List{Light*} atlas_lights;
     int atlas_columns;
     int atlas_rows;
     // the lights that want a tile, while updating it
-    List{SpotLight*} atlas_pending;
+    List{Light*} atlas_pending;
+    // each tile's view-projection when it was last drawn (directional lights' boxes may follow
+    // the camera: the lookups must use the box the map was drawn for)
+    Mat4[MAX_ATLAS_TILES] atlas_view_proj;
     // set while gathering the casters of a light with shadow.skip_instanced
     bool skip_instanced;
     // the directional light with a shadow, if any, and its map: one box, or 2x2 cascades
@@ -1140,27 +1147,48 @@ fn void ensure_shadow_atlas(int tile, int capacity) @local {
 }
 
 // The tile of a light in the atlas, -1 if it has none.
-fn int atlas_tile_of(SpotLight* sl) @local {
+fn int atlas_tile_of(Light* sl) @local {
     foreach (i, l : state.atlas_lights) {
         if (l == sl) return (int)i;
     }
     return -1;
 }
 
-// Draws the maps of the lights with shadow.auto_update off: the tiles of those that ask for
-// it, or whose tile has changed hands.
+// The shadow settings of a spot or directional light.
+fn LightShadow* light_shadow(Light* l) @local {
+    return l.light_type == SPOT ? &((SpotLight*)l).shadow : &((DirectionalLight*)l).shadow;
+}
+
+// View-projection of a light's map in the atlas: a spot light's frustum (`relative`: of world
+// - the light's position, see shadow_view_proj), or a directional light's one box (world), its
+// texels the atlas's.
+fn Mat4 light_view_proj(Light* l, Camera* camera, bool relative = false) @local {
+    if (l.light_type == SPOT) return shadow_view_proj((SpotLight*)l, relative);
+    return directional_shadow_view_proj((DirectionalLight*)l, camera, state.atlas_tile);
+}
+
+// Draws the atlas's tiles: those of the spot lights with shadow.auto_update off that ask for
+// it, or whose tile has changed hands, then those of the shadowed directional lights besides
+// the sun (state.sun_caster), every frame unless their shadow.auto_update is off too.
 fn void update_shadow_atlas(Scene* scene, Camera* camera) @local {
-    int capacity = math::max(state.renderer.shadow_atlas_capacity, 1);
     state.atlas_pending.clear();
     int tile = 4;
     foreach (l : state.lights) {
         if (l.light_type != SPOT || !l.cast_shadow || !l.visible || l.intensity <= 0) continue;
         SpotLight* sl = (SpotLight*)l;
-        if (sl.shadow.auto_update || state.atlas_pending.len() >= capacity) continue;
+        if (sl.shadow.auto_update || state.atlas_pending.len() >= MAX_ATLAS_TILES) continue;
         state.atlas_pending.push(sl);
         tile = math::max(tile, sl.shadow.map_size);
     }
-    int count = (int)state.atlas_pending.len();
+    int statics = (int)state.atlas_pending.len();
+    foreach (l : state.lights) {
+        if (l.light_type != DIRECTIONAL || !l.cast_shadow || !l.visible || l.intensity <= 0) continue;
+        if (l == state.sun_caster || state.atlas_pending.len() >= MAX_ATLAS_TILES) continue;
+        state.atlas_pending.push(l);
+        tile = math::max(tile, ((DirectionalLight*)l).shadow.map_size);
+    }
+    int count    = (int)state.atlas_pending.len();
+    int capacity = math::min(math::max(state.renderer.shadow_atlas_capacity, count, 1), MAX_ATLAS_TILES);
     // keep the atlas while nothing uses it: the lights may only be switched off for a moment
     if (!count && state.atlas_tile) return;
     int old_tile = state.atlas_tile;
@@ -1168,20 +1196,24 @@ fn void update_shadow_atlas(Scene* scene, Camera* camera) @local {
     tile = state.atlas_tile;
     // a new atlas (ensure_shadow_atlas forgot its lights): every tile
     bool all = state.atlas_tile != old_tile || state.atlas_lights.len() == 0;
-    // a tile is drawn again for a light that asks for it, or that it newly belongs to
-    bool[64] redraw;
+    // a tile is drawn again for a light that asks for it, that it newly belongs to, or a
+    // directional light's that is updated every frame
+    bool[MAX_ATLAS_TILES] redraw;
     int redraws;
+    int static_redraws;
     for (int i = 0; i < count; i++) {
-        SpotLight* sl = state.atlas_pending[i];
-        bool moved    = i >= state.atlas_lights.len() || state.atlas_lights[i] != sl;
-        if (all || moved || sl.shadow.needs_update || i >= redraw.len) {
-            if (i < redraw.len) redraw[i] = true;
+        Light* l        = state.atlas_pending[i];
+        LightShadow* sh = light_shadow(l);
+        bool moved      = i >= state.atlas_lights.len() || state.atlas_lights[i] != l;
+        if (all || moved || sh.needs_update || (i >= statics && sh.auto_update)) {
+            redraw[i] = true;
             redraws++;
+            if (i < statics) static_redraws++;
         }
     }
     if (!redraws) return;
-    // most of them: clear all of it, as a pass does
-    if (redraws * 2 > count || count > redraw.len) all = true;
+    // most of the drawn-once ones: clear all of it, as a pass does
+    if (static_redraws * 2 > statics) all = true;
     state.atlas_lights.clear();
     foreach (l : state.atlas_pending) state.atlas_lights.push(l);
     Vector3 camera_pos = camera.matrix_world.get_position();
@@ -1196,21 +1228,27 @@ fn void update_shadow_atlas(Scene* scene, Camera* camera) @local {
     sg::apply_pipeline(get_shadow_pipeline());
     for (int i = 0; i < count; i++) {
         if (!all && !redraw[i]) continue;
-        SpotLight* sl = state.atlas_pending[i];
-        sl.shadow.needs_update = false;
-        Mat4 light_vp         = shadow_view_proj(sl);
+        Light* l        = state.atlas_pending[i];
+        LightShadow* sh = light_shadow(l);
+        sh.needs_update = false;
+        Mat4 light_vp = light_view_proj(l, camera);
+        state.atlas_view_proj[i] = light_vp;
         Frustum light_frustum = frustum_from(light_vp);
         state.casters.clear();
-        state.skip_instanced = sl.shadow.skip_instanced;
+        state.skip_instanced = sh.skip_instanced;
         collect(scene, camera.matrix_world_inverse, &light_frustum, camera_pos, true);
         state.skip_instanced = false;
         int columns = state.atlas_columns;
         sg::apply_viewport((i % columns) * tile, (i / columns) * tile, tile, tile, top_left);
         sg::apply_scissor_rect((i % columns) * tile, (i / columns) * tile, tile, tile, top_left);
         if (!all) clear_atlas_tile();
-        Mat4 light_rel    = shadow_view_proj(sl, true);
-        Vector3 light_pos = sl.matrix_world.get_position();
-        foreach (&item : state.casters) draw_shadow_item(item, light_rel, light_pos);
+        if (l.light_type == SPOT) {
+            Mat4 light_rel    = light_view_proj(l, camera, true);
+            Vector3 light_pos = l.matrix_world.get_position();
+            foreach (&item : state.casters) draw_shadow_item(item, light_rel, light_pos);
+        } else {
+            foreach (&item : state.casters) draw_shadow_item(item, light_vp);
+        }
     }
     sg::end_pass();
     state.casters.clear();
@@ -1348,8 +1386,9 @@ fn DirectionalLight* directional_shadow_light() @local {
     return null;
 }
 
-// View-projection of a directional light's shadow box.
-fn Mat4 directional_shadow_view_proj(DirectionalLight* d, Camera* camera) @local {
+// View-projection of a directional light's shadow box, moved a texel of a `size` map at a time
+// (0: shadow.map_size).
+fn Mat4 directional_shadow_view_proj(DirectionalLight* d, Camera* camera, int size = 0) @local {
     Vector3 target = d.target ? d.target.get_world_position() : (Vector3) { 0, 0, 0 };
     Vector3 dir    = (d.matrix_world.get_position() - target).normalize();
     float extent   = math::max(d.shadow_extent, 0.1f);
@@ -1360,7 +1399,7 @@ fn Mat4 directional_shadow_view_proj(DirectionalLight* d, Camera* camera) @local
         Vector3 ahead = { -cw[2][0], 0, -cw[2][2] };
         if (ahead.length() > 1e-4f) center = at + ahead.normalize() * (extent * 0.55f);
     }
-    return sun_box_view_proj(d, dir, center, extent, d.shadow.map_size);
+    return sun_box_view_proj(d, dir, center, extent, size ?: d.shadow.map_size);
 }
 
 // View-projection of a box of parallel rays towards `dir`, `radius` meters around `center`,
@@ -1579,7 +1618,25 @@ fn FsParams build_light_params(Scene* scene, Camera* camera, SpotLight* caster) 
                     };
                     p.dir_cascade_fwd.w = clamp(d.shadow.intensity, 0, 1);
                 }
-                g.dirs.push({ .dir = { ...dir, 0 }, .color = { ...c, 0 } });
+                GpuDirLight gd = { .dir = { ...dir, 0 }, .color = { ...c, 0 }, .shadow = { -1, 1, 0, 0 } };
+                // the other shadowed ones: a box in a tile of the atlas (dir_tile_shadow)
+                int tile = atlas_tile_of(d);
+                if (d != state.sun_caster && tile >= 0 && d.cast_shadow) {
+                    float cols = (float)state.atlas_columns;
+                    float rows = (float)state.atlas_rows;
+                    GpuSpotShadow sh;
+                    sh.mat = shadow_bias().mul(state.atlas_view_proj[tile]);
+                    sh.params = { 3, d.shadow.normal_bias, 1.0f / (float)state.atlas_tile, d.shadow.radius };
+                    sh.rect = {
+                        (float)(tile % state.atlas_columns) / cols,
+                        (float)(tile / state.atlas_columns) / rows,
+                        1.0f / cols,
+                        1.0f / rows
+                    };
+                    gd.shadow = { (float)g.shadows.len(), clamp(d.shadow.intensity, 0, 1), 0, 0 };
+                    g.shadows.push(sh);
+                }
+                g.dirs.push(gd);
             case POINT:
                 if (!g.room(g.points.len(), r.max_lights)) break;
                 PointLight* pl = (PointLight*)l;

@@ -363,6 +363,8 @@ layout(binding=1) uniform fs_params {
 struct gpu_dir_light {
     vec4 dir;    // world-space direction towards the light
     vec4 color;
+    vec4 shadow; // x = its shadow in spot_shadows (-1: none; the sun's is dir_shadow_mat's),
+                 //   y = shadow intensity (0..1)
 };
 struct gpu_point_light {
     vec4 pos;    // w = distance cutoff
@@ -378,9 +380,9 @@ struct gpu_spot_light {
     vec4 shadow; // x = its shadow in spot_shadows (-1: none), y = shadow intensity (0..1)
 };
 struct gpu_spot_shadow {
-    mat4 mat;    // world - the light's position -> shadow map uv + depth
-    vec4 params; // x = 1: in shadow_map, 2: in shadow_atlas, y = normal bias (m), z = texel size,
-                 //   w = blur radius in texels
+    mat4 mat;    // world - the light's position -> shadow map uv + depth (directional: world ->)
+    vec4 params; // x = 1: in shadow_map, 2: in shadow_atlas, 3: a directional light's box in
+                 //   shadow_atlas, y = normal bias (m), z = texel size, w = blur radius in texels
     vec4 rect;   // the light's tile in shadow_atlas: xy = offset, zw = size
     vec4 soft;   // x = size of the source (m; 0: edges equally sharp everywhere), y = near,
                  //   z = far, w = width of the map 1 m from the light (negative: depth is -1..1)
@@ -896,6 +898,29 @@ float dir_shadow_in(int i, vec3 n, vec3 l) {
     }
     if (dir_cascade_params.w < 0.5) return sum / 10.0;
     // one box: nothing is shadowed outside of it, fade towards its edge
+    vec2 edge = min(c.xy, 1.0 - c.xy);
+    return mix(1.0, sum / 10.0, clamp(min(edge.x, edge.y) * 10.0, 0.0, 1.0));
+}
+
+// Shadow of a directional light besides the sun, whose box is tile `si` of shadow_atlas
+// (spot_shadows): as dir_shadow_in, without cascades; nothing is shadowed outside of it.
+float dir_tile_shadow(int si, vec3 n, vec3 l) {
+    vec4 params = spot_shadow_data[si].params;
+    vec4 rect = spot_shadow_data[si].rect;
+    float slope = 1.0 - clamp(dot(n, l), 0.0, 1.0);
+    vec3 c = (spot_shadow_data[si].mat * vec4(v_world_pos + n * params.y * (0.4 + slope), 1.0)).xyz;
+    if (c.x < 0.0 || c.x > 1.0 || c.y < 0.0 || c.y > 1.0 || c.z > 1.0 || c.z < 0.0) return 1.0;
+    float angle = fract(sin(dot(gl_FragCoord.xy + ssr_params.z * vec2(5.0, 3.0), vec2(12.9898, 78.233))) * 43758.5453) * 6.2831;
+    float ca = cos(angle);
+    float sa = sin(angle);
+    float r = params.z * params.w;
+    float sum = 0.0;
+    for (int k = 0; k < 10; k++) {
+        float a = float(k) * 2.39996;
+        vec2 o = vec2(cos(a), sin(a)) * (sqrt((float(k) + 0.5) / 10.0) * r);
+        sum += shadow_tap(true, rect, params.z, c.xy + vec2(o.x * ca - o.y * sa, o.x * sa + o.y * ca), c.z);
+    }
+    // fade out towards the box's edge
     vec2 edge = min(c.xy, 1.0 - c.xy);
     return mix(1.0, sum / 10.0, clamp(min(edge.x, edge.y) * 10.0, 0.0, 1.0));
 }
@@ -1781,6 +1806,9 @@ void main() {
             g_radius = 0.0;
             vec3 l = normalize(dirs[i].dir.xyz);
             float lit = int(dir_shadow_params.x) == i + 1 ? dir_shadow(n, l) : 1.0;
+            // the other shadowed ones: a tile of shadow_atlas each
+            int dsi = int(dirs[i].shadow.x);
+            if (dsi >= 0 && (flags() & 4) != 0) lit = mix(1.0, dir_tile_shadow(dsi, n, l), dirs[i].shadow.y);
             // parallax_map: the bumps' own shadows, toward the first directional light
             if (i == 0) lit *= parallax_shadow(geo_n, l);
             if (lit > 0.0) outc += direct(mode, n, v, l, 1e6, dirs[i].color.rgb * lit, diffuse_color, spec);
