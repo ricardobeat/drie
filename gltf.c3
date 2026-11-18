@@ -3,7 +3,9 @@
 //   scene.add(model.scene);
 // Supported: node hierarchy, triangle meshes (positions, normals, uvs, vertex colors),
 // metallic-roughness materials with base color / normal / occlusion-roughness-metal textures,
-// alpha modes and double sided materials. Not supported: skins, animations, cameras, sparse accessors.
+// alpha modes, double sided materials, and the transmission / volume / ior / dispersion
+// extensions (see Material.transmission). Not supported: skins, animations, cameras, sparse
+// accessors.
 module drie::loaders;
 import std::io, std::math, std::encoding::json, std::collections::object, std::collections::list;
 import drie;
@@ -163,6 +165,25 @@ fn Material*? GltfReader.material(&self, Object* m) {
         if (mode == "BLEND") mat.transparent = true;
     }
     if (m.has_key("doubleSided") && m.get_bool("doubleSided")!) mat.side = DOUBLE_SIDE;
+    if (try ext = child(m, "extensions")) {
+        // transmission, and what the light does as it crosses the volume
+        if (try t = child(ext, "KHR_materials_transmission")) {
+            mat.transmission = num(t, "transmissionFactor", 0);
+        }
+        if (try vol = child(ext, "KHR_materials_volume")) {
+            mat.thickness = num(vol, "thicknessFactor", 0);
+            mat.attenuation_distance = num(vol, "attenuationDistance", 0);
+            if (try c = child(vol, "attenuationColor")) {
+                mat.attenuation_color = linear_color(
+                    (float)c.get_float_at(0)!,
+                    (float)c.get_float_at(1)!,
+                    (float)c.get_float_at(2)!
+                );
+            }
+        }
+        if (try ior = child(ext, "KHR_materials_ior")) mat.ior = num(ior, "ior", 1.5f);
+        if (try d = child(ext, "KHR_materials_dispersion")) mat.dispersion = num(d, "dispersion", 0);
+    }
     return mat;
 }
 

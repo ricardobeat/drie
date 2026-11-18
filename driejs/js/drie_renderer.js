@@ -493,7 +493,10 @@ export class DrieRenderer {
 			material.emissive ? material.emissive.getHex() : 0, material.specular ? material.specular.getHex() : 0x111111,
 			material.shininess ?? 30, material.roughness ?? 1, material.metalness ?? 0, material.opacity,
 			material.transparent, material.side, material.wireframe === true, map, material.vertexColors,
-			material.alphaTest, colorScale, mapEmissive, material.emissiveIntensity ?? 1);
+			material.alphaTest, colorScale, mapEmissive, material.emissiveIntensity ?? 1,
+			material.transmission ?? 0, material.thickness ?? 0, material.ior ?? 1.5, material.dispersion ?? 0,
+			material.attenuationColor ? material.attenuationColor.getHex() : 0xffffff,
+			Number.isFinite(material.attenuationDistance) ? material.attenuationDistance : 0);
 		material.__drieVersion = material.version;
 		material.__drieMap = map;
 		material.__drieValues = null;
@@ -515,19 +518,26 @@ export class DrieRenderer {
 		const c = material.color;
 		const e = material.emissive;
 		const s = material.specular;
+		const a = material.attenuationColor;
+		const ad = Number.isFinite(material.attenuationDistance) ? material.attenuationDistance : 0;
 		const v = material.__drieValues;
 		if (v !== null && v !== undefined && (!c || (v[0] === c.r && v[1] === c.g && v[2] === c.b))
 			&& (!e || (v[3] === e.r && v[4] === e.g && v[5] === e.b)) && (!s || (v[6] === s.r && v[7] === s.g && v[8] === s.b))
 			&& v[9] === material.opacity && v[10] === material.shininess && v[11] === material.roughness
-			&& v[12] === material.metalness) {
+			&& v[12] === material.metalness && v[13] === material.transmission && v[14] === material.thickness
+			&& v[15] === material.ior && v[16] === material.dispersion && (!a || v[17] === a.getHex())
+			&& v[18] === ad) {
 			return;
 		}
 		material.__drieValues = [c?.r, c?.g, c?.b, e?.r, e?.g, e?.b, s?.r, s?.g, s?.b, material.opacity, material.shininess,
-			material.roughness, material.metalness];
+			material.roughness, material.metalness, material.transmission, material.thickness, material.ior,
+			material.dispersion, a?.getHex(), ad];
 		if (v === null) return;
 		const [color, colorScale] = c ? scaledColor(c) : [0xffffff, 1];
 		N.materialUpdate(material.__drie, color, e ? e.getHex() : 0, s ? s.getHex() : 0x111111,
-			material.shininess ?? 30, material.roughness ?? 1, material.metalness ?? 0, material.opacity, colorScale);
+			material.shininess ?? 30, material.roughness ?? 1, material.metalness ?? 0, material.opacity, colorScale,
+			material.transmission ?? 0, material.thickness ?? 0, material.ior ?? 1.5, material.dispersion ?? 0,
+			a ? a.getHex() : 0xffffff, ad);
 	}
 
 	_project(camera) {
