@@ -431,7 +431,7 @@ fn void Renderer.render_back_faces(&self, RenderTarget* target) {
                         shaders::ATTR_THREE_UV,
                         shaders::ATTR_THREE_COLOR0,
                         shaders::ATTR_THREE_UV1,
-                        shaders::ATTR_THREE_TANGENT,
+                        -1,
                         shaders::ATTR_THREE_INST0,
                         shaders::ATTR_THREE_INST1,
                         shaders::ATTR_THREE_INST2
@@ -557,6 +557,12 @@ struct RendererState @local {
     // that makes them (vsm.glsl)
     SgShader vsm_shader;
     SgShader mrt_vsm_shader;
+    // for geometries with tangents (none: they go without, see uses_tangents)
+    SgShader tangent_shader;
+    SgShader mrt_tangent_shader;
+    SgShader vsm_tangent_shader;
+    SgShader mrt_vsm_tangent_shader;
+    SgShader depth_tangent_shader;
     SgShader vsm_blur_shader;
     SgPipeline vsm_blur_pipeline;
     SgSampler vsm_sampler;
@@ -590,7 +596,7 @@ struct RendererState @local {
     // depth_write)][VSM][DrawKind][side][opaque, transparent, additive][wireframe][target:
     // swapchain, RGBA8 1x, RGBA8 4x, RGBA16F 1x, RGBA16F 4x, MRT 1x, MRT 4x][alpha to coverage]
     // (C3 declares array dimensions innermost first)
-    SgPipeline[2][7][2][3][3][4][2][4] pipelines;
+    SgPipeline[2][7][2][3][3][4][2][4][2] pipelines;
     SgPipeline shadow_pipeline;
     // writes the far depth wherever it draws: clears one tile of the shadow atlas
     SgPipeline tile_clear_pipeline;
@@ -794,7 +800,10 @@ alias ShaderDescFn = fn SgShaderDesc(SgBackend backend);
 // includes shader_core.glsl: `my_module::three_shader_desc`, `three_opaque_shader_desc`,
 // `depth_shader_desc`, `shadow_shader_desc`, and for RenderTarget.mrt `three_mrt_shader_desc`
 // and `three_opaque_mrt_shader_desc`; for Renderer.shadow_type = VSM `three_vsm_shader_desc`
-// and `three_mrt_vsm_shader_desc` (null: the engine's).
+// and `three_mrt_vsm_shader_desc`; for geometries with tangents `three_tangent_shader_desc`,
+// `three_mrt_tangent_shader_desc`, `three_vsm_tangent_shader_desc`,
+// `three_mrt_vsm_tangent_shader_desc` and `depth_tangent_shader_desc` (null: the engine's; with a `main` of its own and no
+// tangents' programs, those geometries' normal maps take their frame from the uv instead).
 struct MaterialShaders {
     ShaderDescFn main;
     ShaderDescFn opaque;
@@ -804,6 +813,11 @@ struct MaterialShaders {
     ShaderDescFn opaque_mrt;
     ShaderDescFn main_vsm;
     ShaderDescFn main_mrt_vsm;
+    ShaderDescFn main_tangent;
+    ShaderDescFn main_mrt_tangent;
+    ShaderDescFn main_vsm_tangent;
+    ShaderDescFn main_mrt_vsm_tangent;
+    ShaderDescFn depth_tangent;
 }
 
 fn void setup_gfx(SgEnvironment environment) @local {
@@ -842,6 +856,20 @@ fn void setup_gfx(SgEnvironment environment) @local {
     state.mrt_vsm_shader = sg::make_shader(
         &&(s.main_mrt_vsm ? s.main_mrt_vsm(backend) : shaders::three_mrt_vsm_shader_desc(backend))
     );
+    // the tangents' programs: a material shader's own, the engine's if it has none of its own
+    // (all of them or none)
+    ShaderDescFn[5] tangent_descs = s.main
+        ? { s.main_tangent, s.main_mrt_tangent, s.main_vsm_tangent, s.main_mrt_vsm_tangent, s.depth_tangent }
+        : { &shaders::three_tangent_shader_desc, &shaders::three_mrt_tangent_shader_desc,
+            &shaders::three_vsm_tangent_shader_desc, &shaders::three_mrt_vsm_tangent_shader_desc,
+            &shaders::depth_tangent_shader_desc };
+    SgShader*[5] tangent_shaders = { &state.tangent_shader, &state.mrt_tangent_shader, &state.vsm_tangent_shader,
+                                     &state.mrt_vsm_tangent_shader, &state.depth_tangent_shader };
+    bool all = true;
+    foreach (desc : tangent_descs) all = all && desc;
+    if (all) {
+        foreach (i, desc : tangent_descs) *tangent_shaders[i] = sg::make_shader(&&desc(backend));
+    }
     state.vsm_blur_shader = sg::make_shader(&&shaders::vsm_shader_desc(backend));
     state.white = data_texture({ 255, 255, 255, 255 }, 1, 1, NO_COLOR_SPACE);
     float[12] identity = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0 };
@@ -930,19 +958,21 @@ fn void on_event(SappEvent* e) @local {
 
 // position, normal, uv, color, uv1, tangent, and the instance's three rows. Buffer 0: the
 // geometry's vertices, 1: the instances, 2: the second uv set, 3: the tangents (see
-// bind_instances).
+// bind_instances), only for a program that reads them (tangent -1: none).
 fn SgVertexLayoutState vertex_layout(int[9] attrs) @local {
     SgVertexLayoutState layout;
     layout.buffers[0].stride = FLOATS_PER_VERTEX * float::size;
     layout.buffers[1] = { .stride = 12 * float::size, .step_func = PER_INSTANCE };
     layout.buffers[2].stride = 2 * float::size;
-    layout.buffers[3].stride = 4 * float::size;
     layout.attrs[attrs[0]] = { .format = FLOAT3, .offset = 0 };
     layout.attrs[attrs[1]] = { .format = FLOAT3, .offset = 12 };
     layout.attrs[attrs[2]] = { .format = FLOAT2, .offset = 24 };
     layout.attrs[attrs[3]] = { .format = FLOAT4, .offset = 32 };
     layout.attrs[attrs[4]] = { .format = FLOAT2, .offset = 0, .buffer_index = 2 };
-    layout.attrs[attrs[5]] = { .format = FLOAT4, .offset = 0, .buffer_index = 3 };
+    if (attrs[5] >= 0) {
+        layout.buffers[3].stride = 4 * float::size;
+        layout.attrs[attrs[5]] = { .format = FLOAT4, .offset = 0, .buffer_index = 3 };
+    }
     layout.attrs[attrs[6]] = { .format = FLOAT4, .offset = 0, .buffer_index = 1 };
     layout.attrs[attrs[7]] = { .format = FLOAT4, .offset = 16, .buffer_index = 1 };
     layout.attrs[attrs[8]] = { .format = FLOAT4, .offset = 32, .buffer_index = 1 };
@@ -970,7 +1000,8 @@ fn SgPipeline get_pipeline(
     Blending blending = NORMAL_BLENDING,
     DrawKind kind = CUT,
     bool depth_test = true,
-    bool depth_write = true
+    bool depth_write = true,
+    bool tangents = false
 ) @local {
     int target = rt ? (rt.samples > 1 ? 2 : 1) + (rt.mrt ? 4 : (rt.is_linear() ? 2 : 0)) : 0;
     if (rt && rt.samples != 1 && rt.samples != 4) abort("drie: render targets support 1 or 4 samples");
@@ -988,7 +1019,9 @@ fn SgPipeline get_pipeline(
         depth_write = true;
     }
     int depth = (depth_write ? 0 : 1) + (depth_test ? 0 : 2);
-    SgPipeline* pip = &state.pipelines[depth][vsm ? 1
+    // the geometry's tangents: a program that reads them (the depth prepass too: the main pass
+    // tests against its depth with EQUAL, which wants the same vertex shader)
+    SgPipeline* pip = &state.pipelines[tangents ? 1 : 0][depth][vsm ? 1
         : 0][kind.ordinal][side.ordinal][transparent ? (additive ? 2 : 1) : 0][wireframe ? 1 : 0][target][a2c ? 1 : 0];
     if (pip.id) return *pip;
     SgCullMode cull;
@@ -1006,6 +1039,12 @@ fn SgPipeline get_pipeline(
         case DEPTH: shader = state.depth_shader;
     }
     if (vsm) shader = mrt ? state.mrt_vsm_shader : state.vsm_shader;
+    // (the tangents' programs can all cut holes: the opaque draws take them too)
+    if (tangents) {
+        shader = kind == DEPTH ? state.depth_tangent_shader
+            : vsm ? (mrt ? state.mrt_vsm_tangent_shader : state.vsm_tangent_shader)
+            : (mrt ? state.mrt_tangent_shader : state.tangent_shader);
+    }
     SgPipelineDesc desc = {
         .shader = shader,
         .index_type = UINT32,
@@ -1019,7 +1058,7 @@ fn SgPipeline get_pipeline(
                 shaders::ATTR_THREE_UV,
                 shaders::ATTR_THREE_COLOR0,
                 shaders::ATTR_THREE_UV1,
-                shaders::ATTR_THREE_TANGENT,
+                tangents ? shaders::ATTR_THREE_TANGENT_TANGENT : -1,
                 shaders::ATTR_THREE_INST0,
                 shaders::ATTR_THREE_INST1,
                 shaders::ATTR_THREE_INST2
@@ -1076,7 +1115,7 @@ fn SgPipeline get_shadow_pipeline() @local {
                     shaders::ATTR_SHADOW_UV,
                     shaders::ATTR_SHADOW_COLOR0,
                     shaders::ATTR_SHADOW_UV1,
-                    shaders::ATTR_SHADOW_TANGENT,
+                    -1,
                     shaders::ATTR_SHADOW_INST0,
                     shaders::ATTR_SHADOW_INST1,
                     shaders::ATTR_SHADOW_INST2
@@ -1111,7 +1150,7 @@ fn void clear_atlas_tile() @local {
                         shaders::ATTR_SHADOW_UV,
                         shaders::ATTR_SHADOW_COLOR0,
                         shaders::ATTR_SHADOW_UV1,
-                        shaders::ATTR_SHADOW_TANGENT,
+                        -1,
                         shaders::ATTR_SHADOW_INST0,
                         shaders::ATTR_SHADOW_INST1,
                         shaders::ATTR_SHADOW_INST2
@@ -1133,7 +1172,6 @@ fn void clear_atlas_tile() @local {
         .vertex_buffers[0] = g.vbuf,
         .vertex_buffers[1] = state.identity_instance,
         .vertex_buffers[2] = zeros(g.vertex_count()),
-        .vertex_buffers[3] = zeros(g.vertex_count()),
         .index_buffer = g.ibuf
     };
     Vec4 inst_cull = cull_bind(&bind, -1);
@@ -2109,7 +2147,7 @@ fn Vec4[2] uv_relative(Texture* base, Texture* t) @local {
 }
 
 // A buffer of zeros, four floats for each of `vertices` vertices, grown as needed: the second
-// uv set and the tangents of a geometry without them.
+// uv set of a geometry without one.
 fn SgBuffer zeros(uint vertices) @local {
     if (state.zeros.id && state.zeros_vertices >= vertices) return state.zeros;
     if (state.zeros.id) sg::destroy_buffer(state.zeros);
@@ -2243,9 +2281,12 @@ fn void draw_depth_item(DrawItem* item, Mat4 view_proj) @local {
     BufferGeometry* g = m.geometry;
     Renderer* r       = state.renderer;
     float alpha_test  = alpha_test_of(mat);
-    sg::apply_pipeline(get_pipeline(mat.side, false, false, r.render_target, alpha_test > 0, mat.blending, DEPTH));
+    bool tangents     = uses_tangents(item);
+    sg::apply_pipeline(
+        get_pipeline(mat.side, false, false, r.render_target, alpha_test > 0, mat.blending, DEPTH, tangents: tangents)
+    );
     SgBindings bind = { .vertex_buffers[0] = g.vbuf, .index_buffer = g.ibuf };
-    bind_instances(&bind, item);
+    bind_instances(&bind, item, tangents);
     Vec4 inst_cull = cull_bind(&bind, item.job - 1);
     Texture* map   = ready(mat.map);
     bind.views[shaders::VIEW_TEX_MAP] = map.view;
@@ -2278,6 +2319,7 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     Texture* map = ready(mat.map);
     if (mat.screen_target) map = state.white;
     float alpha_test = alpha_test_of(mat);
+    bool tangents = !state.bake.on && uses_tangents(item);
     sg::apply_pipeline(
         state.bake.on ? state.bake.pipeline
             : get_pipeline(
@@ -2289,7 +2331,8 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
                 mat.blending,
                 kind,
                 mat.depth_test,
-                mat.depth_write
+                mat.depth_write,
+                tangents
             )
     );
     // the prepass has cut it out already (the shader takes a negative threshold as "covered")
@@ -2298,7 +2341,7 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
         .vertex_buffers[0] = g.vbuf,
         .index_buffer = indices,
     };
-    bind_instances(&bind, item);
+    bind_instances(&bind, item, tangents);
     Vec4 inst_cull = cull_bind(&bind, item.job - 1);
     bind.views[shaders::VIEW_TEX_MAP] = map.view;
     bind.views[shaders::VIEW_TEX_NORMAL] = ready(mat.normal_map).view;
@@ -2571,12 +2614,12 @@ fn void draw_shadow_item(DrawItem* item, Mat4 light_vp, Vector3 origin = { 0, 0,
 }
 
 // The instance attributes of a draw (one identity instance for a plain mesh), and its
-// geometry's second uv set and tangents.
-fn void bind_instances(SgBindings* bind, DrawItem* item) @local {
+// geometry's second uv set, and its tangents for a program that reads them (uses_tangents).
+fn void bind_instances(SgBindings* bind, DrawItem* item, bool tangents = false) @local {
     Mesh* m = item.mesh;
     BufferGeometry* g = m.geometry;
     bind.vertex_buffers[2] = g.uv1buf.id ? g.uv1buf : zeros(g.vertex_count());
-    bind.vertex_buffers[3] = g.tangent_buf.id ? g.tangent_buf : zeros(g.vertex_count());
+    if (tangents) bind.vertex_buffers[3] = g.tangent_buf;
     if (!m.instance_data.len()) {
         bind.vertex_buffers[1] = state.identity_instance;
         return;
@@ -2922,6 +2965,16 @@ fn void copy_for_transmission(Renderer* r, SgPass* pass) @local {
     profile::begin_pass(&again);
 }
 
+// A draw that takes its geometry's tangents (as three's vertexTangents): it has them, its
+// material a map that is read along them (a normal map, the clear coat's, anisotropy), and
+// the material shader the programs for them (MaterialShaders).
+fn bool uses_tangents(DrawItem* item) @local {
+    Material* mat = item.mesh.material;
+    BufferGeometry* g = item.mesh.geometry;
+    if (!state.tangent_shader.id || (usz)g.tangents.len() < (usz)g.vertex_count() * 4) return false;
+    return mat.normal_map || (mat.type == STANDARD && (mat.clearcoat_normal_map || mat.anisotropy != 0));
+}
+
 // A transmission material: it shows the picture of what is behind it (render_transmission).
 fn bool refracts(DrawItem* item) @local => item.mesh.material.transmission > 0 && item.mesh.material.type == STANDARD;
 
@@ -3245,7 +3298,7 @@ fn SgPipeline bake_pipeline(SgPixelFormat format) @local {
                     shaders::ATTR_THREE_UV,
                     shaders::ATTR_THREE_COLOR0,
                     shaders::ATTR_THREE_UV1,
-                    shaders::ATTR_THREE_TANGENT,
+                    -1,
                     shaders::ATTR_THREE_INST0,
                     shaders::ATTR_THREE_INST1,
                     shaders::ATTR_THREE_INST2
