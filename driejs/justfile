@@ -145,7 +145,8 @@ assets: \
     (asset "textures/carbon/Carbon_Normal.png" "15fe5cbeb3db8e85d8663ee1f67ffd5f0bfa457d01e1209c3011222ba08bb4fd") \
     (asset "textures/water/Water_1_M_Normal.jpg" "6d7825469a374ff84700b4fb1a2890bd1fce0ca1f777bdd4d5ecdaf15833a804") \
     (asset "textures/golfball.jpg" "7d5f075891eac89ee55620cd8753efe8a969d89cdd73b54fe0ee444ee5da0b15") \
-    (asset "textures/pbr/Scratched_gold/Scratched_gold_01_1K_Normal.png" "f6cbad89a8d43188007532a2545f382e225e6def85778fc530681588fb9f6f9c")
+    (asset "textures/pbr/Scratched_gold/Scratched_gold_01_1K_Normal.png" "f6cbad89a8d43188007532a2545f382e225e6def85778fc530681588fb9f6f9c") \
+    (asset "models/gltf/ShadowmappableMesh.glb" "1a5d49c27bf0b884b5cf70562c9023a3b931a90e05944eed02f3c5c226ff1c5d")
 
 [private]
 asset path sha256: (fetch examples + "/" + path sha256 "demos/" + path)
