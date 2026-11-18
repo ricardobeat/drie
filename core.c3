@@ -692,8 +692,9 @@ struct DirectionalLight {
     Object3D* target;
     // Like three's light.shadow (set cast_shadow). Its camera is a box of parallel rays,
     // shadow.far deep. shadow.radius is the blur of the edge in texels; softness and focus
-    // are not used. One directional light at a time has a shadow, in a map of its own (spot
-    // lights keep theirs).
+    // are not used. The first directional light with a shadow has a map of its own (spot
+    // lights keep theirs); the others get one box each, in a tile of the shadow atlas
+    // (Renderer.shadow_atlas_capacity), drawn every frame unless shadow.auto_update is off.
     // Extension: cascaded shadow maps. With shadow.cascades above 1 the camera's view, up to
     // shadow.max_distance, is cut into that many slices, each with a box of its own (2x2 tiles
     // of map_size), so shadows near the camera are sharp and far ones still there.
