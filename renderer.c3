@@ -2386,9 +2386,10 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     }
     bind.samplers[shaders::SMP_SSR_SMP] = state.clamp_sampler;
     // what a transmission material refracts (its own draw leaves the picture alone: the
-    // renderer draws the opaque scene without it first, see render_transmission)
+    // picture of the opaque scene is made before the glass is drawn, see copy_for_transmission
+    // and render_transmission)
     Texture* none     = ready(state.white);
-    bool transmission = mat.transmission > 0 && mat.type == STANDARD && state.transmission != null;
+    bool transmission = mat.transmission > 0 && mat.type == STANDARD && state.transmission_mips.id != 0;
     bind.views[shaders::VIEW_TEX_TRANSMISSION] = transmission ? state.transmission_mips_view : none.view;
     bind.samplers[shaders::SMP_TRANSMISSION_SMP] = transmission ? state.mip_sampler : none.sampler;
     bind.views[shaders::VIEW_TEX_GI] = state.irradiance.view;
@@ -2810,11 +2811,11 @@ fn void transmission_levels(int width, int height) @local {
 // Fills the mip levels from the resolved transmission picture: level 0 a copy of it, each next
 // one the last one halved (one bilinear tap between four texels: their average, as
 // generateMipmap does).
-fn void fill_transmission_levels() @local {
-    transmission_levels(state.transmission.width, state.transmission.height);
+fn void fill_transmission_levels(SgView source, int width, int height) @local {
+    transmission_levels(width, height);
     postprocessing::OutputParams p = { .params = { 0, 1, 0, 1 } };
     for (int i = 0; i < state.transmission_levels; i++) {
-        SgView source = i == 0 ? state.transmission.texture : state.transmission_level_views[i - 1];
+        SgView level = i == 0 ? source : state.transmission_level_views[i - 1];
         profile::begin_pass(
             &&{
                 .action.colors[0] = { .load_action = DONTCARE, .store_action = STORE },
@@ -2824,8 +2825,8 @@ fn void fill_transmission_levels() @local {
         );
         sg::apply_pipeline(state.mip_pipeline);
         SgBindings bind;
-        bind.views[postprocessing::VIEW_OUTPUT_SRC] = source;
-        bind.views[postprocessing::VIEW_OUTPUT_EXPOSURE] = source;
+        bind.views[postprocessing::VIEW_OUTPUT_SRC] = level;
+        bind.views[postprocessing::VIEW_OUTPUT_EXPOSURE] = level;
         bind.samplers[postprocessing::SMP_OUTPUT_SMP] = state.mip_sampler;
         sg::apply_bindings(&bind);
         sg::apply_uniforms(postprocessing::UB_OUTPUT_PARAMS, &&{ .ptr = &p, .size = postprocessing::OutputParams::size });
@@ -2841,7 +2842,9 @@ fn void fill_transmission_levels() @local {
 fn void render_transmission(Renderer* r, Scene* scene, Camera* camera, Mat4 view_proj, FsParams* fs) @local {
     int width   = r.render_target ? r.render_target.width : sapp::width();
     int height  = r.render_target ? r.render_target.height : sapp::height();
-    int samples = (r.render_target ? r.render_target.samples : sapp::sample_count()) > 1 ? 4 : 1;
+    // one sample: the glass's edges are smoothed in the main pass, and what shows through it
+    // is bent (and blurred by roughness) anyway
+    int samples = 1;
     if (!state.transmission) state.transmission = render_target(width, height, samples, RGBA16F);
     state.transmission.set_size(width, height, samples);
 
@@ -2855,7 +2858,7 @@ fn void render_transmission(Renderer* r, Scene* scene, Camera* camera, Mat4 view
     profile::begin_pass(
         &&{
             .action = {
-                // (kept, multisampled, for the back faces of double-sided glass after it)
+                // (kept for the back faces of double-sided glass after it)
                 .colors[0] = { .load_action = CLEAR, .store_action = STORE, .clear_value = { clear.x, clear.y, clear.z, 1 } },
                 .depth = { .load_action = CLEAR, .store_action = STORE, .clear_value = 1 },
             },
@@ -2870,7 +2873,7 @@ fn void render_transmission(Renderer* r, Scene* scene, Camera* camera, Mat4 view
         draw_item(item, view_proj, &tfs, item.mesh.material.wireframe || has_holes(item) ? CUT : SOLID);
     }
     sg::end_pass();
-    fill_transmission_levels();
+    fill_transmission_levels(state.transmission.texture, state.transmission.width, state.transmission.height);
     // the far side of double-sided glass (a bowl, a glass's back wall) is behind its near side:
     // its back faces, refracting the picture so far, drawn into it (as three does)
     bool backs;
@@ -2900,9 +2903,23 @@ fn void render_transmission(Renderer* r, Scene* scene, Camera* camera, Mat4 view
             }
         }
         sg::end_pass();
-        fill_transmission_levels();
+        fill_transmission_levels(state.transmission.texture, state.transmission.width, state.transmission.height);
     }
     r.render_target = prev;
+}
+
+// Half way through the main pass into a linear target: the pass ends, the picture so far (the
+// opaque scene, resolved) becomes the transmission picture and its mip levels, and the pass
+// goes on where it left off, for the glass that refracts it.
+fn void copy_for_transmission(Renderer* r, SgPass* pass) @local {
+    sg::end_pass();
+    RenderTarget* rt = r.render_target;
+    fill_transmission_levels(rt.texture, rt.width, rt.height);
+    SgPass again = *pass;
+    for (int i = 0; i <= (rt.mrt ? MRT_COUNT : 0); i++) again.action.colors[i].load_action = LOAD;
+    again.action.depth.load_action = LOAD;
+    again.label = "drie-main-glass";
+    profile::begin_pass(&again);
 }
 
 // A transmission material: it shows the picture of what is behind it (render_transmission).
@@ -3093,7 +3110,12 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera) {
     bool refraction;
     foreach (&item : state.opaque) refraction = refraction || refracts(item);
     foreach (&item : state.transparent) refraction = refraction || refracts(item);
-    if (refraction) render_transmission(self, scene, camera, view_proj_rel, &fs);
+    // Into a linear target (RGBA16F), the main pass's own picture of the opaque scene is what
+    // the glass refracts: it is copied half way through the pass (copy_for_transmission), as
+    // engines that draw the scene once do. Otherwise (a tone mapped picture can't be refracted
+    // as light), the opaque scene is drawn again for it first, as three does.
+    bool split = refraction && self.render_target && self.render_target.is_linear();
+    if (refraction && !split) render_transmission(self, scene, camera, view_proj_rel, &fs);
     profile::stop("render: transmission", pt);
     pt = profile::start();
 
@@ -3120,6 +3142,10 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera) {
     } else {
         pass.swapchain = sglue::swapchain();
     }
+    if (split) {
+        // (multisampled: kept for the second half of the pass)
+        for (int i = 0; i <= (self.render_target.mrt ? MRT_COUNT : 0); i++) pass.action.colors[i].store_action = STORE;
+    }
     profile::begin_pass(&pass);
     // (not with a cull box: everything would have holes)
     bool prepass = self.depth_prepass && !self.cull_box;
@@ -3138,6 +3164,8 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera) {
     pt = profile::start();
     draw_background(scene, camera, view_proj_rel, &fs);
     foreach (&item : state.opaque) {
+        // (the glass after the copy, see below)
+        if (split && refracts(item)) continue;
         DrawKind kind = SOLID;
         if (draws_lines(item) || has_holes(item)) kind = prepass && prepassed(item) ? PRETESTED : CUT;
         draw_item(item, view_proj_rel, &fs, kind);
@@ -3145,7 +3173,51 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera) {
     profile::stop("render: main opaque", pt);
     pt = profile::start();
     draw_backdrop(scene, camera, view_proj_rel, &fs);
-    if (!self.prof_no_transparent) foreach (&item : state.transparent) draw_item(item, view_proj_rel, &fs);
+    bool backs;
+    if (split) {
+        profile::stop("render: backdrop", pt);
+        pt = profile::start();
+        // the far side of double-sided glass is behind its near side: its back faces first,
+        // refracting the opaque scene, and the picture copied again with them in it
+        for (int list = 0; list < 2 && !backs; list++) {
+            foreach (&item : list == 0 ? state.opaque : state.transparent) {
+                if (refracts(item) && item.mesh.material.side == DOUBLE_SIDE) backs = true;
+            }
+        }
+        copy_for_transmission(self, &pass);
+        if (backs) {
+            for (int list = 0; list < 2; list++) {
+                foreach (&item : list == 0 ? state.opaque : state.transparent) {
+                    Material* mat = item.mesh.material;
+                    if (!refracts(item) || mat.side != DOUBLE_SIDE) continue;
+                    mat.side = BACK_SIDE;
+                    draw_item(item, view_proj_rel, &fs, list == 0 && !mat.wireframe && !has_holes(item) ? SOLID : CUT);
+                    mat.side = DOUBLE_SIDE;
+                }
+            }
+            copy_for_transmission(self, &pass);
+        }
+        foreach (&item : state.opaque) {
+            if (!refracts(item)) continue;
+            Material* mat = item.mesh.material;
+            Side side = mat.side;
+            if (backs && side == DOUBLE_SIDE) mat.side = FRONT_SIDE;
+            draw_item(item, view_proj_rel, &fs, mat.wireframe || has_holes(item) ? CUT : SOLID);
+            mat.side = side;
+        }
+        profile::stop("render: transmission", pt);
+        pt = profile::start();
+    }
+    if (!self.prof_no_transparent) {
+        foreach (&item : state.transparent) {
+            Material* mat = item.mesh.material;
+            Side side = mat.side;
+            // (its back faces are drawn already)
+            if (split && backs && side == DOUBLE_SIDE && refracts(item)) mat.side = FRONT_SIDE;
+            draw_item(item, view_proj_rel, &fs);
+            mat.side = side;
+        }
+    }
     // menus and fades on top (drie::ui)
     if (!self.render_target) draw_overlays();
     sg::end_pass();

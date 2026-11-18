@@ -1821,17 +1821,48 @@ void main() {
         ao *= 1.0 + (occlusion - 1.0) * ext_params.y;
     }
 
+    g_iridescence = 0.0;
+    g_clearcoat = 0.0;
+    // (a coat that the surface hook lays on: smooth, along the surface's own normal)
+    g_clearcoat_rough = 0.045;
+    g_clearcoat_n = geo_n;
+    g_clearcoat_direct = vec3(0.0);
+    g_sheen_rough = 0.0;
+    g_sheen_light = vec3(0.0);
+    // the clear coat and the sheen before the surface hook, which can change them (a wet
+    // surface: a coat of water over it)
+    if (mode == 3) {
+        // the clear coat: its strength and roughness, and its normal (the surface's own, under
+        // the normal map, or from its own map)
+        g_clearcoat = clearcoat_params.x;
+        if (g_clearcoat > 0.0) {
+            if (has_map(MAP_CLEARCOAT)) g_clearcoat *= material_map(MAP_CLEARCOAT).r;
+            g_clearcoat = clamp(g_clearcoat, 0.0, 1.0);
+            g_clearcoat_rough = clearcoat_params.y;
+            if (has_map(MAP_CLEARCOAT_ROUGHNESS)) g_clearcoat_rough *= material_map(MAP_CLEARCOAT_ROUGHNESS).g;
+            g_clearcoat_rough = clamp(g_clearcoat_rough, 0.045, 1.0);
+            g_clearcoat_n = geo_n;
+            if (has_map(MAP_CLEARCOAT_NORMAL)) {
+                vec3 t = material_map(MAP_CLEARCOAT_NORMAL).xyz * 2.0 - 1.0;
+                t.xy *= clearcoat_params.zw;
+                int cs = map_uv_slot(MAP_CLEARCOAT_NORMAL);
+                g_clearcoat_n = perturb_with(geo_n, t, slot_dx(cs), slot_dy(cs));
+            }
+        }
+        // the sheen (0 roughness: none)
+        if (any(greaterThan(sheen_params.rgb, vec3(0.0)))) {
+            g_sheen_color = sheen_params.rgb;
+            g_sheen_rough = clamp(sheen_params.a, 1e-4, 1.0);
+            if (has_map(MAP_SHEEN_COLOR)) g_sheen_color *= material_map(MAP_SHEEN_COLOR).rgb;
+            if (has_map(MAP_SHEEN_ROUGHNESS)) g_sheen_rough *= material_map(MAP_SHEEN_ROUGHNESS).a;
+        }
+    }
     if (mode != 0) surface_hook(geo_n, g_base, g_rough, g_metal);
     // what it reflects head on: 4% for glass's IOR of 1.5, tinted and scaled by the specular
     // color and intensity (KHR_materials_specular); metals reflect their own color
     g_f0 = mix(vec3(0.04), g_base.rgb, g_metal);
     g_f90 = 1.0;
-    g_iridescence = 0.0;
     g_anisotropy = 0.0;
-    g_clearcoat = 0.0;
-    g_clearcoat_direct = vec3(0.0);
-    g_sheen_rough = 0.0;
-    g_sheen_light = vec3(0.0);
     if (mode == 3) {
         float ior = transmission_params.x > 0.0 ? transmission_params.x : 1.5;
         float r0 = (ior - 1.0) / (ior + 1.0);
@@ -1857,30 +1888,6 @@ void main() {
                 g_iridescence_fresnel = mix(over_dielectric, over_metal, g_metal);
                 g_iridescence_f0 = mix(schlick_to_f0(over_dielectric, 1.0, nov), schlick_to_f0(over_metal, 1.0, nov), g_metal);
             }
-        }
-        // the clear coat: its strength and roughness, and its normal (the surface's own, under
-        // the normal map, or from its own map)
-        g_clearcoat = clearcoat_params.x;
-        if (g_clearcoat > 0.0) {
-            if (has_map(MAP_CLEARCOAT)) g_clearcoat *= material_map(MAP_CLEARCOAT).r;
-            g_clearcoat = clamp(g_clearcoat, 0.0, 1.0);
-            g_clearcoat_rough = clearcoat_params.y;
-            if (has_map(MAP_CLEARCOAT_ROUGHNESS)) g_clearcoat_rough *= material_map(MAP_CLEARCOAT_ROUGHNESS).g;
-            g_clearcoat_rough = clamp(g_clearcoat_rough, 0.045, 1.0);
-            g_clearcoat_n = geo_n;
-            if (has_map(MAP_CLEARCOAT_NORMAL)) {
-                vec3 t = material_map(MAP_CLEARCOAT_NORMAL).xyz * 2.0 - 1.0;
-                t.xy *= clearcoat_params.zw;
-                int cs = map_uv_slot(MAP_CLEARCOAT_NORMAL);
-                g_clearcoat_n = perturb_with(geo_n, t, slot_dx(cs), slot_dy(cs));
-            }
-        }
-        // the sheen (0 roughness: none)
-        if (any(greaterThan(sheen_params.rgb, vec3(0.0)))) {
-            g_sheen_color = sheen_params.rgb;
-            g_sheen_rough = clamp(sheen_params.a, 1e-4, 1.0);
-            if (has_map(MAP_SHEEN_COLOR)) g_sheen_color *= material_map(MAP_SHEEN_COLOR).rgb;
-            if (has_map(MAP_SHEEN_ROUGHNESS)) g_sheen_rough *= material_map(MAP_SHEEN_ROUGHNESS).a;
         }
         // anisotropy (three's): highlights drawn out along a direction of the surface, as on
         // brushed metal. The direction in the tangent frame, turned by the map's (rg, around
