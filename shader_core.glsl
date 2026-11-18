@@ -78,7 +78,12 @@ vec4 frame_custom[2];
 
 @vs vs
 layout(binding=0) uniform vs_params {
+    // world -> clip space, measured from view_origin: gl_Position = view_proj * (world - origin).
+    // Far from the world's origin (a farm 6 km out) a plain view_proj * world loses the depth:
+    // clip z and w come out as the small difference of two large sums, rounded apart, and
+    // surfaces centimetres apart swap places from frame to frame
     mat4 view_proj;
+    vec4 view_origin;   // xyz: the camera's position
     mat4 model;
     mat4 normal_mat;
     vec4 uv_transform;  // xy = repeat, zw = offset
@@ -131,7 +136,7 @@ void main() {
     v_uv = uv * uv_transform.xy + uv_transform.zw;
     v_color = color0.rgb;
     v_alpha = color0.a;
-    gl_Position = view_proj * wp;
+    gl_Position = view_proj * vec4(wp.xyz - view_origin.xyz, 1.0);
     v_clip = gl_Position;
     v_clip.xy -= motion.zw * v_clip.w;
     v_prev_clip = v_clip;
@@ -149,7 +154,8 @@ void main() {
 
 @vs shadow_vs
 layout(binding=0) uniform shadow_vs_params {
-    mat4 s_view_proj;
+    mat4 s_view_proj;   // world - s_origin -> the light's clip space (see vs_params)
+    vec4 s_origin;      // xyz: the light's position (0 for the sun's orthographic maps)
     mat4 s_model;
     vec4 s_uv_transform;
     vec4 s_sway;
@@ -179,7 +185,7 @@ void main() {
     v_uv = uv * s_uv_transform.xy + s_uv_transform.zw;
     // keep the unused attributes alive so both programs share one vertex layout
     v_uv += (normal.xy + color0.xy) * 0.0;
-    gl_Position = s_view_proj * wp;
+    gl_Position = s_view_proj * vec4(wp.xyz - s_origin.xyz, 1.0);
 }
 @end
 
@@ -315,7 +321,7 @@ struct gpu_spot_light {
     vec4 shadow; // x = its shadow in spot_shadows (-1: none), y = shadow intensity (0..1)
 };
 struct gpu_spot_shadow {
-    mat4 mat;    // world -> shadow map uv + depth
+    mat4 mat;    // world - the light's position -> shadow map uv + depth
     vec4 params; // x = 1: in shadow_map, 2: in shadow_atlas, y = normal bias (m), z = texel size,
                  //   w = blur radius in texels
     vec4 rect;   // the light's tile in shadow_atlas: xy = offset, zw = size
@@ -569,7 +575,9 @@ float spot_shadow_of(int s, int si, vec3 n) {
     // push the lookup off the surface, more at grazing angles and far away where texels are big
     float slope = 1.0 - clamp(dot(n, to_light / dist), 0.0, 1.0);
     vec3 p = v_world_pos + n * params.y * dist * (0.4 + slope);
+    // (the matrix takes the point from the light, see vs_params)
     mat4 m = spot_shadow_data[si].mat;
+    p -= spots[s].pos.xyz;
     vec4 sp = m * vec4(p, 1.0);
     if (sp.w <= 0.0) return 1.0;
     vec3 c = sp.xyz / sp.w;

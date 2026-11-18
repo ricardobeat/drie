@@ -434,7 +434,7 @@ fn void Renderer.render_back_faces(&self, RenderTarget* target) {
             .label = "drie-back-faces",
         }
     );
-    Mat4 view_proj = state.last_view_proj;
+    Mat4 view_proj = state.last_view_proj_rel;
     foreach (&item : state.opaque) {
         Material* mat = item.mesh.material;
         // (what has holes or two sides has no inside to speak of)
@@ -518,8 +518,11 @@ struct RendererState @local {
     // last (DisplayColorSpace's ordinal, -1: none yet)
     bool float_window;
     int window_colors;
-    // the last render's view_proj (as drawn, jitter and all), for render_back_faces
-    Mat4 last_view_proj;
+    // the last render's view_proj (as drawn, jitter and all), for render_back_faces: of
+    // world - view_origin (the camera's position), as the vertex shader takes it (see
+    // relative_view_proj)
+    Mat4 last_view_proj_rel;
+    Vector3 view_origin;
     SgPipeline back_pipeline;
     // the camera's jitter in clip space (per unit of w), left out of the motion vectors
     Vector2 motion_jitter;
@@ -1175,7 +1178,9 @@ fn void update_shadow_atlas(Scene* scene, Camera* camera) @local {
         sg::apply_viewport((i % columns) * tile, (i / columns) * tile, tile, tile, top_left);
         sg::apply_scissor_rect((i % columns) * tile, (i / columns) * tile, tile, tile, top_left);
         if (!all) clear_atlas_tile();
-        foreach (&item : state.casters) draw_shadow_item(item, light_vp);
+        Mat4 light_rel    = shadow_view_proj(sl, true);
+        Vector3 light_pos = sl.matrix_world.get_position();
+        foreach (&item : state.casters) draw_shadow_item(item, light_rel, light_pos);
     }
     sg::end_pass();
     state.casters.clear();
@@ -1476,13 +1481,15 @@ fn Vector3 spot_direction(SpotLight* sl) @private {
     return (target - sl.matrix_world.get_position()).normalize();
 }
 
-// View-projection of the shadow casting spot light.
-fn Mat4 shadow_view_proj(SpotLight* sl) @local {
+// View-projection of the shadow casting spot light. `relative`: of world - the light's
+// position, as the shadow pass and the lookups take it (see relative_view_proj).
+fn Mat4 shadow_view_proj(SpotLight* sl, bool relative = false) @local {
     Vector3 pos = sl.matrix_world.get_position();
     Vector3 dir = spot_direction(sl);
     Vector3 up  = math::abs(dir.y) > 0.99f ? (Vector3) { 1, 0, 0 } : (Vector3) { 0, 1, 0 };
     Mat4 world  = mat4_look_at(pos, pos + dir, up, true);
     world[3] = { pos.x, pos.y, pos.z, 1 };
+    if (relative) world[3] = { 0, 0, 0, 1 };
     float fov = math::min(sl.angle * 2 * RAD2DEG * clamp(sl.shadow.focus, 0.05f, 1) + 4, 150.0f);
     float far = sl.shadow.far > 0 ? sl.shadow.far : (sl.distance > 0 ? sl.distance : 50.0f);
     Mat4 proj = mat4_perspective(fov, 1, math::max(sl.shadow.near, 0.01f), far, 1, depth_zero_to_one());
@@ -1584,7 +1591,7 @@ fn FsParams build_light_params(Scene* scene, Camera* camera, SpotLight* caster) 
                     bias[2][2] = zo ? 1.0f : 0.5f;
                     bias[3][2] = zo ? 0.0f : 0.5f;
                     GpuSpotShadow sh;
-                    sh.mat = bias.mul(shadow_view_proj(sl));
+                    sh.mat = bias.mul(shadow_view_proj(sl, true));
                     float size = sl == caster ? (float)state.shadow_size : (float)state.atlas_tile;
                     sh.params = { sl == caster ? 1 : 2, sl.shadow.normal_bias, 1.0f / size, sl.shadow.radius };
                     float fov   = math::min(sl.angle * 2 * RAD2DEG * clamp(sl.shadow.focus, 0.05f, 1) + 4, 150.0f);
@@ -1730,11 +1737,28 @@ fn bool prepassed(DrawItem* item) @local {
 }
 
 // `normals`: false when nothing reads them (the depth prepass), to save the inverse.
+// The camera's projection * view, measured from `origin` (the camera's position): takes
+// world - origin, so the vertex shader never multiplies the large coordinates of a place far
+// from the world's origin into clip space (see shader_core.glsl's vs_params). The view's
+// translation is worked out in doubles; the rest are small numbers.
+fn Mat4 relative_view_proj(Camera* camera, Vector3 origin) @local {
+    Mat4 view = camera.matrix_world_inverse;
+    for (int r = 0; r < 3; r++) {
+        double t = (double)view[3][r];
+        t += (double)view[0][r] * (double)origin.x + (double)view[1][r] * (double)origin.y
+            + (double)view[2][r] * (double)origin.z;
+        view[3][r] = (float)t;
+    }
+    return camera.projection_matrix.mul(view);
+}
+
+// `view_proj`: world - state.view_origin -> clip space (see relative_view_proj).
 fn VsParams vs_params_of(DrawItem* item, Mat4 view_proj, bool normals = true) @local {
     Mesh* m       = item.mesh;
     Material* mat = m.material;
     VsParams vs = {
         .view_proj = view_proj,
+        .view_origin = { ...state.view_origin, 0 },
         .model = m.matrix_world,
         .normal_mat = normals ? m.matrix_world.invert()
         .transpose() : m.matrix_world, .uv_transform = uv_transform(
@@ -1925,7 +1949,8 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     r.info.triangles += draw_geometry(item, mat.wireframe);
 }
 
-fn void draw_shadow_item(DrawItem* item, Mat4 light_vp) @local {
+// `light_vp`: world - `origin` -> the light's clip space.
+fn void draw_shadow_item(DrawItem* item, Mat4 light_vp, Vector3 origin = { 0, 0, 0 }) @local {
     Mesh* m       = item.mesh;
     Material* mat = m.material;
     Texture* map  = ready(mat.map);
@@ -1940,6 +1965,7 @@ fn void draw_shadow_item(DrawItem* item, Mat4 light_vp) @local {
     sg::apply_bindings(&bind);
     ShadowVsParams vs = {
         .s_view_proj = light_vp,
+        .s_origin = { ...origin, 0 },
         .s_model = m.matrix_world,
         .s_uv_transform = uv_transform(mat),
         .s_sway = sway_params(mat),
@@ -2128,6 +2154,8 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera) {
     camera.matrix_world_inverse = camera.matrix_world.invert();
     Mat4 view_proj        = camera.projection_matrix.mul(camera.matrix_world_inverse);
     Mat4 steady_view_proj = view_proj;
+    Vector3 camera_pos    = camera.matrix_world.get_position();
+    Mat4 view_proj_rel    = relative_view_proj(camera, camera_pos);
     state.motion_jitter = { };
     if (camera.jitter != { }) {
         // shifted across the picture after the projection: x' = x + s * w
@@ -2139,10 +2167,11 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera) {
         for (int c = 0; c < 4; c++) {
             view_proj[c][0] += s.x * view_proj[c][3];
             view_proj[c][1] += s.y * view_proj[c][3];
+            view_proj_rel[c][0] += s.x * view_proj_rel[c][3];
+            view_proj_rel[c][1] += s.y * view_proj_rel[c][3];
         }
         state.motion_jitter = s;
     }
-    Vector3 camera_pos = camera.matrix_world.get_position();
     // motion vectors: every render with MRT is the next frame of them
     state.motion = self.render_target && self.render_target.mrt;
     if (state.motion) {
@@ -2157,7 +2186,8 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera) {
 
     profile::stop("render: matrices", pt);
     pt = profile::start();
-    state.last_view_proj = view_proj;
+    state.last_view_proj_rel = view_proj_rel;
+    state.view_origin = camera_pos;
     state.opaque.clear();
     state.transparent.clear();
     state.casters.clear();
@@ -2214,7 +2244,9 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera) {
             }
         );
         sg::apply_pipeline(get_shadow_pipeline());
-        foreach (&item : state.spot_casters) draw_shadow_item(item, caster_vp);
+        Mat4 caster_rel    = shadow_view_proj(caster, true);
+        Vector3 caster_pos = caster.matrix_world.get_position();
+        foreach (&item : state.spot_casters) draw_shadow_item(item, caster_rel, caster_pos);
         sg::end_pass();
     }
     profile::stop("render: spot shadow", pt);
@@ -2291,7 +2323,7 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera) {
     }
     if (prepass) {
         foreach (&item : state.opaque) {
-            if (prepassed(item)) draw_depth_item(item, view_proj);
+            if (prepassed(item)) draw_depth_item(item, view_proj_rel);
         }
     }
     profile::stop("render: depth prepass", pt);
@@ -2299,12 +2331,12 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera) {
     foreach (&item : state.opaque) {
         DrawKind kind = SOLID;
         if (item.mesh.material.wireframe || has_holes(item)) kind = prepass && prepassed(item) ? PRETESTED : CUT;
-        draw_item(item, view_proj, &fs, kind);
+        draw_item(item, view_proj_rel, &fs, kind);
     }
     profile::stop("render: main opaque", pt);
     pt = profile::start();
-    draw_backdrop(scene, camera, view_proj, &fs);
-    if (!self.prof_no_transparent) foreach (&item : state.transparent) draw_item(item, view_proj, &fs);
+    draw_backdrop(scene, camera, view_proj_rel, &fs);
+    if (!self.prof_no_transparent) foreach (&item : state.transparent) draw_item(item, view_proj_rel, &fs);
     // menus and fades on top (drie::ui)
     if (!self.render_target) draw_overlays();
     sg::end_pass();
