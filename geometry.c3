@@ -243,6 +243,8 @@ fn void BufferGeometry.free_cpu(&self) {
 fn void BufferGeometry.upload(&self) {
     if (self.uploaded) return;
     self.dispose();
+    // (nothing to draw: Metal makes no buffer of no bytes)
+    if (!self.indices.len() || !self.vertices.len()) return;
     if (self.bounds_radius == 0) self.compute_bounding_sphere();
     self.index_count = (uint)self.indices.len();
     self.vbuf = sg::make_buffer(

@@ -120,15 +120,23 @@ fn RadianceCascades* radiance_cascades(Vector3 min, Vector3 max, float spacing =
         r.counts[l] = n.x * n.y * n.z * d * d;
         at += r.counts[l];
     }
-    r.cascade_buf = storage_buffer((sz)at * 16, label: "drie-rc-cascades");
-    r.irradiance_buf = storage_buffer((sz)r.nx * r.ny * r.nz * 6 * 16, label: "drie-rc-irradiance");
-    r.light_buf = storage_buffer(RC_MAX_LIGHTS * RcLight::size, cpu_write: true, label: "drie-rc-lights");
-    r.voxel_buf = storage_buffer(16, label: "drie-rc-voxels");
-    r.brick_buf = storage_buffer(16, label: "drie-rc-bricks");
-    SgBackend backend = sg::query_backend();
-    r.trace = compute_pass(shaders::rc_trace_shader_desc(backend), "drie-rc-trace");
-    r.gather = compute_pass(shaders::rc_gather_shader_desc(backend), "drie-rc-gather");
     return r;
+}
+
+// Makes the GPU's part (the buffers and the passes), if it isn't made yet. update() and the
+// renderer call it; until then the cascades touch no GPU, so they can be made and voxelized
+// on a thread that doesn't draw.
+fn void RadianceCascades.upload(&self) {
+    if (self.trace) return;
+    int at = self.offsets[self.levels - 1] + self.counts[self.levels - 1];
+    self.cascade_buf = storage_buffer((sz)at * 16, label: "drie-rc-cascades");
+    self.irradiance_buf = storage_buffer((sz)self.nx * self.ny * self.nz * 6 * 16, label: "drie-rc-irradiance");
+    self.light_buf = storage_buffer(RC_MAX_LIGHTS * RcLight::size, cpu_write: true, label: "drie-rc-lights");
+    self.voxel_buf = storage_buffer(16, label: "drie-rc-voxels");
+    self.brick_buf = storage_buffer(16, label: "drie-rc-bricks");
+    SgBackend backend = sg::query_backend();
+    self.trace = compute_pass(shaders::rc_trace_shader_desc(backend), "drie-rc-trace");
+    self.gather = compute_pass(shaders::rc_gather_shader_desc(backend), "drie-rc-gather");
 }
 
 // The probes of a cascade along each axis.
@@ -347,6 +355,7 @@ fn bool RadianceCascades.reaches(&self, Vector3 p, float distance) {
 // Traces the cascades for this frame with the scene's lights as they are. Call it once a
 // frame before render(), outside of any pass.
 fn void RadianceCascades.update(&self, Scene* scene) {
+    self.upload();
     if (self.voxels_changed) {
         self.voxel_buf.write(self.voxels.ptr, (sz)self.voxels.len * uint::size);
         // the solid voxels in each block of 4 x 4 x 4, for the rays to skip the empty ones
@@ -435,10 +444,11 @@ fn void RadianceCascades.reset(&self) {
 }
 
 fn void RadianceCascades.dispose(&self) {
+    free(self.voxels);
+    if (!self.trace) return;
     self.voxel_buf.dispose();
     self.brick_buf.dispose();
     self.cascade_buf.dispose();
     self.irradiance_buf.dispose();
     self.light_buf.dispose();
-    free(self.voxels);
 }
