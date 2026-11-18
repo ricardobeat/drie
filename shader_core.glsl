@@ -5,6 +5,7 @@ in vec3 normal;
 in vec2 uv;
 in vec4 color0;
 in vec2 uv1;      // the second uv set (glTF's TEXCOORD_1, three's uv1), zeros without one
+in vec4 tangent;  // the tangents (BufferGeometry.tangents: glTF's TANGENT), zeros without them
 // Rows of the per-instance 3x4 matrix (identity for plain meshes).
 in vec4 inst0;
 in vec4 inst1;
@@ -109,6 +110,7 @@ out vec3 v_world_pos;
 out vec3 v_normal;
 out vec2 v_uv;
 out vec2 v_uv1;
+out vec4 v_tangent;   // the tangent in the world, w = the bitangent's sign (zeros: none)
 out vec3 v_color;
 out float v_alpha;
 out vec4 v_clip;
@@ -125,6 +127,7 @@ void main() {
         v_normal = vec3(0.0, 1.0, 0.0);
         v_uv = vec2(0.0);
         v_uv1 = vec2(0.0);
+        v_tangent = vec4(0.0);
         v_color = vec3(0.0);
         v_alpha = 0.0;
         v_clip = vec4(2.0, 2.0, 2.0, 1.0);
@@ -145,6 +148,8 @@ void main() {
     v_normal = (normal_mat * vec4(instance_dir(normal), 0.0)).xyz;
     v_uv = vec2(dot(uv_transform[0].xyz, vec3(uv, 1.0)), dot(uv_transform[1].xyz, vec3(uv, 1.0)));
     v_uv1 = uv1;
+    // (a direction along the surface: the model matrix's, as three's)
+    v_tangent = vec4((model * vec4(instance_dir(tangent.xyz), 0.0)).xyz, tangent.w);
     v_color = color0.rgb;
     v_alpha = color0.a;
     gl_Position = view_proj * vec4(wp.xyz - view_origin.xyz, 1.0);
@@ -271,7 +276,7 @@ layout(binding=1) uniform fs_params {
     vec4 specular;     // phong specular color, w = flags (1: vertex colors, 2: foliage, 4: receive shadow, 8: glass,
                        //   16: vertex colors are baked light (emissive.w = strength), 32: screen-space map)
     vec4 mat_params;   // x = mode, y = roughness, z = metalness, w = shininess
-    vec4 tex_params;   // x = has map, y = normal map scale (0 = none), z = what tex_arm holds (1: ambient
+    vec4 tex_params;   // x = has map, y = has a normal map (tangent_params: its scale), z = what tex_arm holds (1: ambient
                        //   occlusion in r, 2: roughness in g, 4: metalness in b), w = alpha test
     vec4 env_params;   // x = has environment map, y = intensity, z = 1: the scene's environment
                        // lights the diffuse part too (env_sh), w = meters that alpha 1 of the
@@ -351,6 +356,9 @@ layout(binding=1) uniform fs_params {
     vec4 sheen_params;         // Material.sheen_color * sheen (linear rgb; 0: none), a = sheen_roughness
     vec4 iridescence_params;   // Material.iridescence: x = strength (0: none), y = the film's IOR,
                                //   z, w = its thinnest and thickest (nm)
+    vec4 tangent_params;       // what is read in the tangent frame: xy = Material.normal_scale, zw =
+                               //   Material.anisotropy's direction in the frame (the cos and sin
+                               //   of anisotropy_rotation) times its strength (0: none)
     vec4 light_map_params;     // x = Material.light_map_intensity
     vec4 shadow_ext;           // x = the shadow casting directional light's shadow.bias (VSM)
     vec4 bake_params;          // baking a light map (lightmap.c3): x = 1, y = the new sample's
@@ -377,6 +385,7 @@ layout(binding=1) uniform fs_params {
 #define MAP_ALPHA 12                // g
 #define MAP_EMISSIVE 13             // rgb
 #define MAP_LIGHT 14                // rgb
+#define MAP_ANISOTROPY 15           // rg = direction, b = strength
 
 // Lights live in storage buffers, as many as there are. Point and spot lights are sorted into
 // a grid of clusters (froxels: tiles of the screen, cut into slices of depth that grow
@@ -432,6 +441,7 @@ in vec3 v_world_pos;
 in vec3 v_normal;
 in vec2 v_uv;
 in vec2 v_uv1;
+in vec4 v_tangent;
 in vec3 v_color;
 in float v_alpha;
 in vec4 v_clip;
@@ -488,6 +498,21 @@ float v_smith(float nov, float nol, float a) {
     float gv = nol * sqrt(a2 + (1.0 - a2) * nov * nov);
     float gl = nov * sqrt(a2 + (1.0 - a2) * nol * nol);
     return 0.5 / max(gv + gl, 1e-6);
+}
+
+// Anisotropic GGX (Filament's, as three's): alpha t along the direction t, alpha b across it
+// (b); the cosines are with t and b.
+float v_smith_aniso(float at, float ab, float tov, float bov, float tol, float bol, float nov, float nol) {
+    float gv = nol * length(vec3(at * tov, ab * bov, nov));
+    float gl = nov * length(vec3(at * tol, ab * bol, nol));
+    return 0.5 / max(gv + gl, 1e-6);
+}
+
+float d_ggx_aniso(float at, float ab, float noh, float toh, float boh) {
+    float a2 = at * ab;
+    vec3 d = vec3(ab * toh, at * boh, a2 * noh);
+    float w2 = a2 / dot(d, d);
+    return RECIPROCAL_PI * a2 * w2 * w2;
 }
 
 int flags() { return int(specular.w + 0.5); }
@@ -616,6 +641,9 @@ vec3 g_sheen_light;       // the sheen's light, from the lights and all around
 float g_iridescence;
 vec3 g_iridescence_fresnel; // the film's reflectance toward the viewer
 vec3 g_iridescence_f0;      //   and head on
+float g_anisotropy;         // how much the highlights stretch along g_anisotropy_t (0..1)
+vec3 g_anisotropy_t;        // the direction they stretch along, in the tangent frame's scale
+vec3 g_anisotropy_b;        //   and across it
 vec3 g_dpdx;      // how the world position changes from one pixel to the next (taken where
 vec3 g_dpdy;      // the flow is uniform, for the shadows' tap counts)
 // Parallax occlusion mapping (Material.parallax_map). The material's maps are read at g_uv,
@@ -679,7 +707,17 @@ vec3 direct(int mode, vec3 n, vec3 v, vec3 l, float dist, vec3 radiance, vec3 di
         float nov = clamp(abs(dot(n, v)), 1e-4, 1.0);
         vec3 fresnel = g_f0 + (vec3(g_f90) - g_f0) * pow(1.0 - voh, 5.0);
         if (g_iridescence > 0.0) fresnel = mix(fresnel, g_iridescence_fresnel, g_iridescence);
-        spec += irradiance * fresnel * v_smith(nov, nol, a_wide) * d_ggx(noh, a_wide) * norm * norm;
+        float vis = v_smith(nov, nol, a_wide);
+        float d = d_ggx(noh, a_wide);
+        if (g_anisotropy > 0.0) {
+            // rougher along g_anisotropy_t, by as much as it is anisotropic (three's alphaT)
+            float at = max(mix(a, 1.0, g_anisotropy * g_anisotropy), a_wide);
+            vec3 t = g_anisotropy_t;
+            vec3 b = g_anisotropy_b;
+            vis = v_smith_aniso(at, a_wide, dot(t, v), dot(b, v), dot(t, l), dot(b, l), nov, nol);
+            d = d_ggx_aniso(at, a_wide, noh, dot(t, h), dot(b, h));
+        }
+        spec += irradiance * fresnel * vis * d * norm * norm;
     }
     return result;
 }
@@ -1290,23 +1328,48 @@ vec2 slot_dy(int slot) { return slot_d(slot, uv_rel[slot * 2].w > 0.5 ? g_duv1dy
 
 #define slot_texel(tex, slot) textureGrad(sampler2D(tex, tex_smp), slot_uv(slot), slot_dx(slot), slot_dy(slot))
 
-// Tangent-space normal mapping without vertex tangents (cotangent frame from screen derivatives).
-// t: the map's texel, in -1..1; duv1, duv2: how the map's uv changes from one pixel to the next.
-vec3 perturb_with(vec3 n, vec3 t, vec2 duv1, vec2 duv2) {
-    vec3 dp1 = dFdx(v_world_pos);
-    vec3 dp2 = dFdy(v_world_pos);
-    vec3 dp2perp = cross(dp2, n);
-    vec3 dp1perp = cross(n, dp1);
-    vec3 tangent = dp2perp * duv1.x + dp1perp * duv2.x;
-    vec3 bitangent = dp2perp * duv1.y + dp1perp * duv2.y;
-    float invmax = inversesqrt(max(max(dot(tangent, tangent), dot(bitangent, bitangent)), 1e-12));
-    return normalize(tangent * invmax * t.x + bitangent * invmax * t.y + n * t.z);
+// The surface's tangent frame (three's tbn) around the normal n (facing the viewer): the
+// tangent t, along which the uv's u grows, and the bitangent b. From the vertex tangents where
+// the geometry has them (b = cross(normal, tangent) * w, glTF's), else from how the position
+// and a map's uv change from one pixel to the next (duv1, duv2: that map's; three's
+// getTangentFrame, the cotangent frame: t and b scaled together, not to a length of 1 each).
+void tangent_frame(vec3 n, vec2 duv1, vec2 duv2, out vec3 t, out vec3 b) {
+    if (dot(v_tangent.xyz, v_tangent.xyz) > 0.0) {
+        vec3 vn = normalize(v_normal);
+        t = normalize(v_tangent.xyz);
+        b = normalize(cross(vn, t) * v_tangent.w);
+        // (a back face: the front's frame, turned over with its normal)
+        if (dot(n, vn) < 0.0) {
+            t = -t;
+            b = -b;
+        }
+        return;
+    }
+    vec3 dp2perp = cross(g_dpdy, n);
+    vec3 dp1perp = cross(n, g_dpdx);
+    t = dp2perp * duv1.x + dp1perp * duv2.x;
+    b = dp2perp * duv1.y + dp1perp * duv2.y;
+    // (three's formula takes the screen's y up, as GL's dFdy; Metal's and D3D's go down, which
+    // turns the frame around: its sign, the determinant's, keeps it the same on every backend)
+    float invmax = inversesqrt(max(max(dot(t, t), dot(b, b)), 1e-12));
+    if (dot(g_dpdx, dp2perp) < 0.0) invmax = -invmax;
+    t *= invmax;
+    b *= invmax;
 }
 
-vec3 perturb_normal(vec3 n, float scale) {
-    vec3 t = slot_texel(tex_normal, 0).xyz * 2.0 - 1.0;  // (parallax: g_uv)
-    t.xy *= scale;
-    return perturb_with(n, t, slot_dx(0), slot_dy(0));
+// Tangent-space normal mapping. m: the map's texel, in -1..1; duv1, duv2: how the map's uv
+// changes from one pixel to the next.
+vec3 perturb_with(vec3 n, vec3 m, vec2 duv1, vec2 duv2) {
+    vec3 t;
+    vec3 b;
+    tangent_frame(n, duv1, duv2, t, b);
+    return normalize(t * m.x + b * m.y + n * m.z);
+}
+
+vec3 perturb_normal(vec3 n) {
+    vec3 m = slot_texel(tex_normal, 0).xyz * 2.0 - 1.0;  // (parallax: g_uv)
+    m.xy *= tangent_params.xy;
+    return perturb_with(n, m, slot_dx(0), slot_dy(0));
 }
 
 // The material's map `role` (MAP_*) at g_uv, from the slot it is in; white without one.
@@ -1735,7 +1798,7 @@ void main() {
     vec3 geo_n = n;
     g_dpdx = dFdx(v_world_pos);
     g_dpdy = dFdy(v_world_pos);
-    if (tex_params.y != 0.0 && mode != 0) n = perturb_normal(n, tex_params.y);
+    if (tex_params.y != 0.0 && mode != 0) n = perturb_normal(n);
     if (mode != 0) normal_hook(geo_n, n);
 #ifdef MRT
     frag_normal.xy = pack_normal_octahedral(n);
@@ -1764,6 +1827,7 @@ void main() {
     g_f0 = mix(vec3(0.04), g_base.rgb, g_metal);
     g_f90 = 1.0;
     g_iridescence = 0.0;
+    g_anisotropy = 0.0;
     g_clearcoat = 0.0;
     g_clearcoat_direct = vec3(0.0);
     g_sheen_rough = 0.0;
@@ -1817,6 +1881,34 @@ void main() {
             g_sheen_rough = clamp(sheen_params.a, 1e-4, 1.0);
             if (has_map(MAP_SHEEN_COLOR)) g_sheen_color *= material_map(MAP_SHEEN_COLOR).rgb;
             if (has_map(MAP_SHEEN_ROUGHNESS)) g_sheen_rough *= material_map(MAP_SHEEN_ROUGHNESS).a;
+        }
+        // anisotropy (three's): highlights drawn out along a direction of the surface, as on
+        // brushed metal. The direction in the tangent frame, turned by the map's (rg, around
+        // its middle) and scaled by its b
+        if (any(notEqual(tangent_params.zw, vec2(0.0)))) {
+            vec2 dir = tangent_params.zw;
+            if (has_map(MAP_ANISOTROPY)) {
+                vec3 polar = material_map(MAP_ANISOTROPY).rgb;
+                vec2 turn = 2.0 * polar.rg - 1.0;
+                turn *= polar.b / max(length(turn), 1e-6);
+                dir = vec2(dir.x * turn.x - dir.y * turn.y, dir.y * turn.x + dir.x * turn.y);
+            }
+            g_anisotropy = length(dir);
+            dir = g_anisotropy > 0.0 ? dir / g_anisotropy : vec2(1.0, 0.0);
+            g_anisotropy = min(g_anisotropy, 1.0);
+            // the frame: the normal map's uv, or the clear coat's normal map's, or the color map's
+            vec3 t;
+            vec3 b;
+            if (tex_params.y != 0.0) {
+                tangent_frame(geo_n, slot_dx(0), slot_dy(0), t, b);
+            } else if (has_map(MAP_CLEARCOAT_NORMAL)) {
+                int cs = map_uv_slot(MAP_CLEARCOAT_NORMAL);
+                tangent_frame(geo_n, slot_dx(cs), slot_dy(cs), t, b);
+            } else {
+                tangent_frame(geo_n, g_duvdx, g_duvdy, t, b);
+            }
+            g_anisotropy_t = t * dir.x + b * dir.y;
+            g_anisotropy_b = b * dir.x - t * dir.y;
         }
     }
 #ifdef MRT
@@ -1967,7 +2059,16 @@ void main() {
             float nov = clamp(dot(n, v), 0.0, 1.0);
             vec3 f0 = g_iridescence > 0.0 ? mix(g_f0, g_iridescence_f0, g_iridescence) : g_f0;
             vec3 fr = f0 + (max(vec3((1.0 - g_rough) * g_f90), f0) - f0) * pow(1.0 - nov, 5.0);
-            vec3 r = dominant_reflection(reflect(-v, n), n, g_rough);
+            vec3 rn = n;
+            if (g_anisotropy > 0.0) {
+                // the normal bent toward the stretched highlight (three's
+                // getIBLAnisotropyRadiance, Filament's)
+                vec3 bent = normalize(cross(cross(g_anisotropy_b, v), g_anisotropy_b));
+                float k = 1.0 - g_anisotropy * (1.0 - g_rough);
+                k *= k;
+                rn = normalize(mix(bent, n, k * k));
+            }
+            vec3 r = dominant_reflection(reflect(-v, rn), rn, g_rough);
             vec3 env = env_reflection(r, g_rough, n);
             reflection_hook(r, env);
             env_term = env * fr;
@@ -2177,6 +2278,7 @@ in vec3 v_world_pos;
 in vec3 v_normal;
 in vec2 v_uv;
 in vec2 v_uv1;
+in vec4 v_tangent;
 in vec3 v_color;
 in float v_alpha;
 in vec4 v_clip;

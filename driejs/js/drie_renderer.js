@@ -20,13 +20,13 @@
 // backgroundBlurriness and backgroundIntensity), and the maps of MeshStandardMaterial and
 // MeshPhysicalMaterial: normal, roughness, metalness and ao maps, and the physical material's
 // transmission (with its maps), volume, ior, dispersion and specular color and intensity (with
-// theirs), clearcoat, sheen and iridescence. Any material's lightMap (on the first or the
+// theirs), clearcoat, sheen, iridescence and anisotropy (with the geometry's tangents). Any material's lightMap (on the first or the
 // second uv set: texture.channel) and lightMapIntensity, depthTest and depthWrite. Light maps
 // baked by js/progressive_lightmap.js's ProgressiveLightMap.
 //
 // Not mirrored yet: changes to a material's flags without `needsUpdate`, geometry groups and
 // draw ranges, renderOrder, toneMapped, points, sprites, morph targets, point light shadows,
-// an emissiveMap that isn't the map, anisotropy, render targets (getRenderTarget() is null,
+// an emissiveMap that isn't the map, render targets (getRenderTarget() is null,
 // setRenderTarget() does nothing) and post-processing.
 import { Color, EquirectangularReflectionMapping, EquirectangularRefractionMapping, Matrix4, NearestFilter } from "../vendor/three.core.js";
 import { setCanvas } from "./dom.js";
@@ -503,7 +503,8 @@ export class DrieRenderer {
 		}
 		const normals = a.normal ? floats(a.normal, 3) : a.lineDistance ? lineDistanceNormals(a.lineDistance) : null;
 		geometry.__drie = N.geometry(floats(a.position, 3), normals, floats(a.uv, 2), color,
-			geometry.index ? geometry.index.array : null, joints, floats(a.skinWeight, 4), floats(a.uv1, 2));
+			geometry.index ? geometry.index.array : null, joints, floats(a.skinWeight, 4), floats(a.uv1, 2),
+			floats(a.tangent, 4));
 		geometry.__drieVersion = version;
 		return geometry.__drie;
 	}
@@ -588,7 +589,7 @@ export class DrieRenderer {
 		const rough = material.roughnessMap;
 		const metal = rough && material.metalnessMap?.source === rough.source ? rough : material.metalnessMap;
 		const maps = [this._map(material.normalMap), material.normalScale ? material.normalScale.x : 1,
-			this._map(rough), this._map(metal), this._map(material.aoMap),
+			material.normalScale ? material.normalScale.y : 1, this._map(rough), this._map(metal), this._map(material.aoMap),
 			material.aoMapIntensity ?? 1, this._map(material.specularColorMap),
 			this._map(material.specularIntensityMap), this._map(material.transmissionMap),
 			this._map(material.thicknessMap), this._map(material.clearcoatMap),
@@ -597,7 +598,7 @@ export class DrieRenderer {
 			material.clearcoatNormalScale ? material.clearcoatNormalScale.y : 1,
 			this._map(material.sheenColorMap), this._map(material.sheenRoughnessMap),
 			this._map(material.iridescenceMap), this._map(material.iridescenceThicknessMap),
-			this._map(material.alphaMap),
+			this._map(material.anisotropyMap), this._map(material.alphaMap),
 			// (the color map, when it is the same image: drie's map_emissive)
 			material.__drieMapEmissive ? -1 : this._map(material.emissiveMap),
 			// (its own surroundings, instead of the scene's environment)
@@ -628,13 +629,14 @@ export class DrieRenderer {
 		N.materialDepth(material.__drie, material.depthTest !== false, material.depthWrite !== false);
 	}
 
-	// MeshPhysicalMaterial's clear coat, sheen and iridescence, sent when they change.
+	// MeshPhysicalMaterial's clear coat, sheen, iridescence and anisotropy, sent when they change.
 	_layers(material) {
 		if (!material.isMeshPhysicalMaterial) return;
 		const sc = material.sheenColor;
 		const layers = [material.clearcoat, material.clearcoatRoughness, material.sheen, sc.r, sc.g, sc.b,
 			material.sheenRoughness, material.iridescence, material.iridescenceIOR,
-			material.iridescenceThicknessMinimum, material.iridescenceThicknessMaximum];
+			material.iridescenceThicknessMinimum, material.iridescenceThicknessMaximum,
+			material.anisotropy, material.anisotropyRotation];
 		const key = layers.join(" ");
 		if (material.__drieLayers === key) return;
 		material.__drieLayers = key;

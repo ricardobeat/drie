@@ -70,7 +70,7 @@ three.js API coverage:
 | Meshes & LOD | ✅ | `Mesh`, `InstancedMesh`, `Lod` |
 | Lines | ✅ | `Line`, `LineSegments`, `LineLoop`, `LineBasic` and `LineDashed` materials |
 | Geometry | ✅ | `box`, `plane`, `sphere`, `cylinder`, `cone`, `torus`, `lathe`, `buffer_geometry`, `merge` |
-| Materials | ✅ | `MeshBasic`, `MeshLambert`, `MeshPhong`, `MeshStandard`, `MeshNormal`, `MeshPhysical` (transmission, volume, IOR, dispersion, specular, clearcoat, sheen, iridescence; no anisotropy), parallax mapping (`parallaxUV`), `depthTest` / `depthWrite`, shader hooks (`onBeforeCompile`) |
+| Materials | ✅ | `MeshBasic`, `MeshLambert`, `MeshPhong`, `MeshStandard`, `MeshNormal`, `MeshPhysical` (transmission, volume, IOR, dispersion, specular, clearcoat, sheen, iridescence, anisotropy), tangents (a geometry's own, or from the screen derivatives), parallax mapping (`parallaxUV`), `depthTest` / `depthWrite`, shader hooks (`onBeforeCompile`) |
 | Textures | ✅ | `load_texture` (PNG/JPEG), `data_texture`, `canvas_texture`, mipmaps, anisotropy, `repeat` / `offset` / `rotation` / `center` per map, `channel` (a geometry's second uv set, `uv1`), `nearest` (three's `NearestFilter` magnification) |
 | Lights | ✅ | `AmbientLight`, `HemisphereLight`, `DirectionalLight`, `PointLight`, `SpotLight`; light maps (`lightMap`, `lightMapIntensity`), `ProgressiveLightMap` |
 | Lighting addons | ✅ | Clustered forward lighting (`ClusteredLighting`), irradiance volume (`LightProbeGrid`) |
@@ -82,7 +82,7 @@ three.js API coverage:
 | Renderer | ✅ | `render_target`, tone mapping, frustum culling, `renderer.info`, MRT, compute passes |
 | Shadows | ⚠️ | `DirectionalLight` (the first: CSM; every other one: a tile of the shadow atlas) and `SpotLight` (1 live + cached atlas); PCF and VSM (`VSMShadowMap`); `PointLight` ❌ |
 | Skeletons | ⚠️ | `Bone`, `Skeleton`, `SkinnedMesh` (CPU skinning); animation clips ❌ |
-| glTF (`drie::loaders`) | ⚠️ | `.glb` and `.gltf` on [cgltf](https://github.com/jkuhlmann/cgltf): meshes (sparse and quantized accessors, two uv sets), materials (with `KHR_materials_*` transmission, volume, ior, dispersion, specular, emissive_strength, clearcoat, sheen, iridescence, unlit), textures (embedded, files or `data:` URIs, their samplers, either uv set, `KHR_texture_transform`); skins, animations, morph targets, cameras, lights, Draco ❌ |
+| glTF (`drie::loaders`) | ⚠️ | `.glb` and `.gltf` on [cgltf](https://github.com/jkuhlmann/cgltf): meshes (sparse and quantized accessors, tangents, two uv sets), materials (with `KHR_materials_*` transmission, volume, ior, dispersion, specular, emissive_strength, clearcoat, sheen, iridescence, anisotropy, unlit), textures (embedded, files or `data:` URIs, their samplers, either uv set, `KHR_texture_transform`); skins, animations, morph targets, cameras, lights, Draco ❌ |
 | Quaternions / Animation | ❌ | XYZ Euler rotations only; no animation clips |
 | Sky | ✅ | `Sky` (`drie::objects`) |
 
@@ -143,7 +143,8 @@ Features not in three.js:
 - **Foliage & wind sway:** `material.foliage` enables two-sided wrapped lighting for alpha-tested foliage, animated with `sway`, `sway_speed`, and `renderer.time`.
 - **Glass & viewer silhouette:** `material.glass` preserves reflections regardless of opacity; `material.reflect_viewer` darkens glass reflections with a soft silhouette at the camera.
 - **Transmission & dispersion:** `material.transmission` shows what stands behind a surface, refracted through `thickness` meters of it at `ior` and blurred by its roughness; `dispersion` bends each color channel by its own index of refraction, fringing edges with rainbow colors, and `attenuation_color` / `attenuation_distance` tint the light as it crosses (Beer's law). `specular_color` / `specular_intensity` tint and scale what a dielectric reflects (KHR_materials_specular). Double-sided glass shows its own far side through the near one.
-- **Clearcoat, sheen & iridescence:** `material.clearcoat` lays a thin clear varnish over the surface, with its own `clearcoat_roughness` and normal map (car paint, lacquer); `sheen` / `sheen_color` / `sheen_roughness` give cloth its soft glow at glancing angles (velvet, fabric); `iridescence` is a thin film (soap bubbles, oil) whose colors come from its thickness, `iridescence_thickness_min` to `_max` nanometers, and `iridescence_ior`. They are three's `MeshPhysicalMaterial` layers, from its shader code.
+- **Clearcoat, sheen, iridescence & anisotropy:** `material.clearcoat` lays a thin clear varnish over the surface, with its own `clearcoat_roughness` and normal map (car paint, lacquer); `sheen` / `sheen_color` / `sheen_roughness` give cloth its soft glow at glancing angles (velvet, fabric); `iridescence` is a thin film (soap bubbles, oil) whose colors come from its thickness, `iridescence_thickness_min` to `_max` nanometers, and `iridescence_ior`; `anisotropy` draws highlights and reflections out along the surface's tangent, turned by `anisotropy_rotation` and `anisotropy_map` (brushed metal). They are three's `MeshPhysicalMaterial` layers, from its shader code.
+- **Tangents:** normal and anisotropy maps are read in the geometry's own tangent frame (`geometry.tangents`, glTF's `TANGENT`), or without one in a frame from the screen derivatives of the position and uv. `normal_scale` is x and y, as three's `normalScale`: the glTF loader negates y on meshes without tangents, as three's GLTFLoader does.
 - **Alpha and emissive maps:** `material.alpha_map` (green: how opaque) and `emissive_map` (tints `emissive`).
 - **Depth test & write:** `material.depth_test` / `depth_write` (three.js `depthTest` / `depthWrite`); a material that isn't tested or doesn't write depth stays out of the depth pre-pass.
 - **Additive blending & draw order:** `material.blending = ADDITIVE_BLENDING` for transparent materials and `object.render_order` for explicit draw order, as in three.js.
@@ -160,6 +161,7 @@ Features not in three.js:
 | Clearcoat | `material.clearcoat`, `clearcoat_roughness` (+ `clearcoat_map`, `clearcoat_roughness_map`), `clearcoat_normal_map`, `clearcoat_normal_scale` | Loaded from `KHR_materials_clearcoat`; `just test physical` |
 | Sheen | `material.sheen`, `sheen_color` (+ `sheen_color_map`), `sheen_roughness` (+ `sheen_roughness_map`) | Loaded from `KHR_materials_sheen` |
 | Iridescence | `material.iridescence` (+ `iridescence_map`), `iridescence_ior`, `iridescence_thickness_min` / `_max` (nm, + `iridescence_thickness_map`) | Loaded from `KHR_materials_iridescence` |
+| Anisotropy | `material.anisotropy`, `anisotropy_rotation` (radians), `anisotropy_map` (rg = direction, b = strength) | Along the tangent: the geometry's `tangents` (glTF's `TANGENT`), else the uv's u from screen derivatives; loaded from `KHR_materials_anisotropy`; `just test anisotropy` |
 
 A material's maps besides `map`, `normal_map` and `arm_map` share six texture slots: up to six distinct textures among them.
 
@@ -303,6 +305,10 @@ and by them with only the glowing cubes
 - `just test gltf`: `tests/gltf.c3` loads Khronos's TextureTransformTest (`tests/assets`, CC0) and renders its
 `KHR_texture_transform` checks: every arrow should point at a green mark
 - `just test physical`: `tests/physical.c3` renders iridescence, a clear coat, sheen and double-sided glass side by side
+- `just test anisotropy`: `tests/anisotropy.c3` loads Khronos's AnisotropyRotationTest (CC-BY 4.0): every band's highlight
+should be a horizontal stripe, whether its direction comes from the tangents, `anisotropy_rotation` or the map
+- `just test normals`: `tests/normals.c3` loads Khronos's NormalTangentTest (CC0, no tangents) and
+NormalTangentMirrorTest (CC-BY 4.0, tangents): each normal-mapped cell should reflect the horizon as the real geometry beside it does
 
 ## Justfile
 
