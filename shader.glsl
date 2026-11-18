@@ -14,7 +14,10 @@
 //       (m0, m1, m2) can be read too.
 //   surface_hook(geo_n, base, rough, metal)  for lit materials, after the textures: changes
 //       the color (rgb, a = opacity), roughness and metalness. `geo_n` is the normal before
-//       the normal map; v_world_pos, v_uv, camera_pos... are there to read.
+//       the normal map; v_world_pos, v_uv, camera_pos... are there to read. A standard
+//       material's clear coat and sheen are set up by then, and it can change them too:
+//       g_clearcoat (0..1), g_clearcoat_rough (0.045..1) and g_clearcoat_n (a water film over
+//       a wet surface), g_sheen_color and g_sheen_rough (0: no sheen).
 //   normal_hook(geo_n, n)  for lit materials, after the normal map: changes the normal the
 //       surface is shaded with (and that the screen-space passes see). `geo_n` is the normal
 //       before the normal map, facing the camera.
