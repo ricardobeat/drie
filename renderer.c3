@@ -585,10 +585,11 @@ struct RendererState @local {
     int motion_frame;
     float motion_time;
     float motion_prev_time;
-    // indexed [VSM][DrawKind][side][opaque, transparent, additive][wireframe][target: swapchain,
-    // RGBA8 1x, RGBA8 4x, RGBA16F 1x, RGBA16F 4x, MRT 1x, MRT 4x][alpha to coverage] (C3
-    // declares array dimensions innermost first)
-    SgPipeline[2][7][2][3][3][4][2] pipelines;
+    // indexed [depth: tested and written, not written, not tested, neither (Material.depth_test,
+    // depth_write)][VSM][DrawKind][side][opaque, transparent, additive][wireframe][target:
+    // swapchain, RGBA8 1x, RGBA8 4x, RGBA16F 1x, RGBA16F 4x, MRT 1x, MRT 4x][alpha to coverage]
+    // (C3 declares array dimensions innermost first)
+    SgPipeline[2][7][2][3][3][4][2][4] pipelines;
     SgPipeline shadow_pipeline;
     // writes the far depth wherever it draws: clears one tile of the shadow atlas
     SgPipeline tile_clear_pipeline;
@@ -963,7 +964,9 @@ fn SgPipeline get_pipeline(
     RenderTarget* rt,
     bool alpha_test,
     Blending blending = NORMAL_BLENDING,
-    DrawKind kind = CUT
+    DrawKind kind = CUT,
+    bool depth_test = true,
+    bool depth_write = true
 ) @local {
     int target = rt ? (rt.samples > 1 ? 2 : 1) + (rt.mrt ? 4 : (rt.is_linear() ? 2 : 0)) : 0;
     if (rt && rt.samples != 1 && rt.samples != 4) abort("drie: render targets support 1 or 4 samples");
@@ -975,7 +978,13 @@ fn SgPipeline get_pipeline(
     // VSM: the programs that read the maps' moments (the one that cuts holes for all: the
     // depth prepass has cut them for PRETESTED, and SOLID has none)
     bool vsm      = kind != DEPTH && state.renderer && state.renderer.shadow_type == VSM;
-    SgPipeline* pip = &state.pipelines[vsm ? 1
+    // (the prepass and what it has drawn test and write as they always do: see prepassed)
+    if (kind == DEPTH || kind == PRETESTED) {
+        depth_test = true;
+        depth_write = true;
+    }
+    int depth = (depth_write ? 0 : 1) + (depth_test ? 0 : 2);
+    SgPipeline* pip = &state.pipelines[depth][vsm ? 1
         : 0][kind.ordinal][side.ordinal][transparent ? (additive ? 2 : 1) : 0][wireframe ? 1 : 0][target][a2c ? 1 : 0];
     if (pip.id) return *pip;
     SgCullMode cull;
@@ -1012,8 +1021,10 @@ fn SgPipeline get_pipeline(
             }
         ),
         .depth = {
-            .write_enabled = !transparent && kind != PRETESTED,
-            .compare = kind == PRETESTED ? SgCompareFunc.EQUAL : SgCompareFunc.LESS_EQUAL,
+            .write_enabled = !transparent && kind != PRETESTED && depth_write,
+            .compare = kind == PRETESTED ? SgCompareFunc.EQUAL
+                : depth_test ? SgCompareFunc.LESS_EQUAL
+                : SgCompareFunc.ALWAYS,
         },
         .alpha_to_coverage_enabled = a2c,
         .label = kind == DEPTH ? "drie-depth-prepass" : "drie-pipeline",
@@ -2156,6 +2167,9 @@ fn bool has_holes(DrawItem* item) @local {
 // triangles twice costs (a far tree is mostly triangles, a meadow mostly pixels).
 fn bool prepassed(DrawItem* item) @local {
     if (draws_lines(item) || !has_holes(item)) return false;
+    // (the prepass would write the depth of what writes none, or test what isn't tested)
+    Material* mat = item.mesh.material;
+    if (!mat.depth_test || !mat.depth_write) return false;
     if (state.prepass_focal <= 0) return true;
     Mesh* m       = item.mesh;
     int instances = m.instance_data.len() > 0 ? m.instance_count : 1;
@@ -2255,7 +2269,17 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     float alpha_test = alpha_test_of(mat);
     sg::apply_pipeline(
         state.bake.on ? state.bake.pipeline
-            : get_pipeline(mat.side, mat.transparent, lines, r.render_target, alpha_test > 0, mat.blending, kind)
+            : get_pipeline(
+                mat.side,
+                mat.transparent,
+                lines,
+                r.render_target,
+                alpha_test > 0,
+                mat.blending,
+                kind,
+                mat.depth_test,
+                mat.depth_write
+            )
     );
     // the prepass has cut it out already (the shader takes a negative threshold as "covered")
     if (kind == PRETESTED && alpha_test > 0) alpha_test = -1;
