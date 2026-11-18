@@ -102,8 +102,91 @@ class Element extends Target {
 	get ownerDocument() {
 		return document;
 	}
-	getContext() {
-		return null;
+	// A canvas's 2D context (see Context2D): the one thing it draws is images.
+	getContext(kind) {
+		if (this.tagName !== "CANVAS" || kind !== "2d") return null;
+		return (this._context2d ??= new Context2D(this));
+	}
+}
+
+// What createImageBitmap makes: the encoded image (`data`, which the renderer hands drie as an
+// Image's), decoded by drie only when its size or pixels are asked for (a canvas drawing it).
+class ImageBitmap {
+	constructor(bytes) {
+		this.data = bytes;
+		this._decoded = undefined;
+	}
+	_handle() {
+		if (this._decoded === undefined) {
+			this._decoded = N.imageDecode(this.data);
+			if (this._decoded < 0) throw new Error("createImageBitmap: the image cannot be decoded");
+		}
+		return this._decoded;
+	}
+	get width() {
+		return N.imageSize(this._handle(), 0);
+	}
+	get height() {
+		return N.imageSize(this._handle(), 1);
+	}
+	close() {
+		if (this._decoded !== undefined && this._decoded >= 0) N.imageFree(this._decoded);
+		this._decoded = -1;
+	}
+}
+
+// A canvas's 2D context as UltraHDRLoader uses it: drawImage of an ImageBitmap (stretched to
+// any size, bilinear) and getImageData. Its pixels are made when the canvas's size is first
+// drawn at.
+class Context2D {
+	constructor(canvas) {
+		this.canvas = canvas;
+		this._pixels = null;
+	}
+	_buffer() {
+		const { width, height } = this.canvas;
+		if (!this._pixels || this._pixels.width !== width || this._pixels.height !== height) {
+			this._pixels = { width, height, data: new Uint8ClampedArray(width * height * 4) };
+		}
+		return this._pixels;
+	}
+	drawImage(image, ...args) {
+		let sx = 0, sy = 0, sw = image.width, sh = image.height, dx, dy, dw = sw, dh = sh;
+		if (args.length === 2) [dx, dy] = args;
+		else if (args.length === 4) [dx, dy, dw, dh] = args;
+		else [sx, sy, sw, sh, dx, dy, dw, dh] = args;
+		if (sx !== 0 || sy !== 0 || sw !== image.width || sh !== image.height) {
+			throw new Error("driejs: drawImage of part of an image is not supported");
+		}
+		const target = this._buffer();
+		dx = Math.round(dx);
+		dy = Math.round(dy);
+		dw = Math.round(dw);
+		dh = Math.round(dh);
+		if (dx === 0 && dy === 0 && dw === target.width && dh === target.height) {
+			N.imagePixels(image._handle(), target.data, dw, dh);
+			return;
+		}
+		const pixels = new Uint8ClampedArray(dw * dh * 4);
+		N.imagePixels(image._handle(), pixels, dw, dh);
+		for (let y = Math.max(0, -dy); y < dh && y + dy < target.height; y++) {
+			const from = y * dw * 4;
+			const x0 = Math.max(0, -dx);
+			const x1 = Math.min(dw, target.width - dx);
+			if (x1 > x0) target.data.set(pixels.subarray(from + x0 * 4, from + x1 * 4), ((y + dy) * target.width + dx + x0) * 4);
+		}
+	}
+	getImageData(x, y, width, height) {
+		const target = this._buffer();
+		if (x === 0 && y === 0 && width === target.width && height === target.height) {
+			return { width, height, data: target.data.slice(), colorSpace: "srgb" };
+		}
+		const data = new Uint8ClampedArray(width * height * 4);
+		for (let row = 0; row < height; row++) {
+			const from = ((row + y) * target.width + x) * 4;
+			data.set(target.data.subarray(from, from + width * 4), row * width * 4);
+		}
+		return { width, height, data, colorSpace: "srgb" };
 	}
 }
 
@@ -594,6 +677,15 @@ globalThis.Headers = Headers;
 globalThis.Request = Request;
 globalThis.Response = Response;
 globalThis.Blob = Blob;
+globalThis.ImageBitmap = ImageBitmap;
+// (GLTFLoader then loads its textures with an ImageBitmapLoader: their bytes reach drie as
+// an Image's do)
+globalThis.createImageBitmap = async (source) => {
+	if (source instanceof ImageBitmap) return source;
+	if (source instanceof Blob) return new ImageBitmap(source.bytes());
+	if (source && source.data instanceof Uint8Array) return new ImageBitmap(source.data);
+	throw new Error("driejs: createImageBitmap takes a Blob");
+};
 globalThis.fetch = (input) => {
 	let url = typeof input === "string" ? input : input.url;
 	// a URL made from an addon's import.meta.url (its specifier), as the host imports it

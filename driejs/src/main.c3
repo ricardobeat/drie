@@ -26,7 +26,7 @@ import boomkat::builtins, boomkat::hobject;
 import drie, drie::ui;
 import sokol;
 import std::io, std::time, std::math, std::collections::list;
-import drie::readback, libc, draco;
+import drie::readback, drie::imageio, libc, draco;
 
 const double GEOMETRY_BASE = 1_000_000;
 const double MATERIAL_BASE = 2_000_000;
@@ -346,7 +346,8 @@ fn void h_texture(JsCtx ctx, void* udata)
 // material(kind, color, emissive, specular, shininess, roughness, metalness, opacity,
 //          transparent, side, wireframe, map, vertexColors, alphaTest, colorScale,
 //          mapEmissive, emissiveIntensity, transmission, thickness, ior, dispersion,
-//          attenuationColor, attenuationDistance)
+//          attenuationColor, attenuationDistance, specularR, specularG, specularB,
+//          specularIntensity)
 // kind: 0 basic, 1 lambert, 2 phong, 3 standard, 4 normal
 fn void h_material(JsCtx ctx, void* udata)
 {
@@ -391,12 +392,16 @@ fn void h_material(JsCtx ctx, void* udata)
     m.dispersion = (float)num_arg(ctx, 20, 0);
     m.attenuation_color = color_of(num_arg(ctx, 21, 0xffffff));
     m.attenuation_distance = (float)num_arg(ctx, 22, 0);
+    // MeshPhysicalMaterial's specularColor (linear, may pass 1) and specularIntensity
+    m.specular_color = { (float)num_arg(ctx, 23, 1), (float)num_arg(ctx, 24, 1), (float)num_arg(ctx, 25, 1) };
+    m.specular_intensity = (float)num_arg(ctx, 26, 1);
     ctx.ret_number(@reg(materials, m, MATERIAL_BASE));
 }
 
 // materialUpdate(material, color, emissive, specular, shininess, roughness, metalness,
 // opacity, colorScale, transmission, thickness, ior, dispersion, attenuationColor,
-// attenuationDistance): what three takes from a material every frame, when it changed.
+// attenuationDistance, specularR, specularG, specularB, specularIntensity): what three takes
+// from a material every frame, when it changed.
 fn void h_material_update(JsCtx ctx, void* udata)
 {
     Material* m = get_material(num_arg(ctx, 0, -1));
@@ -415,6 +420,157 @@ fn void h_material_update(JsCtx ctx, void* udata)
     m.dispersion = (float)num_arg(ctx, 12, 0);
     m.attenuation_color = color_of(num_arg(ctx, 13, 0xffffff));
     m.attenuation_distance = (float)num_arg(ctx, 14, 0);
+    m.specular_color = { (float)num_arg(ctx, 15, 1), (float)num_arg(ctx, 16, 1), (float)num_arg(ctx, 17, 1) };
+    m.specular_intensity = (float)num_arg(ctx, 18, 1);
+}
+
+// materialMaps(material, normalMap, normalScale, roughnessMap, metalnessMap, aoMap,
+// aoMapIntensity, specularColorMap, specularIntensityMap, transmissionMap, thicknessMap): a
+// material's maps besides `map`, as three's (texture handles; -1: none)
+fn void h_material_maps(JsCtx ctx, void* udata)
+{
+    Material* m = get_material(num_arg(ctx, 0, -1));
+    if (m == null) { ctx.throw_error(TYPE, "materialMaps: invalid material"); return; }
+    m.normal_map = get_texture(num_arg(ctx, 1, -1));
+    m.normal_scale = (float)num_arg(ctx, 2, 1);
+    m.roughness_map = get_texture(num_arg(ctx, 3, -1));
+    m.metalness_map = get_texture(num_arg(ctx, 4, -1));
+    m.ao_map = get_texture(num_arg(ctx, 5, -1));
+    m.ao_intensity = (float)num_arg(ctx, 6, 1);
+    m.specular_color_map = get_texture(num_arg(ctx, 7, -1));
+    m.specular_intensity_map = get_texture(num_arg(ctx, 8, -1));
+    m.transmission_map = get_texture(num_arg(ctx, 9, -1));
+    m.thickness_map = get_texture(num_arg(ctx, 10, -1));
+}
+
+// floatTexture(data, width, height, flipY): a texture of RGBA in linear light, from a
+// DataTexture of half floats (Uint16Array, HalfFloatType) or floats (Float32Array)
+fn void h_float_texture(JsCtx ctx, void* udata)
+{
+    View v;
+    int width = (int)num_arg(ctx, 1, 0);
+    int height = (int)num_arg(ctx, 2, 0);
+    usz count = (usz)width * (usz)height * 4;
+    if (!view_arg(ctx, 0, &v) || (v.cls != ObjClass.UINT16ARRAY && v.cls != ObjClass.FLOAT32ARRAY) || v.len < count)
+    {
+        ctx.throw_error(TYPE, "floatTexture: expected width * height * 4 half floats (Uint16Array) or floats");
+        return;
+    }
+    float[] px = mem::new_array(float, (sz)count);
+    defer mem::free(px.ptr);
+    if (v.cls == ObjClass.FLOAT32ARRAY)
+    {
+        libc::memcpy(px.ptr, v.data, count * 4);
+    }
+    else
+    {
+        ushort* halfs = (ushort*)v.data;
+        for (usz i = 0; i < count; i++) px[i] = drie::half_to_float(halfs[i]);
+    }
+    Texture* t = drie::float_texture(px, width, height);
+    t.flip_y = bool_arg(ctx, 3, false);
+    ctx.ret_number(@reg(textures, t, TEXTURE_BASE));
+}
+
+// ----------------------------------------------------------------------------
+// Decoded images: createImageBitmap and a canvas's drawImage (js/dom.js)
+// ----------------------------------------------------------------------------
+
+struct Decoded
+{
+    char* pixels;
+    int width;
+    int height;
+}
+List{Decoded} decoded;
+
+// imageDecode(bytes): a handle to the decoded PNG or JPEG (-1: it cannot be decoded)
+fn void h_image_decode(JsCtx ctx, void* udata)
+{
+    View v;
+    if (!view_arg(ctx, 0, &v) || v.cls != ObjClass.UINT8ARRAY) { ctx.throw_error(TYPE, "imageDecode: expected a Uint8Array"); return; }
+    CInt w;
+    CInt h;
+    char* px = imageio::decode(v.data, v.len, &w, &h);
+    if (!px) { ctx.ret_number(-1); return; }
+    Decoded d = { px, w, h };
+    foreach (i, slot : decoded)
+    {
+        if (slot.pixels == null)
+        {
+            decoded[i] = d;
+            ctx.ret_number((double)i);
+            return;
+        }
+    }
+    decoded.push(d);
+    ctx.ret_number((double)(decoded.len() - 1));
+}
+
+fn Decoded* decoded_arg(JsCtx ctx)
+{
+    int i = (int)num_arg(ctx, 0, -1);
+    return i >= 0 && i < decoded.len() && decoded[i].pixels ? &decoded[i] : null;
+}
+
+// imageSize(handle, 0: width, 1: height)
+fn void h_image_size(JsCtx ctx, void* udata)
+{
+    Decoded* d = decoded_arg(ctx);
+    if (!d) { ctx.throw_error(TYPE, "imageSize: invalid image"); return; }
+    ctx.ret_number(num_arg(ctx, 1, 0) > 0.5 ? d.height : d.width);
+}
+
+// imagePixels(handle, out, width, height): its RGBA, stretched to width x height (bilinear,
+// as a canvas draws an image at another size), into the Uint8Array or Uint8ClampedArray
+fn void h_image_pixels(JsCtx ctx, void* udata)
+{
+    Decoded* d = decoded_arg(ctx);
+    View v;
+    int w = (int)num_arg(ctx, 2, 0);
+    int h = (int)num_arg(ctx, 3, 0);
+    if (!d || !view_arg(ctx, 1, &v) || (v.cls != ObjClass.UINT8ARRAY && v.cls != ObjClass.UINT8CLAMPEDARRAY)
+        || w <= 0 || h <= 0 || v.len < (usz)w * (usz)h * 4)
+    {
+        ctx.throw_error(TYPE, "imagePixels: expected an image, a byte array and its width and height");
+        return;
+    }
+    char* out = (char*)v.data;
+    if (w == d.width && h == d.height)
+    {
+        libc::memcpy(out, d.pixels, (usz)w * (usz)h * 4);
+        return;
+    }
+    for (int y = 0; y < h; y++)
+    {
+        float sy = math::clamp(((float)y + 0.5f) * d.height / h - 0.5f, 0, (float)(d.height - 1));
+        int y0 = (int)sy;
+        int y1 = math::min(y0 + 1, d.height - 1);
+        float fy = sy - y0;
+        for (int x = 0; x < w; x++)
+        {
+            float sx = math::clamp(((float)x + 0.5f) * d.width / w - 0.5f, 0, (float)(d.width - 1));
+            int x0 = (int)sx;
+            int x1 = math::min(x0 + 1, d.width - 1);
+            float fx = sx - x0;
+            usz r0 = (usz)y0 * (usz)d.width;
+            usz r1 = (usz)y1 * (usz)d.width;
+            for (usz c = 0; c < 4; c++)
+            {
+                float a = d.pixels[(r0 + (usz)x0) * 4 + c] * (1 - fx) + d.pixels[(r0 + (usz)x1) * 4 + c] * fx;
+                float b = d.pixels[(r1 + (usz)x0) * 4 + c] * (1 - fx) + d.pixels[(r1 + (usz)x1) * 4 + c] * fx;
+                out[((usz)y * (usz)w + (usz)x) * 4 + c] = (char)(a * (1 - fy) + b * fy + 0.5f);
+            }
+        }
+    }
+}
+
+fn void h_image_free(JsCtx ctx, void* udata)
+{
+    Decoded* d = decoded_arg(ctx);
+    if (!d) return;
+    imageio::free_pixels(d.pixels);
+    d.pixels = null;
 }
 
 // shadow(object, cast, receive)
@@ -835,6 +991,18 @@ fn void h_background(JsCtx ctx, void* udata)
     ((Scene*)o).background = color_of(num_arg(ctx, 1, 0));
 }
 
+// backgroundTexture(scene, texture or -1, blurriness, intensity): an equirectangular map
+// behind everything (three's scene.background as a texture)
+fn void h_background_texture(JsCtx ctx, void* udata)
+{
+    Object3D* o = get_object(num_arg(ctx, 0, -1));
+    if (o == null || o.kind != SCENE) { ctx.throw_error(TYPE, "backgroundTexture: not a scene"); return; }
+    Scene* s = (Scene*)o;
+    s.background_texture = get_texture(num_arg(ctx, 1, -1));
+    s.background_blurriness = (float)num_arg(ctx, 2, 0);
+    s.background_intensity = (float)num_arg(ctx, 3, 1);
+}
+
 fn void h_render(JsCtx ctx, void* udata)
 {
     Renderer* r = get_renderer(num_arg(ctx, 0, -1));
@@ -1180,8 +1348,15 @@ fn int main(String[] args)
     reg(natives, "lightTarget", &h_light_target, 1);
     reg(natives, "geometry", &h_geometry, 7);
     reg(natives, "texture", &h_texture, 10);
-    reg(natives, "material", &h_material, 23);
-    reg(natives, "materialUpdate", &h_material_update, 15);
+    reg(natives, "material", &h_material, 27);
+    reg(natives, "materialUpdate", &h_material_update, 19);
+    reg(natives, "materialMaps", &h_material_maps, 11);
+    reg(natives, "floatTexture", &h_float_texture, 4);
+    reg(natives, "imageDecode", &h_image_decode, 1);
+    reg(natives, "imageSize", &h_image_size, 2);
+    reg(natives, "imagePixels", &h_image_pixels, 4);
+    reg(natives, "imageFree", &h_image_free, 1);
+    reg(natives, "backgroundTexture", &h_background_texture, 4);
     reg(natives, "mesh", &h_mesh, 2);
     reg(natives, "line", &h_line, 3);
     reg(natives, "lineDash", &h_line_dash, 4);

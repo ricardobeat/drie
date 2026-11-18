@@ -1,7 +1,7 @@
 // Renderer: owns the window and the GPU, draws a Scene from a Camera.
 module drie;
 import std::collections::list, std::sort, std::io, std::math;
-import sokol, drie::readback;
+import sokol, drie::readback, drie::postprocessing;
 
 alias AnimationLoop = fn void(double time_ms);
 alias EventListener = fn void(SappEvent* event);
@@ -606,6 +606,19 @@ struct RendererState @local {
     // What the transmission materials refract (Material.transmission): the opaque scene from
     // the same camera, drawn before the main pass (see render_transmission).
     RenderTarget* transmission;
+    // ...and its mip levels, blurrier and blurrier, for rough surfaces (three's transmission
+    // target has them): level 0 is a copy of the resolved picture, each next one half the size
+    SgImage transmission_mips;
+    SgView transmission_mips_view;
+    SgView[16] transmission_level_views;
+    SgView[16] transmission_level_attachments;
+    int transmission_levels;
+    int transmission_width;
+    int transmission_height;
+    SgPipeline mip_pipeline;
+    SgSampler mip_sampler;
+    // the scene's background_texture, drawn as a sphere around the camera
+    Mesh* background;
 }
 
 RendererState state @local;
@@ -1870,7 +1883,30 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     Vec4 inst_cull = cull_bind(&bind, item.job - 1);
     bind.views[shaders::VIEW_TEX_MAP] = map.view;
     bind.views[shaders::VIEW_TEX_NORMAL] = ready(mat.normal_map).view;
-    bind.views[shaders::VIEW_TEX_ARM] = ready(mat.arm_map).view;
+    // roughness and metalness: three's maps a channel each, in the arm map's place
+    Texture* arm = mat.arm_map ?: (mat.roughness_map ?: mat.metalness_map);
+    int arm_bits;
+    if (mat.arm_map) {
+        arm_bits = 7;
+    } else if (arm) {
+        arm_bits = (mat.roughness_map ? 2 : 0) | (mat.metalness_map == arm ? 4 : 0);
+    }
+    bind.views[shaders::VIEW_TEX_ARM] = ready(arm).view;
+    // the standard material's other maps (white where it has none, as for the others)
+    bool standard = mat.type == STANDARD;
+    Texture* ao_map = standard && mat.ao_intensity != 0 ? mat.ao_map : null;
+    Texture* specular_color_map = standard ? mat.specular_color_map : null;
+    Texture* specular_intensity_map = standard ? mat.specular_intensity_map : null;
+    Texture* transmission_map = standard && mat.transmission > 0 ? mat.transmission_map : null;
+    Texture* thickness_map = standard && mat.transmission > 0 ? mat.thickness_map : null;
+    bind.views[shaders::VIEW_TEX_AO] = ready(ao_map).view;
+    bind.views[shaders::VIEW_TEX_SPECULAR_COLOR] = ready(specular_color_map).view;
+    bind.views[shaders::VIEW_TEX_SPECULAR_INTENSITY] = ready(specular_intensity_map).view;
+    bind.views[shaders::VIEW_TEX_TRANSMISSION_MAP] = ready(transmission_map).view;
+    bind.views[shaders::VIEW_TEX_THICKNESS] = ready(thickness_map).view;
+    bool backdrop = m == state.background;
+    int ext_bits = (ao_map ? 1 : 0) | (specular_color_map ? 2 : 0) | (specular_intensity_map ? 4 : 0)
+        | (transmission_map ? 8 : 0) | (thickness_map ? 16 : 0) | (backdrop ? 32 : 0);
     // (the parallax map: white, none, where the material has none)
     bind.views[shaders::VIEW_TEX_PARALLAX] = ready(mat.parallax_map).view;
     bind.views[shaders::VIEW_SHADOW_MAP] = state.shadow_view;
@@ -1898,8 +1934,8 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     // renderer draws the opaque scene without it first, see render_transmission)
     Texture* none     = ready(state.white);
     bool transmission = mat.transmission > 0 && mat.type == STANDARD && state.transmission != null;
-    bind.views[shaders::VIEW_TEX_TRANSMISSION] = transmission ? state.transmission.texture : none.view;
-    bind.samplers[shaders::SMP_TRANSMISSION_SMP] = transmission ? state.clamp_sampler : none.sampler;
+    bind.views[shaders::VIEW_TEX_TRANSMISSION] = transmission ? state.transmission_mips_view : none.view;
+    bind.samplers[shaders::SMP_TRANSMISSION_SMP] = transmission ? state.mip_sampler : none.sampler;
     bind.views[shaders::VIEW_TEX_GI] = state.irradiance.view;
     bind.views[shaders::VIEW_RC_PROBES] = state.radiance_view;
     bind.samplers[shaders::SMP_GI_SMP] = state.irradiance.sampler;
@@ -1920,7 +1956,7 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     }
     bind.views[shaders::VIEW_TEX_ENV] = env.view;
     bind.samplers[shaders::SMP_ENV_SMP] = env.sampler;
-    bind.samplers[shaders::SMP_TEX_SMP] = (mat.map ?: (mat.normal_map ?: (mat.arm_map ?: state.white))).sampler;
+    bind.samplers[shaders::SMP_TEX_SMP] = (mat.map ?: (mat.normal_map ?: (arm ?: (ao_map ?: (specular_color_map ?: (thickness_map ?: state.white)))))).sampler;
     if (mat.screen_target) {
         bind.views[shaders::VIEW_TEX_MAP] = mat.screen_target.texture;
         bind.samplers[shaders::SMP_TEX_SMP] = state.white.sampler;
@@ -1958,7 +1994,7 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     }
     fs.specular = { ...color_to_linear(mat.specular), (float)flags };
     fs.mat_params = { (float)mat.type, mat.roughness, mat.metalness, mat.shininess };
-    fs.tex_params = { mat.map ? 1 : 0, mat.normal_map ? mat.normal_scale : 0, mat.arm_map ? 1 : 0, alpha_test };
+    fs.tex_params = { mat.map ? 1 : 0, mat.normal_map ? mat.normal_scale : 0, (float)arm_bits, alpha_test };
     fs.parallax_params = {
         mat.parallax_map && mat.type == STANDARD ? mat.parallax_scale : 0,
         mat.parallax_distance > 0 ? mat.parallax_distance : 30,
@@ -1982,6 +2018,15 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     // (a draw without the picture behind it, the transmission pass's own, leaves it off)
     fs.transmission_params = { mat.ior > 0 ? mat.ior : 1.5f, mat.thickness, mat.dispersion, mat.attenuation_distance };
     fs.transmission_color = { ...color_to_linear(mat.attenuation_color), transmission ? mat.transmission : 0 };
+    fs.specular_params = { ...mat.specular_color, mat.specular_intensity };
+    // (the thickness is in the model's meters: three's modelScale, here one number for all three axes)
+    float scale = 1;
+    if (transmission) {
+        Mat4 w = m.matrix_world;
+        scale = (((Vector3) { w[0][0], w[0][1], w[0][2] }).length() + ((Vector3) { w[1][0], w[1][1], w[1][2] }).length()
+            + ((Vector3) { w[2][0], w[2][1], w[2][2] }).length()) / 3;
+    }
+    fs.ext_params = { (float)ext_bits, mat.ao_intensity, scale, (float)state.transmission_width };
     fs.frame_custom = r.custom;
     fs.ssr_view_proj = r.ssr_view_proj;
     fs.ssr_params = { ssr ? mat.ssr : 0, r.ssr_reach, (float)(r.ssr_frame % 64), depth_zero_to_one() ? 1 : 0 };
@@ -2190,10 +2235,118 @@ fn void draw_backdrop(Scene* scene, Camera* camera, Mat4 view_proj, FsParams* fs
     draw_item(&item, view_proj, fs, has_holes(&item) ? CUT : SOLID);
 }
 
+// The scene's background_texture (three's scene.background as an equirectangular texture):
+// a sphere around the camera, just inside its far plane, that shows the map in each direction
+// (see the shader's background mode). Drawn before the opaque scene, without writing depth.
+fn void draw_background(Scene* scene, Camera* camera, Mat4 view_proj, FsParams* fs) @local {
+    if (!scene.background_texture || camera.camera_type != PERSPECTIVE) return;
+    if (!state.background) {
+        MeshBasicMaterial* mat = mesh_basic_material(transparent: true, side: BACK_SIDE, fog: false);
+        state.background = mesh(sphere_geometry(1, 32, 16), mat);
+        state.background.receive_shadow = false;
+    }
+    Mesh* m = state.background;
+    m.material.env_map = scene.background_texture;
+    m.material.env_intensity = scene.background_intensity;
+    // (the shader reads the blur from the roughness)
+    m.material.roughness = math::clamp(scene.background_blurriness, 0, 1);
+    float r = ((PerspectiveCamera*)camera).far * 0.9f;
+    m.matrix_world = mat4_compose(camera.matrix_world.get_position(), { 0, 0, 0 }, { r, r, r });
+    m.geometry.upload();
+    DrawItem item = { m, 0, 0, 0, 0, 1 };
+    draw_item(&item, view_proj, fs);
+}
+
+// The transmission picture's mip levels, for a picture of width x height.
+fn void transmission_levels(int width, int height) @local {
+    if (state.transmission_mips.id && state.transmission_width == width && state.transmission_height == height) return;
+    if (state.transmission_mips.id) {
+        sg::destroy_view(state.transmission_mips_view);
+        for (int i = 0; i < state.transmission_levels; i++) {
+            sg::destroy_view(state.transmission_level_views[i]);
+            sg::destroy_view(state.transmission_level_attachments[i]);
+        }
+        sg::destroy_image(state.transmission_mips);
+    }
+    int levels = 1;
+    while (levels < 16 && (width >> levels > 0 || height >> levels > 0)) levels++;
+    state.transmission_levels = levels;
+    state.transmission_width = width;
+    state.transmission_height = height;
+    state.transmission_mips = sg::make_image(
+        &&{
+            .usage = { .color_attachment = true },
+            .width = width,
+            .height = height,
+            .num_mipmaps = levels,
+            .pixel_format = RGBA16F,
+            .label = "drie-transmission-mips",
+        }
+    );
+    state.transmission_mips_view = sg::make_view(&&{ .texture = { .image = state.transmission_mips } });
+    for (int i = 0; i < levels; i++) {
+        state.transmission_level_views[i] = sg::make_view(
+            &&{ .texture = { .image = state.transmission_mips, .mip_levels = { .base = i, .count = 1 } } }
+        );
+        state.transmission_level_attachments[i] = sg::make_view(
+            &&{ .color_attachment = { .image = state.transmission_mips, .mip_level = i } }
+        );
+    }
+    if (!state.mip_pipeline.id) {
+        // (the output pass's shader, without tone mapping or sRGB: a copy, filtered)
+        state.mip_pipeline = sg::make_pipeline(
+            &&{
+                .shader = sg::make_shader(&&postprocessing::output_shader_desc(sg::query_backend())),
+                .colors[0].pixel_format = RGBA16F,
+                .depth.pixel_format = NONE,
+                .sample_count = 1,
+                .label = "drie-transmission-mips",
+            }
+        );
+        state.mip_sampler = sg::make_sampler(
+            &&{
+                .min_filter = LINEAR,
+                .mag_filter = LINEAR,
+                .mipmap_filter = LINEAR,
+                .wrap_u = CLAMP_TO_EDGE,
+                .wrap_v = CLAMP_TO_EDGE,
+            }
+        );
+    }
+}
+
+// Fills the mip levels from the resolved transmission picture: level 0 a copy of it, each next
+// one the last one halved (one bilinear tap between four texels: their average, as
+// generateMipmap does).
+fn void fill_transmission_levels() @local {
+    transmission_levels(state.transmission.width, state.transmission.height);
+    postprocessing::OutputParams p = { .params = { 0, 1, 0, 1 } };
+    for (int i = 0; i < state.transmission_levels; i++) {
+        SgView source = i == 0 ? state.transmission.texture : state.transmission_level_views[i - 1];
+        profile::begin_pass(
+            &&{
+                .action.colors[0] = { .load_action = DONTCARE, .store_action = STORE },
+                .attachments.colors[0] = state.transmission_level_attachments[i],
+                .label = "drie-transmission-mip",
+            }
+        );
+        sg::apply_pipeline(state.mip_pipeline);
+        SgBindings bind;
+        bind.views[postprocessing::VIEW_OUTPUT_SRC] = source;
+        bind.views[postprocessing::VIEW_OUTPUT_EXPOSURE] = source;
+        bind.samplers[postprocessing::SMP_OUTPUT_SMP] = state.mip_sampler;
+        sg::apply_bindings(&bind);
+        sg::apply_uniforms(postprocessing::UB_OUTPUT_PARAMS, &&{ .ptr = &p, .size = postprocessing::OutputParams::size });
+        sg::draw(0, 3, 1);
+        sg::end_pass();
+    }
+}
+
 // The picture the transmission materials refract, like three's renderTransmissionPass: the
-// opaque scene without them, from the same camera, in linear light, with the frame's lights.
-// The main pass then samples it where each refraction ray leaves the surface.
-fn void render_transmission(Renderer* r, Scene* scene, Mat4 view_proj, FsParams* fs) @local {
+// background and the opaque scene without them, from the same camera, in linear light, with
+// the frame's lights, then its mip levels (for rough surfaces). The main pass then samples it
+// where each refraction ray leaves the surface.
+fn void render_transmission(Renderer* r, Scene* scene, Camera* camera, Mat4 view_proj, FsParams* fs) @local {
     int width   = r.render_target ? r.render_target.width : sapp::width();
     int height  = r.render_target ? r.render_target.height : sapp::height();
     int samples = (r.render_target ? r.render_target.samples : sapp::sample_count()) > 1 ? 4 : 1;
@@ -2217,6 +2370,7 @@ fn void render_transmission(Renderer* r, Scene* scene, Mat4 view_proj, FsParams*
             .label = "drie-transmission",
         }
     );
+    draw_background(scene, camera, view_proj, &tfs);
     foreach (&item : state.opaque) {
         // the glass is not behind itself
         if (item.mesh.material.transmission > 0 && item.mesh.material.type == STANDARD) continue;
@@ -2224,6 +2378,7 @@ fn void render_transmission(Renderer* r, Scene* scene, Mat4 view_proj, FsParams*
     }
     sg::end_pass();
     r.render_target = prev;
+    fill_transmission_levels();
 }
 
 // Draws the scene from the camera's point of view. Call once per frame from the animation loop.
@@ -2386,7 +2541,7 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera) {
     foreach (&item : state.opaque) {
         Material* mat = item.mesh.material;
         if (mat.transmission > 0 && mat.type == STANDARD) {
-            render_transmission(self, scene, view_proj, &fs);
+            render_transmission(self, scene, camera, view_proj_rel, &fs);
             break;
         }
     }
@@ -2432,6 +2587,7 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera) {
     }
     profile::stop("render: depth prepass", pt);
     pt = profile::start();
+    draw_background(scene, camera, view_proj_rel, &fs);
     foreach (&item : state.opaque) {
         DrawKind kind = SOLID;
         if (draws_lines(item) || has_holes(item)) kind = prepass && prepassed(item) ? PRETESTED : CUT;

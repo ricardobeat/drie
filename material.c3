@@ -60,6 +60,15 @@ struct Material {
     // Packed ambient occlusion (R), roughness (G) and metalness (B), as in glTF's ORM textures.
     // Roughness and metalness are multiplied with the material's values.
     Texture* arm_map;
+    // The same, a map at a time, as three has them (without an arm_map): roughness from the
+    // green channel of roughness_map, metalness from the blue of metalness_map (glTF's
+    // metallicRoughnessTexture is both: when they are different images, metalness_map is not
+    // used), and ambient occlusion from the red of ao_map, ao_intensity strong (three's
+    // aoMapIntensity; 0: none).
+    Texture* roughness_map;
+    Texture* metalness_map;
+    Texture* ao_map;
+    float ao_intensity;
     // Parallax occlusion mapping (not in three.js; three's displacementMap moves the vertices,
     // this only the texture): a height map (r: 1 = the top of the surface, 0 = parallax_scale
     // meters under it), in the same uv as the other maps. The view ray is marched into it and
@@ -80,12 +89,28 @@ struct Material {
     // Light passing through: how much of what stands behind the surface shows through it, bent
     // as it crosses (KHR_materials_transmission). The renderer draws the scene behind into a
     // target of its own first, so it costs a second pass over the opaque scene. 0 = off.
+    // Rough surfaces blur what they show (roughness, as three: the picture's mip levels).
     float transmission;
+    // times the red channel of this map
+    Texture* transmission_map;
     // How far (m) a ray bends as it travels through it: light leaves the surface shifted by the
-    // part of the material it crosses. Thin glass wants a few millimeters.
+    // part of the material it crosses. Thin glass wants a few millimeters. In the model's own
+    // meters: the object's scale scales it.
     float thickness;
-    // Index of refraction: how strongly it bends light (1.5: glass, 1.33: water).
+    // times the green channel of this map
+    Texture* thickness_map;
+    // Index of refraction: how strongly it bends light (1.5: glass, 1.33: water). It also sets
+    // how much a dielectric reflects head on: ((ior - 1) / (ior + 1))², 4% for 1.5.
     float ior;
+    // The strength and color of a standard material's reflections where it isn't metal
+    // (KHR_materials_specular, three's specularIntensity and specularColor): the reflectance
+    // head on (from `ior`) is tinted by specular_color, linear and allowed above 1, times the
+    // rgb of specular_color_map (sRGB), and scaled by specular_intensity times the alpha of
+    // specular_intensity_map. 1 and white: as without them.
+    float specular_intensity;
+    Vector3 specular_color;
+    Texture* specular_color_map;
+    Texture* specular_intensity_map;
     // How much the refraction differs across the red..blue channels (KHR_materials_dispersion):
     // each is bent with an IOR of `ior` + (ior - 1) * 0.025 * dispersion, so edges come out
     // fringed with rainbow colors. 0 = all wavelengths bent alike.
@@ -196,6 +221,9 @@ fn void Material.init_base(
     self.sway_speed = 1;
     self.ior = 1.5f;
     self.attenuation_color = 0xffffff;
+    self.specular_intensity = 1;
+    self.specular_color = { 1, 1, 1 };
+    self.ao_intensity = 1;
 }
 
 // Unlit, flat color.
