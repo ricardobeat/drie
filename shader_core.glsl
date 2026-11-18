@@ -1334,12 +1334,14 @@ vec2 slot_dy(int slot) { return slot_d(slot, uv_rel[slot * 2].w > 0.5 ? g_duv1dy
 // and a map's uv change from one pixel to the next (duv1, duv2: that map's; three's
 // getTangentFrame, the cotangent frame: t and b scaled together, not to a length of 1 each).
 void tangent_frame(vec3 n, vec2 duv1, vec2 duv2, out vec3 t, out vec3 b) {
+    // a back face (its normal turned to the camera): the frame turned over too, as three's
+    // tbn *= faceDirection
+    bool back = dot(n, v_normal) < 0.0;
     if (dot(v_tangent.xyz, v_tangent.xyz) > 0.0) {
         vec3 vn = normalize(v_normal);
         t = normalize(v_tangent.xyz);
         b = normalize(cross(vn, t) * v_tangent.w);
-        // (a back face: the front's frame, turned over with its normal)
-        if (dot(n, vn) < 0.0) {
+        if (back) {
             t = -t;
             b = -b;
         }
@@ -1353,6 +1355,7 @@ void tangent_frame(vec3 n, vec2 duv1, vec2 duv2, out vec3 t, out vec3 b) {
     // turns the frame around: its sign, the determinant's, keeps it the same on every backend)
     float invmax = inversesqrt(max(max(dot(t, t), dot(b, b)), 1e-12));
     if (dot(g_dpdx, dp2perp) < 0.0) invmax = -invmax;
+    if (back) invmax = -invmax;
     t *= invmax;
     b *= invmax;
 }
