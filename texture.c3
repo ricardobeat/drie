@@ -3,7 +3,7 @@
 //   t.repeat = { 4, 4 };
 //   material.map = t;
 module drie;
-import std::io, std::math;
+import std::io, std::math, std::atomic, std::thread;
 import sokol, drie::imageio;
 
 enum Wrapping {
@@ -24,9 +24,9 @@ enum ColorSpace {
 struct Texture {
     int width;
     int height;
-    // RGBA8 pixels, top row first. Freed after the upload to the GPU.
+    // RGBA8 pixels, top row first. Freed by prepare() (at the upload, or average_color()).
     char[] pixels;
-    // The image's average color in linear light, once average_color() has worked it out.
+    // The image's average color in linear light, once prepare() has worked it out.
     Vector3 average;
     bool has_average;
     // Or RGBA in linear light, for images brighter than 1 (an environment captured with hdr):
@@ -55,6 +55,11 @@ struct Texture {
     // (longitude/latitude) image.
     Vector3[9] env_sh;
     bool has_env_sh;
+    // What prepare() leaves for the upload: the mip levels, largest first, in one block.
+    char[] prepared;
+    int prepared_levels;
+    // prepare()'s progress: 0 not started, 1 under way (perhaps on another thread), 2 done.
+    Atomic{int} preparing;
     // GPU state, created lazily on first render.
     SgImage image;
     SgView view;
@@ -348,8 +353,13 @@ fn void Texture.upload_float(&self) {
 
 // The image's average color in linear light (from every 7th pixel), for whoever needs one
 // color for a whole surface (RadianceCascades' voxels). White for a texture without pixels.
+// (once prepared: safe on any thread; white for an image without RGBA8 pixels)
 fn Vector3 Texture.average_color(&self) {
-    if (self.has_average) return self.average;
+    self.prepare();
+    return self.has_average ? self.average : (Vector3) { 1, 1, 1 };
+}
+
+fn void Texture.find_average(&self) {
     self.average = { 1, 1, 1 };
     sz count = self.pixels.len / 4;
     if (count > 0) {
@@ -366,7 +376,6 @@ fn Vector3 Texture.average_color(&self) {
         self.average = sum / (float)n;
     }
     self.has_average = true;
-    return self.average;
 }
 
 // Uploads the pixels (and mipmaps) to the GPU. Called by the renderer.
@@ -404,12 +413,46 @@ fn void Texture.upload(&self) {
         self.uploaded = true;
         return;
     }
-    if (self.flip_y) flip_rows(self.pixels, self.width, self.height);
+    self.prepare();
     SgImageDesc desc = {
         .width = self.width,
         .height = self.height,
         .pixel_format = self.color_space == SRGB_COLOR_SPACE ? SgPixelFormat.SRGB8A8 : SgPixelFormat.RGBA8,
+        .num_mipmaps = self.prepared_levels,
+        .data = { .ptr = self.prepared.ptr, .size = (usz)self.prepared.len },
     };
+    self.image = sg::make_image(&desc);
+    self.view = sg::make_view(&&{ .texture = { .image = self.image } });
+    self.sampler = sg::make_sampler(
+        &&{
+            .min_filter = LINEAR,
+            .mag_filter = LINEAR,
+            .mipmap_filter = self.prepared_levels > 1 ? SgFilter.LINEAR : SgFilter.NEAREST,
+            .wrap_u = sg_wrap(self.wrap_s),
+            .wrap_v = sg_wrap(self.wrap_t),
+            .max_anisotropy = self.prepared_levels > 1 ? (uint)math::clamp(self.anisotropy, 1, 16) : 1,
+        }
+    );
+    mem::free(self.prepared.ptr);
+    self.prepared = { };
+    self.uploaded = true;
+}
+
+// The CPU's part of an RGBA8 image's upload: the rows flipped, the mip levels made and put in
+// one block, the light of an environment and the average color worked out; the pixels are
+// freed. upload() does it if it isn't done yet; call it on any thread before then (while
+// loading) to leave upload() only the copy to the GPU. Once only, and safe to call from two
+// threads at once (the second waits for the first).
+fn void Texture.prepare(&self) {
+    int expected = 0;
+    if (!self.preparing.compare_exchange(&expected, 1)) {
+        while (self.preparing.load() != 2) thread::yield();
+        return;
+    }
+    defer self.preparing.store(2);
+    if (self.float_pixels.len || self.render_target || !self.pixels.len) return;
+    self.find_average();
+    if (self.flip_y) flip_rows(self.pixels, self.width, self.height);
     char[][16] levels;
     int count = 1;
     levels[0] = self.pixels;
@@ -425,30 +468,16 @@ fn void Texture.upload(&self) {
             count++;
         }
     }
-    desc.num_mipmaps = count;
     // sokol takes all mip levels in one block, largest first
     sz total;
     for (int i = 0; i < count; i++) total += levels[i].len;
-    char[] all = mem::new_array(char, total);
-    defer mem::free(all.ptr);
+    self.prepared = mem::new_array(char, total);
+    self.prepared_levels = count;
     sz at;
     for (int i = 0; i < count; i++) {
-        all[at:levels[i].len] = levels[i][..];
+        self.prepared[at:levels[i].len] = levels[i][..];
         at += levels[i].len;
     }
-    desc.data = { .ptr = all.ptr, .size = (usz)total };
-    self.image = sg::make_image(&desc);
-    self.view = sg::make_view(&&{ .texture = { .image = self.image } });
-    self.sampler = sg::make_sampler(
-        &&{
-            .min_filter = LINEAR,
-            .mag_filter = LINEAR,
-            .mipmap_filter = count > 1 ? SgFilter.LINEAR : SgFilter.NEAREST,
-            .wrap_u = sg_wrap(self.wrap_s),
-            .wrap_v = sg_wrap(self.wrap_t),
-            .max_anisotropy = count > 1 ? (uint)math::clamp(self.anisotropy, 1, 16) : 1,
-        }
-    );
     if (self.width == 2 * self.height) {
         int[16] widths;
         for (int i = 0; i < count; i++) widths[i] = math::max(self.width >> i, 1);
@@ -463,10 +492,8 @@ fn void Texture.upload(&self) {
         self.has_env_sh = true;
     }
     for (int i = 1; i < count; i++) mem::free(levels[i].ptr);
-    self.average_color();
     mem::free(self.pixels.ptr);
     self.pixels = { };
-    self.uploaded = true;
 }
 
 // Frees the GPU resources.
