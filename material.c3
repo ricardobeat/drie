@@ -83,6 +83,11 @@ struct Material {
     Texture* alpha_map;
     // What glows: emissive * emissive_intensity times this map's rgb (sRGB; three's emissiveMap).
     Texture* emissive_map;
+    // Baked light (three's lightMap), linear rgb, light_map_intensity strong: added to the
+    // indirect light of lit materials; for BASIC the indirect light (1) becomes map / PI.
+    // Read from the uv set of its `channel` (1: the second, uv1).
+    Texture* light_map;
+    float light_map_intensity;
     // Discard pixels with alpha below this (0 = off). Cutout edges are antialiased with MSAA.
     float alpha_test;
     // Extensions:
@@ -260,6 +265,7 @@ fn void Material.init_base(
     self.specular_intensity = 1;
     self.specular_color = { 1, 1, 1 };
     self.ao_intensity = 1;
+    self.light_map_intensity = 1;
     self.clearcoat_normal_scale = { 1, 1 };
     self.sheen_roughness = 1;
     self.iridescence_ior = 1.3f;
