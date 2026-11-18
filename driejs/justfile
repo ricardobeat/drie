@@ -131,7 +131,21 @@ assets: \
     (asset "models/collada/abb_irb52_7_120.dae" "d016d827423984a2b8f3d0052074304d4ae3f0b0e69663c3c7d9a9523b6317d6") \
     (asset "models/gltf/DispersionTest.glb" "bb7710e6eaeb1c81fc5f62000ed014689e4bd8ef300c3f9e3a08b2a6db821be7") \
     (asset "models/gltf/IridescentDishWithOlives.glb" "98a6db7fbc0b90b9807fd57189e8cf71642672ee0301609b0aabcc28c698f29f") \
-    (asset "textures/equirectangular/royal_esplanade_2k.hdr.jpg" "b05a664c5fb022ddc6104f253a6684570e99876d30b41a220c8dea4482df6d64")
+    (asset "textures/equirectangular/royal_esplanade_2k.hdr.jpg" "b05a664c5fb022ddc6104f253a6684570e99876d30b41a220c8dea4482df6d64") \
+    (asset "models/gltf/IridescenceLamp.glb" "60e991ad33985c7b2b3af1d8a0d0f62e1e2d1f3c05f5d8f0aabfb8db6b70be30") \
+    (asset "textures/equirectangular/venice_sunset_1k.hdr" "0e72ed46b5316cb5fb67fc81ff85b024a09146fd89ef3811a8d2299647ada118") \
+    (asset "models/gltf/SheenChair.glb" "07c80216eb5d57fc9d4148e1e14a69e19d3436eca1af33590d8d36c04957ffd4") \
+    (asset "textures/cube/pisaHDR/px.hdr" "72f6b4f08e657dbf47483367a92ac1b299979fa96906591f6a5260229ef128db") \
+    (asset "textures/cube/pisaHDR/nx.hdr" "800985acb87cb45cd01ca959b2ee8199af3ebe2a4e3abfa104c064d16b4be6f8") \
+    (asset "textures/cube/pisaHDR/py.hdr" "d4bfbe9f1f00d4405618c172155729b4f2051cc37b1aaf6162e06763121da73c") \
+    (asset "textures/cube/pisaHDR/ny.hdr" "76bac4fe6e6b148fdf37f9addbd90c25d3d4a8007598728c63fae3c35e987492") \
+    (asset "textures/cube/pisaHDR/pz.hdr" "ab9495d3e6a9efc8741fe820834446c9b8d0e0fc9771d325683366fe12843f54") \
+    (asset "textures/cube/pisaHDR/nz.hdr" "9e10429a6dccfedf425c94e1b8be62150d40953b78c804b50b913c6f3bcafb78") \
+    (asset "textures/carbon/Carbon.png" "f5d4dd14c4b6f7548f50921e2bc75a77e2867fd93916928f60551f4857a96e06") \
+    (asset "textures/carbon/Carbon_Normal.png" "15fe5cbeb3db8e85d8663ee1f67ffd5f0bfa457d01e1209c3011222ba08bb4fd") \
+    (asset "textures/water/Water_1_M_Normal.jpg" "6d7825469a374ff84700b4fb1a2890bd1fce0ca1f777bdd4d5ecdaf15833a804") \
+    (asset "textures/golfball.jpg" "7d5f075891eac89ee55620cd8753efe8a969d89cdd73b54fe0ee444ee5da0b15") \
+    (asset "textures/pbr/Scratched_gold/Scratched_gold_01_1K_Normal.png" "f6cbad89a8d43188007532a2545f382e225e6def85778fc530681588fb9f6f9c")
 
 [private]
 asset path sha256: (fetch examples + "/" + path sha256 "demos/" + path)

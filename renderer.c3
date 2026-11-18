@@ -413,6 +413,7 @@ fn void Renderer.render_back_faces(&self, RenderTarget* target) {
                         shaders::ATTR_THREE_NORMAL,
                         shaders::ATTR_THREE_UV,
                         shaders::ATTR_THREE_COLOR0,
+                        shaders::ATTR_THREE_UV1,
                         shaders::ATTR_THREE_INST0,
                         shaders::ATTR_THREE_INST1,
                         shaders::ATTR_THREE_INST2
@@ -565,6 +566,9 @@ struct RendererState @local {
     SgView no_probes;
     // One identity instance, bound for meshes that aren't instanced.
     SgBuffer identity_instance;
+    // zeros for the second uv set of the geometries without one, for this many vertices
+    SgBuffer zero_uv1;
+    uint zero_uv1_vertices;
     SgImage shadow_image;
     SgView shadow_attachment;
     SgView shadow_view;
@@ -844,17 +848,21 @@ fn void on_event(SappEvent* e) @local {
     foreach (l : state.listeners) l(e);
 }
 
-fn SgVertexLayoutState vertex_layout(int[7] attrs) @local {
+// position, normal, uv, color, uv1, and the instance's three rows. Buffer 0: the geometry's
+// vertices, 1: the instances, 2: the second uv set (see bind_instances).
+fn SgVertexLayoutState vertex_layout(int[8] attrs) @local {
     SgVertexLayoutState layout;
     layout.buffers[0].stride = FLOATS_PER_VERTEX * float::size;
     layout.buffers[1] = { .stride = 12 * float::size, .step_func = PER_INSTANCE };
+    layout.buffers[2].stride = 2 * float::size;
     layout.attrs[attrs[0]] = { .format = FLOAT3, .offset = 0 };
     layout.attrs[attrs[1]] = { .format = FLOAT3, .offset = 12 };
     layout.attrs[attrs[2]] = { .format = FLOAT2, .offset = 24 };
     layout.attrs[attrs[3]] = { .format = FLOAT4, .offset = 32 };
-    layout.attrs[attrs[4]] = { .format = FLOAT4, .offset = 0, .buffer_index = 1 };
-    layout.attrs[attrs[5]] = { .format = FLOAT4, .offset = 16, .buffer_index = 1 };
-    layout.attrs[attrs[6]] = { .format = FLOAT4, .offset = 32, .buffer_index = 1 };
+    layout.attrs[attrs[4]] = { .format = FLOAT2, .offset = 0, .buffer_index = 2 };
+    layout.attrs[attrs[5]] = { .format = FLOAT4, .offset = 0, .buffer_index = 1 };
+    layout.attrs[attrs[6]] = { .format = FLOAT4, .offset = 16, .buffer_index = 1 };
+    layout.attrs[attrs[7]] = { .format = FLOAT4, .offset = 32, .buffer_index = 1 };
     return layout;
 }
 
@@ -915,6 +923,7 @@ fn SgPipeline get_pipeline(
                 shaders::ATTR_THREE_NORMAL,
                 shaders::ATTR_THREE_UV,
                 shaders::ATTR_THREE_COLOR0,
+                shaders::ATTR_THREE_UV1,
                 shaders::ATTR_THREE_INST0,
                 shaders::ATTR_THREE_INST1,
                 shaders::ATTR_THREE_INST2
@@ -968,6 +977,7 @@ fn SgPipeline get_shadow_pipeline() @local {
                     shaders::ATTR_SHADOW_NORMAL,
                     shaders::ATTR_SHADOW_UV,
                     shaders::ATTR_SHADOW_COLOR0,
+                    shaders::ATTR_SHADOW_UV1,
                     shaders::ATTR_SHADOW_INST0,
                     shaders::ATTR_SHADOW_INST1,
                     shaders::ATTR_SHADOW_INST2
@@ -1001,6 +1011,7 @@ fn void clear_atlas_tile() @local {
                         shaders::ATTR_SHADOW_NORMAL,
                         shaders::ATTR_SHADOW_UV,
                         shaders::ATTR_SHADOW_COLOR0,
+                        shaders::ATTR_SHADOW_UV1,
                         shaders::ATTR_SHADOW_INST0,
                         shaders::ATTR_SHADOW_INST1,
                         shaders::ATTR_SHADOW_INST2
@@ -1021,6 +1032,7 @@ fn void clear_atlas_tile() @local {
     SgBindings bind = {
         .vertex_buffers[0] = g.vbuf,
         .vertex_buffers[1] = state.identity_instance,
+        .vertex_buffers[2] = zero_uv1(g.vertex_count()),
         .index_buffer = g.ibuf
     };
     Vec4 inst_cull = cull_bind(&bind, -1);
@@ -1036,7 +1048,7 @@ fn void clear_atlas_tile() @local {
     ShadowVsParams vs = {
         .s_view_proj = to_far,
         .s_model = mat4_identity(),
-        .s_uv_transform = { 1, 1, 0, 0 },
+        .s_uv_transform = { { 1, 0, 0, 0 }, { 0, 1, 0, 0 } },
         .s_inst_cull = inst_cull
     };
     sg::apply_uniforms(shaders::UB_SHADOW_VS_PARAMS, &&{ .ptr = &vs, .size = ShadowVsParams::size });
@@ -1714,9 +1726,59 @@ fn Texture* ready(Texture* t) @local {
     return t;
 }
 
-fn Vec4 uv_transform(Material* mat) @local {
-    Texture* t = mat.map ?: (mat.normal_map ?: mat.arm_map);
-    return t ? (Vec4) { t.repeat.x, t.repeat.y, t.offset.x, t.offset.y } : (Vec4) { 1, 1, 0, 0 };
+// The texture that places the uv of all of a material's maps (see Texture.repeat).
+fn Texture* uv_base(Material* mat) @local => mat.map ?: (mat.normal_map ?: mat.arm_map);
+
+// A texture's uv transform, three's texture.matrix (Matrix3.setUvTransform), as two rows:
+// u' = dot(row 0, (u, v, 1)), v' = dot(row 1, (u, v, 1)).
+fn Vec4[2] uv_rows(Texture* t) @local {
+    if (!t) return { { 1, 0, 0, 0 }, { 0, 1, 0, 0 } };
+    float c = math::cos(t.rotation);
+    float s = math::sin(t.rotation);
+    Vector2 k = t.center;
+    return {
+        { t.repeat.x * c, t.repeat.x * s, -t.repeat.x * (c * k.x + s * k.y) + k.x + t.offset.x, 0 },
+        { -t.repeat.y * s, t.repeat.y * c, -t.repeat.y * (-s * k.x + c * k.y) + k.y + t.offset.y, 0 },
+    };
+}
+
+fn Vec4[2] uv_transform(Material* mat) @local => uv_rows(uv_base(mat));
+
+// The uv of texture t from the uv of `base` (the color map's: see uv_base), for the fragment
+// shader's uv_rel: t's transform after the inverse of base's.
+// (on the second uv set, t's own transform of it: a 1 in the first row's w)
+fn Vec4[2] uv_relative(Texture* base, Texture* t) @local {
+    Vec4[2] m = uv_rows(t);
+    if (t && t.channel == 1) {
+        m[0].w = 1;
+        return m;
+    }
+    Vec4[2] b = uv_rows(base);
+    float det = b[0].x * b[1].y - b[0].y * b[1].x;
+    if (math::abs(det) < 1e-12) return m;
+    // base's inverse: [d -b; -c a] / det, and its offset
+    float ia = b[1].y / det;
+    float ib = -b[0].y / det;
+    float ic = -b[1].x / det;
+    float id = b[0].x / det;
+    float ix = -(ia * b[0].z + ib * b[1].z);
+    float iy = -(ic * b[0].z + id * b[1].z);
+    return {
+        { m[0].x * ia + m[0].y * ic, m[0].x * ib + m[0].y * id, m[0].x * ix + m[0].y * iy + m[0].z, 0 },
+        { m[1].x * ia + m[1].y * ic, m[1].x * ib + m[1].y * id, m[1].x * ix + m[1].y * iy + m[1].z, 0 },
+    };
+}
+
+// A buffer of zeros for `vertices` vertices' second uv set, grown as needed.
+fn SgBuffer zero_uv1(uint vertices) @local {
+    if (state.zero_uv1.id && state.zero_uv1_vertices >= vertices) return state.zero_uv1;
+    if (state.zero_uv1.id) sg::destroy_buffer(state.zero_uv1);
+    uint n = math::max(vertices, 1024u, state.zero_uv1_vertices * 2);
+    float[] zeros = mem::new_array(float, (usz)n * 2);
+    defer free(zeros);
+    state.zero_uv1 = sg::make_buffer(&&{ .data = { .ptr = zeros.ptr, .size = (usz)n * 2 * float::size }, .label = "drie-zero-uv1" });
+    state.zero_uv1_vertices = n;
+    return state.zero_uv1;
 }
 
 fn Vec4 sway_params(Material* mat) @local => { state.renderer.time, mat.sway, mat.sway_speed, 0 };
@@ -1892,21 +1954,46 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
         arm_bits = (mat.roughness_map ? 2 : 0) | (mat.metalness_map == arm ? 4 : 0);
     }
     bind.views[shaders::VIEW_TEX_ARM] = ready(arm).view;
-    // the standard material's other maps (white where it has none, as for the others)
+    // the material's other maps, in the six slots they share (white where a slot is empty):
+    // by role, in the order of the shader's MAP_*; one image in two roles takes one slot
     bool standard = mat.type == STANDARD;
-    Texture* ao_map = standard && mat.ao_intensity != 0 ? mat.ao_map : null;
-    Texture* specular_color_map = standard ? mat.specular_color_map : null;
-    Texture* specular_intensity_map = standard ? mat.specular_intensity_map : null;
-    Texture* transmission_map = standard && mat.transmission > 0 ? mat.transmission_map : null;
-    Texture* thickness_map = standard && mat.transmission > 0 ? mat.thickness_map : null;
-    bind.views[shaders::VIEW_TEX_AO] = ready(ao_map).view;
-    bind.views[shaders::VIEW_TEX_SPECULAR_COLOR] = ready(specular_color_map).view;
-    bind.views[shaders::VIEW_TEX_SPECULAR_INTENSITY] = ready(specular_intensity_map).view;
-    bind.views[shaders::VIEW_TEX_TRANSMISSION_MAP] = ready(transmission_map).view;
-    bind.views[shaders::VIEW_TEX_THICKNESS] = ready(thickness_map).view;
+    bool refracts = standard && mat.transmission > 0;
+    Texture*[14] roles = {
+        standard && mat.ao_intensity != 0 ? mat.ao_map : null,
+        standard ? mat.specular_color_map : null,
+        standard ? mat.specular_intensity_map : null,
+        refracts ? mat.transmission_map : null,
+        refracts ? mat.thickness_map : null,
+        standard && mat.iridescence > 0 ? mat.iridescence_map : null,
+        standard && mat.iridescence > 0 ? mat.iridescence_thickness_map : null,
+        standard && mat.clearcoat > 0 ? mat.clearcoat_map : null,
+        standard && mat.clearcoat > 0 ? mat.clearcoat_roughness_map : null,
+        standard && mat.clearcoat > 0 ? mat.clearcoat_normal_map : null,
+        standard && mat.sheen > 0 ? mat.sheen_color_map : null,
+        standard && mat.sheen > 0 ? mat.sheen_roughness_map : null,
+        mat.alpha_map,
+        mat.emissive_map,
+    };
+    Texture*[6] slots;
+    int used;
+    Vec4[4] map_slots;
+    foreach (i, t : roles) {
+        int slot = -1;
+        if (t) {
+            for (int k = 0; k < used; k++) {
+                if (slots[k] == t) slot = k;
+            }
+            // (more than six images: the rest are left out)
+            if (slot < 0 && used < slots.len) {
+                slots[used] = t;
+                slot = used++;
+            }
+        }
+        map_slots[i / 4][i % 4] = (float)slot;
+    }
+    for (int k = 0; k < slots.len; k++) bind.views[shaders::VIEW_TEX_EXT0 + k] = ready(slots[k]).view;
     bool backdrop = m == state.background;
-    int ext_bits = (ao_map ? 1 : 0) | (specular_color_map ? 2 : 0) | (specular_intensity_map ? 4 : 0)
-        | (transmission_map ? 8 : 0) | (thickness_map ? 16 : 0) | (backdrop ? 32 : 0);
+    int ext_bits = backdrop ? 32 : 0;
     // (the parallax map: white, none, where the material has none)
     bind.views[shaders::VIEW_TEX_PARALLAX] = ready(mat.parallax_map).view;
     bind.views[shaders::VIEW_SHADOW_MAP] = state.shadow_view;
@@ -1956,7 +2043,7 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     }
     bind.views[shaders::VIEW_TEX_ENV] = env.view;
     bind.samplers[shaders::SMP_ENV_SMP] = env.sampler;
-    bind.samplers[shaders::SMP_TEX_SMP] = (mat.map ?: (mat.normal_map ?: (arm ?: (ao_map ?: (specular_color_map ?: (thickness_map ?: state.white)))))).sampler;
+    bind.samplers[shaders::SMP_TEX_SMP] = (mat.map ?: (mat.normal_map ?: (arm ?: (slots[0] ?: state.white)))).sampler;
     if (mat.screen_target) {
         bind.views[shaders::VIEW_TEX_MAP] = mat.screen_target.texture;
         bind.samplers[shaders::SMP_TEX_SMP] = state.white.sampler;
@@ -2027,6 +2114,25 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
             + ((Vector3) { w[2][0], w[2][1], w[2][2] }).length()) / 3;
     }
     fs.ext_params = { (float)ext_bits, mat.ao_intensity, scale, (float)state.transmission_width };
+    fs.map_slots = map_slots;
+    // each map's uv from the color map's
+    Texture* base = uv_base(mat);
+    Vec4[2] rel = uv_relative(base, mat.normal_map);
+    fs.uv_rel[0:2] = rel[..];
+    rel = uv_relative(base, arm);
+    fs.uv_rel[2:2] = rel[..];
+    for (int k = 0; k < slots.len; k++) {
+        rel = uv_relative(base, slots[k]);
+        fs.uv_rel[4 + 2 * k:2] = rel[..];
+    }
+    fs.clearcoat_params = {
+        standard ? mat.clearcoat : 0, mat.clearcoat_roughness, mat.clearcoat_normal_scale.x, mat.clearcoat_normal_scale.y
+    };
+    Vector3 sheen = standard ? mat.sheen_color * mat.sheen : (Vector3) { 0, 0, 0 };
+    fs.sheen_params = { ...sheen, mat.sheen_roughness };
+    fs.iridescence_params = {
+        standard ? mat.iridescence : 0, mat.iridescence_ior, mat.iridescence_thickness_min, mat.iridescence_thickness_max
+    };
     fs.frame_custom = r.custom;
     fs.ssr_view_proj = r.ssr_view_proj;
     fs.ssr_params = { ssr ? mat.ssr : 0, r.ssr_reach, (float)(r.ssr_frame % 64), depth_zero_to_one() ? 1 : 0 };
@@ -2084,9 +2190,11 @@ fn void draw_shadow_item(DrawItem* item, Mat4 light_vp, Vector3 origin = { 0, 0,
     state.renderer.info.shadow_triangles += draw_geometry(item, false);
 }
 
-// The instance attributes of a draw (one identity instance for a plain mesh).
+// The instance attributes of a draw (one identity instance for a plain mesh), and its
+// geometry's second uv set.
 fn void bind_instances(SgBindings* bind, DrawItem* item) @local {
     Mesh* m = item.mesh;
+    bind.vertex_buffers[2] = m.geometry.uv1buf.id ? m.geometry.uv1buf : zero_uv1(m.geometry.vertex_count());
     if (!m.instance_data.len()) {
         bind.vertex_buffers[1] = state.identity_instance;
         return;
@@ -2366,7 +2474,8 @@ fn void render_transmission(Renderer* r, Scene* scene, Camera* camera, Mat4 view
     profile::begin_pass(
         &&{
             .action = {
-                .colors[0] = { .load_action = CLEAR, .clear_value = { clear.x, clear.y, clear.z, 1 } },
+                // (kept, multisampled, for the back faces of double-sided glass after it)
+                .colors[0] = { .load_action = CLEAR, .store_action = STORE, .clear_value = { clear.x, clear.y, clear.z, 1 } },
                 .depth = { .load_action = CLEAR, .store_action = STORE, .clear_value = 1 },
             },
             .attachments = state.transmission.attachments(),
@@ -2376,13 +2485,47 @@ fn void render_transmission(Renderer* r, Scene* scene, Camera* camera, Mat4 view
     draw_background(scene, camera, view_proj, &tfs);
     foreach (&item : state.opaque) {
         // the glass is not behind itself
-        if (item.mesh.material.transmission > 0 && item.mesh.material.type == STANDARD) continue;
+        if (refracts(item)) continue;
         draw_item(item, view_proj, &tfs, item.mesh.material.wireframe || has_holes(item) ? CUT : SOLID);
     }
     sg::end_pass();
-    r.render_target = prev;
     fill_transmission_levels();
+    // the far side of double-sided glass (a bowl, a glass's back wall) is behind its near side:
+    // its back faces, refracting the picture so far, drawn into it (as three does)
+    bool backs;
+    for (int list = 0; list < 2 && !backs; list++) {
+        foreach (&item : list == 0 ? state.opaque : state.transparent) {
+            if (refracts(item) && item.mesh.material.side == DOUBLE_SIDE) backs = true;
+        }
+    }
+    if (backs) {
+        profile::begin_pass(
+            &&{
+                .action = {
+                    .colors[0] = { .load_action = LOAD, .store_action = STORE },
+                    .depth = { .load_action = LOAD, .store_action = DONTCARE },
+                },
+                .attachments = state.transmission.attachments(),
+                .label = "drie-transmission-backs",
+            }
+        );
+        for (int list = 0; list < 2; list++) {
+            foreach (&item : list == 0 ? state.opaque : state.transparent) {
+                Material* mat = item.mesh.material;
+                if (!refracts(item) || mat.side != DOUBLE_SIDE) continue;
+                mat.side = BACK_SIDE;
+                draw_item(item, view_proj, &tfs, list == 0 && !mat.wireframe && !has_holes(item) ? SOLID : CUT);
+                mat.side = DOUBLE_SIDE;
+            }
+        }
+        sg::end_pass();
+        fill_transmission_levels();
+    }
+    r.render_target = prev;
 }
+
+// A transmission material: it shows the picture of what is behind it (render_transmission).
+fn bool refracts(DrawItem* item) @local => item.mesh.material.transmission > 0 && item.mesh.material.type == STANDARD;
 
 // Draws the scene from the camera's point of view. Call once per frame from the animation loop.
 fn void Renderer.render(&self, Scene* scene, Camera* camera) {
@@ -2541,13 +2684,11 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera) {
     profile::stop("render: volumetric fog", pt);
     pt = profile::start();
     // what the transmission materials refract: the opaque scene behind them, without them
-    foreach (&item : state.opaque) {
-        Material* mat = item.mesh.material;
-        if (mat.transmission > 0 && mat.type == STANDARD) {
-            render_transmission(self, scene, camera, view_proj_rel, &fs);
-            break;
-        }
-    }
+    // (theirs, opaque or transparent)
+    bool refraction;
+    foreach (&item : state.opaque) refraction = refraction || refracts(item);
+    foreach (&item : state.transparent) refraction = refraction || refracts(item);
+    if (refraction) render_transmission(self, scene, camera, view_proj_rel, &fs);
     profile::stop("render: transmission", pt);
     pt = profile::start();
 

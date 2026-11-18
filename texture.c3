@@ -40,11 +40,22 @@ struct Texture {
     ColorSpace color_space;
     Wrapping wrap_s;
     Wrapping wrap_t;
-    // UV scale and offset, like three's texture.repeat / texture.offset.
+    // UV scale and offset, like three's texture.repeat / texture.offset, and its rotation
+    // (radians) about `center` (three's texture.rotation and center). The color map's (or
+    // without one the normal map's, or the arm map's) places the uv of all the material's
+    // maps; the others are read each with its own.
     Vector2 repeat;
     Vector2 offset;
+    float rotation;
+    Vector2 center;
+    // Which of the geometry's uv sets it is read with: 0 its uv, 1 its uv1 (three's
+    // texture.channel). Only the maps besides the color map can take the second.
+    char channel;
     bool generate_mipmaps;
     int anisotropy;
+    // Up close, each texel a sharp square instead of blended with its neighbours (three's
+    // magFilter = NearestFilter).
+    bool nearest;
     // Drawn into, not loaded (see canvas_texture): black until the first drawing.
     bool render_target;
     // For an environment map captured with distances (Renderer.capture_environment): alpha 1
@@ -334,7 +345,7 @@ fn void Texture.upload_float(&self) {
     self.sampler = sg::make_sampler(
         &&{
             .min_filter = LINEAR,
-            .mag_filter = LINEAR,
+            .mag_filter = self.nearest ? SgFilter.NEAREST : SgFilter.LINEAR,
             .mipmap_filter = count > 1 ? SgFilter.LINEAR : SgFilter.NEAREST,
             .wrap_u = sg_wrap(self.wrap_s),
             .wrap_v = sg_wrap(self.wrap_t),
@@ -426,7 +437,7 @@ fn void Texture.upload(&self) {
     self.sampler = sg::make_sampler(
         &&{
             .min_filter = LINEAR,
-            .mag_filter = LINEAR,
+            .mag_filter = self.nearest ? SgFilter.NEAREST : SgFilter.LINEAR,
             .mipmap_filter = self.prepared_levels > 1 ? SgFilter.LINEAR : SgFilter.NEAREST,
             .wrap_u = sg_wrap(self.wrap_s),
             .wrap_v = sg_wrap(self.wrap_t),

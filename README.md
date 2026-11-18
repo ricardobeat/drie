@@ -70,8 +70,8 @@ three.js API coverage:
 | Meshes & LOD | ✅ | `Mesh`, `InstancedMesh`, `Lod` |
 | Lines | ✅ | `Line`, `LineSegments`, `LineLoop`, `LineBasic` and `LineDashed` materials |
 | Geometry | ✅ | `box`, `plane`, `sphere`, `cylinder`, `cone`, `torus`, `lathe`, `buffer_geometry`, `merge` |
-| Materials | ✅ | `MeshBasic`, `MeshLambert`, `MeshPhong`, `MeshStandard`, `MeshNormal`, `MeshPhysical`'s transmission, volume, IOR, dispersion and specular (no clearcoat, sheen, iridescence), parallax mapping (`parallaxUV`), shader hooks (`onBeforeCompile`) |
-| Textures | ✅ | `load_texture` (PNG/JPEG), `data_texture`, `canvas_texture`, mipmaps, anisotropy |
+| Materials | ✅ | `MeshBasic`, `MeshLambert`, `MeshPhong`, `MeshStandard`, `MeshNormal`, `MeshPhysical` (transmission, volume, IOR, dispersion, specular, clearcoat, sheen, iridescence; no anisotropy), parallax mapping (`parallaxUV`), shader hooks (`onBeforeCompile`) |
+| Textures | ✅ | `load_texture` (PNG/JPEG), `data_texture`, `canvas_texture`, mipmaps, anisotropy, `repeat` / `offset` / `rotation` / `center` per map, `channel` (a geometry's second uv set, `uv1`), `nearest` (three's `NearestFilter` magnification) |
 | Lights | ✅ | `AmbientLight`, `HemisphereLight`, `DirectionalLight`, `PointLight`, `SpotLight` |
 | Lighting addons | ✅ | Clustered forward lighting (`ClusteredLighting`), irradiance volume (`LightProbeGrid`) |
 | Reflections | ✅ | Box-projected env maps, `CubeCamera` capture, SSR (`SSRNode`), planar `Reflector` |
@@ -82,7 +82,7 @@ three.js API coverage:
 | Renderer | ✅ | `render_target`, tone mapping, frustum culling, `renderer.info`, MRT, compute passes |
 | Shadows | ⚠️ | `DirectionalLight` (CSM) and `SpotLight` (1 live + cached atlas); `PointLight` ❌ |
 | Skeletons | ⚠️ | `Bone`, `Skeleton`, `SkinnedMesh` (CPU skinning); animation clips ❌ |
-| glTF (`drie::loaders`) | ⚠️ | `.glb` meshes, materials, textures; skins & animations ❌ |
+| glTF (`drie::loaders`) | ⚠️ | `.glb` meshes, materials (with `KHR_materials_*` transmission, volume, ior, dispersion, specular, emissive_strength, clearcoat, sheen, iridescence), textures on either uv set; `KHR_texture_transform`, skins & animations ❌ |
 | Quaternions / Animation | ❌ | XYZ Euler rotations only; no animation clips |
 | Sky | ✅ | `Sky` (`drie::objects`) |
 
@@ -125,7 +125,7 @@ Features not in three.js:
 | **Room Reflection Probes** | Box-projected, cross-faded room probes |
 | **GPU Culling** | Depth pre-pass and GPU instanced culling |
 | **Light Radius** | Softer close-range falloff on point and spot lights |
-| **Material Extensions** | Foliage wind sway, glass viewer silhouette, refraction with dispersion |
+| **Material Extensions** | Foliage wind sway, glass viewer silhouette, refraction with dispersion, clearcoat, sheen, iridescence |
 | **UI, Input & Tooling** | Menus, macOS GameController support, deterministic timeline rewind, profiling |
 
 ### Materials & Geometry
@@ -134,7 +134,9 @@ Features not in three.js:
 - **Parallax occlusion mapping:** `material.parallax_map` with shadowing from the first directional light.
 - **Foliage & wind sway:** `material.foliage` enables two-sided wrapped lighting for alpha-tested foliage, animated with `sway`, `sway_speed`, and `renderer.time`.
 - **Glass & viewer silhouette:** `material.glass` preserves reflections regardless of opacity; `material.reflect_viewer` darkens glass reflections with a soft silhouette at the camera.
-- **Transmission & dispersion:** `material.transmission` shows what stands behind a surface, refracted through `thickness` meters of it at `ior` and blurred by its roughness; `dispersion` bends each color channel by its own index of refraction, fringing edges with rainbow colors, and `attenuation_color` / `attenuation_distance` tint the light as it crosses (Beer's law). `specular_color` / `specular_intensity` tint and scale what a dielectric reflects (KHR_materials_specular).
+- **Transmission & dispersion:** `material.transmission` shows what stands behind a surface, refracted through `thickness` meters of it at `ior` and blurred by its roughness; `dispersion` bends each color channel by its own index of refraction, fringing edges with rainbow colors, and `attenuation_color` / `attenuation_distance` tint the light as it crosses (Beer's law). `specular_color` / `specular_intensity` tint and scale what a dielectric reflects (KHR_materials_specular). Double-sided glass shows its own far side through the near one.
+- **Clearcoat, sheen & iridescence:** `material.clearcoat` lays a thin clear varnish over the surface, with its own `clearcoat_roughness` and normal map (car paint, lacquer); `sheen` / `sheen_color` / `sheen_roughness` give cloth its soft glow at glancing angles (velvet, fabric); `iridescence` is a thin film (soap bubbles, oil) whose colors come from its thickness, `iridescence_thickness_min` to `_max` nanometers, and `iridescence_ior`. They are three's `MeshPhysicalMaterial` layers, from its shader code.
+- **Alpha and emissive maps:** `material.alpha_map` (green: how opaque) and `emissive_map` (tints `emissive`).
 - **Additive blending & draw order:** `material.blending = ADDITIVE_BLENDING` for transparent materials and `object.render_order` for explicit draw order, as in three.js.
 - **World-space box UVs:** `geometry.box_project_uv(tiles_per_unit)` generates box-projected UVs.
 
@@ -145,7 +147,12 @@ Features not in three.js:
 | --- | --- | --- |
 | Parallax | `material.parallax_map`, `parallax_scale`, `parallax_distance`, `parallax_shadow` | Shadowing uses the first directional light |
 | Foliage | `material.foliage`, `material.sway`, `sway_speed`, `renderer.time`, `renderer.auto_time` | `auto_time` drives `sway` animation |
-| Transmission & dispersion | `material.transmission` (+ `transmission_map`), `thickness` (m, + `thickness_map`), `ior`, `dispersion`, `attenuation_color`, `attenuation_distance`, `specular_color` / `specular_intensity` (+ maps) | Costs a second pass over the opaque scene and its mip levels (for rough glass); loaded from `KHR_materials_transmission` / `_volume` / `_ior` / `_dispersion` / `_specular`; `just test dispersion`, `just test transmission` |
+| Transmission & dispersion | `material.transmission` (+ `transmission_map`), `thickness` (m, + `thickness_map`), `ior`, `dispersion`, `attenuation_color`, `attenuation_distance`, `specular_color` / `specular_intensity` (+ maps) | Costs a second pass over the opaque scene and its mip levels (for rough glass), and a third for the back faces of double-sided glass; loaded from `KHR_materials_transmission` / `_volume` / `_ior` / `_dispersion` / `_specular`; `just test dispersion`, `just test transmission` |
+| Clearcoat | `material.clearcoat`, `clearcoat_roughness` (+ `clearcoat_map`, `clearcoat_roughness_map`), `clearcoat_normal_map`, `clearcoat_normal_scale` | Loaded from `KHR_materials_clearcoat`; `just test physical` |
+| Sheen | `material.sheen`, `sheen_color` (+ `sheen_color_map`), `sheen_roughness` (+ `sheen_roughness_map`) | Loaded from `KHR_materials_sheen` |
+| Iridescence | `material.iridescence` (+ `iridescence_map`), `iridescence_ior`, `iridescence_thickness_min` / `_max` (nm, + `iridescence_thickness_map`) | Loaded from `KHR_materials_iridescence` |
+
+A material's maps besides `map`, `normal_map` and `arm_map` share six texture slots: up to six distinct textures among them.
 
 </details>
 
@@ -171,7 +178,7 @@ Features not in three.js:
 
 ### Reflections
 
-- **Environment maps:** Equirectangular reflections with mip-based roughness blur and optional box projection.
+- **Environment maps:** Equirectangular reflections with mip-based roughness blur (as wide as three's PMREM at each roughness, sampled towards the GGX lobe's dominant direction) and optional box projection.
 - **Environment capture:** `renderer.capture_environment(...)` renders a 6-face light probe into an equirectangular `env_map` (reads back from the GPU; intended for load time). This is three.js's `CubeCamera` + `PMREMGenerator`.
 - **Room reflection probes:** `scene.reflection_probes` (`ReflectionProbes`) array texture of box-projected, cross-faded room probes for materials with `env_probes`.
 - **Screen-space reflections (SSR):** Previous-frame color/depth reflections with optional back-face thickness.

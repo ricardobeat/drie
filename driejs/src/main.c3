@@ -241,8 +241,8 @@ fn void h_light_target(JsCtx ctx, void* udata)
     ctx.ret_number(reg_object(target));
 }
 
-// geometry(position, normal, uv, color, index): three's attribute arrays (Float32Array;
-// index Uint16Array or Uint32Array), any but position may be null. Without normals they
+// geometry(position, normal, uv, color, index, skinIndex, skinWeight, uv1): three's attribute
+// arrays (Float32Array; index Uint16Array or Uint32Array), any but position may be null. Without normals they
 // are computed, without an index every three vertices are a triangle.
 fn void h_geometry(JsCtx ctx, void* udata)
 {
@@ -292,6 +292,8 @@ fn void h_geometry(JsCtx ctx, void* udata)
         for (uint i = 0; i < count; i++) g.indices.push(i);
     }
     if (!nrm.len && count) g.compute_vertex_normals();
+    float[] uv1 = floats_arg(ctx, 7);
+    if (uv1.len >= (usz)count * 2) foreach (f : uv1[:(usz)count * 2]) g.uv1.push(f);
     // skinIndex (Uint16Array) and skinWeight, 4 of each per vertex
     View joints;
     float[] weights = floats_arg(ctx, 6);
@@ -309,14 +311,29 @@ fn void h_geometry(JsCtx ctx, void* udata)
     ctx.ret_number(@reg(geometries, g, GEOMETRY_BASE));
 }
 
-// texture(source, srgb, wrapS, wrapT, anisotropy, repeatX, repeatY, offsetX, offsetY, flipY):
-// `source` is a file's path or an encoded image (PNG, JPEG) in a Uint8Array
+// texture(source, srgb, wrapS, wrapT, anisotropy, repeatX, repeatY, offsetX, offsetY, flipY,
+// rotation, centerX, centerY, width, height, nearest, channel):
+// `source` is a file's path or an encoded image (PNG, JPEG) in a Uint8Array, or with `width`
+// and `height` its pixels (RGBA, a Uint8Array or Uint8ClampedArray: a canvas's)
 fn void h_texture(JsCtx ctx, void* udata)
 {
     ColorSpace space = bool_arg(ctx, 1, true) ? SRGB_COLOR_SPACE : NO_COLOR_SPACE;
     Texture* t;
     View bytes;
-    if (view_arg(ctx, 0, &bytes) && bytes.cls == ObjClass.UINT8ARRAY)
+    int width = (int)num_arg(ctx, 13, 0);
+    int height = (int)num_arg(ctx, 14, 0);
+    bool raw = width > 0 && height > 0 && view_arg(ctx, 0, &bytes)
+        && (bytes.cls == ObjClass.UINT8ARRAY || bytes.cls == ObjClass.UINT8CLAMPEDARRAY);
+    if (raw)
+    {
+        if (bytes.len < (usz)width * (usz)height * 4)
+        {
+            ctx.throw_error(TYPE, "texture: expected width * height * 4 bytes");
+            return;
+        }
+        t = drie::data_texture(((char*)bytes.data)[:(usz)width * (usz)height * 4], width, height, space);
+    }
+    else if (view_arg(ctx, 0, &bytes) && bytes.cls == ObjClass.UINT8ARRAY)
     {
         if (try decoded = drie::decode_texture(((char*)bytes.data)[:bytes.len], space))
         {
@@ -340,7 +357,102 @@ fn void h_texture(JsCtx ctx, void* udata)
     t.anisotropy = (int)num_arg(ctx, 4, 1);
     t.repeat = { (float)num_arg(ctx, 5, 1), (float)num_arg(ctx, 6, 1) };
     t.offset = { (float)num_arg(ctx, 7, 0), (float)num_arg(ctx, 8, 0) };
+    t.rotation = (float)num_arg(ctx, 10, 0);
+    t.center = { (float)num_arg(ctx, 11, 0), (float)num_arg(ctx, 12, 0) };
+    t.nearest = bool_arg(ctx, 15, false);
+    t.channel = (char)num_arg(ctx, 16, 0);
     ctx.ret_number(@reg(textures, t, TEXTURE_BASE));
+}
+
+// cubeTexture(px, nx, py, ny, pz, nz, size): an equirectangular texture (linear light, 4 * size
+// by 2 * size) of a cube map's six faces of half floats (Uint16Array) or floats, RGBA, as
+// HDRCubeTextureLoader makes them. Looked up as three looks up a CubeTexture (x mirrored).
+fn void h_cube_texture(JsCtx ctx, void* udata)
+{
+    int size = (int)num_arg(ctx, 6, 0);
+    float[][6] faces;
+    float[] all = mem::new_array(float, (sz)size * size * 4 * 6);
+    defer mem::free(all.ptr);
+    for (int f = 0; f < 6; f++)
+    {
+        View v;
+        usz count = (usz)size * (usz)size * 4;
+        if (size <= 0 || !view_arg(ctx, (uint)f, &v) || (v.cls != ObjClass.UINT16ARRAY && v.cls != ObjClass.FLOAT32ARRAY) || v.len < count)
+        {
+            ctx.throw_error(TYPE, "cubeTexture: expected six faces of size * size * 4 half floats or floats");
+            return;
+        }
+        faces[f] = all[(sz)count * f:(sz)count];
+        if (v.cls == ObjClass.FLOAT32ARRAY)
+        {
+            libc::memcpy(faces[f].ptr, v.data, count * 4);
+        }
+        else
+        {
+            ushort* halfs = (ushort*)v.data;
+            for (usz i = 0; i < count; i++) faces[f][i] = drie::half_to_float(halfs[i]);
+        }
+    }
+    int w = size * 4;
+    int h = size * 2;
+    float[] px = mem::new_array(float, (sz)w * h * 4);
+    defer mem::free(px.ptr);
+    for (int y = 0; y < h; y++)
+    {
+        // drie's equirectangular maps: v = 0 straight up, u = 0.5 toward +x (see env_uv)
+        float theta = ((float)y + 0.5f) / h * (float)math::PI;
+        for (int x = 0; x < w; x++)
+        {
+            float phi = (((float)x + 0.5f) / w - 0.5f) * 2 * (float)math::PI;
+            // (three reads a CubeTexture with x mirrored: flipEnvMap)
+            Vector3 d = { -math::cos(phi) * math::sin(theta), math::cos(theta), math::sin(phi) * math::sin(theta) };
+            int face;
+            float sc;
+            float tc;
+            float ma;
+            Vector3 a = { math::abs(d.x), math::abs(d.y), math::abs(d.z) };
+            // GL's cube map faces: which one, and where in it
+            if (a.x >= a.y && a.x >= a.z)
+            {
+                face = d.x > 0 ? 0 : 1;
+                sc = d.x > 0 ? -d.z : d.z;
+                tc = -d.y;
+                ma = a.x;
+            }
+            else if (a.y >= a.z)
+            {
+                face = d.y > 0 ? 2 : 3;
+                sc = d.x;
+                tc = d.y > 0 ? d.z : -d.z;
+                ma = a.y;
+            }
+            else
+            {
+                face = d.z > 0 ? 4 : 5;
+                sc = d.z > 0 ? d.x : -d.x;
+                tc = -d.y;
+                ma = a.z;
+            }
+            float s = ((sc / ma + 1) * 0.5f) * size - 0.5f;
+            float t = ((tc / ma + 1) * 0.5f) * size - 0.5f;
+            int s0 = (int)math::floor(s);
+            int t0 = (int)math::floor(t);
+            float fs = s - s0;
+            float ft = t - t0;
+            sz o = ((sz)y * w + x) * 4;
+            for (int k = 0; k < 4; k++)
+            {
+                int si = math::clamp(s0 + (k & 1), 0, size - 1);
+                int ti = math::clamp(t0 + (k >> 1), 0, size - 1);
+                float wk = ((k & 1) != 0 ? fs : 1 - fs) * ((k >> 1) != 0 ? ft : 1 - ft);
+                sz i = ((sz)ti * size + si) * 4;
+                for (int c = 0; c < 3; c++) px[o + c] += faces[face][i + c] * wk;
+            }
+            px[o + 3] = 1;
+        }
+    }
+    Texture* tex = drie::float_texture(px, w, h);
+    ctx.ret_number(@reg(textures, tex, TEXTURE_BASE));
 }
 
 // material(kind, color, emissive, specular, shininess, roughness, metalness, opacity,
@@ -425,8 +537,11 @@ fn void h_material_update(JsCtx ctx, void* udata)
 }
 
 // materialMaps(material, normalMap, normalScale, roughnessMap, metalnessMap, aoMap,
-// aoMapIntensity, specularColorMap, specularIntensityMap, transmissionMap, thicknessMap): a
-// material's maps besides `map`, as three's (texture handles; -1: none)
+// aoMapIntensity, specularColorMap, specularIntensityMap, transmissionMap, thicknessMap,
+// clearcoatMap, clearcoatRoughnessMap, clearcoatNormalMap, clearcoatNormalScaleX, _Y,
+// sheenColorMap, sheenRoughnessMap, iridescenceMap, iridescenceThicknessMap, alphaMap,
+// emissiveMap, envMap, envMapIntensity): a material's maps besides `map`, as three's (texture
+// handles; -1: none)
 fn void h_material_maps(JsCtx ctx, void* udata)
 {
     Material* m = get_material(num_arg(ctx, 0, -1));
@@ -441,6 +556,37 @@ fn void h_material_maps(JsCtx ctx, void* udata)
     m.specular_intensity_map = get_texture(num_arg(ctx, 8, -1));
     m.transmission_map = get_texture(num_arg(ctx, 9, -1));
     m.thickness_map = get_texture(num_arg(ctx, 10, -1));
+    m.clearcoat_map = get_texture(num_arg(ctx, 11, -1));
+    m.clearcoat_roughness_map = get_texture(num_arg(ctx, 12, -1));
+    m.clearcoat_normal_map = get_texture(num_arg(ctx, 13, -1));
+    m.clearcoat_normal_scale = { (float)num_arg(ctx, 14, 1), (float)num_arg(ctx, 15, 1) };
+    m.sheen_color_map = get_texture(num_arg(ctx, 16, -1));
+    m.sheen_roughness_map = get_texture(num_arg(ctx, 17, -1));
+    m.iridescence_map = get_texture(num_arg(ctx, 18, -1));
+    m.iridescence_thickness_map = get_texture(num_arg(ctx, 19, -1));
+    m.alpha_map = get_texture(num_arg(ctx, 20, -1));
+    m.emissive_map = get_texture(num_arg(ctx, 21, -1));
+    m.env_map = get_texture(num_arg(ctx, 22, -1));
+    // (drie takes 0 for 1)
+    m.env_intensity = math::max((float)num_arg(ctx, 23, 1), 1e-6f);
+}
+
+// materialLayers(material, clearcoat, clearcoatRoughness, sheen, sheenR, sheenG, sheenB,
+// sheenRoughness, iridescence, iridescenceIOR, iridescenceThicknessMin, _Max):
+// MeshPhysicalMaterial's clear coat, sheen (its color linear) and iridescence
+fn void h_material_layers(JsCtx ctx, void* udata)
+{
+    Material* m = get_material(num_arg(ctx, 0, -1));
+    if (m == null) { ctx.throw_error(TYPE, "materialLayers: invalid material"); return; }
+    m.clearcoat = (float)num_arg(ctx, 1, 0);
+    m.clearcoat_roughness = (float)num_arg(ctx, 2, 0);
+    m.sheen = (float)num_arg(ctx, 3, 0);
+    m.sheen_color = { (float)num_arg(ctx, 4, 0), (float)num_arg(ctx, 5, 0), (float)num_arg(ctx, 6, 0) };
+    m.sheen_roughness = (float)num_arg(ctx, 7, 1);
+    m.iridescence = (float)num_arg(ctx, 8, 0);
+    m.iridescence_ior = (float)num_arg(ctx, 9, 1.3);
+    m.iridescence_thickness_min = (float)num_arg(ctx, 10, 100);
+    m.iridescence_thickness_max = (float)num_arg(ctx, 11, 400);
 }
 
 // floatTexture(data, width, height, flipY): a texture of RGBA in linear light, from a
@@ -1346,11 +1492,13 @@ fn int main(String[] args)
     reg(natives, "cameraUpdate", &h_camera_update, 6);
     reg(natives, "light", &h_light, 8);
     reg(natives, "lightTarget", &h_light_target, 1);
-    reg(natives, "geometry", &h_geometry, 7);
-    reg(natives, "texture", &h_texture, 10);
+    reg(natives, "geometry", &h_geometry, 8);
+    reg(natives, "texture", &h_texture, 17);
+    reg(natives, "cubeTexture", &h_cube_texture, 7);
     reg(natives, "material", &h_material, 27);
     reg(natives, "materialUpdate", &h_material_update, 19);
-    reg(natives, "materialMaps", &h_material_maps, 11);
+    reg(natives, "materialMaps", &h_material_maps, 24);
+    reg(natives, "materialLayers", &h_material_layers, 12);
     reg(natives, "floatTexture", &h_float_texture, 4);
     reg(natives, "imageDecode", &h_image_decode, 1);
     reg(natives, "imageSize", &h_image_size, 2);

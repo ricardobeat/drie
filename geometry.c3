@@ -14,8 +14,13 @@ struct BufferGeometry {
     // three's skinIndex and skinWeight attributes. Empty unless set with set_skin / skin_range.
     List{ushort} skin_indices;
     List{float} skin_weights;
+    // A second uv per vertex (glTF's TEXCOORD_1, three's uv1), for the maps that read it (a
+    // Texture's channel 1), like light and ambient occlusion maps baked on their own unwrap.
+    // Empty without one: those maps read uv (0, 0).
+    List{float} uv1;
     // GPU state, created lazily on first render.
     SgBuffer vbuf;
+    SgBuffer uv1buf;
     SgBuffer ibuf;
     SgBuffer wire_ibuf;
     uint wire_count;
@@ -36,6 +41,7 @@ fn void BufferGeometry.init_lists(&self) {
     self.indices.allocator = mem;
     self.skin_indices.allocator = mem;
     self.skin_weights.allocator = mem;
+    self.uv1.allocator = mem;
 }
 
 fn void BufferGeometry.compute_bounding_sphere(&self) {
@@ -258,6 +264,9 @@ fn void BufferGeometry.upload(&self) {
             .data = { .ptr = self.indices.entries, .size = (usz)self.indices.len() * uint::size },
         }
     );
+    if ((usz)self.uv1.len() >= (usz)self.vertex_count() * 2) {
+        self.uv1buf = sg::make_buffer(&&{ .data = { .ptr = self.uv1.entries, .size = (usz)self.vertex_count() * 2 * float::size } });
+    }
     self.uploaded = true;
 }
 
@@ -322,6 +331,8 @@ fn void BufferGeometry.dispose(&self) {
     if (self.ibuf.id) sg::destroy_buffer(self.ibuf);
     if (self.wire_ibuf.id) sg::destroy_buffer(self.wire_ibuf);
     if (self.line_ibuf.id) sg::destroy_buffer(self.line_ibuf);
+    if (self.uv1buf.id) sg::destroy_buffer(self.uv1buf);
+    self.uv1buf = { };
     self.vbuf = { };
     self.ibuf = { };
     self.wire_ibuf = { };

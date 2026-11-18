@@ -22,7 +22,7 @@
 // draw ranges, points, sprites, morph targets, spot and point light shadows, lightMap, an
 // emissiveMap that isn't the map, clearcoat, sheen, iridescence and anisotropy, render targets
 // and post-processing.
-import { Color, EquirectangularReflectionMapping, EquirectangularRefractionMapping, Matrix4 } from "../vendor/three.core.js";
+import { Color, EquirectangularReflectionMapping, EquirectangularRefractionMapping, Matrix4, NearestFilter } from "../vendor/three.core.js";
 import { setCanvas } from "./dom.js";
 
 const N = globalThis.__drie;
@@ -160,7 +160,15 @@ export class DrieRenderer {
 	}
 
 	setAnimationLoop(callback) {
-		N.setAnimationLoop(this._id, callback);
+		this._loop = callback;
+		N.setAnimationLoop(this._id, callback ?? (this._last ? () => this._redraw() : null));
+	}
+
+	// A page that renders only when something changes (OrbitControls' "change" event, no
+	// animation loop): its last picture is drawn again every frame, so the window has one.
+	_redraw() {
+		const [scene, camera] = this._last;
+		this.render(scene, camera);
 	}
 
 	getContext() {
@@ -171,6 +179,8 @@ export class DrieRenderer {
 	dispose() {}
 
 	render(scene, camera) {
+		if (!this._last && !this._loop) N.setAnimationLoop(this._id, () => this._redraw());
+		this._last = [scene, camera];
 		const sceneId = this._mirror(scene, camera);
 		const t = profile ? N.now() : 0;
 		N.render(this._id, sceneId, camera.__drie);
@@ -468,7 +478,7 @@ export class DrieRenderer {
 		}
 		const normals = a.normal ? floats(a.normal, 3) : a.lineDistance ? lineDistanceNormals(a.lineDistance) : null;
 		geometry.__drie = N.geometry(floats(a.position, 3), normals, floats(a.uv, 2), color,
-			geometry.index ? geometry.index.array : null, joints, floats(a.skinWeight, 4));
+			geometry.index ? geometry.index.array : null, joints, floats(a.skinWeight, 4), floats(a.uv1, 2));
 		geometry.__drieVersion = version;
 		return geometry.__drie;
 	}
@@ -488,8 +498,11 @@ export class DrieRenderer {
 	// as GLTFLoader makes them), or a DataTexture of half floats or floats (an HDR image, as
 	// UltraHDRLoader and HDRLoader make them).
 	_texture(texture) {
+		if (texture?.isCubeTexture) return this._cubeTexture(texture);
 		const image = texture?.image;
-		const source = image ? (image.data ?? image.path) : undefined;
+		// (a canvas: the pixels its 2D context drew)
+		const canvas = image?.tagName === "CANVAS" ? image.getContext("2d")._buffer() : null;
+		const source = canvas ? canvas.data : image ? (image.data ?? image.path) : undefined;
 		if (source === undefined) return -1;
 		if (texture.__drie !== undefined && texture.__drieVersion === texture.version) return texture.__drie;
 		// (three's equirectangular maps have the sky at v = 1, drie's at v = 0: flipped the other way)
@@ -500,23 +513,75 @@ export class DrieRenderer {
 			texture.__drie = N.floatTexture(source, image.width, image.height, flipY);
 		} else {
 			texture.__drie = N.texture(source, texture.colorSpace === "srgb", texture.wrapS, texture.wrapT,
-				texture.anisotropy, texture.repeat.x, texture.repeat.y, texture.offset.x, texture.offset.y, flipY);
+				texture.anisotropy, texture.repeat.x, texture.repeat.y, texture.offset.x, texture.offset.y, flipY,
+				texture.rotation, texture.center.x, texture.center.y, canvas ? canvas.width : 0,
+				canvas ? canvas.height : 0, texture.magFilter === NearestFilter, texture.channel ?? 0);
 		}
+		texture.__drieVersion = texture.version;
+		return texture.__drie;
+	}
+
+	// A map on the first or the second uv set (three's texture.channel; drie's geometries have
+	// only those two).
+	_map(texture) {
+		return texture && texture.channel > 1 ? -1 : this._texture(texture);
+	}
+
+	// A CubeTexture of six DataTextures of half floats or floats (HDRCubeTextureLoader's), as
+	// drie's equirectangular map of it.
+	_cubeTexture(texture) {
+		if (texture.__drie !== undefined && texture.__drieVersion === texture.version) return texture.__drie;
+		const faces = texture.images ?? texture.image;
+		if (!Array.isArray(faces) || faces.length !== 6) return -1;
+		const data = faces.map((f) => f?.image?.data ?? f?.data);
+		const size = faces[0]?.image?.width ?? faces[0]?.width;
+		if (!size || data.some((d) => !(d instanceof Uint16Array || d instanceof Float32Array))) {
+			throw new Error("driejs: only cube maps of half floats or floats (HDRCubeTextureLoader) are supported");
+		}
+		texture.__drie = N.cubeTexture(...data, size);
 		texture.__drieVersion = texture.version;
 		return texture.__drie;
 	}
 
 	// The maps besides `map`, sent when one of them changes.
 	_maps(material) {
-		const maps = [this._texture(material.normalMap), material.normalScale ? material.normalScale.x : 1,
-			this._texture(material.roughnessMap), this._texture(material.metalnessMap), this._texture(material.aoMap),
-			material.aoMapIntensity ?? 1, this._texture(material.specularColorMap),
-			this._texture(material.specularIntensityMap), this._texture(material.transmissionMap),
-			this._texture(material.thicknessMap)];
+		// (GLTFLoader clones metallicRoughnessTexture for each with a KHR_texture_transform: one
+		// image is one map for drie, which reads both from its channels only when they are one)
+		const rough = material.roughnessMap;
+		const metal = rough && material.metalnessMap?.source === rough.source ? rough : material.metalnessMap;
+		const maps = [this._map(material.normalMap), material.normalScale ? material.normalScale.x : 1,
+			this._map(rough), this._map(metal), this._map(material.aoMap),
+			material.aoMapIntensity ?? 1, this._map(material.specularColorMap),
+			this._map(material.specularIntensityMap), this._map(material.transmissionMap),
+			this._map(material.thicknessMap), this._map(material.clearcoatMap),
+			this._map(material.clearcoatRoughnessMap), this._map(material.clearcoatNormalMap),
+			material.clearcoatNormalScale ? material.clearcoatNormalScale.x : 1,
+			material.clearcoatNormalScale ? material.clearcoatNormalScale.y : 1,
+			this._map(material.sheenColorMap), this._map(material.sheenRoughnessMap),
+			this._map(material.iridescenceMap), this._map(material.iridescenceThicknessMap),
+			this._map(material.alphaMap),
+			// (the color map, when it is the same image: drie's map_emissive)
+			material.__drieMapEmissive ? -1 : this._map(material.emissiveMap),
+			// (its own surroundings, instead of the scene's environment)
+			material.envMap ? (material.envMap.__drieEnvironment ?? this._texture(material.envMap)) : -1,
+			material.envMapIntensity ?? 1];
 		const key = maps.join(" ");
 		if (material.__drieMaps === key) return;
 		material.__drieMaps = key;
 		N.materialMaps(material.__drie, ...maps);
+	}
+
+	// MeshPhysicalMaterial's clear coat, sheen and iridescence, sent when they change.
+	_layers(material) {
+		if (!material.isMeshPhysicalMaterial) return;
+		const sc = material.sheenColor;
+		const layers = [material.clearcoat, material.clearcoatRoughness, material.sheen, sc.r, sc.g, sc.b,
+			material.sheenRoughness, material.iridescence, material.iridescenceIOR,
+			material.iridescenceThicknessMinimum, material.iridescenceThicknessMaximum];
+		const key = layers.join(" ");
+		if (material.__drieLayers === key) return;
+		material.__drieLayers = key;
+		N.materialLayers(material.__drie, ...layers);
 	}
 
 	_material(material, frame) {
@@ -527,12 +592,14 @@ export class DrieRenderer {
 		if (material.__drie !== undefined && material.__drieVersion === material.version && material.__drieMap === map) {
 			this._materialValues(material);
 			this._maps(material);
+			this._layers(material);
 			return material.__drie;
 		}
 		const sc = material.specularColor;
 		const [color, colorScale] = material.color ? scaledColor(material.color) : [0xffffff, 1];
 		const e = material.emissiveMap;
 		const mapEmissive = !!(e && material.map && (e === material.map || e.source === material.map.source));
+		material.__drieMapEmissive = mapEmissive;
 		material.__drie = N.material(materialKind(material), color,
 			material.emissive ? material.emissive.getHex() : 0, material.specular ? material.specular.getHex() : 0x111111,
 			material.shininess ?? 30, material.roughness ?? 1, material.metalness ?? 0, material.opacity,
@@ -547,8 +614,10 @@ export class DrieRenderer {
 		material.__drieValues = null;
 		material.__drieDash = undefined;
 		material.__drieMaps = undefined;
+		material.__drieLayers = undefined;
 		this._materialValues(material);
 		this._maps(material);
+		this._layers(material);
 		return material.__drie;
 	}
 
