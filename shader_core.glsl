@@ -219,13 +219,21 @@ void main() {
 layout(binding=0) uniform texture2D tex_map;
 layout(binding=1) uniform texture2D tex_normal;
 layout(binding=2) uniform texture2D tex_arm;
-layout(binding=3) uniform texture2D shadow_map;
 layout(binding=4) uniform texture2D tex_env;
-layout(binding=5) uniform texture2D shadow_atlas;
 layout(binding=6) uniform texture3D tex_gi;
 layout(binding=7) uniform texture2D ssr_color;   // the last frame: tone mapped, sRGB, a = 0 at light sources
 layout(binding=8) uniform texture2D ssr_depth;   // g = its distance from the camera's plane (m)
+#ifdef VSM
+// Renderer.shadow_type = VSM: the maps' moments (mean depth, its standard deviation; vsm.glsl)
+// in place of their depths, on the same slots (the fog's kernel reads the depths)
+layout(binding=3) uniform texture2D vsm_map;
+layout(binding=5) uniform texture2D vsm_atlas;
+layout(binding=9) uniform texture2D vsm_sun;
+#else
+layout(binding=3) uniform texture2D shadow_map;
+layout(binding=5) uniform texture2D shadow_atlas;
 layout(binding=9) uniform texture2D sun_shadow;  // the directional light's map: 2x2 cascades, or one box
+#endif
 layout(binding=21) uniform texture2D reflector_map; // a Reflector's mirrored render, linear
 layout(binding=20) uniform texture2D ssr_back;    // r = the nearest back face's distance from the camera's plane (m), 0: none
 layout(binding=23) uniform texture2DArray tex_probes; // the scene's reflection probes (reflection_probes.c3)
@@ -241,7 +249,11 @@ layout(binding=29) uniform texture2D tex_ext3;
 layout(binding=30) uniform texture2D tex_ext4;
 layout(binding=31) uniform texture2D tex_ext5;
 layout(binding=0) uniform sampler tex_smp;
+#ifdef VSM
+layout(binding=1) uniform sampler vsm_smp;
+#else
 layout(binding=1) uniform sampler shadow_smp;
+#endif
 layout(binding=2) uniform sampler env_smp;
 layout(binding=3) uniform sampler gi_smp;
 layout(binding=4) uniform sampler ssr_smp;
@@ -334,6 +346,7 @@ layout(binding=1) uniform fs_params {
     vec4 iridescence_params;   // Material.iridescence: x = strength (0: none), y = the film's IOR,
                                //   z, w = its thinnest and thickest (nm)
     vec4 light_map_params;     // x = Material.light_map_intensity
+    vec4 shadow_ext;           // x = the shadow casting directional light's shadow.bias (VSM)
     vec4 uv_rel[16];           // per map slot (0: tex_normal, 1: tex_arm, 2..7: tex_ext0..5), its uv
                                //   from the color map's (g_uv; each texture has its own
                                //   transform, three's texture.matrix): two rows, as uv_transform;
@@ -383,6 +396,7 @@ struct gpu_spot_shadow {
     mat4 mat;    // world - the light's position -> shadow map uv + depth (directional: world ->)
     vec4 params; // x = 1: in shadow_map, 2: in shadow_atlas, 3: a directional light's box in
                  //   shadow_atlas, y = normal bias (m), z = texel size, w = blur radius in texels
+                 //   (Renderer.shadow_type = VSM: shadow.bias, added to the depth)
     vec4 rect;   // the light's tile in shadow_atlas: xy = offset, zw = size
     vec4 soft;   // x = size of the source (m; 0: edges equally sharp everywhere), y = near,
                  //   z = far, w = width of the map 1 m from the light (negative: depth is -1..1)
@@ -760,14 +774,43 @@ int cluster_of(vec3 p) {
     return tile.x + grid.x * (tile.y + grid.y * slice);
 }
 
+#ifdef VSM
+// three's VSMShadowMap: how lit depth `z` is where the map's depths have mean `m.x` and
+// standard deviation `m.y` (Chebyshev's upper bound, its low end cut off against light
+// bleeding, as three's).
+float vsm_lookup(vec2 m, float z) {
+    float hard = step(z, m.x);
+    if (hard == 1.0) return 1.0;
+    float variance = max(m.y * m.y, 1e-7);
+    float d = z - m.x;
+    float p = variance / (variance + d * d);
+    p = clamp((p - 0.3) / 0.65, 0.0, 1.0);
+    return max(hard, p);
+}
+
+// The moments of the spot light's map (or its tile of the atlas) at `uv`.
+vec2 vsm_moments(bool tiled, vec4 rect, float texel, vec2 uv) {
+    if (tiled) {
+        uv = rect.xy + clamp(uv, vec2(texel), vec2(1.0 - texel)) * rect.zw;
+        return textureLod(sampler2D(vsm_atlas, vsm_smp), uv, 0.0).rg;
+    }
+    return textureLod(sampler2D(vsm_map, vsm_smp), uv, 0.0).rg;
+}
+#endif
+
 // 1 where the light's map has nothing nearer than depth `z` at `uv`.
 float shadow_tap(bool tiled, vec4 rect, float texel, vec2 uv, float z) {
+#ifdef VSM
+    // (with VSM: nearer than the mean depth)
+    return step(z, vsm_moments(tiled, rect, texel, uv).x);
+#else
     if (tiled) {
         // stay half a texel inside the tile: the neighbours belong to other lights
         uv = rect.xy + clamp(uv, vec2(texel), vec2(1.0 - texel)) * rect.zw;
         return texture(sampler2DShadow(shadow_atlas, shadow_smp), vec3(uv, z));
     }
     return texture(sampler2DShadow(shadow_map, shadow_smp), vec3(uv, z));
+#endif
 }
 
 // Shadow of spot light `s`, whose map is `si` in spot_shadows. Lights whose map is redrawn
@@ -786,6 +829,10 @@ float spot_shadow_of(int s, int si, vec3 n) {
     if (sp.w <= 0.0) return 1.0;
     vec3 c = sp.xyz / sp.w;
     if (c.x < 0.0 || c.x > 1.0 || c.y < 0.0 || c.y > 1.0 || c.z > 1.0) return 1.0;
+#ifdef VSM
+    // one lookup: the map is blurred already (params.w is the bias)
+    return vsm_lookup(vsm_moments(params.x > 1.5, spot_shadow_data[si].rect, params.z, c.xy), c.z + params.w);
+#endif
     // the map's footprint of a pixel of the screen: blurs much smaller than that need few taps,
     // and the search for what casts the shadow none
     vec4 spx = m * vec4(p + g_dpdx, 1.0);
@@ -863,7 +910,11 @@ float sun_tap(int i, vec2 uv, float z) {
     // stay half a texel inside the tile: the neighbours belong to other cascades
     vec2 t = dir_shadow_params.z / rect.zw;
     uv = rect.xy + clamp(uv, t * 0.5, 1.0 - t * 0.5) * rect.zw;
+#ifdef VSM
+    return vsm_lookup(textureLod(sampler2D(vsm_sun, vsm_smp), uv, 0.0).rg, z + shadow_ext.x);
+#else
     return texture(sampler2DShadow(sun_shadow, shadow_smp), vec3(uv, z));
+#endif
 }
 
 // The cascade that covers view depth `depth`, -1 past the last.
@@ -885,6 +936,10 @@ float dir_shadow_in(int i, vec3 n, vec3 l) {
     float slope = 1.0 - clamp(dot(n, l), 0.0, 1.0);
     vec3 c = (dir_shadow_mat[i] * vec4(v_world_pos + n * params.y * scale * (0.4 + slope), 1.0)).xyz;
     if (c.x < 0.0 || c.x > 1.0 || c.y < 0.0 || c.y > 1.0 || c.z > 1.0 || c.z < 0.0) return 1.0;
+#ifdef VSM
+    // one lookup: each cascade's tile is blurred already
+    float sum = sun_tap(i, c.xy, c.z) * 10.0;
+#else
     float angle = fract(sin(dot(gl_FragCoord.xy + ssr_params.z * vec2(5.0, 3.0), vec2(12.9898, 78.233))) * 43758.5453) * 6.2831;
     float ca = cos(angle);
     float sa = sin(angle);
@@ -896,6 +951,7 @@ float dir_shadow_in(int i, vec3 n, vec3 l) {
         vec2 o = vec2(cos(a), sin(a)) * (sqrt((float(k) + 0.5) / 10.0) * r);
         sum += sun_tap(i, c.xy + vec2(o.x * ca - o.y * sa, o.x * sa + o.y * ca), c.z);
     }
+#endif
     if (dir_cascade_params.w < 0.5) return sum / 10.0;
     // one box: nothing is shadowed outside of it, fade towards its edge
     vec2 edge = min(c.xy, 1.0 - c.xy);
@@ -910,6 +966,10 @@ float dir_tile_shadow(int si, vec3 n, vec3 l) {
     float slope = 1.0 - clamp(dot(n, l), 0.0, 1.0);
     vec3 c = (spot_shadow_data[si].mat * vec4(v_world_pos + n * params.y * (0.4 + slope), 1.0)).xyz;
     if (c.x < 0.0 || c.x > 1.0 || c.y < 0.0 || c.y > 1.0 || c.z > 1.0 || c.z < 0.0) return 1.0;
+#ifdef VSM
+    // one lookup: the tile is blurred already (params.w is the bias)
+    float sum = vsm_lookup(vsm_moments(true, rect, params.z, c.xy), c.z + params.w) * 10.0;
+#else
     float angle = fract(sin(dot(gl_FragCoord.xy + ssr_params.z * vec2(5.0, 3.0), vec2(12.9898, 78.233))) * 43758.5453) * 6.2831;
     float ca = cos(angle);
     float sa = sin(angle);
@@ -920,6 +980,7 @@ float dir_tile_shadow(int si, vec3 n, vec3 l) {
         vec2 o = vec2(cos(a), sin(a)) * (sqrt((float(k) + 0.5) / 10.0) * r);
         sum += shadow_tap(true, rect, params.z, c.xy + vec2(o.x * ca - o.y * sa, o.x * sa + o.y * ca), c.z);
     }
+#endif
     // fade out towards the box's edge
     vec2 edge = min(c.xy, 1.0 - c.xy);
     return mix(1.0, sum / 10.0, clamp(min(edge.x, edge.y) * 10.0, 0.0, 1.0));
@@ -970,6 +1031,10 @@ float sun_in_fog(vec3 from, vec3 to, float sigma) {
         float seen = 1.0;
         if (k >= 0 && c.x > 0.0 && c.x < 1.0 && c.y > 0.0 && c.y < 1.0 && c.z < 1.0 && c.z > 0.0) {
             seen = sun_tap(k, c.xy, c.z);
+#ifdef VSM
+            // (a hard test against the mean, as the PCF map's one tap)
+            seen = seen < 1.0 ? 0.0 : 1.0;
+#endif
             vec2 edge = min(c.xy, 1.0 - c.xy);
             seen = mix(1.0, seen, clamp(min(edge.x, edge.y) * 10.0, 0.0, 1.0));
         }
@@ -2051,6 +2116,19 @@ void main() {
 @include_block fs_main
 @end
 
+// Renderer.shadow_type = VSM: the shadows from the maps' moments. Only these two: what has no
+// holes is drawn by them too (each variant is a few MB of generated code).
+@fs fs_vsm
+#define VSM
+@include_block fs_main
+@end
+
+@fs fs_mrt_vsm
+#define MRT
+#define VSM
+@include_block fs_main
+@end
+
 @fs fs_opaque_mrt
 #define NO_DISCARD
 #define MRT
@@ -2118,5 +2196,7 @@ void main() {
 @program three_opaque vs fs_opaque
 @program three_mrt vs fs_mrt
 @program three_opaque_mrt vs fs_opaque_mrt
+@program three_vsm vs fs_vsm
+@program three_mrt_vsm vs fs_mrt_vsm
 @program depth vs depth_fs
 @program shadow shadow_vs shadow_fs

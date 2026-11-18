@@ -14,6 +14,17 @@ const int DEFAULT_SHADOW_ATLAS_CAPACITY = 8;
 // The most tiles the shadow atlas has.
 const int MAX_ATLAS_TILES @local        = 64;
 
+// How shadow maps are filtered (Renderer.shadow_type), as three's renderer.shadowMap.type.
+enum ShadowType {
+    // percentage-closer: taps of the depth map over a disk of shadow.radius texels (drie's own
+    // soft shadows: shadow.softness, normal_bias)
+    PCF,
+    // three's VSMShadowMap: each map's depths are blurred into their mean and spread
+    // (shadow.radius, shadow.blur_samples) and looked up once (shadow.bias); soft, wide edges
+    // cheaply. Point lights cast no shadows either way.
+    VSM,
+}
+
 // An offscreen image to render into, like three's WebGLRenderTarget.
 // Use `texture` (a sokol texture view) to sample the result in your own passes.
 struct RenderTarget {
@@ -337,6 +348,9 @@ struct Renderer {
     // the maps as the last one left them: for a second view of the same moment (a Reflector's),
     // which would otherwise draw them all again from its own viewpoint. On by default.
     bool shadow_map_auto_update;
+    // How the shadow maps are filtered, like three's shadowMap.type (PCFSoftShadowMap or
+    // VSMShadowMap). Default PCF.
+    ShadowType shadow_type;
     // ...for what covers at least this many pixels per triangle (about: its bounding sphere's
     // disk on the screen, over its triangles). Default 1.5.
     float depth_prepass_pixels;
@@ -500,6 +514,18 @@ struct DrawItem @local {
     float cover;
 }
 
+// A shadow map's moments for VSM (vsm_blur), and the image between the blur's two passes.
+struct VsmMaps @local {
+    SgImage image;
+    SgView view;
+    SgView attachment;
+    SgImage scratch;
+    SgView scratch_view;
+    SgView scratch_attachment;
+    int width;
+    int height;
+}
+
 struct Frustum @private {
     Vec4[5] planes;
 }
@@ -516,6 +542,20 @@ struct RendererState @local {
     SgShader shadow_shader;
     SgShader mrt_shader;
     SgShader opaque_mrt_shader;
+    // Renderer.shadow_type = VSM: the main programs that read the maps' moments, and the blur
+    // that makes them (vsm.glsl)
+    SgShader vsm_shader;
+    SgShader mrt_vsm_shader;
+    SgShader vsm_blur_shader;
+    SgPipeline vsm_blur_pipeline;
+    SgSampler vsm_sampler;
+    SgSampler vsm_point_sampler;
+    SgPixelFormat vsm_format;
+    // the moments of the spot light's map, of the sun's and of the atlas (made when first
+    // used, the size of their depth maps)
+    VsmMaps vsm_spot;
+    VsmMaps vsm_sun;
+    VsmMaps vsm_atlas;
     // drawing with motion vectors (a target with MRT): the camera's view_proj a frame ago, and
     // which frame of them this is
     bool motion;
@@ -535,10 +575,10 @@ struct RendererState @local {
     int motion_frame;
     float motion_time;
     float motion_prev_time;
-    // indexed [DrawKind][side][opaque, transparent, additive][wireframe][target: swapchain, RGBA8 1x,
-    // RGBA8 4x, RGBA16F 1x, RGBA16F 4x, MRT 1x, MRT 4x][alpha to coverage] (C3 declares array
-    // dimensions innermost first)
-    SgPipeline[2][7][2][3][3][4] pipelines;
+    // indexed [VSM][DrawKind][side][opaque, transparent, additive][wireframe][target: swapchain,
+    // RGBA8 1x, RGBA8 4x, RGBA16F 1x, RGBA16F 4x, MRT 1x, MRT 4x][alpha to coverage] (C3
+    // declares array dimensions innermost first)
+    SgPipeline[2][7][2][3][3][4][2] pipelines;
     SgPipeline shadow_pipeline;
     // writes the far depth wherever it draws: clears one tile of the shadow atlas
     SgPipeline tile_clear_pipeline;
@@ -728,7 +768,8 @@ alias ShaderDescFn = fn SgShaderDesc(SgBackend backend);
 // The programs of the material shader, as sokol-shdc generates them from a .glsl file that
 // includes shader_core.glsl: `my_module::three_shader_desc`, `three_opaque_shader_desc`,
 // `depth_shader_desc`, `shadow_shader_desc`, and for RenderTarget.mrt `three_mrt_shader_desc`
-// and `three_opaque_mrt_shader_desc`.
+// and `three_opaque_mrt_shader_desc`; for Renderer.shadow_type = VSM `three_vsm_shader_desc`
+// and `three_mrt_vsm_shader_desc` (null: the engine's).
 struct MaterialShaders {
     ShaderDescFn main;
     ShaderDescFn opaque;
@@ -736,6 +777,8 @@ struct MaterialShaders {
     ShaderDescFn shadow;
     ShaderDescFn main_mrt;
     ShaderDescFn opaque_mrt;
+    ShaderDescFn main_vsm;
+    ShaderDescFn main_mrt_vsm;
 }
 
 fn void setup_gfx(SgEnvironment environment) @local {
@@ -750,9 +793,9 @@ fn void setup_gfx(SgEnvironment environment) @local {
             .image_pool_size = 1024,
             .view_pool_size = 4096,
             .sampler_pool_size = 1024, // a pipeline per variant of the material shader that is drawn (get_pipeline: kind,
-            // side, blending, wireframe, target, alpha to coverage; up to 1008), and the passes'.
-            // sokol's default (64) runs out once a scene is drawn into a few kinds of target
-            .pipeline_pool_size = 2048,
+            // side, blending, wireframe, target, alpha to coverage, VSM; up to 2016), and the
+            // passes'. sokol's default (64) runs out once a scene is drawn into a few kinds of target
+            .pipeline_pool_size = 4096,
             .shader_pool_size = 256,
         }
     );
@@ -770,6 +813,11 @@ fn void setup_gfx(SgEnvironment environment) @local {
     state.opaque_mrt_shader = sg::make_shader(
         &&(s.opaque_mrt ? s.opaque_mrt(backend) : shaders::three_opaque_mrt_shader_desc(backend))
     );
+    state.vsm_shader = sg::make_shader(&&(s.main_vsm ? s.main_vsm(backend) : shaders::three_vsm_shader_desc(backend)));
+    state.mrt_vsm_shader = sg::make_shader(
+        &&(s.main_mrt_vsm ? s.main_mrt_vsm(backend) : shaders::three_mrt_vsm_shader_desc(backend))
+    );
+    state.vsm_blur_shader = sg::make_shader(&&shaders::vsm_shader_desc(backend));
     state.white = data_texture({ 255, 255, 255, 255 }, 1, 1, NO_COLOR_SPACE);
     float[12] identity = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0 };
     state.identity_instance = sg::make_buffer(&&{ .data = { .ptr = &identity, .size = identity.len * float::size } });
@@ -901,8 +949,11 @@ fn SgPipeline get_pipeline(
     // after the prepass, the coverage of the cut-out's edge is in the depth buffer's samples
     bool a2c      = alpha_test && !transparent && samples > 1 && kind != PRETESTED;
     bool additive = transparent && blending == ADDITIVE_BLENDING;
-    SgPipeline* pip = &state.pipelines[kind.ordinal][side.ordinal][transparent ? (additive ? 2 : 1)
-        : 0][wireframe ? 1 : 0][target][a2c ? 1 : 0];
+    // VSM: the programs that read the maps' moments (the one that cuts holes for all: the
+    // depth prepass has cut them for PRETESTED, and SOLID has none)
+    bool vsm      = kind != DEPTH && state.renderer && state.renderer.shadow_type == VSM;
+    SgPipeline* pip = &state.pipelines[vsm ? 1
+        : 0][kind.ordinal][side.ordinal][transparent ? (additive ? 2 : 1) : 0][wireframe ? 1 : 0][target][a2c ? 1 : 0];
     if (pip.id) return *pip;
     SgCullMode cull;
     switch (side) {
@@ -918,6 +969,7 @@ fn SgPipeline get_pipeline(
         case PRETESTED: shader = mrt ? state.opaque_mrt_shader : state.opaque_shader;
         case DEPTH: shader = state.depth_shader;
     }
+    if (vsm) shader = mrt ? state.mrt_vsm_shader : state.vsm_shader;
     SgPipelineDesc desc = {
         .shader = shader,
         .index_type = UINT32,
@@ -1146,6 +1198,108 @@ fn void ensure_shadow_atlas(int tile, int capacity) @local {
     state.atlas_view = sg::make_view(&&{ .texture = { .image = state.atlas_image } });
 }
 
+// The shadows are VSM (Renderer.shadow_type).
+fn bool vsm_on() @local => state.renderer && state.renderer.shadow_type == VSM;
+
+// Makes `v` the moments of a `width` x `height` depth map (RG32F where the GPU can draw and
+// filter it, else RG16F as three's). True when they are new: nothing is in them yet.
+fn bool ensure_vsm(VsmMaps* v, int width, int height) @local {
+    if (v.width == width && v.height == height) return false;
+    if (!state.vsm_format) {
+        SgPixelformatInfo f = sg::query_pixelformat(RG32F);
+        state.vsm_format = f.render && f.filter ? SgPixelFormat.RG32F : SgPixelFormat.RG16F;
+        state.vsm_sampler = sg::make_sampler(
+            &&{ .min_filter = LINEAR, .mag_filter = LINEAR, .wrap_u = CLAMP_TO_EDGE, .wrap_v = CLAMP_TO_EDGE }
+        );
+        state.vsm_point_sampler = sg::make_sampler(
+            &&{ .min_filter = NEAREST, .mag_filter = NEAREST, .wrap_u = CLAMP_TO_EDGE, .wrap_v = CLAMP_TO_EDGE }
+        );
+        state.vsm_blur_pipeline = sg::make_pipeline(
+            &&{
+                .shader = state.vsm_blur_shader,
+                .colors[0].pixel_format = state.vsm_format,
+                .depth.pixel_format = NONE,
+                .sample_count = 1,
+                .label = "drie-vsm-blur",
+            }
+        );
+    }
+    if (v.width) {
+        sg::destroy_view(v.view);
+        sg::destroy_view(v.attachment);
+        sg::destroy_image(v.image);
+        sg::destroy_view(v.scratch_view);
+        sg::destroy_view(v.scratch_attachment);
+        sg::destroy_image(v.scratch);
+    }
+    v.width = width;
+    v.height = height;
+    SgImageDesc desc = {
+        .usage = { .color_attachment = true },
+        .width = width,
+        .height = height,
+        .sample_count = 1,
+        .pixel_format = state.vsm_format,
+    };
+    v.image = sg::make_image(&desc);
+    v.view = sg::make_view(&&{ .texture = { .image = v.image } });
+    v.attachment = sg::make_view(&&{ .color_attachment = { .image = v.image } });
+    v.scratch = sg::make_image(&desc);
+    v.scratch_view = sg::make_view(&&{ .texture = { .image = v.scratch } });
+    v.scratch_attachment = sg::make_view(&&{ .color_attachment = { .image = v.scratch } });
+    return true;
+}
+
+// A tile of a depth map to blur into its moments (vsm_blur): where it is (texels, as the
+// viewport of its shadow pass), its blur radius (texels) and taps.
+struct VsmTile @local {
+    int x;
+    int y;
+    int size;
+    float radius;
+    int samples;
+}
+
+// Turns `tiles` of the depth map `depth` into their moments in `v`, as three's VSMPass: a box
+// blur along y from the depths into v.scratch, then along x into v.image. `load`: the other
+// tiles of v.image keep what they have.
+fn void vsm_blur(VsmMaps* v, SgView depth, VsmTile[] tiles, bool load) @local {
+    if (!tiles.len) return;
+    bool top_left = depth_zero_to_one();
+    for (int pass = 0; pass < 2; pass++) {
+        bool along_x = pass == 1;
+        profile::begin_pass(
+            &&{
+                .action = {
+                    .colors[0] = {
+                        .load_action = along_x && load ? LOAD : CLEAR,
+                        .store_action = STORE,
+                        .clear_value = { 1, 0, 0, 1 }
+                    }
+                },
+                .attachments = { .colors[0] = along_x ? v.attachment : v.scratch_attachment },
+                .label = along_x ? "drie-vsm-blur-x" : "drie-vsm-blur-y",
+            }
+        );
+        sg::apply_pipeline(state.vsm_blur_pipeline);
+        SgBindings bind;
+        bind.views[shaders::VIEW_VSM_SRC] = along_x ? v.scratch_view : depth;
+        bind.samplers[shaders::SMP_VSM_SRC_SMP] = state.vsm_point_sampler;
+        sg::apply_bindings(&bind);
+        foreach (t : tiles) {
+            sg::apply_viewport(t.x, t.y, t.size, t.size, top_left);
+            sg::apply_scissor_rect(t.x, t.y, t.size, t.size, top_left);
+            shaders::VsmParams p = {
+                .vsm_rect = { (float)t.x, (float)t.y, (float)t.size, (float)t.size },
+                .vsm_spread = { math::max(t.radius, 0.0f), (float)math::max(t.samples, 1), along_x ? 1 : 0, 0 },
+            };
+            sg::apply_uniforms(shaders::UB_VSM_PARAMS, &&{ .ptr = &p, .size = shaders::VsmParams::size });
+            sg::draw(0, 3, 1);
+        }
+        sg::end_pass();
+    }
+}
+
 // The tile of a light in the atlas, -1 if it has none.
 fn int atlas_tile_of(Light* sl) @local {
     foreach (i, l : state.atlas_lights) {
@@ -1196,6 +1350,9 @@ fn void update_shadow_atlas(Scene* scene, Camera* camera) @local {
     tile = state.atlas_tile;
     // a new atlas (ensure_shadow_atlas forgot its lights): every tile
     bool all = state.atlas_tile != old_tile || state.atlas_lights.len() == 0;
+    // ...and new moments for VSM
+    bool vsm = vsm_on();
+    if (vsm && ensure_vsm(&state.vsm_atlas, tile * state.atlas_columns, tile * state.atlas_rows)) all = true;
     // a tile is drawn again for a light that asks for it, that it newly belongs to, or a
     // directional light's that is updated every frame
     bool[MAX_ATLAS_TILES] redraw;
@@ -1252,6 +1409,17 @@ fn void update_shadow_atlas(Scene* scene, Camera* camera) @local {
     }
     sg::end_pass();
     state.casters.clear();
+    if (vsm) {
+        VsmTile[MAX_ATLAS_TILES] tiles;
+        int n;
+        for (int i = 0; i < count; i++) {
+            if (!all && !redraw[i]) continue;
+            LightShadow* sh = light_shadow(state.atlas_pending[i]);
+            int columns     = state.atlas_columns;
+            tiles[n++] = { (i % columns) * tile, (i / columns) * tile, tile, sh.radius, sh.blur_samples };
+        }
+        vsm_blur(&state.vsm_atlas, state.atlas_view, tiles[:n], !all);
+    }
 }
 
 // Clip planes of a view-projection matrix (left, right, bottom, top, far), pointing inwards.
@@ -1510,6 +1678,23 @@ fn void draw_sun_shadow(DirectionalLight* sun) @local {
         foreach (&item : state.sun_casters[i]) draw_shadow_item(item, state.sun_view_proj[i]);
     }
     sg::end_pass();
+    if (!vsm_on()) return;
+    // VSM: each cascade blurred in its tile; as dir_shadow_in's taps, the far ones (bigger
+    // texels) over fewer texels, down to one
+    ensure_vsm(&state.vsm_sun, state.sun_size, state.sun_size);
+    VsmTile[4] tiles;
+    for (int i = 0; i < math::max(n, 1); i++) {
+        float scale  = n ? state.sun_info[i].y / math::max(state.sun_info[0].y, 1e-6f) : 1;
+        float radius = math::max(sun.shadow.radius / scale, math::min(sun.shadow.radius, 1.0f));
+        tiles[i] = {
+            n ? (i % 2) * tile : 0,
+            n ? (i / 2) * tile : 0,
+            n ? tile : state.sun_size,
+            radius,
+            sun.shadow.blur_samples
+        };
+    }
+    vsm_blur(&state.vsm_sun, state.sun_view, tiles[:math::max(n, 1)], false);
 }
 
 // Gathers the shadow casters inside `frustum` into `out`, their instances culled on the GPU
@@ -1572,6 +1757,8 @@ fn FsParams build_light_params(Scene* scene, Camera* camera, SpotLight* caster) 
     Renderer* r  = state.renderer;
     LightData* g = &lights_gpu;
     g.clear();
+    // VSM: spot_shadows' params.w is the bias (the maps are blurred already)
+    bool vsm       = r.shadow_type == VSM;
     float exposure = r.tone_mapping == NO_TONE_MAPPING ? 1 : math::max(r.tone_mapping_exposure, 1e-4f);
     p.camera_pos = { ...camera.matrix_world.get_position(), exposure };
     bool linear  = r.render_target && r.render_target.is_linear();
@@ -1617,6 +1804,7 @@ fn FsParams build_light_params(Scene* scene, Camera* camera, SpotLight* caster) 
                         n ? 0 : 1
                     };
                     p.dir_cascade_fwd.w = clamp(d.shadow.intensity, 0, 1);
+                    p.shadow_ext.x = d.shadow.bias;
                 }
                 GpuDirLight gd = { .dir = { ...dir, 0 }, .color = { ...c, 0 }, .shadow = { -1, 1, 0, 0 } };
                 // the other shadowed ones: a box in a tile of the atlas (dir_tile_shadow)
@@ -1626,7 +1814,13 @@ fn FsParams build_light_params(Scene* scene, Camera* camera, SpotLight* caster) 
                     float rows = (float)state.atlas_rows;
                     GpuSpotShadow sh;
                     sh.mat = shadow_bias().mul(state.atlas_view_proj[tile]);
-                    sh.params = { 3, d.shadow.normal_bias, 1.0f / (float)state.atlas_tile, d.shadow.radius };
+                    // (VSM: w is the bias, the tile being blurred already)
+                    sh.params = {
+                        3,
+                        d.shadow.normal_bias,
+                        1.0f / (float)state.atlas_tile,
+                        vsm ? d.shadow.bias : d.shadow.radius
+                    };
                     sh.rect = {
                         (float)(tile % state.atlas_columns) / cols,
                         (float)(tile / state.atlas_columns) / rows,
@@ -1682,7 +1876,12 @@ fn FsParams build_light_params(Scene* scene, Camera* camera, SpotLight* caster) 
                     GpuSpotShadow sh;
                     sh.mat = bias.mul(shadow_view_proj(sl, true));
                     float size = sl == caster ? (float)state.shadow_size : (float)state.atlas_tile;
-                    sh.params = { sl == caster ? 1 : 2, sl.shadow.normal_bias, 1.0f / size, sl.shadow.radius };
+                    sh.params = {
+                        sl == caster ? 1 : 2,
+                        sl.shadow.normal_bias,
+                        1.0f / size,
+                        vsm ? sl.shadow.bias : sl.shadow.radius
+                    };
                     float fov   = math::min(sl.angle * 2 * RAD2DEG * clamp(sl.shadow.focus, 0.05f, 1) + 4, 150.0f);
                     float width = 2 * math::tan(fov * DEG2RAD * 0.5f);
                     float far   = sl.shadow.far > 0 ? sl.shadow.far : (sl.distance > 0 ? sl.distance : 50.0f);
@@ -2054,9 +2253,16 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     int ext_bits = backdrop ? 32 : 0;
     // (the parallax map: white, none, where the material has none)
     bind.views[shaders::VIEW_TEX_PARALLAX] = ready(mat.parallax_map).view;
-    bind.views[shaders::VIEW_SHADOW_MAP] = state.shadow_view;
-    bind.views[shaders::VIEW_SHADOW_ATLAS] = state.atlas_view;
-    bind.views[shaders::VIEW_SUN_SHADOW] = state.sun_view;
+    bool vsm = vsm_on();
+    if (vsm) {
+        bind.views[shaders::VIEW_VSM_MAP] = state.vsm_spot.view;
+        bind.views[shaders::VIEW_VSM_ATLAS] = state.vsm_atlas.view;
+        bind.views[shaders::VIEW_VSM_SUN] = state.vsm_sun.view;
+    } else {
+        bind.views[shaders::VIEW_SHADOW_MAP] = state.shadow_view;
+        bind.views[shaders::VIEW_SHADOW_ATLAS] = state.atlas_view;
+        bind.views[shaders::VIEW_SUN_SHADOW] = state.sun_view;
+    }
     bind.views[shaders::VIEW_FOG_VOLUME] = state.fog_view;
     bool ssr = r.ssr_color.id != 0 && r.ssr_depth.id != 0 && mat.ssr > 0;
     bind.views[shaders::VIEW_SSR_COLOR] = ssr ? r.ssr_color : ready(state.white).view;
@@ -2118,6 +2324,7 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     bind.views[shaders::VIEW_TEX_PROBES] = state.probes_view.id ? state.probes_view : state.no_probes;
     if (probes) bind.samplers[shaders::SMP_ENV_SMP] = state.probes_sampler;
     bind.samplers[shaders::SMP_SHADOW_SMP] = state.shadow_sampler;
+    if (vsm) bind.samplers[shaders::SMP_VSM_SMP] = state.vsm_sampler;
     lights_gpu.bind(&bind);
     sg::apply_bindings(&bind);
 
@@ -2701,6 +2908,12 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera) {
         Vector3 caster_pos = caster.matrix_world.get_position();
         foreach (&item : state.spot_casters) draw_shadow_item(item, caster_rel, caster_pos);
         sg::end_pass();
+        if (vsm_on()) {
+            int size = state.shadow_size;
+            ensure_vsm(&state.vsm_spot, size, size);
+            VsmTile[1] tiles = { { 0, 0, size, caster.shadow.radius, caster.shadow.blur_samples } };
+            vsm_blur(&state.vsm_spot, state.shadow_view, &tiles, false);
+        }
     }
     profile::stop("render: spot shadow", pt);
     pt = profile::start();
@@ -2713,6 +2926,12 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera) {
     if (!shadows) {
         ensure_sun_map(state.sun_size ?: 4);
         if (!state.atlas_tile) ensure_shadow_atlas(4, 1);
+    }
+    // VSM's moments, the size of the depth maps (the main pass binds them all)
+    if (vsm_on()) {
+        ensure_vsm(&state.vsm_spot, state.shadow_size, state.shadow_size);
+        ensure_vsm(&state.vsm_sun, state.sun_size, state.sun_size);
+        ensure_vsm(&state.vsm_atlas, state.atlas_tile * state.atlas_columns, state.atlas_tile * state.atlas_rows);
     }
     profile::stop("render: spot atlas", pt);
     pt = profile::start();

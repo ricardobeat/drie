@@ -160,6 +160,7 @@ A material's maps besides `map`, `normal_map` and `arm_map` share six texture sl
 
 - **Light source radius:** `light.radius` softens close-range falloff on point and spot lights; `spot_light.specular_radius` controls reflection highlight size.
 - **Cached static shadows:** `light.shadow.auto_update = false` (three.js `shadow.autoUpdate`) caches static shadow maps in the shared atlas (`renderer.shadow_atlas_capacity`).
+- **Variance shadow maps:** `renderer.shadow_type = VSM` (three.js `VSMShadowMap`) blurs each map into its moments (`shadow.radius`, `shadow.blur_samples`, `shadow.bias`).
 - **Cascaded shadow maps:** `DirectionalLight` supports 1–4 texel-snapped cascades with blending and debug visualization.
 - **Irradiance volume** (`irradiance.c3`): `scene.irradiance` (`IrradianceVolume`) probe grid for user-populated indirect bounce light.
 - **Radiance Cascades GI** (`radiance.c3`): `scene.radiance` (`RadianceCascades`) computes real-time GPU GI and emissive bounce, replacing ambient/hemisphere lights and `scene.irradiance` inside its box.
@@ -263,7 +264,7 @@ TBD. Currently the demo, with all advanced features on, runs at 40-60FPS on a Ma
 `shader_core.glsl` is the material shader; `shader.glsl` includes it with empty hooks. Run
 `just shaders` (sokol-shdc, from sokol-tools) to regenerate `generated/shader.c3`, and with it
 `kernels.c3` (the compute shaders, from `kernels.glsl`), `output.c3`, `gtao.c3` and `taa.c3` (the
-post-processing passes) and `radiance_cs.c3`. An application with its own copy of the material
+post-processing passes), `radiance_cs.c3` and `vsm.c3` (the variance shadow maps' blur). An application with its own copy of the material
 shader generates it into its own sources, and regenerates it whenever `shader_core.glsl` changes.
 
 ## Tests
@@ -271,6 +272,7 @@ shader generates it into its own sources, and regenerates it whenever `shader_co
 - `just test reflections`: `tests/reflections.c3` renders a scene made for reflections from different angles
 - `just test radiance`: `tests/radiance.c3` renders the same scene lit by its hemisphere light, by `RadianceCascades`,
 and by them with only the glowing cubes
+- `just test vsm`: `tests/vsm.c3` renders three's `webgl_shadowmap_vsm` scene with PCF and with variance shadow maps
 
 ## Justfile
 
