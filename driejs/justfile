@@ -135,6 +135,7 @@ assets: \
     (asset "models/gltf/IridescenceLamp.glb" "60e991ad33985c7b2b3af1d8a0d0f62e1e2d1f3c05f5d8f0aabfb8db6b70be30") \
     (asset "textures/equirectangular/venice_sunset_1k.hdr" "0e72ed46b5316cb5fb67fc81ff85b024a09146fd89ef3811a8d2299647ada118") \
     (asset "models/gltf/SheenChair.glb" "07c80216eb5d57fc9d4148e1e14a69e19d3436eca1af33590d8d36c04957ffd4") \
+    (asset "models/gltf/AnisotropyBarnLamp.glb" "3068f5b617a63816aefb76a0154f22fde7a664ecd4bb29e7a530bd2dc77a0099") \
     (asset "textures/cube/pisaHDR/px.hdr" "72f6b4f08e657dbf47483367a92ac1b299979fa96906591f6a5260229ef128db") \
     (asset "textures/cube/pisaHDR/nx.hdr" "800985acb87cb45cd01ca959b2ee8199af3ebe2a4e3abfa104c064d16b4be6f8") \
     (asset "textures/cube/pisaHDR/py.hdr" "d4bfbe9f1f00d4405618c172155729b4f2051cc37b1aaf6162e06763121da73c") \

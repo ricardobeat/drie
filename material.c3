@@ -54,9 +54,12 @@ struct Material {
     bool vertex_colors;
     // Color texture, multiplied with `color`. Its alpha channel is the opacity.
     Texture* map;
-    // Tangent-space normal map (OpenGL convention, +Y up) and its strength.
+    // Tangent-space normal map (OpenGL convention, +Y up) and its strength, x and y (three's
+    // normalScale). The tangent frame is the geometry's tangents, or without them (three's
+    // derivative tangents) one where +Y is the way the uv's v grows: a glTF model's normals,
+    // made with its v growing down the image, then need y negated (as the glTF loader does).
     Texture* normal_map;
-    float normal_scale;
+    Vector2 normal_scale;
     // Packed ambient occlusion (R), roughness (G) and metalness (B), as in glTF's ORM textures.
     // Roughness and metalness are multiplied with the material's values.
     Texture* arm_map;
@@ -152,6 +155,14 @@ struct Material {
     float iridescence_thickness_max;
     Texture* iridescence_map;
     Texture* iridescence_thickness_map;
+    // Anisotropy (KHR_materials_anisotropy, three's anisotropy): highlights and reflections
+    // drawn out along a direction of the surface, as on brushed metal. 0 = none, 1 = the
+    // most; the direction is the tangent's (the way the uv's u grows; see normal_map), turned
+    // anisotropy_rotation radians toward the bitangent, and anisotropy_map's rg (a direction
+    // around 0.5, 0.5) turns it further and its b scales the strength. Needs roughness.
+    float anisotropy;
+    float anisotropy_rotation;
+    Texture* anisotropy_map;
     // How much the refraction differs across the red..blue channels (KHR_materials_dispersion):
     // each is bent with an IOR of `ior` + (ior - 1) * 0.025 * dispersion, so edges come out
     // fringed with rainbow colors. 0 = all wavelengths bent alike.
@@ -258,7 +269,7 @@ fn void Material.init_base(
     self.specular = 0x111111;
     self.shininess = 30;
     self.roughness = 1;
-    self.normal_scale = 1;
+    self.normal_scale = { 1, 1 };
     self.sway_speed = 1;
     self.ior = 1.5f;
     self.attenuation_color = 0xffffff;

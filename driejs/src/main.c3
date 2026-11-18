@@ -245,7 +245,7 @@ fn void h_light_target(JsCtx ctx, void* udata)
     ctx.ret_number(reg_object(target));
 }
 
-// geometry(position, normal, uv, color, index, skinIndex, skinWeight, uv1): three's attribute
+// geometry(position, normal, uv, color, index, skinIndex, skinWeight, uv1, tangent): three's attribute
 // arrays (Float32Array; index Uint16Array or Uint32Array), any but position may be null. Without normals they
 // are computed, without an index every three vertices are a triangle.
 fn void h_geometry(JsCtx ctx, void* udata)
@@ -298,6 +298,8 @@ fn void h_geometry(JsCtx ctx, void* udata)
     if (!nrm.len && count) g.compute_vertex_normals();
     float[] uv1 = floats_arg(ctx, 7);
     if (uv1.len >= (usz)count * 2) foreach (f : uv1[:(usz)count * 2]) g.uv1.push(f);
+    float[] tangents = floats_arg(ctx, 8);
+    if (tangents.len >= (usz)count * 4) foreach (f : tangents[:(usz)count * 4]) g.tangents.push(f);
     // skinIndex (Uint16Array) and skinWeight, 4 of each per vertex
     View joints;
     float[] weights = floats_arg(ctx, 6);
@@ -557,44 +559,46 @@ fn void h_material_update(JsCtx ctx, void* udata)
     m.specular_intensity = (float)num_arg(ctx, 18, 1);
 }
 
-// materialMaps(material, normalMap, normalScale, roughnessMap, metalnessMap, aoMap,
+// materialMaps(material, normalMap, normalScaleX, _Y, roughnessMap, metalnessMap, aoMap,
 // aoMapIntensity, specularColorMap, specularIntensityMap, transmissionMap, thicknessMap,
 // clearcoatMap, clearcoatRoughnessMap, clearcoatNormalMap, clearcoatNormalScaleX, _Y,
-// sheenColorMap, sheenRoughnessMap, iridescenceMap, iridescenceThicknessMap, alphaMap,
-// emissiveMap, envMap, envMapIntensity): a material's maps besides `map`, as three's (texture
-// handles; -1: none)
+// sheenColorMap, sheenRoughnessMap, iridescenceMap, iridescenceThicknessMap, anisotropyMap,
+// alphaMap, emissiveMap, envMap, envMapIntensity): a material's maps besides `map`, as three's
+// (texture handles; -1: none)
 fn void h_material_maps(JsCtx ctx, void* udata)
 {
     Material* m = get_material(num_arg(ctx, 0, -1));
     if (m == null) { ctx.throw_error(TYPE, "materialMaps: invalid material"); return; }
     m.normal_map = get_texture(num_arg(ctx, 1, -1));
-    m.normal_scale = (float)num_arg(ctx, 2, 1);
-    m.roughness_map = get_texture(num_arg(ctx, 3, -1));
-    m.metalness_map = get_texture(num_arg(ctx, 4, -1));
-    m.ao_map = get_texture(num_arg(ctx, 5, -1));
-    m.ao_intensity = (float)num_arg(ctx, 6, 1);
-    m.specular_color_map = get_texture(num_arg(ctx, 7, -1));
-    m.specular_intensity_map = get_texture(num_arg(ctx, 8, -1));
-    m.transmission_map = get_texture(num_arg(ctx, 9, -1));
-    m.thickness_map = get_texture(num_arg(ctx, 10, -1));
-    m.clearcoat_map = get_texture(num_arg(ctx, 11, -1));
-    m.clearcoat_roughness_map = get_texture(num_arg(ctx, 12, -1));
-    m.clearcoat_normal_map = get_texture(num_arg(ctx, 13, -1));
-    m.clearcoat_normal_scale = { (float)num_arg(ctx, 14, 1), (float)num_arg(ctx, 15, 1) };
-    m.sheen_color_map = get_texture(num_arg(ctx, 16, -1));
-    m.sheen_roughness_map = get_texture(num_arg(ctx, 17, -1));
-    m.iridescence_map = get_texture(num_arg(ctx, 18, -1));
-    m.iridescence_thickness_map = get_texture(num_arg(ctx, 19, -1));
-    m.alpha_map = get_texture(num_arg(ctx, 20, -1));
-    m.emissive_map = get_texture(num_arg(ctx, 21, -1));
-    m.env_map = get_texture(num_arg(ctx, 22, -1));
+    m.normal_scale = { (float)num_arg(ctx, 2, 1), (float)num_arg(ctx, 3, 1) };
+    m.roughness_map = get_texture(num_arg(ctx, 4, -1));
+    m.metalness_map = get_texture(num_arg(ctx, 5, -1));
+    m.ao_map = get_texture(num_arg(ctx, 6, -1));
+    m.ao_intensity = (float)num_arg(ctx, 7, 1);
+    m.specular_color_map = get_texture(num_arg(ctx, 8, -1));
+    m.specular_intensity_map = get_texture(num_arg(ctx, 9, -1));
+    m.transmission_map = get_texture(num_arg(ctx, 10, -1));
+    m.thickness_map = get_texture(num_arg(ctx, 11, -1));
+    m.clearcoat_map = get_texture(num_arg(ctx, 12, -1));
+    m.clearcoat_roughness_map = get_texture(num_arg(ctx, 13, -1));
+    m.clearcoat_normal_map = get_texture(num_arg(ctx, 14, -1));
+    m.clearcoat_normal_scale = { (float)num_arg(ctx, 15, 1), (float)num_arg(ctx, 16, 1) };
+    m.sheen_color_map = get_texture(num_arg(ctx, 17, -1));
+    m.sheen_roughness_map = get_texture(num_arg(ctx, 18, -1));
+    m.iridescence_map = get_texture(num_arg(ctx, 19, -1));
+    m.iridescence_thickness_map = get_texture(num_arg(ctx, 20, -1));
+    m.anisotropy_map = get_texture(num_arg(ctx, 21, -1));
+    m.alpha_map = get_texture(num_arg(ctx, 22, -1));
+    m.emissive_map = get_texture(num_arg(ctx, 23, -1));
+    m.env_map = get_texture(num_arg(ctx, 24, -1));
     // (drie takes 0 for 1)
-    m.env_intensity = math::max((float)num_arg(ctx, 23, 1), 1e-6f);
+    m.env_intensity = math::max((float)num_arg(ctx, 25, 1), 1e-6f);
 }
 
 // materialLayers(material, clearcoat, clearcoatRoughness, sheen, sheenR, sheenG, sheenB,
-// sheenRoughness, iridescence, iridescenceIOR, iridescenceThicknessMin, _Max):
-// MeshPhysicalMaterial's clear coat, sheen (its color linear) and iridescence
+// sheenRoughness, iridescence, iridescenceIOR, iridescenceThicknessMin, _Max, anisotropy,
+// anisotropyRotation): MeshPhysicalMaterial's clear coat, sheen (its color linear),
+// iridescence and anisotropy
 fn void h_material_layers(JsCtx ctx, void* udata)
 {
     Material* m = get_material(num_arg(ctx, 0, -1));
@@ -608,6 +612,8 @@ fn void h_material_layers(JsCtx ctx, void* udata)
     m.iridescence_ior = (float)num_arg(ctx, 9, 1.3);
     m.iridescence_thickness_min = (float)num_arg(ctx, 10, 100);
     m.iridescence_thickness_max = (float)num_arg(ctx, 11, 400);
+    m.anisotropy = (float)num_arg(ctx, 12, 0);
+    m.anisotropy_rotation = (float)num_arg(ctx, 13, 0);
 }
 
 // floatTexture(data, width, height, flipY): a texture of RGBA in linear light, from a
@@ -1624,14 +1630,14 @@ fn int main(String[] args)
     reg(natives, "cameraUpdate", &h_camera_update, 6);
     reg(natives, "light", &h_light, 8);
     reg(natives, "lightTarget", &h_light_target, 1);
-    reg(natives, "geometry", &h_geometry, 8);
+    reg(natives, "geometry", &h_geometry, 9);
     reg(natives, "texture", &h_texture, 17);
     reg(natives, "textureClone", &h_texture_clone, 9);
     reg(natives, "cubeTexture", &h_cube_texture, 7);
     reg(natives, "material", &h_material, 27);
     reg(natives, "materialUpdate", &h_material_update, 19);
-    reg(natives, "materialMaps", &h_material_maps, 24);
-    reg(natives, "materialLayers", &h_material_layers, 12);
+    reg(natives, "materialMaps", &h_material_maps, 26);
+    reg(natives, "materialLayers", &h_material_layers, 14);
     reg(natives, "floatTexture", &h_float_texture, 4);
     reg(natives, "imageDecode", &h_image_decode, 1);
     reg(natives, "imageSize", &h_image_size, 2);

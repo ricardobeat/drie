@@ -2,13 +2,13 @@
 // cgltf (third_party/cgltf, through generated/cgltf.c3).
 //   GltfModel* model = loaders::load_gltf("assets/models/tree.glb")!!;
 //   scene.add(model.scene);
-// Supported: the node hierarchy, triangle meshes (positions, normals, two uv sets, vertex
-// colors; sparse and quantized accessors), metallic-roughness materials with their base color,
+// Supported: the node hierarchy, triangle meshes (positions, normals, tangents, two uv sets,
+// vertex colors; sparse and quantized accessors), metallic-roughness materials with their base color,
 // metallic-roughness, normal, occlusion and emissive textures (embedded, files or data: URIs,
 // with their samplers' wrapping and KHR_texture_transform), alpha modes, double sided
 // materials, KHR_materials_unlit, and the transmission / volume / ior / dispersion / specular /
-// clearcoat / sheen / iridescence / emissive_strength extensions (see Material.transmission,
-// specular_color, clearcoat, sheen and iridescence). Not yet: skins, animations, morph targets,
+// clearcoat / sheen / iridescence / anisotropy / emissive_strength extensions (see
+// Material.transmission, specular_color, clearcoat, sheen, iridescence and anisotropy). Not yet: skins, animations, morph targets,
 // cameras, lights, Draco and meshopt compression, KHR_texture_basisu.
 module drie::loaders;
 import std::io, std::math, std::collections::list, libc;
@@ -20,6 +20,8 @@ struct GltfModel {
     // Root of the loaded node hierarchy. Each glTF node is an Object3D named like the node,
     // with one child Mesh per material it uses.
     Group* scene;
+    // the glTF's materials in its order, then the copies made of those with normal maps for
+    // meshes without tangents (see GltfReader.untangented_material)
     List{Material*} materials;
     List{Mesh*} meshes;
 }
@@ -36,6 +38,8 @@ struct GltfReader @local {
     List{Texture*[2]} images;
     // per glTF mesh, its primitives' geometries (shared by the nodes that use the mesh)
     List{BufferGeometry*[]} geometries;
+    // per glTF material, its copy for meshes without tangents (null: none made yet)
+    List{Material*} untangented;
 }
 
 fn String text(CChar* s) @local => s ? ((ZString)s).str_view() : "";
@@ -163,7 +167,7 @@ fn Material*? GltfReader.material(&self, CgltfMaterial* m) {
     }
     if (m.normal_texture.texture) {
         mat.normal_map = self.texture(&m.normal_texture, NO_COLOR_SPACE)!;
-        mat.normal_scale = m.normal_texture.scale;
+        mat.normal_scale = { m.normal_texture.scale, m.normal_texture.scale };
     }
     mat.emissive = linear_color(m.emissive_factor[0], m.emissive_factor[1], m.emissive_factor[2]);
     mat.emissive_map = self.texture(&m.emissive_texture, SRGB_COLOR_SPACE)!;
@@ -224,7 +228,30 @@ fn Material*? GltfReader.material(&self, CgltfMaterial* m) {
         mat.iridescence_map = self.texture(&ir.iridescence_texture, NO_COLOR_SPACE)!;
         mat.iridescence_thickness_map = self.texture(&ir.iridescence_thickness_texture, NO_COLOR_SPACE)!;
     }
+    // brushed metal's drawn out highlights
+    if (m.has_anisotropy) {
+        CgltfAnisotropy* an = &m.anisotropy;
+        mat.anisotropy = an.anisotropy_strength;
+        mat.anisotropy_rotation = an.anisotropy_rotation;
+        mat.anisotropy_map = self.texture(&an.anisotropy_texture, NO_COLOR_SPACE)!;
+    }
     return mat;
+}
+
+// The material for a mesh without tangents. Its tangent frame is then the one of the uv's
+// derivatives (see Material.normal_scale), whose y is the way v grows, down a glTF image,
+// where the normal maps' y is up: a copy of the material with their y negated, made once
+// (three's GLTFLoader does the same).
+fn Material* GltfReader.untangented_material(&self, sz index) {
+    Material* mat = self.model.materials[index];
+    if (!mat.normal_map && !mat.clearcoat_normal_map) return mat;
+    if (self.untangented[index]) return self.untangented[index];
+    Material* copy = mat.clone();
+    copy.normal_scale.y = -copy.normal_scale.y;
+    copy.clearcoat_normal_scale.y = -copy.clearcoat_normal_scale.y;
+    self.untangented[index] = copy;
+    self.model.materials.push(copy);
+    return copy;
 }
 
 // An accessor's values as floats (normalized integers to -1..1 or 0..1, sparse values
@@ -258,7 +285,9 @@ fn BufferGeometry* primitive_geometry(CgltfPrimitive* p) @local {
     float[] uv = floats((CgltfAccessor*)cgltf::find_accessor(p, cgltf::ATTRIBUTE_TYPE_TEXCOORD, 0), 2);
     float[] uv1 = floats((CgltfAccessor*)cgltf::find_accessor(p, cgltf::ATTRIBUTE_TYPE_TEXCOORD, 1), 2);
     float[] color = floats((CgltfAccessor*)cgltf::find_accessor(p, cgltf::ATTRIBUTE_TYPE_COLOR, 0), 3);
+    float[] tangents = floats((CgltfAccessor*)cgltf::find_accessor(p, cgltf::ATTRIBUTE_TYPE_TANGENT, 0), 4);
     defer {
+        mem::free(tangents.ptr);
         mem::free(pos.ptr);
         mem::free(nrm.ptr);
         mem::free(uv.ptr);
@@ -277,6 +306,7 @@ fn BufferGeometry* primitive_geometry(CgltfPrimitive* p) @local {
         g.add_vertex({ pos[i * 3], pos[i * 3 + 1], pos[i * 3 + 2] }, n, t, c);
     }
     if (uv1.len) foreach (f : uv1) g.uv1.push(f);
+    if (tangents.len) foreach (f : tangents) g.tangents.push(f);
     if (p.indices) {
         usz n = p.indices.count;
         uint[] idx = mem::new_array(uint, (sz)n);
@@ -326,8 +356,13 @@ fn Object3D*? GltfReader.node(&self, CgltfNode* n) {
             if (!self.geometries[mesh_index][i]) self.geometries[mesh_index][i] = primitive_geometry(prim);
             BufferGeometry* g = self.geometries[mesh_index][i];
             if (!g) continue;
-            Material* mat = prim.material ? self.model.materials[(sz)cgltf::material_index(self.data, prim.material)]
-                : (Material*)drie::mesh_standard_material();
+            Material* mat;
+            if (prim.material) {
+                sz index = (sz)cgltf::material_index(self.data, prim.material);
+                mat = g.tangents.len() ? self.model.materials[index] : self.untangented_material(index);
+            } else {
+                mat = drie::mesh_standard_material();
+            }
             Mesh* mesh = drie::mesh(g, mat);
             mesh.name = obj.name;
             obj.add(mesh);
@@ -369,6 +404,9 @@ fn GltfModel*? load_gltf(String path) {
     model.meshes.allocator = mem;
     r.model = model;
     for (usz i = 0; i < data.materials_count; i++) model.materials.push(r.material(&data.materials[i])!);
+    r.untangented.allocator = mem;
+    defer r.untangented.free();
+    for (usz i = 0; i < data.materials_count; i++) r.untangented.push(null);
     for (usz i = 0; i < data.meshes_count; i++) {
         r.geometries.push(mem::new_array(BufferGeometry*, (sz)data.meshes[i].primitives_count));
     }

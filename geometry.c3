@@ -18,9 +18,15 @@ struct BufferGeometry {
     // Texture's channel 1), like light and ambient occlusion maps baked on their own unwrap.
     // Empty without one: those maps read uv (0, 0).
     List{float} uv1;
+    // Tangents per vertex (glTF's TANGENT, three's tangent attribute): x, y, z, the direction
+    // the uv's u grows along the surface, and w, the bitangent's sign (it is cross(normal,
+    // tangent) * w). The tangent frame of normal and anisotropy maps; empty without them, and
+    // the frame is then taken from how the position and the uv change across the screen.
+    List{float} tangents;
     // GPU state, created lazily on first render.
     SgBuffer vbuf;
     SgBuffer uv1buf;
+    SgBuffer tangent_buf;
     SgBuffer ibuf;
     SgBuffer wire_ibuf;
     uint wire_count;
@@ -42,6 +48,7 @@ fn void BufferGeometry.init_lists(&self) {
     self.skin_indices.allocator = mem;
     self.skin_weights.allocator = mem;
     self.uv1.allocator = mem;
+    self.tangents.allocator = mem;
 }
 
 fn void BufferGeometry.compute_bounding_sphere(&self) {
@@ -267,6 +274,11 @@ fn void BufferGeometry.upload(&self) {
     if ((usz)self.uv1.len() >= (usz)self.vertex_count() * 2) {
         self.uv1buf = sg::make_buffer(&&{ .data = { .ptr = self.uv1.entries, .size = (usz)self.vertex_count() * 2 * float::size } });
     }
+    if ((usz)self.tangents.len() >= (usz)self.vertex_count() * 4) {
+        self.tangent_buf = sg::make_buffer(
+            &&{ .data = { .ptr = self.tangents.entries, .size = (usz)self.vertex_count() * 4 * float::size } }
+        );
+    }
     self.uploaded = true;
 }
 
@@ -333,6 +345,8 @@ fn void BufferGeometry.dispose(&self) {
     if (self.line_ibuf.id) sg::destroy_buffer(self.line_ibuf);
     if (self.uv1buf.id) sg::destroy_buffer(self.uv1buf);
     self.uv1buf = { };
+    if (self.tangent_buf.id) sg::destroy_buffer(self.tangent_buf);
+    self.tangent_buf = { };
     self.vbuf = { };
     self.ibuf = { };
     self.wire_ibuf = { };

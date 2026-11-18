@@ -431,6 +431,7 @@ fn void Renderer.render_back_faces(&self, RenderTarget* target) {
                         shaders::ATTR_THREE_UV,
                         shaders::ATTR_THREE_COLOR0,
                         shaders::ATTR_THREE_UV1,
+                        shaders::ATTR_THREE_TANGENT,
                         shaders::ATTR_THREE_INST0,
                         shaders::ATTR_THREE_INST1,
                         shaders::ATTR_THREE_INST2
@@ -621,8 +622,8 @@ struct RendererState @local {
     // One identity instance, bound for meshes that aren't instanced.
     SgBuffer identity_instance;
     // zeros for the second uv set of the geometries without one, for this many vertices
-    SgBuffer zero_uv1;
-    uint zero_uv1_vertices;
+    SgBuffer zeros;
+    uint zeros_vertices;
     SgImage shadow_image;
     SgView shadow_attachment;
     SgView shadow_view;
@@ -927,21 +928,24 @@ fn void on_event(SappEvent* e) @local {
     foreach (l : state.listeners) l(e);
 }
 
-// position, normal, uv, color, uv1, and the instance's three rows. Buffer 0: the geometry's
-// vertices, 1: the instances, 2: the second uv set (see bind_instances).
-fn SgVertexLayoutState vertex_layout(int[8] attrs) @local {
+// position, normal, uv, color, uv1, tangent, and the instance's three rows. Buffer 0: the
+// geometry's vertices, 1: the instances, 2: the second uv set, 3: the tangents (see
+// bind_instances).
+fn SgVertexLayoutState vertex_layout(int[9] attrs) @local {
     SgVertexLayoutState layout;
     layout.buffers[0].stride = FLOATS_PER_VERTEX * float::size;
     layout.buffers[1] = { .stride = 12 * float::size, .step_func = PER_INSTANCE };
     layout.buffers[2].stride = 2 * float::size;
+    layout.buffers[3].stride = 4 * float::size;
     layout.attrs[attrs[0]] = { .format = FLOAT3, .offset = 0 };
     layout.attrs[attrs[1]] = { .format = FLOAT3, .offset = 12 };
     layout.attrs[attrs[2]] = { .format = FLOAT2, .offset = 24 };
     layout.attrs[attrs[3]] = { .format = FLOAT4, .offset = 32 };
     layout.attrs[attrs[4]] = { .format = FLOAT2, .offset = 0, .buffer_index = 2 };
-    layout.attrs[attrs[5]] = { .format = FLOAT4, .offset = 0, .buffer_index = 1 };
-    layout.attrs[attrs[6]] = { .format = FLOAT4, .offset = 16, .buffer_index = 1 };
-    layout.attrs[attrs[7]] = { .format = FLOAT4, .offset = 32, .buffer_index = 1 };
+    layout.attrs[attrs[5]] = { .format = FLOAT4, .offset = 0, .buffer_index = 3 };
+    layout.attrs[attrs[6]] = { .format = FLOAT4, .offset = 0, .buffer_index = 1 };
+    layout.attrs[attrs[7]] = { .format = FLOAT4, .offset = 16, .buffer_index = 1 };
+    layout.attrs[attrs[8]] = { .format = FLOAT4, .offset = 32, .buffer_index = 1 };
     return layout;
 }
 
@@ -1015,6 +1019,7 @@ fn SgPipeline get_pipeline(
                 shaders::ATTR_THREE_UV,
                 shaders::ATTR_THREE_COLOR0,
                 shaders::ATTR_THREE_UV1,
+                shaders::ATTR_THREE_TANGENT,
                 shaders::ATTR_THREE_INST0,
                 shaders::ATTR_THREE_INST1,
                 shaders::ATTR_THREE_INST2
@@ -1071,6 +1076,7 @@ fn SgPipeline get_shadow_pipeline() @local {
                     shaders::ATTR_SHADOW_UV,
                     shaders::ATTR_SHADOW_COLOR0,
                     shaders::ATTR_SHADOW_UV1,
+                    shaders::ATTR_SHADOW_TANGENT,
                     shaders::ATTR_SHADOW_INST0,
                     shaders::ATTR_SHADOW_INST1,
                     shaders::ATTR_SHADOW_INST2
@@ -1105,6 +1111,7 @@ fn void clear_atlas_tile() @local {
                         shaders::ATTR_SHADOW_UV,
                         shaders::ATTR_SHADOW_COLOR0,
                         shaders::ATTR_SHADOW_UV1,
+                        shaders::ATTR_SHADOW_TANGENT,
                         shaders::ATTR_SHADOW_INST0,
                         shaders::ATTR_SHADOW_INST1,
                         shaders::ATTR_SHADOW_INST2
@@ -1125,7 +1132,8 @@ fn void clear_atlas_tile() @local {
     SgBindings bind = {
         .vertex_buffers[0] = g.vbuf,
         .vertex_buffers[1] = state.identity_instance,
-        .vertex_buffers[2] = zero_uv1(g.vertex_count()),
+        .vertex_buffers[2] = zeros(g.vertex_count()),
+        .vertex_buffers[3] = zeros(g.vertex_count()),
         .index_buffer = g.ibuf
     };
     Vec4 inst_cull = cull_bind(&bind, -1);
@@ -2100,16 +2108,19 @@ fn Vec4[2] uv_relative(Texture* base, Texture* t) @local {
     };
 }
 
-// A buffer of zeros for `vertices` vertices' second uv set, grown as needed.
-fn SgBuffer zero_uv1(uint vertices) @local {
-    if (state.zero_uv1.id && state.zero_uv1_vertices >= vertices) return state.zero_uv1;
-    if (state.zero_uv1.id) sg::destroy_buffer(state.zero_uv1);
-    uint n = math::max(vertices, 1024u, state.zero_uv1_vertices * 2);
-    float[] zeros = mem::new_array(float, (usz)n * 2);
-    defer free(zeros);
-    state.zero_uv1 = sg::make_buffer(&&{ .data = { .ptr = zeros.ptr, .size = (usz)n * 2 * float::size }, .label = "drie-zero-uv1" });
-    state.zero_uv1_vertices = n;
-    return state.zero_uv1;
+// A buffer of zeros, four floats for each of `vertices` vertices, grown as needed: the second
+// uv set and the tangents of a geometry without them.
+fn SgBuffer zeros(uint vertices) @local {
+    if (state.zeros.id && state.zeros_vertices >= vertices) return state.zeros;
+    if (state.zeros.id) sg::destroy_buffer(state.zeros);
+    uint n = math::max(vertices, 1024u, state.zeros_vertices * 2);
+    float[] zero = mem::new_array(float, (usz)n * 4);
+    defer free(zero);
+    state.zeros = sg::make_buffer(
+        &&{ .data = { .ptr = zero.ptr, .size = (usz)n * 4 * float::size }, .label = "drie-zeros" }
+    );
+    state.zeros_vertices = n;
+    return state.zeros;
 }
 
 fn Vec4 sway_params(Material* mat) @local => { state.renderer.time, mat.sway, mat.sway_speed, 0 };
@@ -2304,7 +2315,7 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     // by role, in the order of the shader's MAP_*; one image in two roles takes one slot
     bool standard = mat.type == STANDARD;
     bool refracts = standard && mat.transmission > 0;
-    Texture*[15] roles = {
+    Texture*[16] roles = {
         standard && mat.ao_intensity != 0 ? mat.ao_map : null,
         standard ? mat.specular_color_map : null,
         standard ? mat.specular_intensity_map : null,
@@ -2320,6 +2331,7 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
         mat.alpha_map,
         mat.emissive_map,
         mat.type != NORMAL ? mat.light_map : null,
+        standard && mat.anisotropy > 0 ? mat.anisotropy_map : null,
     };
     Texture*[6] slots;
     int used;
@@ -2440,7 +2452,7 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     }
     fs.specular = { ...color_to_linear(mat.specular), (float)flags };
     fs.mat_params = { (float)mat.type, mat.roughness, mat.metalness, mat.shininess };
-    fs.tex_params = { mat.map ? 1 : 0, mat.normal_map ? mat.normal_scale : 0, (float)arm_bits, alpha_test };
+    fs.tex_params = { mat.map ? 1 : 0, mat.normal_map ? 1 : 0, (float)arm_bits, alpha_test };
     fs.parallax_params = {
         mat.parallax_map && mat.type == STANDARD ? mat.parallax_scale : 0,
         mat.parallax_distance > 0 ? mat.parallax_distance : 30,
@@ -2492,6 +2504,13 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     fs.sheen_params = { ...sheen, mat.sheen_roughness };
     fs.iridescence_params = {
         standard ? mat.iridescence : 0, mat.iridescence_ior, mat.iridescence_thickness_min, mat.iridescence_thickness_max
+    };
+    float anisotropy = standard && mat.anisotropy > 0 ? mat.anisotropy : 0;
+    fs.tangent_params = {
+        mat.normal_scale.x,
+        mat.normal_scale.y,
+        math::cos(mat.anisotropy_rotation) * anisotropy,
+        math::sin(mat.anisotropy_rotation) * anisotropy
     };
     fs.frame_custom = r.custom;
     fs.ssr_view_proj = r.ssr_view_proj;
@@ -2551,10 +2570,12 @@ fn void draw_shadow_item(DrawItem* item, Mat4 light_vp, Vector3 origin = { 0, 0,
 }
 
 // The instance attributes of a draw (one identity instance for a plain mesh), and its
-// geometry's second uv set.
+// geometry's second uv set and tangents.
 fn void bind_instances(SgBindings* bind, DrawItem* item) @local {
     Mesh* m = item.mesh;
-    bind.vertex_buffers[2] = m.geometry.uv1buf.id ? m.geometry.uv1buf : zero_uv1(m.geometry.vertex_count());
+    BufferGeometry* g = m.geometry;
+    bind.vertex_buffers[2] = g.uv1buf.id ? g.uv1buf : zeros(g.vertex_count());
+    bind.vertex_buffers[3] = g.tangent_buf.id ? g.tangent_buf : zeros(g.vertex_count());
     if (!m.instance_data.len()) {
         bind.vertex_buffers[1] = state.identity_instance;
         return;
@@ -3152,6 +3173,7 @@ fn SgPipeline bake_pipeline(SgPixelFormat format) @local {
                     shaders::ATTR_THREE_UV,
                     shaders::ATTR_THREE_COLOR0,
                     shaders::ATTR_THREE_UV1,
+                    shaders::ATTR_THREE_TANGENT,
                     shaders::ATTR_THREE_INST0,
                     shaders::ATTR_THREE_INST1,
                     shaders::ATTR_THREE_INST2
