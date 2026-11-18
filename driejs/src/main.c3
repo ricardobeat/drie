@@ -368,6 +368,23 @@ fn void h_texture(JsCtx ctx, void* udata)
     ctx.ret_number(@reg(textures, t, TEXTURE_BASE));
 }
 
+// textureClone(texture, repeatX, repeatY, offsetX, offsetY, rotation, centerX, centerY,
+// channel): another texture of the same image (uploaded once, see drie's Texture.clone),
+// placed its own way: three's texture.clone(), as GLTFLoader makes them for
+// KHR_texture_transform and texCoord.
+fn void h_texture_clone(JsCtx ctx, void* udata)
+{
+    Texture* source = get_texture(num_arg(ctx, 0, -1));
+    if (source == null) { ctx.throw_error(TYPE, "textureClone: not a texture"); return; }
+    Texture* t = source.clone();
+    t.repeat = { (float)num_arg(ctx, 1, 1), (float)num_arg(ctx, 2, 1) };
+    t.offset = { (float)num_arg(ctx, 3, 0), (float)num_arg(ctx, 4, 0) };
+    t.rotation = (float)num_arg(ctx, 5, 0);
+    t.center = { (float)num_arg(ctx, 6, 0), (float)num_arg(ctx, 7, 0) };
+    t.channel = (char)num_arg(ctx, 8, 0);
+    ctx.ret_number(@reg(textures, t, TEXTURE_BASE));
+}
+
 // cubeTexture(px, nx, py, ny, pz, nz, size): an equirectangular texture (linear light, 4 * size
 // by 2 * size) of a cube map's six faces of half floats (Uint16Array) or floats, RGBA, as
 // HDRCubeTextureLoader makes them. Looked up as three looks up a CubeTexture (x mirrored).
@@ -1609,6 +1626,7 @@ fn int main(String[] args)
     reg(natives, "lightTarget", &h_light_target, 1);
     reg(natives, "geometry", &h_geometry, 8);
     reg(natives, "texture", &h_texture, 17);
+    reg(natives, "textureClone", &h_texture_clone, 9);
     reg(natives, "cubeTexture", &h_cube_texture, 7);
     reg(natives, "material", &h_material, 27);
     reg(natives, "materialUpdate", &h_material_update, 19);

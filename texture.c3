@@ -76,6 +76,35 @@ struct Texture {
     SgView view;
     SgSampler sampler;
     bool uploaded;
+    // A clone's (see Texture.clone): the texture whose image it shows. Its GPU state is that
+    // one's, borrowed: only its uv settings (repeat, offset, rotation, center, channel) are its own.
+    Texture* source;
+}
+
+// Like three's texture.clone(): the same image, uploaded once (it stays this texture's, or
+// its source's), placed with its own repeat, offset, rotation, center and channel, which start
+// as this one's. A material's maps share one sampler, so the clone's wrapping and filtering
+// are the image's.
+fn Texture* Texture.clone(&self) {
+    Texture* t = mem::new(Texture);
+    *t = {
+        .width = self.width,
+        .height = self.height,
+        .flip_y = self.flip_y,
+        .color_space = self.color_space,
+        .wrap_s = self.wrap_s,
+        .wrap_t = self.wrap_t,
+        .repeat = self.repeat,
+        .offset = self.offset,
+        .rotation = self.rotation,
+        .center = self.center,
+        .channel = self.channel,
+        .generate_mipmaps = self.generate_mipmaps,
+        .anisotropy = self.anisotropy,
+        .nearest = self.nearest,
+        .source = self.source ?: self,
+    };
+    return t;
 }
 
 // A texture from raw RGBA8 pixels (copied), like THREE.DataTexture.
@@ -366,6 +395,7 @@ fn void Texture.upload_float(&self) {
 // color for a whole surface (RadianceCascades' voxels). White for a texture without pixels.
 // (once prepared: safe on any thread; white for an image without RGBA8 pixels)
 fn Vector3 Texture.average_color(&self) {
+    if (self.source) return self.source.average_color();
     self.prepare();
     return self.has_average ? self.average : (Vector3) { 1, 1, 1 };
 }
@@ -391,6 +421,18 @@ fn void Texture.find_average(&self) {
 
 // Uploads the pixels (and mipmaps) to the GPU. Called by the renderer.
 fn void Texture.upload(&self) {
+    // (a clone: its source's, which may have been uploaded again since)
+    if (self.source) {
+        Texture* s = self.source;
+        s.upload();
+        self.image = s.image;
+        self.view = s.view;
+        self.sampler = s.sampler;
+        self.width = s.width;
+        self.height = s.height;
+        self.uploaded = true;
+        return;
+    }
     if (self.uploaded) return;
     self.dispose();
     if (self.float_pixels.len) {
@@ -509,6 +551,14 @@ fn void Texture.prepare(&self) {
 
 // Frees the GPU resources.
 fn void Texture.dispose(&self) {
+    // (a clone's are its source's)
+    if (self.source) {
+        self.view = { };
+        self.image = { };
+        self.sampler = { };
+        self.uploaded = false;
+        return;
+    }
     if (self.view.id) sg::destroy_view(self.view);
     if (self.image.id) sg::destroy_image(self.image);
     if (self.sampler.id) sg::destroy_sampler(self.sampler);

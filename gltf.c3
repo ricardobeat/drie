@@ -1,15 +1,18 @@
-// glTF 2.0 loader (.glb, or .gltf with one external .bin), like three's GLTFLoader.
+// glTF 2.0 loader (.glb, or .gltf with its .bin and images), like three's GLTFLoader, on
+// cgltf (third_party/cgltf, through generated/cgltf.c3).
 //   GltfModel* model = loaders::load_gltf("assets/models/tree.glb")!!;
 //   scene.add(model.scene);
-// Supported: node hierarchy, triangle meshes (positions, normals, uvs, vertex colors),
-// metallic-roughness materials with base color / normal / occlusion-roughness-metal textures,
-// occlusion and emissive textures, alpha modes, double sided materials, and the transmission /
-// volume / ior / dispersion / specular / clearcoat / sheen / iridescence / emissive_strength
-// extensions (see Material.transmission, specular_color, clearcoat, sheen and iridescence). Not
-// supported: skins, animations, cameras, sparse accessors.
+// Supported: the node hierarchy, triangle meshes (positions, normals, two uv sets, vertex
+// colors; sparse and quantized accessors), metallic-roughness materials with their base color,
+// metallic-roughness, normal, occlusion and emissive textures (embedded, files or data: URIs,
+// with their samplers' wrapping and KHR_texture_transform), alpha modes, double sided
+// materials, KHR_materials_unlit, and the transmission / volume / ior / dispersion / specular /
+// clearcoat / sheen / iridescence / emissive_strength extensions (see Material.transmission,
+// specular_color, clearcoat, sheen and iridescence). Not yet: skins, animations, morph targets,
+// cameras, lights, Draco and meshopt compression, KHR_texture_basisu.
 module drie::loaders;
-import std::io, std::math, std::encoding::json, std::collections::object, std::collections::list;
-import drie;
+import std::io, std::math, std::collections::list, libc;
+import drie, drie::cgltf;
 
 faultdef GLTF_INVALID;
 
@@ -25,111 +28,89 @@ struct GltfModel {
 fn Object3D* GltfModel.get(&self, String name) => self.scene.get_object_by_name(name);
 
 struct GltfReader @local {
-    Object* json;
-    char[] bin;
+    CgltfData* data;
     String dir;
     GltfModel* model;
-    // one per glTF image and color space: [image][srgb ? 0 : 1]
-    List{Texture*[4]} textures;
+    // per glTF image, its Texture in sRGB and in linear (data) colors: what each texture of
+    // it shows, as is or placed another way by a clone (see GltfReader.texture)
+    List{Texture*[2]} images;
+    // per glTF mesh, its primitives' geometries (shared by the nodes that use the mesh)
     List{BufferGeometry*[]} geometries;
 }
 
-fn Object*? child(Object* o, String key) @local => o.has_key(key) ? o.get(key) : io::EOF~;
+fn String text(CChar* s) @local => s ? ((ZString)s).str_view() : "";
 
-fn float num(Object* o, String key, float fallback) @local {
-    if (!o.has_key(key)) return fallback;
-    return (float)(o.get_float(key) ?? (double)fallback);
-}
-
-fn uint read_u32(
-    char[] data,
-    sz at
-) @local => data[at] | (uint)data[at + 1] << 8 | (uint)data[at + 2] << 16 | (uint)data[at + 3] << 24;
-
-struct Accessor @local {
-    char* ptr;
-    sz count;
-    sz stride;
-    int component_type;
-    int components;
-}
-
-fn Accessor? GltfReader.accessor(&self, int index) {
-    Object* a    = self.json.get("accessors")!.get_at(index);
-    Object* view = self.json.get("bufferViews")!.get_at(a.get_int("bufferView")!);
-    Accessor acc;
-    String type  = a.get_string("type")!;
-    switch (type) {
-        case "SCALAR": acc.components = 1;
-        case "VEC2": acc.components = 2;
-        case "VEC3": acc.components = 3;
-        case "VEC4": acc.components = 4;
-        default: return GLTF_INVALID~;
-    }
-    acc.component_type = a.get_int("componentType")!;
-    sz size;
-    switch (acc.component_type) {
-        case 5120:
-        case 5121: size = 1;
-        case 5122:
-        case 5123: size = 2;
-        case 5125:
-        case 5126: size = 4;
-        default: return GLTF_INVALID~;
-    }
-    acc.count = a.get_int("count")!;
-    acc.stride = view.has_key("byteStride") ? view.get_int("byteStride")! : size * acc.components;
-    sz offset = (sz)num(view, "byteOffset", 0) + (sz)num(a, "byteOffset", 0);
-    if (offset + (acc.count - 1) * acc.stride + size * acc.components > self.bin.len) return GLTF_INVALID~;
-    acc.ptr = &self.bin[offset];
-    return acc;
-}
-
-fn float Accessor.value(&self, sz i, int c) {
-    char* p = self.ptr + i * self.stride;
-    switch (self.component_type) {
-        case 5126: return ((float*)p)[c];  // may be unaligned, which arm64 and x86 allow
-        // normalized integers (KHR_mesh_quantization)
-        case 5120: return math::max((float)((ichar*)p)[c] / 127.0f, -1.0f);
-        case 5121: return p[c] / 255.0f;
-        case 5122: return math::max((float)((short*)p)[c] / 32767.0f, -1.0f);
-        case 5123: return ((ushort*)p)[c] / 65535.0f;
-        default: return 0;
-    }
-}
-
-fn uint Accessor.index(&self, sz i) {
-    char* p = self.ptr + i * self.stride;
-    switch (self.component_type) {
-        case 5121: return p[0];
-        case 5123: return *(ushort*)p;
-        default: return *(uint*)p;
-    }
-}
-
-fn Texture*? GltfReader.texture(&self, Object* info, ColorSpace space) {
-    Object* tex     = self.json.get("textures")!.get_at(info.get_int("index")!);
-    int image_index = tex.get_int("source")!;
-    while (self.textures.len() <= image_index) self.textures.push({ });
-    // (one Texture per color space and uv set: an image read with both sets loads twice)
-    int channel = info.has_key("texCoord") && info.get_int("texCoord")! == 1 ? 1 : 0;
-    int slot = (space == SRGB_COLOR_SPACE ? 0 : 1) + channel * 2;
-    if (self.textures[image_index][slot]) return self.textures[image_index][slot];
-    Object* image = self.json.get("images")!.get_at(image_index);
+// The image a glTF texture shows, decoded once per color space.
+fn Texture*? GltfReader.image(&self, CgltfTexture* tex, ColorSpace space) {
+    // (WebP where the platform's decoder reads it; KTX2/Basis is not decoded)
+    CgltfImage* image = tex.image ?: (tex.has_webp ? tex.webp_image : null);
+    if (!image) return GLTF_INVALID~;
+    sz index = (sz)cgltf::image_index(self.data, image);
+    while (self.images.len() <= index) self.images.push({ });
+    int slot = space == SRGB_COLOR_SPACE ? 0 : 1;
+    if (self.images[index][slot]) return self.images[index][slot];
     Texture* t;
-    if (image.has_key("uri")) {
-        @pool() {
-            t = drie::load_texture(string::tformat("%s%s", self.dir, image.get_string("uri")!), space, flip_y: false);
-        };
+    String uri = text(image.uri);
+    if (image.buffer_view) {
+        char* bytes = (char*)cgltf::buffer_view_data(image.buffer_view);
+        if (!bytes) return GLTF_INVALID~;
+        t = drie::decode_texture(bytes[:(sz)image.buffer_view.size], space, flip_y: false)!;
+    } else if (uri.starts_with("data:")) {
+        // base64 in the uri itself
+        sz comma = uri.index_of(";base64,") ?? 0;
+        if (!comma) return GLTF_INVALID~;
+        String b64 = uri[comma + 8..];
+        sz padding = b64.ends_with("==") ? 2 : b64.ends_with("=") ? 1 : 0;
+        sz size = b64.len / 4 * 3 - padding;
+        void* bytes;
+        CgltfOptions options;
+        if (cgltf::load_buffer_base64(&options, (usz)size, (CChar*)b64.ptr, &bytes) != cgltf::RESULT_SUCCESS) return GLTF_INVALID~;
+        defer libc::free(bytes);
+        t = drie::decode_texture(((char*)bytes)[:size], space, flip_y: false)!;
     } else {
-        Object* view = self.json.get("bufferViews")!.get_at(image.get_int("bufferView")!);
-        sz offset    = (sz)num(view, "byteOffset", 0);
-        sz len       = view.get_int("byteLength")!;
-        if (offset + len > self.bin.len) return GLTF_INVALID~;
-        t = drie::decode_texture(self.bin[offset:len], space, flip_y: false)!;
+        @pool() {
+            // (percent-encoded, as uris are)
+            ZString path = string::tformat("%s%s", self.dir, uri).zstr_tcopy();
+            cgltf::decode_uri((CChar*)path);
+            t = drie::load_texture(path.str_view(), space, flip_y: false);
+        };
     }
+    if (tex.sampler) {
+        t.wrap_s = wrapping(tex.sampler.wrap_s);
+        t.wrap_t = wrapping(tex.sampler.wrap_t);
+        t.nearest = tex.sampler.mag_filter == cgltf::FILTER_TYPE_NEAREST;
+        // (a minification filter without mipmaps: none made)
+        CgltfFilterType min = tex.sampler.min_filter;
+        if (min == cgltf::FILTER_TYPE_NEAREST || min == cgltf::FILTER_TYPE_LINEAR) t.generate_mipmaps = false;
+    }
+    self.images[index][slot] = t;
+    return t;
+}
+
+fn Wrapping wrapping(CgltfWrapMode mode) @local {
+    if (mode == cgltf::WRAP_MODE_CLAMP_TO_EDGE) return CLAMP_TO_EDGE_WRAPPING;
+    if (mode == cgltf::WRAP_MODE_MIRRORED_REPEAT) return MIRRORED_REPEAT_WRAPPING;
+    return REPEAT_WRAPPING;
+}
+
+// A material's texture: its image, read with the uv set it names and placed by its
+// KHR_texture_transform (as three's GLTFLoader places it: offset, rotation and repeat). Null
+// for none.
+fn Texture*? GltfReader.texture(&self, CgltfTextureView* view, ColorSpace space) {
+    if (!view.texture) return null;
+    Texture* shown = self.image(view.texture, space)!;
+    int channel = view.has_transform && view.transform.has_texcoord ? view.transform.texcoord : view.texcoord;
+    if (!view.has_transform && channel == 0) return shown;
+    // (drie's geometries have two uv sets)
+    if (channel > 1) return null;
+    Texture* t = shown.clone();
     t.channel = (char)channel;
-    self.textures[image_index][slot] = t;
+    if (view.has_transform) {
+        CgltfTextureTransform* x = &view.transform;
+        t.offset = { x.offset[0], x.offset[1] };
+        t.rotation = x.rotation;
+        t.repeat = { x.scale[0], x.scale[1] };
+    }
     return t;
 }
 
@@ -144,247 +125,252 @@ fn Color linear_color(float r, float g, float b) @local {
     return result;
 }
 
-fn Material*? GltfReader.material(&self, Object* m) {
+fn Material*? GltfReader.material(&self, CgltfMaterial* m) {
+    CgltfPbrMetallicRoughness* pbr = &m.pbr_metallic_roughness;
+    float[4] base = m.has_pbr_metallic_roughness ? pbr.base_color_factor : { 1, 1, 1, 1 };
+    if (m.unlit) {
+        // KHR_materials_unlit: its color as it is, as three's MeshBasicMaterial
+        MeshBasicMaterial* basic = drie::mesh_basic_material(
+            color: linear_color(base[0], base[1], base[2]),
+            opacity: base[3],
+            transparent: m.alpha_mode == cgltf::ALPHA_MODE_BLEND,
+            side: m.double_sided ? DOUBLE_SIDE : FRONT_SIDE
+        );
+        basic.map = self.texture(&pbr.base_color_texture, SRGB_COLOR_SPACE)!;
+        if (m.alpha_mode == cgltf::ALPHA_MODE_MASK) basic.alpha_test = m.alpha_cutoff;
+        return basic;
+    }
     MeshStandardMaterial* mat = drie::mesh_standard_material();
-    if (try pbr = child(m, "pbrMetallicRoughness")) {
-        if (try f = child(pbr, "baseColorFactor")) {
-            mat.color = linear_color((float)f.get_float_at(0)!, (float)f.get_float_at(1)!, (float)f.get_float_at(2)!);
-            mat.opacity = (float)f.get_float_at(3)!;
-        }
-        mat.roughness = num(pbr, "roughnessFactor", 1);
-        mat.metalness = num(pbr, "metallicFactor", 1);
-        if (try t = child(pbr, "baseColorTexture")) mat.map = self.texture(t, SRGB_COLOR_SPACE)!;
+    mat.color = linear_color(base[0], base[1], base[2]);
+    mat.opacity = base[3];
+    if (m.has_pbr_metallic_roughness) {
+        mat.roughness = pbr.roughness_factor;
+        mat.metalness = pbr.metallic_factor;
+        mat.map = self.texture(&pbr.base_color_texture, SRGB_COLOR_SPACE)!;
         // roughness in green, metalness in blue, and (without an occlusionTexture) ambient
         // occlusion in red: an arm map, as house's models pack it
-        if (try t = child(pbr, "metallicRoughnessTexture")) mat.arm_map = self.texture(t, NO_COLOR_SPACE)!;
+        mat.arm_map = self.texture(&pbr.metallic_roughness_texture, NO_COLOR_SPACE)!;
     }
-    if (try t = child(m, "occlusionTexture")) {
+    if (m.occlusion_texture.texture) {
         // its own ambient occlusion: the other map gives only roughness and metalness
         if (mat.arm_map) {
             mat.roughness_map = mat.arm_map;
             mat.metalness_map = mat.arm_map;
             mat.arm_map = null;
         }
-        mat.ao_map = self.texture(t, NO_COLOR_SPACE)!;
-        mat.ao_intensity = num(t, "strength", 1);
+        mat.ao_map = self.texture(&m.occlusion_texture, NO_COLOR_SPACE)!;
+        mat.ao_intensity = m.occlusion_texture.scale;
     }
-    if (try t = child(m, "normalTexture")) {
-        mat.normal_map = self.texture(t, NO_COLOR_SPACE)!;
-        mat.normal_scale = num(t, "scale", 1);
+    if (m.normal_texture.texture) {
+        mat.normal_map = self.texture(&m.normal_texture, NO_COLOR_SPACE)!;
+        mat.normal_scale = m.normal_texture.scale;
     }
-    if (try e = child(m, "emissiveFactor")) {
-        mat.emissive = linear_color((float)e.get_float_at(0)!, (float)e.get_float_at(1)!, (float)e.get_float_at(2)!);
+    mat.emissive = linear_color(m.emissive_factor[0], m.emissive_factor[1], m.emissive_factor[2]);
+    mat.emissive_map = self.texture(&m.emissive_texture, SRGB_COLOR_SPACE)!;
+    if (m.alpha_mode == cgltf::ALPHA_MODE_MASK) mat.alpha_test = m.alpha_cutoff;
+    if (m.alpha_mode == cgltf::ALPHA_MODE_BLEND) mat.transparent = true;
+    if (m.double_sided) mat.side = DOUBLE_SIDE;
+    // transmission, and what the light does as it crosses the volume
+    if (m.has_transmission) {
+        mat.transmission = m.transmission.transmission_factor;
+        mat.transmission_map = self.texture(&m.transmission.transmission_texture, NO_COLOR_SPACE)!;
     }
-    if (try t = child(m, "emissiveTexture")) mat.emissive_map = self.texture(t, SRGB_COLOR_SPACE)!;
-    if (m.has_key("alphaMode")) {
-        String mode = m.get_string("alphaMode")!;
-        if (mode == "MASK") mat.alpha_test = num(m, "alphaCutoff", 0.5f);
-        if (mode == "BLEND") mat.transparent = true;
+    if (m.has_volume) {
+        CgltfVolume* vol = &m.volume;
+        mat.thickness = vol.thickness_factor;
+        mat.thickness_map = self.texture(&vol.thickness_texture, NO_COLOR_SPACE)!;
+        // (cgltf's "infinitely far" is FLT_MAX; drie's is 0)
+        mat.attenuation_distance = vol.attenuation_distance < 1e30f ? vol.attenuation_distance : 0;
+        mat.attenuation_color = linear_color(vol.attenuation_color[0], vol.attenuation_color[1], vol.attenuation_color[2]);
     }
-    if (m.has_key("doubleSided") && m.get_bool("doubleSided")!) mat.side = DOUBLE_SIDE;
-    if (try ext = child(m, "extensions")) {
-        // transmission, and what the light does as it crosses the volume
-        if (try t = child(ext, "KHR_materials_transmission")) {
-            mat.transmission = num(t, "transmissionFactor", 0);
-            if (try tt = child(t, "transmissionTexture")) mat.transmission_map = self.texture(tt, NO_COLOR_SPACE)!;
-        }
-        if (try vol = child(ext, "KHR_materials_volume")) {
-            mat.thickness = num(vol, "thicknessFactor", 0);
-            if (try tt = child(vol, "thicknessTexture")) mat.thickness_map = self.texture(tt, NO_COLOR_SPACE)!;
-            mat.attenuation_distance = num(vol, "attenuationDistance", 0);
-            if (try c = child(vol, "attenuationColor")) {
-                mat.attenuation_color = linear_color(
-                    (float)c.get_float_at(0)!,
-                    (float)c.get_float_at(1)!,
-                    (float)c.get_float_at(2)!
-                );
-            }
-        }
-        if (try ior = child(ext, "KHR_materials_ior")) mat.ior = num(ior, "ior", 1.5f);
-        // the strength and color of its reflections where it isn't metal
-        if (try sp = child(ext, "KHR_materials_specular")) {
-            mat.specular_intensity = num(sp, "specularFactor", 1);
-            if (try c = child(sp, "specularColorFactor")) {
-                mat.specular_color = { (float)c.get_float_at(0)!, (float)c.get_float_at(1)!, (float)c.get_float_at(2)! };
-            }
-            if (try tt = child(sp, "specularTexture")) mat.specular_intensity_map = self.texture(tt, NO_COLOR_SPACE)!;
-            if (try tt = child(sp, "specularColorTexture")) mat.specular_color_map = self.texture(tt, SRGB_COLOR_SPACE)!;
-        }
-        if (try d = child(ext, "KHR_materials_dispersion")) mat.dispersion = num(d, "dispersion", 0);
-        if (try e = child(ext, "KHR_materials_emissive_strength")) mat.emissive_intensity = num(e, "emissiveStrength", 1);
-        // a varnish over it
-        if (try cc = child(ext, "KHR_materials_clearcoat")) {
-            mat.clearcoat = num(cc, "clearcoatFactor", 0);
-            mat.clearcoat_roughness = num(cc, "clearcoatRoughnessFactor", 0);
-            if (try tt = child(cc, "clearcoatTexture")) mat.clearcoat_map = self.texture(tt, NO_COLOR_SPACE)!;
-            if (try tt = child(cc, "clearcoatRoughnessTexture")) mat.clearcoat_roughness_map = self.texture(tt, NO_COLOR_SPACE)!;
-            if (try tt = child(cc, "clearcoatNormalTexture")) {
-                mat.clearcoat_normal_map = self.texture(tt, NO_COLOR_SPACE)!;
-                float scale = num(tt, "scale", 1);
-                mat.clearcoat_normal_scale = { scale, scale };
-            }
-        }
-        // cloth's fibers
-        if (try sh = child(ext, "KHR_materials_sheen")) {
-            mat.sheen = 1;
-            if (try c = child(sh, "sheenColorFactor")) {
-                mat.sheen_color = { (float)c.get_float_at(0)!, (float)c.get_float_at(1)!, (float)c.get_float_at(2)! };
-            }
-            mat.sheen_roughness = num(sh, "sheenRoughnessFactor", 0);
-            if (try tt = child(sh, "sheenColorTexture")) mat.sheen_color_map = self.texture(tt, SRGB_COLOR_SPACE)!;
-            if (try tt = child(sh, "sheenRoughnessTexture")) mat.sheen_roughness_map = self.texture(tt, NO_COLOR_SPACE)!;
-        }
-        // a thin film's rainbow
-        if (try ir = child(ext, "KHR_materials_iridescence")) {
-            mat.iridescence = num(ir, "iridescenceFactor", 0);
-            mat.iridescence_ior = num(ir, "iridescenceIor", 1.3f);
-            mat.iridescence_thickness_min = num(ir, "iridescenceThicknessMinimum", 100);
-            mat.iridescence_thickness_max = num(ir, "iridescenceThicknessMaximum", 400);
-            if (try tt = child(ir, "iridescenceTexture")) mat.iridescence_map = self.texture(tt, NO_COLOR_SPACE)!;
-            if (try tt = child(ir, "iridescenceThicknessTexture")) {
-                mat.iridescence_thickness_map = self.texture(tt, NO_COLOR_SPACE)!;
-            }
-        }
+    if (m.has_ior) mat.ior = m.ior.ior;
+    // the strength and color of its reflections where it isn't metal
+    if (m.has_specular) {
+        CgltfSpecular* sp = &m.specular;
+        mat.specular_intensity = sp.specular_factor;
+        mat.specular_color = { sp.specular_color_factor[0], sp.specular_color_factor[1], sp.specular_color_factor[2] };
+        mat.specular_intensity_map = self.texture(&sp.specular_texture, NO_COLOR_SPACE)!;
+        mat.specular_color_map = self.texture(&sp.specular_color_texture, SRGB_COLOR_SPACE)!;
+    }
+    if (m.has_dispersion) mat.dispersion = m.dispersion.dispersion;
+    if (m.has_emissive_strength) mat.emissive_intensity = m.emissive_strength.emissive_strength;
+    // a varnish over it
+    if (m.has_clearcoat) {
+        CgltfClearcoat* cc = &m.clearcoat;
+        mat.clearcoat = cc.clearcoat_factor;
+        mat.clearcoat_roughness = cc.clearcoat_roughness_factor;
+        mat.clearcoat_map = self.texture(&cc.clearcoat_texture, NO_COLOR_SPACE)!;
+        mat.clearcoat_roughness_map = self.texture(&cc.clearcoat_roughness_texture, NO_COLOR_SPACE)!;
+        mat.clearcoat_normal_map = self.texture(&cc.clearcoat_normal_texture, NO_COLOR_SPACE)!;
+        float scale = cc.clearcoat_normal_texture.scale;
+        mat.clearcoat_normal_scale = { scale, scale };
+    }
+    // cloth's fibers
+    if (m.has_sheen) {
+        CgltfSheen* sh = &m.sheen;
+        mat.sheen = 1;
+        mat.sheen_color = { sh.sheen_color_factor[0], sh.sheen_color_factor[1], sh.sheen_color_factor[2] };
+        mat.sheen_roughness = sh.sheen_roughness_factor;
+        mat.sheen_color_map = self.texture(&sh.sheen_color_texture, SRGB_COLOR_SPACE)!;
+        mat.sheen_roughness_map = self.texture(&sh.sheen_roughness_texture, NO_COLOR_SPACE)!;
+    }
+    // a thin film's rainbow
+    if (m.has_iridescence) {
+        CgltfIridescence* ir = &m.iridescence;
+        mat.iridescence = ir.iridescence_factor;
+        mat.iridescence_ior = ir.iridescence_ior;
+        mat.iridescence_thickness_min = ir.iridescence_thickness_min;
+        mat.iridescence_thickness_max = ir.iridescence_thickness_max;
+        mat.iridescence_map = self.texture(&ir.iridescence_texture, NO_COLOR_SPACE)!;
+        mat.iridescence_thickness_map = self.texture(&ir.iridescence_thickness_texture, NO_COLOR_SPACE)!;
     }
     return mat;
 }
 
-fn BufferGeometry*? GltfReader.geometry(&self, Object* primitive) {
-    if (primitive.has_key("mode") && primitive.get_int("mode")! != 4) return GLTF_INVALID~;
-    Object* attrs = primitive.get("attributes")!;
-    Accessor pos  = self.accessor(attrs.get_int("POSITION")!)!;
-    Accessor normal;
-    Accessor uv;
-    Accessor uv1;
-    Accessor color;
-    if (attrs.has_key("NORMAL")) normal = self.accessor(attrs.get_int("NORMAL")!)!;
-    if (attrs.has_key("TEXCOORD_0")) uv = self.accessor(attrs.get_int("TEXCOORD_0")!)!;
-    if (attrs.has_key("TEXCOORD_1")) uv1 = self.accessor(attrs.get_int("TEXCOORD_1")!)!;
-    if (attrs.has_key("COLOR_0")) color = self.accessor(attrs.get_int("COLOR_0")!)!;
+// An accessor's values as floats (normalized integers to -1..1 or 0..1, sparse values
+// applied), `components` per element; empty for none. Free with mem::free.
+fn float[] floats(CgltfAccessor* a, usz components) @local {
+    if (!a) return { };
+    usz n = cgltf::num_components(a.type);
+    float[] all = mem::new_array(float, (sz)(a.count * n));
+    cgltf::accessor_unpack_floats(a, all.ptr, all.len);
+    if (n == components) return all;
+    // (colors as RGB from RGBA: the shape drie keeps)
+    float[] out = mem::new_array(float, (sz)(a.count * components));
+    for (usz i = 0; i < a.count; i++) {
+        for (usz c = 0; c < components; c++) out[i * components + c] = c < n ? all[i * n + c] : 1;
+    }
+    mem::free(all.ptr);
+    return out;
+}
+
+// A primitive's geometry; null for one drie does not draw (points, lines, compressed data).
+fn BufferGeometry* primitive_geometry(CgltfPrimitive* p) @local {
+    if (p.type != cgltf::PRIMITIVE_TYPE_TRIANGLES) return null;
+    if (p.has_draco_mesh_compression) {
+        io::eprintn("drie: glTF: a Draco compressed mesh is skipped (not supported)");
+        return null;
+    }
+    CgltfAccessor* position = (CgltfAccessor*)cgltf::find_accessor(p, cgltf::ATTRIBUTE_TYPE_POSITION, 0);
+    if (!position) return null;
+    float[] pos = floats(position, 3);
+    float[] nrm = floats((CgltfAccessor*)cgltf::find_accessor(p, cgltf::ATTRIBUTE_TYPE_NORMAL, 0), 3);
+    float[] uv = floats((CgltfAccessor*)cgltf::find_accessor(p, cgltf::ATTRIBUTE_TYPE_TEXCOORD, 0), 2);
+    float[] uv1 = floats((CgltfAccessor*)cgltf::find_accessor(p, cgltf::ATTRIBUTE_TYPE_TEXCOORD, 1), 2);
+    float[] color = floats((CgltfAccessor*)cgltf::find_accessor(p, cgltf::ATTRIBUTE_TYPE_COLOR, 0), 3);
+    defer {
+        mem::free(pos.ptr);
+        mem::free(nrm.ptr);
+        mem::free(uv.ptr);
+        mem::free(uv1.ptr);
+        mem::free(color.ptr);
+    }
+    usz count = position.count;
 
     BufferGeometry* g = mem::new(BufferGeometry);
     g.init_lists();
-    g.vertices.reserve(pos.count * drie::FLOATS_PER_VERTEX);
-    for (sz i = 0; i < pos.count; i++) {
-        Vector3 p = { pos.value(i, 0), pos.value(i, 1), pos.value(i, 2) };
-        Vector3 n = normal.ptr ? (Vector3) { normal.value(i, 0), normal.value(i, 1), normal.value(i, 2) }
-            : (Vector3) { 0, 1, 0 };
-        Vector2 t = uv.ptr ? (Vector2) { uv.value(i, 0), uv.value(i, 1) } : (Vector2) { };
-        Vector3 c = color.ptr ? (Vector3) { color.value(i, 0), color.value(i, 1), color.value(i, 2) }
-            : (Vector3) { 1, 1, 1 };
-        g.add_vertex(p, n, t, c);
-        if (uv1.ptr) {
-            g.uv1.push(uv1.value(i, 0));
-            g.uv1.push(uv1.value(i, 1));
+    g.vertices.reserve((sz)count * drie::FLOATS_PER_VERTEX);
+    for (usz i = 0; i < count; i++) {
+        Vector3 n = nrm.len ? (Vector3) { nrm[i * 3], nrm[i * 3 + 1], nrm[i * 3 + 2] } : (Vector3) { 0, 1, 0 };
+        Vector2 t = uv.len ? (Vector2) { uv[i * 2], uv[i * 2 + 1] } : (Vector2) { };
+        Vector3 c = color.len ? (Vector3) { color[i * 3], color[i * 3 + 1], color[i * 3 + 2] } : (Vector3) { 1, 1, 1 };
+        g.add_vertex({ pos[i * 3], pos[i * 3 + 1], pos[i * 3 + 2] }, n, t, c);
+    }
+    if (uv1.len) foreach (f : uv1) g.uv1.push(f);
+    if (p.indices) {
+        usz n = p.indices.count;
+        uint[] idx = mem::new_array(uint, (sz)n);
+        defer mem::free(idx.ptr);
+        // (one at a time where cgltf can't unpack them all: sparse indices)
+        if (cgltf::accessor_unpack_indices(p.indices, idx.ptr, 4, n) != n) {
+            for (usz i = 0; i < n; i++) idx[i] = (uint)cgltf::accessor_read_index(p.indices, i);
         }
-    }
-    if (primitive.has_key("indices")) {
-        Accessor idx = self.accessor(primitive.get_int("indices")!)!;
-        g.indices.reserve(idx.count);
-        for (sz i = 0; i < idx.count; i++) g.indices.push(idx.index(i));
+        g.indices.reserve((sz)n);
+        foreach (i : idx) g.indices.push(i);
     } else {
-        for (uint i = 0; i < pos.count; i++) g.indices.push(i);
+        for (uint i = 0; i < (uint)count; i++) g.indices.push(i);
     }
-    if (!normal.ptr) g.compute_vertex_normals();
+    if (!nrm.len) g.compute_vertex_normals();
     return g;
 }
 
-fn Object3D*? GltfReader.node(&self, int index) {
-    Object* n  = self.json.get("nodes")!.get_at(index);
+fn Object3D*? GltfReader.node(&self, CgltfNode* n) {
     Group* obj = drie::group();
-    if (n.has_key("name")) obj.name = n.get_string("name")!.copy(mem);
-    if (try t = child(
-        n,
-        "translation"
-    )) obj.position = { (float)t.get_float_at(0)!, (float)t.get_float_at(1)!, (float)t.get_float_at(2)! };
-    if (try s = child(
-        n,
-        "scale"
-    )) obj.scale = { (float)s.get_float_at(0)!, (float)s.get_float_at(1)!, (float)s.get_float_at(2)! };
-    if (try q = child(n, "rotation")) {
-        // quaternion -> rotation matrix -> euler
-        float x      = (float)q.get_float_at(0)!;
-        float y      = (float)q.get_float_at(1)!;
-        float z      = (float)q.get_float_at(2)!;
-        float w      = (float)q.get_float_at(3)!;
-        drie::Mat4 m = drie::mat4_identity();
-        m[0] = { 1 - 2 * (y * y + z * z), 2 * (x * y + z * w), 2 * (x * z - y * w), 0 };
-        m[1] = { 2 * (x * y - z * w), 1 - 2 * (x * x + z * z), 2 * (y * z + x * w), 0 };
-        m[2] = { 2 * (x * z + y * w), 2 * (y * z - x * w), 1 - 2 * (x * x + y * y), 0 };
-        obj.rotation = drie::euler_from_rotation(m);
+    if (n.name) obj.name = text(n.name).copy(mem);
+    // its translation, rotation and scale (or matrix), taken apart
+    float[16] local;
+    cgltf::node_transform_local(n, &local);
+    drie::Mat4 m;
+    for (int c = 0; c < 4; c++) m[c] = { local[c * 4], local[c * 4 + 1], local[c * 4 + 2], local[c * 4 + 3] };
+    Vector3 scale = {
+        math::sqrt(m[0][0] * m[0][0] + m[0][1] * m[0][1] + m[0][2] * m[0][2]),
+        math::sqrt(m[1][0] * m[1][0] + m[1][1] * m[1][1] + m[1][2] * m[1][2]),
+        math::sqrt(m[2][0] * m[2][0] + m[2][1] * m[2][1] + m[2][2] * m[2][2]),
+    };
+    // (mirrored: one negative scale)
+    float det = m[0][0] * (m[1][1] * m[2][2] - m[2][1] * m[1][2]) - m[1][0] * (m[0][1] * m[2][2] - m[2][1] * m[0][2])
+        + m[2][0] * (m[0][1] * m[1][2] - m[1][1] * m[0][2]);
+    if (det < 0) scale.x = -scale.x;
+    obj.position = { m[3][0], m[3][1], m[3][2] };
+    obj.scale = scale;
+    for (int c = 0; c < 3; c++) {
+        float s = c == 0 ? scale.x : c == 1 ? scale.y : scale.z;
+        if (s != 0) for (int r = 0; r < 3; r++) m[c][r] /= s;
     }
-    if (n.has_key("mesh")) {
-        int mesh_index     = n.get_int("mesh")!;
-        Object* primitives = self.json.get("meshes")!.get_at(mesh_index).get("primitives")!;
-        for (sz i = 0; i < primitives.get_len(); i++) {
-            Object* prim = primitives.get_at(i);
+    obj.rotation = drie::euler_from_rotation(m);
+    if (n.mesh) {
+        sz mesh_index = (sz)cgltf::mesh_index(self.data, n.mesh);
+        for (sz i = 0; i < (sz)n.mesh.primitives_count; i++) {
+            CgltfPrimitive* prim = &n.mesh.primitives[i];
             // geometry is shared between nodes that use the same glTF mesh
-            if (!self.geometries[mesh_index][i]) self.geometries[mesh_index][i] = self.geometry(prim)!;
-            Material* mat = prim.has_key("material") ? self.model.materials[prim.get_int("material")!]
+            if (!self.geometries[mesh_index][i]) self.geometries[mesh_index][i] = primitive_geometry(prim);
+            BufferGeometry* g = self.geometries[mesh_index][i];
+            if (!g) continue;
+            Material* mat = prim.material ? self.model.materials[(sz)cgltf::material_index(self.data, prim.material)]
                 : (Material*)drie::mesh_standard_material();
-            Mesh* m       = drie::mesh(self.geometries[mesh_index][i], mat);
-            m.name = obj.name;
-            obj.add(m);
-            self.model.meshes.push(m);
+            Mesh* mesh = drie::mesh(g, mat);
+            mesh.name = obj.name;
+            obj.add(mesh);
+            self.model.meshes.push(mesh);
         }
     }
-    if (try kids = child(n, "children")) {
-        for (sz i = 0; i < kids.get_len(); i++) obj.add(self.node(kids.get_int_at(i)!)!);
-    }
+    for (usz i = 0; i < n.children_count; i++) obj.add(self.node(n.children[i])!);
     return obj;
 }
 
 fn GltfModel*? load_gltf(String path) {
-    char[] data = file::load(mem, path)!;
-    defer mem::free(data.ptr);
-    GltfReader r;
-    r.textures.allocator = mem;
+    CgltfOptions options;
+    CgltfData* data;
+    CgltfResult result;
+    @pool() {
+        CChar* zpath = (CChar*)path.zstr_tcopy();
+        result = cgltf::parse_file(&options, zpath, &data);
+        // (the .bin and data: uris; images are read as the materials use them)
+        if (result == cgltf::RESULT_SUCCESS) result = cgltf::load_buffers(&options, data, zpath);
+    };
+    if (result != cgltf::RESULT_SUCCESS) {
+        if (data) cgltf::free(data);
+        io::eprintfn("drie: cannot load glTF '%s' (cgltf result %d)", path, result);
+        return GLTF_INVALID~;
+    }
+    defer cgltf::free(data);
+    GltfReader r = { .data = data };
+    r.images.allocator = mem;
     r.geometries.allocator = mem;
-    defer r.textures.free();
+    defer r.images.free();
     sz slash = -1;
     foreach (i, c : path) {
         if (c == '/') slash = i;
     }
     r.dir = path[:slash + 1];
 
-    String text;
-    char[] external_bin;
-    defer if (external_bin.ptr) mem::free(external_bin.ptr);
-    if (data.len >= 20 && data[0] == 'g' && data[1] == 'l' && data[2] == 'T' && data[3] == 'F') {
-        // GLB container: header, JSON chunk, optional BIN chunk
-        sz json_len = read_u32(data, 12);
-        if (20 + json_len > data.len) return GLTF_INVALID~;
-        text = (String)data[20:json_len];
-        sz at = 20 + json_len;
-        if (at + 8 <= data.len) {
-            sz bin_len = read_u32(data, at);
-            if (at + 8 + bin_len > data.len) return GLTF_INVALID~;
-            r.bin = data[at + 8:bin_len];
-        }
-    } else {
-        text = (String)data;
-    }
-    r.json = json::parse(mem, text)!;
-    defer r.json.free();
-    if (!r.bin.len) {
-        Object* buffer = r.json.get("buffers")!.get_at(0);
-        @pool() {
-            external_bin = file::load(mem, string::tformat("%s%s", r.dir, buffer.get_string("uri")!))!;
-        };
-        r.bin = external_bin;
-    }
-
     GltfModel* model = mem::new(GltfModel);
     model.materials.allocator = mem;
     model.meshes.allocator = mem;
     r.model = model;
-    if (try mats = child(r.json, "materials")) {
-        for (sz i = 0; i < mats.get_len(); i++) model.materials.push(r.material(mats.get_at(i))!);
-    }
-    if (try meshes = child(r.json, "meshes")) {
-        for (sz i = 0; i < meshes.get_len(); i++) {
-            r.geometries.push(mem::new_array(BufferGeometry*, meshes.get_at(i).get("primitives")!.get_len()));
-        }
+    for (usz i = 0; i < data.materials_count; i++) model.materials.push(r.material(&data.materials[i])!);
+    for (usz i = 0; i < data.meshes_count; i++) {
+        r.geometries.push(mem::new_array(BufferGeometry*, (sz)data.meshes[i].primitives_count));
     }
     defer {
         foreach (g : r.geometries) mem::free(g.ptr);
@@ -392,8 +378,14 @@ fn GltfModel*? load_gltf(String path) {
     }
 
     model.scene = drie::group();
-    Object* scenes = r.json.get("scenes")!;
-    Object* nodes  = scenes.get_at((sz)num(r.json, "scene", 0)).get("nodes")!;
-    for (sz i = 0; i < nodes.get_len(); i++) model.scene.add(r.node(nodes.get_int_at(i)!)!);
+    CgltfScene* scene = data.scene ?: (data.scenes_count ? &data.scenes[0] : null);
+    if (scene) {
+        for (usz i = 0; i < scene.nodes_count; i++) model.scene.add(r.node(scene.nodes[i])!);
+    } else {
+        // (no scenes: the nodes at the top of the hierarchy)
+        for (usz i = 0; i < data.nodes_count; i++) {
+            if (!data.nodes[i].parent) model.scene.add(r.node(&data.nodes[i])!);
+        }
+    }
     return model;
 }
