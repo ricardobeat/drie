@@ -93,7 +93,9 @@ function attributeVersions(geometry) {
 	let v = geometry.index ? geometry.index.version : 0;
 	let count = 0;
 	for (const name in geometry.attributes) {
-		v += geometry.attributes[name].version;
+		const a = geometry.attributes[name];
+		// (an interleaved attribute has no version of its own: its buffer's)
+		v += a.isInterleavedBufferAttribute ? a.data.version : a.version;
 		count++;
 	}
 	return v + count * 1e9;
