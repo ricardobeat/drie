@@ -3,8 +3,8 @@
 //   scene.add(model.scene);
 // Supported: node hierarchy, triangle meshes (positions, normals, uvs, vertex colors),
 // metallic-roughness materials with base color / normal / occlusion-roughness-metal textures,
-// alpha modes, double sided materials, and the transmission / volume / ior / dispersion
-// extensions (see Material.transmission). Not supported: skins, animations, cameras, sparse
+// occlusion textures, alpha modes, double sided materials, and the transmission / volume / ior /
+// dispersion / specular extensions (see Material.transmission and specular_color). Not supported: skins, animations, cameras, sparse
 // accessors.
 module drie::loaders;
 import std::io, std::math, std::encoding::json, std::collections::object, std::collections::list;
@@ -150,7 +150,19 @@ fn Material*? GltfReader.material(&self, Object* m) {
         mat.roughness = num(pbr, "roughnessFactor", 1);
         mat.metalness = num(pbr, "metallicFactor", 1);
         if (try t = child(pbr, "baseColorTexture")) mat.map = self.texture(t, SRGB_COLOR_SPACE)!;
+        // roughness in green, metalness in blue, and (without an occlusionTexture) ambient
+        // occlusion in red: an arm map, as house's models pack it
         if (try t = child(pbr, "metallicRoughnessTexture")) mat.arm_map = self.texture(t, NO_COLOR_SPACE)!;
+    }
+    if (try t = child(m, "occlusionTexture")) {
+        // its own ambient occlusion: the other map gives only roughness and metalness
+        if (mat.arm_map) {
+            mat.roughness_map = mat.arm_map;
+            mat.metalness_map = mat.arm_map;
+            mat.arm_map = null;
+        }
+        mat.ao_map = self.texture(t, NO_COLOR_SPACE)!;
+        mat.ao_intensity = num(t, "strength", 1);
     }
     if (try t = child(m, "normalTexture")) {
         mat.normal_map = self.texture(t, NO_COLOR_SPACE)!;
@@ -169,9 +181,11 @@ fn Material*? GltfReader.material(&self, Object* m) {
         // transmission, and what the light does as it crosses the volume
         if (try t = child(ext, "KHR_materials_transmission")) {
             mat.transmission = num(t, "transmissionFactor", 0);
+            if (try tt = child(t, "transmissionTexture")) mat.transmission_map = self.texture(tt, NO_COLOR_SPACE)!;
         }
         if (try vol = child(ext, "KHR_materials_volume")) {
             mat.thickness = num(vol, "thicknessFactor", 0);
+            if (try tt = child(vol, "thicknessTexture")) mat.thickness_map = self.texture(tt, NO_COLOR_SPACE)!;
             mat.attenuation_distance = num(vol, "attenuationDistance", 0);
             if (try c = child(vol, "attenuationColor")) {
                 mat.attenuation_color = linear_color(
@@ -182,6 +196,15 @@ fn Material*? GltfReader.material(&self, Object* m) {
             }
         }
         if (try ior = child(ext, "KHR_materials_ior")) mat.ior = num(ior, "ior", 1.5f);
+        // the strength and color of its reflections where it isn't metal
+        if (try sp = child(ext, "KHR_materials_specular")) {
+            mat.specular_intensity = num(sp, "specularFactor", 1);
+            if (try c = child(sp, "specularColorFactor")) {
+                mat.specular_color = { (float)c.get_float_at(0)!, (float)c.get_float_at(1)!, (float)c.get_float_at(2)! };
+            }
+            if (try tt = child(sp, "specularTexture")) mat.specular_intensity_map = self.texture(tt, NO_COLOR_SPACE)!;
+            if (try tt = child(sp, "specularColorTexture")) mat.specular_color_map = self.texture(tt, SRGB_COLOR_SPACE)!;
+        }
         if (try d = child(ext, "KHR_materials_dispersion")) mat.dispersion = num(d, "dispersion", 0);
     }
     return mat;

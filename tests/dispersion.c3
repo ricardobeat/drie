@@ -3,10 +3,10 @@
 // what the sphere refracts. Columns: dispersion off, and on: each color channel is bent by its
 // own index of refraction, so the stripes' edges fringe with rainbow colors.
 // 
-//   just test dispersion [out.ppm]
+//   just test dispersion [out.png] [--p3]   (tests/build/dispersion.png)
 module dispersion_test;
-import drie, sokol, drie::readback;
-import std::io, std::math, std::io::file;
+import drie, sokol, drie::readback, drie::png;
+import std::io, std::math;
 
 const int W     = 480;
 const int H     = 270;
@@ -69,10 +69,19 @@ fn void render_column(int mode) {
 }
 
 fn int main(String[] args) {
-    String out_path = args.len > 1 ? args[1] : "dispersion.ppm";
+    String out_path = "tests/build/dispersion.png";
+    bool p3;
+    foreach (arg : args[1..]) {
+        if (arg == "--p3") {
+            p3 = true;
+        } else {
+            out_path = arg;
+        }
+    }
     renderer = drie::renderer(antialias: false, width: W, height: H);
     renderer.init_headless();
     renderer.tone_mapping = NEUTRAL_TONE_MAPPING;
+    renderer.output_color_space = p3 ? DISPLAY_P3_COLOR_SPACE : SRGB_COLOR_SPACE;
     build_scene();
     camera = drie::perspective_camera(45, (float)W / H, 0.01f, 30);
     camera.position.set(0, 0.2f, 1.7f);
@@ -95,14 +104,10 @@ fn int main(String[] args) {
             }
         }
     }
-    File? f = file::open(out_path, "wb");
-    if (catch err = f) {
+    if (!png::write(out_path, sheet, sheet_w, H, p3: p3, channels: 3)) {
         io::printfn("could not write %s", out_path);
         return 1;
     }
-    defer (void)f.close();
-    (void)f.write(string::tformat("P6\n%d %d\n255\n", sheet_w, H));
-    (void)f.write(sheet);
     io::printfn("saved %s: dispersion off, on", out_path);
     return 0;
 }

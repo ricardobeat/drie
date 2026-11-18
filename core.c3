@@ -374,6 +374,13 @@ struct Scene {
     // falling on it from all around and its reflections, times environment_intensity.
     Texture* environment;
     float environment_intensity;
+    // Like three's scene.background when it is an equirectangular texture: the map drawn
+    // behind everything (in place of `background`'s color), blurred by background_blurriness
+    // (0..1, as three's backgroundBlurriness) and times background_intensity. It shows
+    // through transmission materials too.
+    Texture* background_texture;
+    float background_blurriness;
+    float background_intensity;
     // Like three's matrixWorldAutoUpdate: render() refreshes every object's world matrix first.
     // Switch it off for a second render of an unchanged scene in the same frame (update
     // whatever did move yourself).
@@ -384,6 +391,7 @@ fn Scene* scene() {
     Scene* s = mem::new(Scene);
     s.init(SCENE);
     s.environment_intensity = 1;
+    s.background_intensity = 1;
     return s;
 }
 

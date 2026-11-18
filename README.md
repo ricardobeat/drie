@@ -66,11 +66,11 @@ three.js API coverage:
 
 | Area | Status | What's implemented |
 | --- | --- | --- |
-| Scene & Cameras | ✅ | `Object3D`, `Group`, `Scene`, `PerspectiveCamera`, `OrthographicCamera` |
+| Scene & Cameras | ✅ | `Object3D`, `Group`, `Scene` (background color or equirectangular texture with `backgroundBlurriness`, `environment`), `PerspectiveCamera`, `OrthographicCamera` |
 | Meshes & LOD | ✅ | `Mesh`, `InstancedMesh`, `Lod` |
 | Lines | ✅ | `Line`, `LineSegments`, `LineLoop`, `LineBasic` and `LineDashed` materials |
 | Geometry | ✅ | `box`, `plane`, `sphere`, `cylinder`, `cone`, `torus`, `lathe`, `buffer_geometry`, `merge` |
-| Materials | ✅ | `MeshBasic`, `MeshLambert`, `MeshPhong`, `MeshStandard`, `MeshNormal`, parallax mapping (`parallaxUV`), shader hooks (`onBeforeCompile`) |
+| Materials | ✅ | `MeshBasic`, `MeshLambert`, `MeshPhong`, `MeshStandard`, `MeshNormal`, `MeshPhysical`'s transmission, volume, IOR, dispersion and specular (no clearcoat, sheen, iridescence), parallax mapping (`parallaxUV`), shader hooks (`onBeforeCompile`) |
 | Textures | ✅ | `load_texture` (PNG/JPEG), `data_texture`, `canvas_texture`, mipmaps, anisotropy |
 | Lights | ✅ | `AmbientLight`, `HemisphereLight`, `DirectionalLight`, `PointLight`, `SpotLight` |
 | Lighting addons | ✅ | Clustered forward lighting (`ClusteredLighting`), irradiance volume (`LightProbeGrid`) |
@@ -134,7 +134,7 @@ Features not in three.js:
 - **Parallax occlusion mapping:** `material.parallax_map` with shadowing from the first directional light.
 - **Foliage & wind sway:** `material.foliage` enables two-sided wrapped lighting for alpha-tested foliage, animated with `sway`, `sway_speed`, and `renderer.time`.
 - **Glass & viewer silhouette:** `material.glass` preserves reflections regardless of opacity; `material.reflect_viewer` darkens glass reflections with a soft silhouette at the camera.
-- **Transmission & dispersion:** `material.transmission` shows what stands behind a surface, refracted through `thickness` meters of it at `ior`; `dispersion` bends each color channel by its own index of refraction, fringing edges with rainbow colors, and `attenuation_color` / `attenuation_distance` tint the light as it crosses (Beer's law).
+- **Transmission & dispersion:** `material.transmission` shows what stands behind a surface, refracted through `thickness` meters of it at `ior` and blurred by its roughness; `dispersion` bends each color channel by its own index of refraction, fringing edges with rainbow colors, and `attenuation_color` / `attenuation_distance` tint the light as it crosses (Beer's law). `specular_color` / `specular_intensity` tint and scale what a dielectric reflects (KHR_materials_specular).
 - **Additive blending & draw order:** `material.blending = ADDITIVE_BLENDING` for transparent materials and `object.render_order` for explicit draw order, as in three.js.
 - **World-space box UVs:** `geometry.box_project_uv(tiles_per_unit)` generates box-projected UVs.
 
@@ -145,7 +145,7 @@ Features not in three.js:
 | --- | --- | --- |
 | Parallax | `material.parallax_map`, `parallax_scale`, `parallax_distance`, `parallax_shadow` | Shadowing uses the first directional light |
 | Foliage | `material.foliage`, `material.sway`, `sway_speed`, `renderer.time`, `renderer.auto_time` | `auto_time` drives `sway` animation |
-| Transmission & dispersion | `material.transmission`, `thickness` (m), `ior`, `dispersion`, `attenuation_color`, `attenuation_distance` | Costs a second pass over the opaque scene; loaded from `KHR_materials_transmission` / `_volume` / `_ior` / `_dispersion`; `just test dispersion` |
+| Transmission & dispersion | `material.transmission` (+ `transmission_map`), `thickness` (m, + `thickness_map`), `ior`, `dispersion`, `attenuation_color`, `attenuation_distance`, `specular_color` / `specular_intensity` (+ maps) | Costs a second pass over the opaque scene and its mip levels (for rough glass); loaded from `KHR_materials_transmission` / `_volume` / `_ior` / `_dispersion` / `_specular`; `just test dispersion`, `just test transmission` |
 
 </details>
 

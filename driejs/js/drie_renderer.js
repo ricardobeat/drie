@@ -11,13 +11,18 @@
 // light's shadow, as drie's one sun shadow of a single box (its shadow.camera's half width).
 // InstancedMesh's matrices, SkinnedMesh (three poses the skeleton, drie moves the vertices),
 // Line, LineSegments and LineLoop (a pixel wide, as in WebGL) with LineBasicMaterial and
-// LineDashedMaterial, and scene.environment from js/pmrem.js's PMREMGenerator.
+// LineDashedMaterial, scene.environment from js/pmrem.js's PMREMGenerator or an
+// equirectangular texture, scene.background as an equirectangular texture (with
+// backgroundBlurriness and backgroundIntensity), and the maps of MeshStandardMaterial and
+// MeshPhysicalMaterial: normal, roughness, metalness and ao maps, and the physical material's
+// transmission (with its maps), volume, ior, dispersion and specular color and intensity (with
+// theirs).
 //
-// Not mirrored yet: changes to a material's textures or flags without `needsUpdate`, geometry
-// groups and draw ranges, points, sprites, morph targets, spot and point light shadows,
-// aoMap, lightMap, normal, roughness and metalness maps, an emissiveMap that isn't the map,
-// render targets and post-processing.
-import { Color, Matrix4 } from "../vendor/three.core.js";
+// Not mirrored yet: changes to a material's flags without `needsUpdate`, geometry groups and
+// draw ranges, points, sprites, morph targets, spot and point light shadows, lightMap, an
+// emissiveMap that isn't the map, clearcoat, sheen, iridescence and anisotropy, render targets
+// and post-processing.
+import { Color, EquirectangularReflectionMapping, EquirectangularRefractionMapping, Matrix4 } from "../vendor/three.core.js";
 import { setCanvas } from "./dom.js";
 
 const N = globalThis.__drie;
@@ -202,7 +207,9 @@ export class DrieRenderer {
 			if (scene.__drieBackground !== hex) N.background(sceneId, (scene.__drieBackground = hex));
 		}
 		this._fog(scene, sceneId);
-		const env = scene.environment?.__drieEnvironment ?? -1;
+		this._background(scene, sceneId);
+		const environment = scene.environment;
+		const env = environment ? (environment.__drieEnvironment ?? this._texture(environment)) : -1;
 		const envIntensity = scene.environmentIntensity ?? 1;
 		if (scene.__drieEnvironment !== env || scene.__drieEnvironmentIntensity !== envIntensity) {
 			scene.__drieEnvironment = env;
@@ -464,17 +471,50 @@ export class DrieRenderer {
 		return geometry.__drie;
 	}
 
+	// scene.background as an equirectangular texture (a color: see render()).
+	_background(scene, sceneId) {
+		const background = scene.background;
+		// (a PMREMGenerator's texture is drie's capture of a scene)
+		const texture = background && background.isTexture ? (background.__drieEnvironment ?? this._texture(background)) : -1;
+		const key = texture < 0 ? -1 : `${texture} ${scene.backgroundBlurriness} ${scene.backgroundIntensity}`;
+		if (scene.__drieBackgroundTexture === key) return;
+		scene.__drieBackgroundTexture = key;
+		N.backgroundTexture(sceneId, texture, scene.backgroundBlurriness ?? 0, scene.backgroundIntensity ?? 1);
+	}
+
 	// An image drie loads from its file (`path`) or decodes from memory (`data`, from a Blob,
-	// as GLTFLoader makes them).
+	// as GLTFLoader makes them), or a DataTexture of half floats or floats (an HDR image, as
+	// UltraHDRLoader and HDRLoader make them).
 	_texture(texture) {
 		const image = texture?.image;
 		const source = image ? (image.data ?? image.path) : undefined;
 		if (source === undefined) return -1;
 		if (texture.__drie !== undefined && texture.__drieVersion === texture.version) return texture.__drie;
-		texture.__drie = N.texture(source, texture.colorSpace === "srgb", texture.wrapS, texture.wrapT,
-			texture.anisotropy, texture.repeat.x, texture.repeat.y, texture.offset.x, texture.offset.y, texture.flipY);
+		// (three's equirectangular maps have the sky at v = 1, drie's at v = 0: flipped the other way)
+		const equirect = texture.mapping === EquirectangularReflectionMapping || texture.mapping === EquirectangularRefractionMapping;
+		const flipY = equirect ? !texture.flipY : texture.flipY;
+		if (texture.isDataTexture && (source instanceof Uint16Array || source instanceof Float32Array)) {
+			if (!image.width || !image.height) return -1;
+			texture.__drie = N.floatTexture(source, image.width, image.height, flipY);
+		} else {
+			texture.__drie = N.texture(source, texture.colorSpace === "srgb", texture.wrapS, texture.wrapT,
+				texture.anisotropy, texture.repeat.x, texture.repeat.y, texture.offset.x, texture.offset.y, flipY);
+		}
 		texture.__drieVersion = texture.version;
 		return texture.__drie;
+	}
+
+	// The maps besides `map`, sent when one of them changes.
+	_maps(material) {
+		const maps = [this._texture(material.normalMap), material.normalScale ? material.normalScale.x : 1,
+			this._texture(material.roughnessMap), this._texture(material.metalnessMap), this._texture(material.aoMap),
+			material.aoMapIntensity ?? 1, this._texture(material.specularColorMap),
+			this._texture(material.specularIntensityMap), this._texture(material.transmissionMap),
+			this._texture(material.thicknessMap)];
+		const key = maps.join(" ");
+		if (material.__drieMaps === key) return;
+		material.__drieMaps = key;
+		N.materialMaps(material.__drie, ...maps);
 	}
 
 	_material(material, frame) {
@@ -484,8 +524,10 @@ export class DrieRenderer {
 		const map = this._texture(material.map);
 		if (material.__drie !== undefined && material.__drieVersion === material.version && material.__drieMap === map) {
 			this._materialValues(material);
+			this._maps(material);
 			return material.__drie;
 		}
+		const sc = material.specularColor;
 		const [color, colorScale] = material.color ? scaledColor(material.color) : [0xffffff, 1];
 		const e = material.emissiveMap;
 		const mapEmissive = !!(e && material.map && (e === material.map || e.source === material.map.source));
@@ -496,12 +538,15 @@ export class DrieRenderer {
 			material.alphaTest, colorScale, mapEmissive, material.emissiveIntensity ?? 1,
 			material.transmission ?? 0, material.thickness ?? 0, material.ior ?? 1.5, material.dispersion ?? 0,
 			material.attenuationColor ? material.attenuationColor.getHex() : 0xffffff,
-			Number.isFinite(material.attenuationDistance) ? material.attenuationDistance : 0);
+			Number.isFinite(material.attenuationDistance) ? material.attenuationDistance : 0,
+			sc ? sc.r : 1, sc ? sc.g : 1, sc ? sc.b : 1, material.specularIntensity ?? 1);
 		material.__drieVersion = material.version;
 		material.__drieMap = map;
 		material.__drieValues = null;
 		material.__drieDash = undefined;
+		material.__drieMaps = undefined;
 		this._materialValues(material);
+		this._maps(material);
 		return material.__drie;
 	}
 
@@ -520,24 +565,26 @@ export class DrieRenderer {
 		const s = material.specular;
 		const a = material.attenuationColor;
 		const ad = Number.isFinite(material.attenuationDistance) ? material.attenuationDistance : 0;
+		const sc = material.specularColor;
 		const v = material.__drieValues;
 		if (v !== null && v !== undefined && (!c || (v[0] === c.r && v[1] === c.g && v[2] === c.b))
 			&& (!e || (v[3] === e.r && v[4] === e.g && v[5] === e.b)) && (!s || (v[6] === s.r && v[7] === s.g && v[8] === s.b))
 			&& v[9] === material.opacity && v[10] === material.shininess && v[11] === material.roughness
 			&& v[12] === material.metalness && v[13] === material.transmission && v[14] === material.thickness
 			&& v[15] === material.ior && v[16] === material.dispersion && (!a || v[17] === a.getHex())
-			&& v[18] === ad) {
+			&& v[18] === ad && (!sc || (v[19] === sc.r && v[20] === sc.g && v[21] === sc.b))
+			&& v[22] === material.specularIntensity) {
 			return;
 		}
 		material.__drieValues = [c?.r, c?.g, c?.b, e?.r, e?.g, e?.b, s?.r, s?.g, s?.b, material.opacity, material.shininess,
 			material.roughness, material.metalness, material.transmission, material.thickness, material.ior,
-			material.dispersion, a?.getHex(), ad];
+			material.dispersion, a?.getHex(), ad, sc?.r, sc?.g, sc?.b, material.specularIntensity];
 		if (v === null) return;
 		const [color, colorScale] = c ? scaledColor(c) : [0xffffff, 1];
 		N.materialUpdate(material.__drie, color, e ? e.getHex() : 0, s ? s.getHex() : 0x111111,
 			material.shininess ?? 30, material.roughness ?? 1, material.metalness ?? 0, material.opacity, colorScale,
 			material.transmission ?? 0, material.thickness ?? 0, material.ior ?? 1.5, material.dispersion ?? 0,
-			a ? a.getHex() : 0xffffff, ad);
+			a ? a.getHex() : 0xffffff, ad, sc ? sc.r : 1, sc ? sc.g : 1, sc ? sc.b : 1, material.specularIntensity ?? 1);
 	}
 
 	_project(camera) {

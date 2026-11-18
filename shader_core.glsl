@@ -226,7 +226,12 @@ layout(binding=20) uniform texture2D ssr_back;    // r = the nearest back face's
 layout(binding=23) uniform texture2DArray tex_probes; // the scene's reflection probes (reflection_probes.c3)
 layout(binding=24) uniform texture2D tex_parallax; // Material.parallax_map: the surface's height, 1 = top
 layout(binding=19) uniform texture2D fog_volume; // volumetric fog: the froxel grid (fog.c3, fog_cs in kernels.glsl)
-layout(binding=25) uniform texture2D tex_transmission; // the scene behind the transmission materials
+layout(binding=25) uniform texture2D tex_transmission; // the scene behind the transmission materials, with mip levels
+layout(binding=26) uniform texture2D tex_ao;          // Material.ao_map: r = ambient occlusion
+layout(binding=27) uniform texture2D tex_specular_color;     // Material.specular_color_map: rgb
+layout(binding=28) uniform texture2D tex_specular_intensity; // Material.specular_intensity_map: a
+layout(binding=29) uniform texture2D tex_transmission_map;   // Material.transmission_map: r
+layout(binding=30) uniform texture2D tex_thickness;   // Material.thickness_map: g
 layout(binding=0) uniform sampler tex_smp;
 layout(binding=1) uniform sampler shadow_smp;
 layout(binding=2) uniform sampler env_smp;
@@ -240,7 +245,8 @@ layout(binding=1) uniform fs_params {
     vec4 specular;     // phong specular color, w = flags (1: vertex colors, 2: foliage, 4: receive shadow, 8: glass,
                        //   16: vertex colors are baked light (emissive.w = strength), 32: screen-space map)
     vec4 mat_params;   // x = mode, y = roughness, z = metalness, w = shininess
-    vec4 tex_params;   // x = has map, y = normal map scale (0 = none), z = has arm map, w = alpha test
+    vec4 tex_params;   // x = has map, y = normal map scale (0 = none), z = what tex_arm holds (1: ambient
+                       //   occlusion in r, 2: roughness in g, 4: metalness in b), w = alpha test
     vec4 env_params;   // x = has environment map, y = intensity, z = 1: the scene's environment
                        // lights the diffuse part too (env_sh), w = meters that alpha 1 of the
                        // map stands for (0: it holds no distances)
@@ -309,6 +315,11 @@ layout(binding=1) uniform fs_params {
                                //   w = attenuation distance (m; 0: the volume does not tint)
     vec4 transmission_color;   // linear rgb = the color the volume tints light toward, a = how much
                                //   of what is behind shows through (0: off)
+    vec4 specular_params;      // Material.specular_color (linear rgb) and specular_intensity (a)
+    vec4 ext_params;           // x = the maps it has (1: ao, 2: specular color, 4: specular intensity,
+                               //   8: transmission, 16: thickness, 32: it is the scene's background),
+                               //   y = ao_intensity, z = the object's scale (for the thickness),
+                               //   w = the width of tex_transmission (pixels)
 };
 
 // Lights live in storage buffers, as many as there are. Point and spot lights are sorted into
@@ -424,6 +435,8 @@ int flags() { return int(specular.w + 0.5); }
 vec4 g_base;      // rgb = albedo, a = alpha
 float g_rough;
 float g_metal;
+vec3 g_f0;        // a standard material's reflectance head on, and at a grazing angle
+float g_f90;      //   (from ior, specular_color and specular_intensity; set after the maps)
 float g_radius;   // source radius of the light being evaluated
 vec3 g_dpdx;      // how the world position changes from one pixel to the next (taken where
 vec3 g_dpdy;      // the flow is uniform, for the shadows' tap counts)
@@ -463,9 +476,9 @@ vec3 direct(int mode, vec3 n, vec3 v, vec3 l, float dist, vec3 radiance, vec3 di
         // a light with a size gives a wider, dimmer highlight (Karis' sphere light normalization)
         float a_wide = clamp(a + g_radius / (2.0 * max(dist, 1e-3)), 0.0, 1.0);
         float norm = a / a_wide;
-        vec3 f0 = mix(vec3(0.04), g_base.rgb, g_metal);
         float nov = clamp(abs(dot(n, v)), 1e-4, 1.0);
-        spec += irradiance * f_schlick(f0, voh) * v_smith(nov, nol, a_wide) * d_ggx(noh, a_wide) * norm * norm;
+        vec3 fresnel = g_f0 + (vec3(g_f90) - g_f0) * pow(1.0 - voh, 5.0);
+        spec += irradiance * fresnel * v_smith(nov, nol, a_wide) * d_ggx(noh, a_wide) * norm * norm;
     }
     return result;
 }
@@ -1204,47 +1217,100 @@ vec3 env_reflection(vec3 d, float rough, vec3 facing) {
     return result;
 }
 
-// One channel of the light that comes through a transmission material: a ray bent by `ior`,
-// followed through `thickness` meters of the volume, projected onto the transmission picture
-// (three's getIBLVolumeRefraction). It is tinted per channel (Beer's law), which is what makes
-// dispersion visible: each channel is bent by a slightly different IOR.
-float transmission_ray(
-    vec3 n, vec3 v, vec3 world_pos, float rough, float ior, float thickness,
-    float attenuation_distance, float attenuation, int channel
-) {
-    vec3 ray = refract(-v, n, 1.0 / ior);
-    // total internal reflection: nothing of what is behind the surface comes through
-    if (dot(ray, ray) < 1e-4) return 0.0;
-    vec3 exit = world_pos + normalize(ray) * thickness;
+// three's bicubic filter for the transmission picture (transmission_pars_fragment): four
+// bilinear taps, weighted, for a smooth picture at the blurrier mip levels.
+float bicubic_w0(float a) { return (1.0 / 6.0) * (a * (a * (-a + 3.0) - 3.0) + 1.0); }
+float bicubic_w1(float a) { return (1.0 / 6.0) * (a * a * (3.0 * a - 6.0) + 4.0); }
+float bicubic_w2(float a) { return (1.0 / 6.0) * (a * (a * (-3.0 * a + 3.0) + 3.0) + 1.0); }
+float bicubic_w3(float a) { return (1.0 / 6.0) * (a * a * a); }
+
+vec4 transmission_bicubic(vec2 uv, float lod) {
+    vec2 size = vec2(textureSize(sampler2D(tex_transmission, transmission_smp), int(lod)));
+    vec2 texel = 1.0 / size;
+    uv = uv * size + 0.5;
+    vec2 iuv = floor(uv);
+    vec2 f = fract(uv);
+    float g0x = bicubic_w0(f.x) + bicubic_w1(f.x);
+    float g1x = bicubic_w2(f.x) + bicubic_w3(f.x);
+    float h0x = -1.0 + bicubic_w1(f.x) / g0x;
+    float h1x = 1.0 + bicubic_w3(f.x) / g1x;
+    float g0y = bicubic_w0(f.y) + bicubic_w1(f.y);
+    float g1y = bicubic_w2(f.y) + bicubic_w3(f.y);
+    float h0y = -1.0 + bicubic_w1(f.y) / g0y;
+    float h1y = 1.0 + bicubic_w3(f.y) / g1y;
+    vec2 p0 = (vec2(iuv.x + h0x, iuv.y + h0y) - 0.5) * texel;
+    vec2 p1 = (vec2(iuv.x + h1x, iuv.y + h0y) - 0.5) * texel;
+    vec2 p2 = (vec2(iuv.x + h0x, iuv.y + h1y) - 0.5) * texel;
+    vec2 p3 = (vec2(iuv.x + h1x, iuv.y + h1y) - 0.5) * texel;
+    return g0y * (g0x * textureLod(sampler2D(tex_transmission, transmission_smp), p0, lod)
+                + g1x * textureLod(sampler2D(tex_transmission, transmission_smp), p1, lod))
+         + g1y * (g0x * textureLod(sampler2D(tex_transmission, transmission_smp), p2, lod)
+                + g1x * textureLod(sampler2D(tex_transmission, transmission_smp), p3, lod));
+}
+
+// What is behind the surface where a ray leaves it at `exit`: the transmission picture there,
+// blurred by the roughness (three's getTransmissionSample: a rough surface scatters the rays,
+// the more the more it bends them).
+vec3 transmission_sample(vec3 exit, float rough, float ior) {
     vec4 clip = cluster_view_proj * vec4(exit, 1.0);
     vec2 uv = (clip.xy / max(abs(clip.w), 1e-5)) * 0.5 + 0.5;
     // (the picture's row 0 is its top where the target's is, as for the reflection source)
     if (ssr_params.w > 0.5) uv.y = 1.0 - uv.y;
-    // a rough surface scatters the refracted rays: a few taps stand in for three's mip level
-    vec2 texel = screen_params.xy * (1.0 + 8.0 * rough);
-    vec4 c = texture(sampler2D(tex_transmission, transmission_smp), uv) * 0.5;
-    c += texture(sampler2D(tex_transmission, transmission_smp), uv + vec2(texel.x, texel.y)) * 0.25;
-    c += texture(sampler2D(tex_transmission, transmission_smp), uv - vec2(texel.x, texel.y)) * 0.25;
-    float s = channel == 0 ? c.r : (channel == 1 ? c.g : c.b);
-    if (attenuation_distance > 0.0) {
-        s *= exp(-max(-log(max(attenuation, 1e-4)), 1e-4) * thickness / attenuation_distance);
-    }
-    return s;
+    float top = float(textureQueryLevels(sampler2D(tex_transmission, transmission_smp)) - 1);
+    float lod = clamp(log2(max(ext_params.w, 1.0)) * rough * clamp(ior * 2.0 - 2.0, 0.0, 1.0), 0.0, top);
+    vec3 fine = transmission_bicubic(uv, floor(lod)).rgb;
+    if (fract(lod) == 0.0) return fine;
+    return mix(fine, transmission_bicubic(uv, min(ceil(lod), top)).rgb, fract(lod));
 }
 
-// The light from behind a transmission material, split into its channels: each is bent with its
-// own IOR (`dispersion` spreads them), so edges fringe with rainbow colors.
-vec3 refracted_light(vec3 n, vec3 v, vec3 world_pos, float rough) {
+// The ray bent by `ior` as it enters, through `thickness` meters of the volume (times the
+// object's scale): three's getVolumeTransmissionRay.
+vec3 transmission_ray(vec3 n, vec3 v, float thickness, float ior) {
+    vec3 ray = refract(-v, n, 1.0 / ior);
+    // total internal reflection: no way through
+    if (dot(ray, ray) < 1e-8) return vec3(0.0);
+    return normalize(ray) * thickness * ext_params.z;
+}
+
+// Beer's law over `distance` meters (transmission_params.w: attenuation distance; 0: none).
+vec3 volume_attenuation(float distance) {
+    if (transmission_params.w <= 0.0) return vec3(1.0);
+    vec3 coefficient = -log(max(transmission_color.rgb, vec3(1e-4))) / transmission_params.w;
+    return exp(-coefficient * distance);
+}
+
+// three's EnvironmentBRDF: how much of the light a surface reflects, all directions taken
+// together (Karis' fit of the split-sum integral).
+vec3 environment_brdf(vec3 n, vec3 v, vec3 f0, float f90, float rough) {
+    float nov = clamp(dot(n, v), 0.0, 1.0);
+    vec4 r = rough * vec4(-1.0, -0.0275, -0.572, 0.022) + vec4(1.0, 0.0425, 1.04, -0.04);
+    float a004 = min(r.x * r.x, exp2(-9.28 * nov)) * r.x + r.y;
+    vec2 fab = vec2(-1.04, 1.04) * a004 + r.zw;
+    return f0 * fab.x + f90 * fab.y;
+}
+
+// The light that comes through a transmission material from behind (three's
+// getIBLVolumeRefraction): bent through the volume, tinted by the surface's color and the
+// volume's, less what the surface reflects. With dispersion each channel is bent by its own
+// IOR, so edges fringe with rainbow colors.
+vec3 refracted_light(vec3 n, vec3 v, vec3 world_pos, float rough, vec3 diffuse_color, float thickness) {
     float ior = transmission_params.x > 0.0 ? transmission_params.x : 1.5;
-    float thickness = max(transmission_params.y, 0.0);
     float spread = (ior - 1.0) * 0.025 * transmission_params.z;
-    vec3 iors = vec3(ior - spread, ior, ior + spread);
-    vec3 att = max(transmission_color.rgb, vec3(1e-4));
-    return vec3(
-        transmission_ray(n, v, world_pos, rough, iors.x, thickness, transmission_params.w, att.r, 0),
-        transmission_ray(n, v, world_pos, rough, iors.y, thickness, transmission_params.w, att.g, 1),
-        transmission_ray(n, v, world_pos, rough, iors.z, thickness, transmission_params.w, att.b, 2)
-    );
+    vec3 light;
+    vec3 transmittance;
+    if (spread > 0.0) {
+        vec3 iors = vec3(ior - spread, ior, ior + spread);
+        for (int i = 0; i < 3; i++) {
+            vec3 ray = transmission_ray(n, v, thickness, iors[i]);
+            light[i] = transmission_sample(world_pos + ray, rough, iors[i])[i];
+            transmittance[i] = diffuse_color[i] * volume_attenuation(length(ray))[i];
+        }
+    } else {
+        vec3 ray = transmission_ray(n, v, thickness, ior);
+        light = transmission_sample(world_pos + ray, rough, ior);
+        transmittance = diffuse_color * volume_attenuation(length(ray));
+    }
+    return (1.0 - environment_brdf(n, v, g_f0, g_f90, rough)) * transmittance * light;
 }
 
 void main() {
@@ -1339,14 +1405,35 @@ void main() {
     g_rough = mat_params.y;
     g_metal = mat_params.z;
     float ao = 1.0;
-    if (tex_params.z > 0.5) {
+    int arm_bits = int(tex_params.z + 0.5);
+    if (arm_bits != 0) {
         vec3 arm = textureGrad(sampler2D(tex_arm, tex_smp), g_uv, g_duvdx, g_duvdy).rgb;  // (parallax: g_uv)
-        ao = arm.r;
-        g_rough *= arm.g;
-        g_metal *= arm.b;
+        if ((arm_bits & 1) != 0) ao = arm.r;
+        if ((arm_bits & 2) != 0) g_rough *= arm.g;
+        if ((arm_bits & 4) != 0) g_metal *= arm.b;
+    }
+    int ext_bits = int(ext_params.x + 0.5);
+    if ((ext_bits & 1) != 0) {
+        // three's aoMap and aoMapIntensity
+        float occlusion = textureGrad(sampler2D(tex_ao, tex_smp), g_uv, g_duvdx, g_duvdy).r;
+        ao *= 1.0 + (occlusion - 1.0) * ext_params.y;
     }
 
     if (mode != 0) surface_hook(geo_n, g_base, g_rough, g_metal);
+    // what it reflects head on: 4% for glass's IOR of 1.5, tinted and scaled by the specular
+    // color and intensity (KHR_materials_specular); metals reflect their own color
+    g_f0 = mix(vec3(0.04), g_base.rgb, g_metal);
+    g_f90 = 1.0;
+    if (mode == 3) {
+        float ior = transmission_params.x > 0.0 ? transmission_params.x : 1.5;
+        float r0 = (ior - 1.0) / (ior + 1.0);
+        vec3 tint = specular_params.rgb;
+        float strength = specular_params.a;
+        if ((ext_bits & 2) != 0) tint *= textureGrad(sampler2D(tex_specular_color, tex_smp), g_uv, g_duvdx, g_duvdy).rgb;
+        if ((ext_bits & 4) != 0) strength *= textureGrad(sampler2D(tex_specular_intensity, tex_smp), g_uv, g_duvdx, g_duvdy).a;
+        g_f0 = mix(min(vec3(r0 * r0) * tint, vec3(1.0)) * strength, g_base.rgb, g_metal);
+        g_f90 = mix(strength, 1.0, g_metal);
+    }
 #ifdef MRT
     frag_indirect.ba = vec2(g_rough, g_metal);
 #endif
@@ -1362,6 +1449,16 @@ void main() {
 
     if (mode == 0) {
         outc = g_base.rgb;
+        if ((ext_bits & 32) != 0) {
+            // the scene's background (Scene.background_texture): its map in the direction of the
+            // view, blurred about as three's PMREM blurs it for backgroundBlurriness (a gaussian
+            // about `blurriness` radians wide)
+            vec3 d = normalize(v_world_pos - camera_pos.xyz);
+            float width = float(textureSize(sampler2D(tex_env, env_smp), 0).x);
+            float lod = g_rough > 0.0 ? max(log2(width * g_rough / PI), 0.0) : 0.0;
+            g_env_layer = -1.0;
+            outc = env_texel(env_uv(d), lod).rgb * env_params.y;
+        }
     } else if (mode == 4) {
         // MeshNormalMaterial: output normal as color (bypasses color management, like three)
         frag_color = vec4(n * 0.5 + 0.5, color.a);
@@ -1458,11 +1555,11 @@ void main() {
     } else {
         vec3 env_term = vec3(0.0);
         vec3 mirror_term = vec3(0.0);
-        if (env_params.x > 0.5 && mode != 1) {
+        // (not the background: it is the surroundings)
+        if (env_params.x > 0.5 && mode != 1 && (ext_bits & 32) == 0) {
             // reflections of the surroundings, fading as the surface gets rougher
             float nov = clamp(dot(n, v), 0.0, 1.0);
-            vec3 f0 = mix(vec3(0.04), g_base.rgb, g_metal);
-            vec3 fr = f0 + (max(vec3(1.0 - g_rough), f0) - f0) * pow(1.0 - nov, 5.0);
+            vec3 fr = g_f0 + (max(vec3((1.0 - g_rough) * g_f90), g_f0) - g_f0) * pow(1.0 - nov, 5.0);
             vec3 r = reflect(-v, n);
             vec3 env = env_reflection(r, g_rough, n);
             reflection_hook(r, env);
@@ -1504,12 +1601,13 @@ void main() {
         // transmission (Material.transmission): what is behind the surface, refracted through
         // the volume, takes the place of its diffuse light; highlights and reflections stay
         if (mode == 3 && transmission_color.a > 0.0) {
-            float nov = clamp(dot(n, v), 0.0, 1.0);
-            vec3 f0 = mix(vec3(0.04), g_base.rgb, g_metal);
-            vec3 fresnel = f0 + (max(vec3(1.0 - g_rough), f0) - f0) * pow(1.0 - nov, 5.0);
-            vec3 refracted = refracted_light(n, v, v_world_pos, g_rough) * (1.0 - fresnel);
+            float amount = transmission_color.a;
+            if ((ext_bits & 8) != 0) amount *= textureGrad(sampler2D(tex_transmission_map, tex_smp), g_uv, g_duvdx, g_duvdy).r;
+            float thickness = max(transmission_params.y, 0.0);
+            if ((ext_bits & 16) != 0) thickness *= textureGrad(sampler2D(tex_thickness, tex_smp), g_uv, g_duvdx, g_duvdy).g;
+            vec3 refracted = refracted_light(n, v, v_world_pos, g_rough, g_base.rgb * (1.0 - g_metal), thickness);
             vec3 highlights = spec + env_term + mirror_term;
-            outc = mix(max(outc - highlights, vec3(0.0)), refracted, transmission_color.a) + highlights;
+            outc = mix(max(outc - highlights, vec3(0.0)), refracted, amount) + highlights;
         }
     }
 
