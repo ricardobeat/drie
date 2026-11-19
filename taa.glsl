@@ -4,6 +4,12 @@
 // history has that the new frame's neighbourhood does not (a thing that moved away, a light
 // that went off) is clipped to the neighbourhood's spread of colors (variance clipping, in
 // YCoCg), and the history is read with a Catmull-Rom filter so it stays sharp.
+//
+// The picture can be larger than the frames rendered (temporal upscaling, as in UE's TAAU or
+// FSR 2): each of its pixels is then made from the rendered pixels around it, weighted by how
+// near what each shows (the camera was shifted) lies to its middle, and the frame's share of
+// the average is as large as the nearest of them is near. Over the frames, the shifts put a
+// sample near every pixel of the picture.
 // Regenerate generated/taa.c3 with: just shaders
 @header module drie::postprocessing;
 @header import drie;
@@ -27,7 +33,9 @@ layout(binding=0) uniform sampler taa_smp;          // linear, clamped
 layout(binding=1) uniform sampler taa_point_smp;    // nearest
 layout(binding=0) uniform taa_params {
     vec4 size;   // xy = picture size, z = 1: no history (start over), w = share of the new frame
-    vec4 tune;   // x = variance clip width (in standard deviations)
+    vec4 tune;   // x = variance clip width (in standard deviations), y = 1: upscaling
+    vec4 source; // xy = the rendered frame's size, zw = the camera's shift in its pixels (along its
+                 //   rows and columns: rendered pixel i shows what lies at i + 0.5 - zw)
 };
 
 out vec4 frag_color;
@@ -68,29 +76,51 @@ vec4 history_at(vec2 uv) {
 }
 
 void main() {
-    ivec2 px = ivec2(gl_FragCoord.xy);
-    ivec2 top = ivec2(size.xy) - 1;
-    vec4 cur = texelFetch(sampler2D(taa_current, taa_point_smp), px, 0);
+    vec2 uv = gl_FragCoord.xy / size.xy;
+    ivec2 top = ivec2(source.xy) - 1;
+    bool up = tune.y > 0.5;
+    // this pixel's middle in the rendered frame's pixels, and the rendered pixel nearest it
+    vec2 q = uv * source.xy;
+    ivec2 base = up ? ivec2(floor(q + source.zw)) : ivec2(gl_FragCoord.xy);
+    // the neighbourhood's colors (mean and spread), and the longest motion in it: an edge
+    // that moves takes its motion along to the pixels just outside it; upscaling, also the
+    // pixel's color from the samples, weighted by how near they lie (in the picture's pixels)
+    vec3 m1 = vec3(0.0);
+    vec3 m2 = vec3(0.0);
+    vec2 vel = vec2(0.0);
+    vec4 rec = vec4(0.0);
+    float wsum = 0.0;
+    vec2 scale = size.xy / source.xy;
+    for (int y = -1; y <= 1; y++) {
+        for (int x = -1; x <= 1; x++) {
+            ivec2 at = base + ivec2(x, y);
+            ivec2 qq = clamp(at, ivec2(0), top);
+            vec4 s = texelFetch(sampler2D(taa_current, taa_point_smp), qq, 0);
+            vec3 c = to_ycocg(squash(s.rgb));
+            m1 += c;
+            m2 += c * c;
+            vec2 v = texelFetch(sampler2D(taa_velocity, taa_point_smp), qq, 0).xy;
+            if (dot(v, v) > dot(vel, vel)) vel = v;
+            if (up) {
+                vec2 d = (vec2(at) + 0.5 - source.zw - q) * scale;
+                float w = exp(-1.5 * dot(d, d));
+                rec += vec4(c, s.a) * w;
+                wsum += w;
+            }
+        }
+    }
+    vec4 cur;
+    if (up) {
+        rec /= max(wsum, 1e-6);
+        cur = vec4(unsquash(clamp(from_ycocg(rec.rgb), 0.0, 0.999)), rec.a);
+    } else {
+        cur = texelFetch(sampler2D(taa_current, taa_point_smp), base, 0);
+    }
     if (size.z > 0.5) {
         frag_color = cur;
         return;
     }
-    // the neighbourhood's colors (mean and spread), and the longest motion in it: an edge
-    // that moves takes its motion along to the pixels just outside it
-    vec3 m1 = vec3(0.0);
-    vec3 m2 = vec3(0.0);
-    vec2 vel = vec2(0.0);
-    for (int y = -1; y <= 1; y++) {
-        for (int x = -1; x <= 1; x++) {
-            ivec2 q = clamp(px + ivec2(x, y), ivec2(0), top);
-            vec3 c = to_ycocg(squash(texelFetch(sampler2D(taa_current, taa_point_smp), q, 0).rgb));
-            m1 += c;
-            m2 += c * c;
-            vec2 v = texelFetch(sampler2D(taa_velocity, taa_point_smp), q, 0).xy;
-            if (dot(v, v) > dot(vel, vel)) vel = v;
-        }
-    }
-    vec2 was = gl_FragCoord.xy / size.xy - vel;
+    vec2 was = uv - vel;
     if (any(lessThan(was, vec2(0.0))) || any(greaterThan(was, vec2(1.0)))) {
         frag_color = cur;
         return;
@@ -104,7 +134,10 @@ void main() {
     float k = max(ratio.x, max(ratio.y, ratio.z));
     if (k > 1.0) hist = mean + d / k;
     vec3 c = to_ycocg(squash(cur.rgb));
-    vec3 blended = mix(hist, c, size.w);
+    // upscaling: a frame whose samples all lie far from this pixel's middle counts for less
+    // (but never for nothing: what the history lost has to come back)
+    float share = up ? size.w * mix(0.2, 1.0, clamp(wsum, 0.0, 1.0)) : size.w;
+    vec3 blended = mix(hist, c, share);
     frag_color = vec4(unsquash(clamp(from_ycocg(blended), 0.0, 0.999)), cur.a);
 }
 @end

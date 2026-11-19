@@ -714,8 +714,16 @@ fn void gtao_pass_render(
 //   renderer.set_render_target(scene_rt); renderer.render(scene, camera);
 //   taa.render(scene_rt);
 //   output.set_source(taa.texture());
+//
+// With `width` and `height` larger than the target's, the picture is that large: temporal
+// upscaling (as UE's TAAU and FSR 2 do), which gets most of a picture rendered at that size out
+// of frames rendered at the target's. More shifts (`jitter_samples`) then put a sample near every
+// pixel of it: about 8 times the ratio of the two sizes' pixels.
 struct TAAPass {
     inline Pass pass;
+    // the picture's size (0: the target's)
+    int width;
+    int height;
     // the share of each new frame in the average: less is smoother and slower to follow
     float blend;
     // how far the history may stray from the new frame's neighbourhood, in standard
@@ -725,6 +733,8 @@ struct TAAPass {
     int jitter_samples;
     // start over with the next frame (after a cut, or when the camera jumps)
     bool reset;
+    // the camera's shift for the frame being rendered (jitter()), in its pixels
+    Vector2 shift;
     PingPong history;
     ShaderPass resolve;
     int frame;
@@ -759,10 +769,12 @@ fn float halton(int i, int base) {
     return r;
 }
 
-// Shifts the camera for the next frame (Halton 2, 3: within half a pixel of the middle).
-fn void TAAPass.jitter(&self, Camera* camera) {
-    int i = self.frame % self.jitter_samples + 1;
-    camera.jitter = { halton(i, 2) - 0.5f, halton(i, 3) - 0.5f };
+// Shifts the camera for the next frame (Halton 2, 3: within half a pixel of the middle); `on`
+// false leaves it where it is (and the picture is made as from frames that were not shifted).
+fn void TAAPass.jitter(&self, Camera* camera, bool on = true) {
+    int i = self.frame % (self.jitter_samples > 0 ? self.jitter_samples : 1) + 1;
+    self.shift = on ? (Vector2) { halton(i, 2) - 0.5f, halton(i, 3) - 0.5f } : (Vector2) { 0, 0 };
+    camera.jitter = self.shift;
 }
 
 // Blends what `target` (rendered with MRT, with the jittered camera) shows now into the history.
@@ -770,19 +782,26 @@ fn void TAAPass.jitter(&self, Camera* camera) {
 // after a pass of its own (a stochastic depth of field, whose noise the average evens out).
 fn void TAAPass.render(&self, RenderTarget* target, SgView color = {}) {
     if (!target.mrt) abort("drie: TAAPass needs a target with MRT (for its motion vectors)");
-    if (!self.history.targets[0]) self.history = ping_pong(target.width, target.height, RGBA16F);
-    RenderTarget* h = self.history.read();
-    if (h.width != target.width || h.height != target.height) {
-        self.history.set_size(target.width, target.height);
+    int w = self.width > 0 ? self.width : target.width;
+    int h = self.height > 0 ? self.height : target.height;
+    if (!self.history.targets[0]) self.history = ping_pong(w, h, RGBA16F);
+    RenderTarget* last = self.history.read();
+    if (last.width != w || last.height != h) {
+        self.history.set_size(w, h);
         self.reset = true;
     }
+    bool up = w != target.width || h != target.height;
+    // the shift along the target's rows and columns: the camera's is in clip space, whose y runs
+    // up, and row 0 is the top but in GL
+    Vector2 shift = { self.shift.x, drie::depth_zero_to_one() ? -self.shift.y : self.shift.y };
     ShaderPass* r = &self.resolve;
     r.set_texture(VIEW_TAA_CURRENT, color.id ? color : target.texture);
     r.set_texture(VIEW_TAA_HISTORY, self.history.read().texture);
     r.set_texture(VIEW_TAA_VELOCITY, target.velocity_texture);
     TaaParams p = {
-        .size = { target.width, target.height, self.reset ? 1 : 0, self.blend },
-        .tune = { self.clip_width, 0, 0, 0 },
+        .size = { w, h, self.reset ? 1 : 0, self.blend },
+        .tune = { self.clip_width, up ? 1 : 0, 0, 0 },
+        .source = { target.width, target.height, shift.x, shift.y },
     };
     r.set_uniforms(UB_TAA_PARAMS, &p);
     r.render(self.history.write());
