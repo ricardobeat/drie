@@ -360,6 +360,21 @@ struct Renderer {
     // Extension: tint what each cascade of the directional light's shadow covers (red, green,
     // blue, yellow, nearest first), to see where they fall.
     bool debug_cascades;
+    // Extensions, for graphics settings (quality against frame time; 1 and the defaults are as
+    // drie draws without them):
+    // every light's shadow map is drawn at this many times its shadow.map_size (texels across);
+    float shadow_map_scale;
+    // the soft shadows take this many times their taps (smoother edges, less noise to average
+    // out over frames), up to 40 per lookup;
+    float shadow_sample_scale;
+    // a screen-space reflection's ray takes at most ssr_steps steps (up to 128), none longer
+    // than ssr_max_step pixels on the screen (shorter misses less of what is thin, reaches less
+    // far in as many steps). Default 40 and 6;
+    int ssr_steps;
+    float ssr_max_step;
+    // the volumetric fog's grid has this many times its cells across, up and in depth
+    // (Fog.resolution, Fog.slices).
+    float fog_resolution_scale;
     // What materials with `ssr` reflect (see set_reflection_source).
     SgView ssr_color;
     SgView ssr_depth;
@@ -724,6 +739,11 @@ fn Renderer* renderer(bool antialias = true, int width = 800, int height = 600, 
         .depth_prepass_pixels = 1.5f,
         .max_lights = DEFAULT_MAX_LIGHTS,
         .shadow_atlas_capacity = DEFAULT_SHADOW_ATLAS_CAPACITY,
+        .shadow_map_scale = 1,
+        .shadow_sample_scale = 1,
+        .ssr_steps = 40,
+        .ssr_max_step = 6,
+        .fog_resolution_scale = 1,
     };
     state.renderer = r;
     state.opaque.allocator = mem;
@@ -1204,6 +1224,13 @@ fn void clear_atlas_tile() @local {
     sg::apply_pipeline(get_shadow_pipeline());
 }
 
+// The size a light's shadow map is drawn at: its shadow.map_size times
+// Renderer.shadow_map_scale.
+fn int shadow_map_size(int map_size) @local {
+    float scale = state.renderer.shadow_map_scale > 0 ? state.renderer.shadow_map_scale : 1;
+    return math::clamp((int)(map_size * scale + 0.5f), 4, 16384);
+}
+
 fn void ensure_shadow_map(int size) @local {
     if (state.shadow_size == size) return;
     if (state.shadow_size) {
@@ -1431,7 +1458,7 @@ fn void update_shadow_atlas(Scene* scene, Camera* camera, bool bake = false) @lo
         SpotLight* sl = (SpotLight*)l;
         if ((sl.shadow.auto_update && !bake) || state.atlas_pending.len() >= MAX_ATLAS_TILES) continue;
         state.atlas_pending.push(sl);
-        tile = math::max(tile, sl.shadow.map_size);
+        tile = math::max(tile, shadow_map_size(sl.shadow.map_size));
     }
     int statics = (int)state.atlas_pending.len();
     if (bake) statics = keep;
@@ -1439,7 +1466,7 @@ fn void update_shadow_atlas(Scene* scene, Camera* camera, bool bake = false) @lo
         if (l.light_type != DIRECTIONAL || !l.cast_shadow || !l.visible || l.intensity <= 0) continue;
         if (l == state.sun_caster || state.atlas_pending.len() >= MAX_ATLAS_TILES) continue;
         state.atlas_pending.push(l);
-        tile = math::max(tile, ((DirectionalLight*)l).shadow.map_size);
+        tile = math::max(tile, shadow_map_size(((DirectionalLight*)l).shadow.map_size));
     }
     int count = (int)state.atlas_pending.len();
     int wanted;
@@ -1684,7 +1711,7 @@ fn Mat4 directional_shadow_view_proj(DirectionalLight* d, Camera* camera, int si
         Vector3 ahead = { -cw[2][0], 0, -cw[2][2] };
         if (ahead.length() > 1e-4f) center = at + ahead.normalize() * (extent * 0.55f);
     }
-    return sun_box_view_proj(d, dir, center, extent, size ?: d.shadow.map_size);
+    return sun_box_view_proj(d, dir, center, extent, size ?: shadow_map_size(d.shadow.map_size));
 }
 
 // View-projection of a box of parallel rays towards `dir`, `radius` meters around `center`,
@@ -1730,7 +1757,7 @@ fn int fit_sun_cascades(DirectionalLight* d, Camera* camera, Vector3 dir) @local
     Vector3 at = cw.get_position();
     Vector3 fwd = ((Vector3) { -cw[2][0], -cw[2][1], -cw[2][2] }).normalize();
     state.sun_forward = fwd;
-    int tile   = math::max(d.shadow.map_size, 4);
+    int tile   = shadow_map_size(d.shadow.map_size);
     float from = near;
     for (int i = 0; i < n; i++) {
         float f      = (float)(i + 1) / (float)n;
@@ -1758,7 +1785,7 @@ fn void prepare_sun_shadow(Scene* scene, Camera* camera, DirectionalLight* sun) 
     }
     Vector3 target = sun.target ? sun.target.get_world_position() : (Vector3) { 0, 0, 0 };
     Vector3 dir    = (sun.matrix_world.get_position() - target).normalize();
-    int tile       = math::max(sun.shadow.map_size, 4);
+    int tile       = shadow_map_size(sun.shadow.map_size);
     int n          = fit_sun_cascades(sun, camera, dir);
     state.sun_cascades = n;
     if (!n) {
@@ -1777,7 +1804,7 @@ fn void prepare_sun_shadow(Scene* scene, Camera* camera, DirectionalLight* sun) 
 fn void draw_sun_shadow(DirectionalLight* sun) @local {
     if (!sun) return;
     int n         = state.sun_cascades;
-    int tile      = math::max(sun.shadow.map_size, 4);
+    int tile      = shadow_map_size(sun.shadow.map_size);
     bool top_left = depth_zero_to_one();
     profile::begin_pass(
         &&{ // depth is not stored by default: ask for it, the main pass samples this map
@@ -2570,6 +2597,7 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     fs.ssr_view_proj = r.ssr_view_proj;
     fs.ssr_params = { ssr ? mat.ssr : 0, r.ssr_reach, (float)(r.ssr_frame % 64), depth_zero_to_one() ? 1 : 0 };
     fs.ssr_thickness = { ssr && r.ssr_back.id ? 1 : 0, mat.ssr_reach > 0 ? mat.ssr_reach : r.ssr_reach, 0, 0 };
+    fs.quality_params = { r.shadow_sample_scale, r.ssr_steps, r.ssr_max_step, 0 };
     if (mirror) {
         fs.reflector_view_proj = mirror.view_proj;
         fs.reflector_params = { mirror.strength, mirror.distortion, mirror.blur, 0 };
@@ -3000,7 +3028,7 @@ fn SpotLight* prepare_and_draw_shadows(Scene* scene, Camera* camera, bool bake =
     SpotLight* caster = bake ? null : shadow_light();
     // without a caster keep whatever map there is: renders that switch shadows off (a portal
     // view, say) must not reallocate it every frame
-    ensure_shadow_map(caster ? caster.shadow.map_size : (state.shadow_size ?: 4));
+    ensure_shadow_map(caster ? shadow_map_size(caster.shadow.map_size) : (state.shadow_size ?: 4));
     Mat4 caster_vp;
     bool shadows = state.renderer.shadow_map_auto_update || bake;
     if (shadows) state.spot_casters.clear();
@@ -3163,7 +3191,8 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera) {
             rt ? rt.width : sapp::width(),
             rt ? rt.height : sapp::height(),
             views,
-            self.time
+            self.time,
+            self.fog_resolution_scale
         );
     }
     profile::stop("render: volumetric fog", pt);

@@ -83,7 +83,8 @@ struct FogShadowViews @private {
 
 // Marches the fog of `scene` for `camera` into its grid, a picture of width x height pixels.
 // `p` holds the render's lights and shadows (build_light_params); the grid's layout goes into
-// it for the lit shader. Returns the grid's texture.
+// it for the lit shader. `resolution_scale` multiplies the grid's cells and slices. Returns the
+// grid's texture.
 fn SgView update_fog_volume(
     Scene* scene,
     Camera* camera,
@@ -91,17 +92,20 @@ fn SgView update_fog_volume(
     int width,
     int height,
     FogShadowViews views,
-    float time
+    float time,
+    float resolution_scale = 1
 ) @private {
     Fog* f = scene.fog;
     if (!fog_pass.shader.id) {
         fog_pass.shader = sg::make_shader(&&shaders::fog_shader_desc(sg::query_backend()));
         fog_pass.pipeline = sg::make_pipeline(&&{ .compute = true, .shader = fog_pass.shader, .label = "drie-fog" });
     }
-    float res    = f.resolution > 0 ? math::min(f.resolution, 1.0f) : 0.125f;
+    // (Renderer.fog_resolution_scale: finer or coarser all round)
+    float q      = resolution_scale > 0 ? resolution_scale : 1;
+    float res    = math::min((f.resolution > 0 ? f.resolution : 0.125f) * q, 1.0f);
     int cx       = math::max((int)math::ceil((float)width * res), 1);
     int cy       = math::max((int)math::ceil((float)height * res), 1);
-    int slices   = math::min(math::max(f.slices > 0 ? f.slices : 96, 2), 256);
+    int slices   = math::min(math::max((int)((f.slices > 0 ? f.slices : 96) * q + 0.5f), 2), 256);
     FogVolume* v = fog_volume_for(cx, cy, slices);
 
     Mat4 cw        = camera.matrix_world;
