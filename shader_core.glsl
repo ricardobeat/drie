@@ -1889,7 +1889,13 @@ void main() {
             if (has_map(MAP_SHEEN_ROUGHNESS)) g_sheen_rough *= material_map(MAP_SHEEN_ROUGHNESS).a;
         }
     }
-    if (mode != 0) surface_hook(geo_n, g_base, g_rough, g_metal);
+    if (mode != 0) {
+        // (the hook's opacity counts too, as its contract says: a water's edge fading out by
+        // the depth behind it, say)
+        float before = g_base.a;
+        surface_hook(geo_n, g_base, g_rough, g_metal);
+        if (before > 0.0) alpha *= clamp(g_base.a / before, 0.0, 1.0);
+    }
     // what it reflects head on: 4% for glass's IOR of 1.5, tinted and scaled by the specular
     // color and intensity (KHR_materials_specular); metals reflect their own color
     g_f0 = mix(vec3(0.04), g_base.rgb, g_metal);
