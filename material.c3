@@ -221,6 +221,11 @@ struct Material {
     // For the application's own shader hooks (Renderer.shaders, see shader.glsl), which read
     // them as `material_custom[0]` and `[1]`. The engine's own shader ignores them.
     Vec4[2] custom;
+    // And a texture for them: a hook reads it with custom_map_texel(uv, dx, dy), at a uv of its
+    // own (world meters, say) and its change from one pixel to the next. It takes the
+    // material's sampler, its first map's (map, normal_map, arm_map, then the others), and so
+    // that one's wrapping.
+    Texture* custom_map;
 }
 
 // A copy of the material to change on its own (like three's Material.clone). Textures are
