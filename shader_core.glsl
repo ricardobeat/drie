@@ -687,8 +687,12 @@ float g_parallax_depth; // the depth after the distance fade (m)
 vec3 direct(int mode, vec3 n, vec3 v, vec3 l, float dist, vec3 radiance, vec3 diffuse_color, inout vec3 spec) {
     bool foliage = (flags() & 2) != 0;
     float ndl = dot(n, l);
-    // thin leaves and blades: light wraps around and shines through
-    float nol = foliage ? 0.35 + 0.65 * abs(ndl) : clamp(ndl, 0.0, 1.0);
+    // thin leaves and blades, lit from either side: on the side the light falls on, as any
+    // surface, with a little of it wrapping round; from the other, what shines through them,
+    // about half of it (a lamp by the eye lights only the faces it sees, and a blade turned
+    // edge-on to it stays dark)
+    float through = dot(n, v) * ndl < 0.0 ? 0.5 : 1.0;
+    float nol = foliage ? through * (0.1 + 0.9 * abs(ndl)) : clamp(ndl, 0.0, 1.0);
     vec3 irradiance = nol * radiance;
     vec3 h = normalize(l + v);
     if (mode == 3) {
