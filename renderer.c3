@@ -903,7 +903,14 @@ alias EventFilter = fn bool(Event* e);
 fn void add_frame_hook(FrameHook hook) => state.frame_hooks.push(hook);
 
 // Gives every window event to `filter` first: when it returns true, the event is used up.
-fn void add_event_filter(EventFilter filter) => state.event_filters.push(filter);
+// `first`: ahead of the filters added before it (the menus', say), not after them.
+fn void add_event_filter(EventFilter filter, bool first = false) {
+    if (first) {
+        state.event_filters.insert_at(0, filter);
+    } else {
+        state.event_filters.push(filter);
+    }
+}
 
 // Draws `overlay` over the picture whenever a frame goes into the window (render() to the
 // window, postprocessing's end_screen(), or draw_overlays() in a pass of the application's).
