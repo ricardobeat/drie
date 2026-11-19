@@ -703,6 +703,125 @@ fn void gtao_pass_render(
     self.render(read);
 }
 
+// The glow round what is bright, like three's UnrealBloomPass (strength, radius, threshold),
+// made as Call of Duty's and Unreal's bloom is (see bloom.glsl): the picture (linear light)
+// halved `levels` times, then added back up, each level through a tent filter into the one
+// above, and the result added to the picture. With threshold 0 everything glows a little, by
+// how bright it is, as through a real lens (keep strength low then: 0.02 to 0.1); a threshold
+// makes only what is brighter glow.
+//
+//   UnrealBloomPass* bloom = postprocessing::unreal_bloom_pass(strength: 0.05, threshold: 0);
+//   bloom.render(hdr_target);           // adds the glow to its picture
+struct UnrealBloomPass {
+    inline Pass pass;
+    // how much of the glow is added
+    float strength;
+    // how far it spreads, 0..1: each level, twice as wide as the one above, counts this much
+    // of it (1: all as much)
+    float radius;
+    // the brightness (linear light) above which things glow, and how softly they start to
+    float threshold;
+    float knee;
+    // levels of halving (1..8): more spreads the glow further
+    int levels;
+    RenderTarget*[8] mips;
+    ShaderPass down;
+    ShaderPass up;
+}
+
+fn UnrealBloomPass* unreal_bloom_pass(float strength = 1, float radius = 0.4, float threshold = 0.85, int levels = 6) {
+    UnrealBloomPass* p = mem::new(UnrealBloomPass);
+    *p = {
+        .render_fn = &unreal_bloom_pass_render,
+        .enabled = true,
+        .strength = strength,
+        .radius = radius,
+        .threshold = threshold,
+        .knee = 0.5f,
+        .levels = levels,
+    };
+    p.down.init(bloom_down_shader_desc(sg::query_backend()), "drie-bloom-down");
+    p.up.init(bloom_up_shader_desc(sg::query_backend()), "drie-bloom-up", ADDITIVE_BLEND);
+    p.down.set_sampler(SMP_BLOOM_DOWN_SMP, linear_sampler());
+    p.up.set_sampler(SMP_BLOOM_UP_SMP, linear_sampler());
+    return p;
+}
+
+// Adds the glow of `target`'s picture (linear light) to it.
+fn void UnrealBloomPass.render(&self, RenderTarget* target) {
+    int n = self.levels < 1 ? 1 : (self.levels > 8 ? 8 : self.levels);
+    int w = target.width;
+    int h = target.height;
+    for (int i = 0; i < n; i++) {
+        w = w / 2 > 1 ? w / 2 : 1;
+        h = h / 2 > 1 ? h / 2 : 1;
+        if (!self.mips[i]) self.mips[i] = drie::render_target(w, h, 1, RGBA16F, false);
+        self.mips[i].set_size(w, h, 1);
+    }
+    // down, each level from the one above
+    SgView src = target.texture;
+    int sw = target.width;
+    int sh = target.height;
+    for (int i = 0; i < n; i++) {
+        RenderTarget* m = self.mips[i];
+        BloomDownParams p = {
+            .size = { m.width, m.height, 1.0f / sw, 1.0f / sh },
+            .tune = { i == 0 ? 1 : 0, self.threshold, self.knee, 0 },
+        };
+        self.down.set_texture(VIEW_BLOOM_DOWN_SRC, src);
+        self.down.set_uniforms(UB_BLOOM_DOWN_PARAMS, &p);
+        self.down.render(m);
+        src = m.texture;
+        sw = m.width;
+        sh = m.height;
+    }
+    // up, each level added into the one above it; the levels' weights 1, r, r^2...
+    float r = self.radius < 0 ? 0 : (self.radius > 1 ? 1 : self.radius);
+    float total = 1;
+    float k = 1;
+    for (int i = 1; i < n; i++) {
+        k *= r;
+        total += k;
+    }
+    for (int i = n - 1; i >= 1; i--) {
+        RenderTarget* from = self.mips[i];
+        RenderTarget* into = self.mips[i - 1];
+        BloomUpParams p = {
+            .size = { into.width, into.height, 1.0f / from.width, 1.0f / from.height },
+            .tune = { r, 0, 0, 0 },
+        };
+        self.up.set_texture(VIEW_BLOOM_UP_SRC, from.texture);
+        self.up.set_uniforms(UB_BLOOM_UP_PARAMS, &p);
+        self.up.render_over(into);
+    }
+    RenderTarget* top = self.mips[0];
+    BloomUpParams p = {
+        .size = { target.width, target.height, 1.0f / top.width, 1.0f / top.height },
+        .tune = { self.strength / total, 0, 0, 0 },
+    };
+    self.up.set_texture(VIEW_BLOOM_UP_SRC, top.texture);
+    self.up.set_uniforms(UB_BLOOM_UP_PARAMS, &p);
+    self.up.render_over(target);
+}
+
+fn void UnrealBloomPass.dispose(&self) {
+    self.down.dispose();
+    self.up.dispose();
+    foreach (m : self.mips) if (m) m.dispose();
+}
+
+// In an EffectComposer (RGBA16F): adds the glow to the picture, which the next pass reads.
+fn void unreal_bloom_pass_render(
+    Pass* pass,
+    EffectComposer* composer,
+    RenderTarget* write,
+    RenderTarget* read,
+    float delta
+) @local {
+    UnrealBloomPass* self = (UnrealBloomPass*)pass;
+    self.render(read);
+}
+
 // Temporal antialiasing, like three's TAARenderPass but over time instead of in one frame:
 // the camera is shifted by a fraction of a pixel each frame (jitter()), and render() blends
 // each new frame of a target rendered with MRT into the frames before, found again with the
