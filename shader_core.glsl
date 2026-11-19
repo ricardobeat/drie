@@ -371,7 +371,7 @@ layout(binding=1) uniform fs_params {
     vec4 ext_params;           // x = 32: it is the scene's background, y = ao_intensity, z = the
                                //   object's scale (for the thickness), w = the width of
                                //   tex_transmission (pixels)
-    vec4 map_slots[4];         // which of tex_ext0..5 holds each of the maps (-1: none), by MAP_*
+    vec4 map_slots[5];         // which of tex_ext0..5 holds each of the maps (-1: none), by MAP_*
     vec4 clearcoat_params;     // Material.clearcoat: x = strength (0: none), y = roughness,
                                //   zw = clearcoat_normal_scale
     vec4 sheen_params;         // Material.sheen_color * sheen (linear rgb; 0: none), a = sheen_roughness
@@ -407,6 +407,7 @@ layout(binding=1) uniform fs_params {
 #define MAP_EMISSIVE 13             // rgb
 #define MAP_LIGHT 14                // rgb
 #define MAP_ANISOTROPY 15           // rg = direction, b = strength
+#define MAP_CUSTOM 16               // Material.custom_map, for the application's hooks
 
 // Lights live in storage buffers, as many as there are. Point and spot lights are sorted into
 // a grid of clusters (froxels: tiles of the screen, cut into slices of depth that grow
@@ -1478,6 +1479,19 @@ vec4 ext_texel(int slot) {
     if (slot == 3) return slot_texel(tex_ext3, 5);
     if (slot == 4) return slot_texel(tex_ext4, 6);
     if (slot == 5) return slot_texel(tex_ext5, 7);
+    return vec4(1.0);
+}
+
+// Material.custom_map at uv, for the application's hooks: a uv of the hook's own, and how it
+// changes from one pixel to the next (which picks the mip level); white without one.
+vec4 custom_map_texel(vec2 uv, vec2 dx, vec2 dy) {
+    int slot = int(map_slots[MAP_CUSTOM / 4][MAP_CUSTOM % 4]);
+    if (slot == 0) return textureGrad(sampler2D(tex_ext0, tex_smp), uv, dx, dy);
+    if (slot == 1) return textureGrad(sampler2D(tex_ext1, tex_smp), uv, dx, dy);
+    if (slot == 2) return textureGrad(sampler2D(tex_ext2, tex_smp), uv, dx, dy);
+    if (slot == 3) return textureGrad(sampler2D(tex_ext3, tex_smp), uv, dx, dy);
+    if (slot == 4) return textureGrad(sampler2D(tex_ext4, tex_smp), uv, dx, dy);
+    if (slot == 5) return textureGrad(sampler2D(tex_ext5, tex_smp), uv, dx, dy);
     return vec4(1.0);
 }
 
