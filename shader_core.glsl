@@ -349,6 +349,7 @@ layout(binding=1) uniform fs_params {
     vec4 ssr_params;       // x = this material's screen-space reflections (0: none), y = reach (m),
                            //   z = noise seed, w = 1: the last frame's row 0 is its top
     vec4 ssr_thickness;    // x = 1: ssr_back has the last frame's back faces, y = this material's reach (m)
+    vec4 quality_params;   // x = Renderer.shadow_sample_scale, y = ssr_steps, z = ssr_max_step (px)
     mat4 reflector_view_proj;  // world -> the Reflector's picture's clip space (reflector.c3)
     vec4 reflector_params;     // x = strength (0: no reflector), y = distortion (m), z = blur
     vec4 probe_info;           // x = the scene's reflection probes (0: none; env_params.x = 2: this material uses them)
@@ -892,6 +893,12 @@ float shadow_tap(bool tiled, vec4 rect, float texel, vec2 uv, float z) {
 #endif
 }
 
+// The soft shadows' taps: `base` of them (as many as Renderer.shadow_sample_scale 1 takes),
+// times that scale.
+const int SHADOW_MAX_TAPS = 40;
+float shadow_sample_scale() { return quality_params.x > 0.0 ? quality_params.x : 1.0; }
+int shadow_taps(float base) { return clamp(int(base * shadow_sample_scale() + 0.5), 4, SHADOW_MAX_TAPS); }
+
 // Shadow of spot light `s`, whose map is `si` in spot_shadows. Lights whose map is redrawn
 // every frame have shadow_map to themselves; the ones drawn once share shadow_atlas, a tile each.
 float spot_shadow_of(int s, int si, vec3 n) {
@@ -930,7 +937,7 @@ float spot_shadow_of(int s, int si, vec3 n) {
     // how the depth changes over the map along this surface, so that a wide blur does not
     // run the surface into its own shadow
     vec2 grad = vec2(0.0);
-    int most = 8;
+    int most = shadow_taps(8.0);
     if (soft.x > 0.0) {
         // A source with a size: the edge of a shadow is as wide as the source looks from there
         // past the thing that casts it. Sharp where the two touch, wide far behind. How far the
@@ -938,13 +945,16 @@ float spot_shadow_of(int s, int si, vec3 n) {
         float dr = shadow_distance(c.z, soft);
         float per_m = 1.0 / (abs(soft.w) * dr);
         float search = clamp(soft.x * 1.6 * per_m, r, 0.04);
-        most = 14;
+        most = shadow_taps(14.0);
         // the widest edge the source could make here is under a pixel: no need to look
         if (search > pixel) {
             float found = 0.0;
             float nearest = 0.0;
-            for (int k = 0; k < 7; k++) {
-                float a = float(k) * 1.0472;
+            // the middle and a ring round it
+            int looks = clamp(int(7.0 * shadow_sample_scale() + 0.5), 4, SHADOW_MAX_TAPS);
+            for (int k = 0; k < SHADOW_MAX_TAPS; k++) {
+                if (k >= looks) break;
+                float a = float(k) * 6.2831853 / float(looks - 1);
                 vec2 o = k == 0 ? vec2(0.0) : vec2(cos(a) * ca - sin(a) * sa, cos(a) * sa + sin(a) * ca) * search;
                 if (shadow_tap(tiled, rect, params.z, c.xy + o, c.z) > 0.5) continue;
                 float lo = soft.y;
@@ -966,7 +976,7 @@ float spot_shadow_of(int s, int si, vec3 n) {
     // about three taps per pixel across the blur, at least four (each tap is a bilinear 2x2)
     int taps = clamp(int(ceil(r / pixel * 3.0)), 4, most);
     float sum = 0.0;
-    for (int k = 0; k < 14; k++) {
+    for (int k = 0; k < SHADOW_MAX_TAPS; k++) {
         if (k >= taps) break;
         float a = float(k) * 2.39996;
         float rr = sqrt((float(k) + 0.5) / float(taps)) * r;
@@ -1024,12 +1034,15 @@ float dir_shadow_in(int i, vec3 n, vec3 l) {
     float sa = sin(angle);
     float texel = params.z / dir_cascade_rect[i].z;
     float r = texel * max(params.w / scale, min(params.w, 1.0));
+    int taps = shadow_taps(10.0);
     float sum = 0.0;
-    for (int k = 0; k < 10; k++) {
+    for (int k = 0; k < SHADOW_MAX_TAPS; k++) {
+        if (k >= taps) break;
         float a = float(k) * 2.39996;
-        vec2 o = vec2(cos(a), sin(a)) * (sqrt((float(k) + 0.5) / 10.0) * r);
+        vec2 o = vec2(cos(a), sin(a)) * (sqrt((float(k) + 0.5) / float(taps)) * r);
         sum += sun_tap(i, c.xy + vec2(o.x * ca - o.y * sa, o.x * sa + o.y * ca), c.z);
     }
+    sum *= 10.0 / float(taps);
 #endif
     if (dir_cascade_params.w < 0.5) return sum / 10.0;
     // one box: nothing is shadowed outside of it, fade towards its edge
@@ -1053,12 +1066,15 @@ float dir_tile_shadow(int si, vec3 n, vec3 l) {
     float ca = cos(angle);
     float sa = sin(angle);
     float r = params.z * params.w;
+    int taps = shadow_taps(10.0);
     float sum = 0.0;
-    for (int k = 0; k < 10; k++) {
+    for (int k = 0; k < SHADOW_MAX_TAPS; k++) {
+        if (k >= taps) break;
         float a = float(k) * 2.39996;
-        vec2 o = vec2(cos(a), sin(a)) * (sqrt((float(k) + 0.5) / 10.0) * r);
+        vec2 o = vec2(cos(a), sin(a)) * (sqrt((float(k) + 0.5) / float(taps)) * r);
         sum += shadow_tap(true, rect, params.z, c.xy + vec2(o.x * ca - o.y * sa, o.x * sa + o.y * ca), c.z);
     }
+    sum *= 10.0 / float(taps);
 #endif
     // fade out towards the box's edge
     vec2 edge = min(c.xy, 1.0 - c.xy);
@@ -1235,10 +1251,11 @@ vec3 planar_reflection(vec3 n, vec3 v, float rough, out float found) {
     return sum / 8.0;
 }
 
-// how many steps a reflected ray takes at most, and how far one goes on the screen at most (in
-// pixels of the reflection source)
-const int SSR_STEPS = 40;
-const float SSR_MAX_STEP_PX = 6.0;
+// how many steps a reflected ray takes at most (Renderer.ssr_steps), and how far one goes on
+// the screen at most (Renderer.ssr_max_step, in pixels of the reflection source)
+const int SSR_MAX_STEPS = 128;
+int ssr_steps() { return quality_params.y > 0.0 ? min(int(quality_params.y), SSR_MAX_STEPS) : 40; }
+float ssr_max_step_px() { return quality_params.z > 0.0 ? quality_params.z : 6.0; }
 
 // how much of a rough surface's lobe the ray itself is sent through (the inner part, by
 // chance: the frames add up to it); the rest is blurred from what the ray finds. All of it by
@@ -1284,7 +1301,10 @@ vec3 screen_reflection(vec3 n, vec3 geo_n, vec3 v, float rough, out float found)
     float step_len = 0.06;
     float t = step_len * (0.4 + n2);
     float t_prev = 0.0;
-    for (int i = 0; i < SSR_STEPS; i++) {
+    int steps = ssr_steps();
+    float max_step = ssr_max_step_px();
+    for (int i = 0; i < SSR_MAX_STEPS; i++) {
+        if (i >= steps) break;
         vec3 s = ssr_project(origin + r * t);
         if (s.z < 0.05 || s.x < 0.0 || s.y < 0.0 || s.x > 1.0 || s.y > 1.0) break;
         // behind what the camera saw there: where the ray went in lies between the step before
@@ -1342,7 +1362,7 @@ vec3 screen_reflection(vec3 n, vec3 geo_n, vec3 v, float rough, out float found)
         step_len *= 1.2;
         vec3 next = ssr_project(origin + r * (t + step_len));
         float px = length((next.xy - s.xy) * screen_px);
-        if (next.z > 0.05 && px > SSR_MAX_STEP_PX) step_len *= SSR_MAX_STEP_PX / px;
+        if (next.z > 0.05 && px > max_step) step_len *= max_step / px;
         t += step_len;
         if (t > ssr_thickness.y) break;
     }

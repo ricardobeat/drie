@@ -30,8 +30,8 @@ layout(binding=0) uniform gtao_params {
     vec4 tune;       // x = radius (m), y = intensity (a power), zw = fades out between these
                      //   distances (m; w = 0: never)
     vec4 cam_right;  // the camera's axes in the world (for the normals); cam_right.w = frame
-    vec4 cam_up;
-    vec4 cam_fwd;
+    vec4 cam_up;     // w = slices of the hemisphere (GTAOPass.slices)
+    vec4 cam_fwd;    // w = steps along each side of a slice (GTAOPass.steps)
 };
 
 out vec4 frag_color;
@@ -44,8 +44,9 @@ vec3 unpack_octahedral_normal(vec2 e) {
     return normalize(n);
 }
 
-const int SLICES = 2;
-const int STEPS = 6;
+// (the most of each that the loops go to)
+const int MAX_SLICES = 8;
+const int MAX_STEPS = 24;
 const float PI = 3.14159265;
 const float HALF_PI = 1.5707963;
 
@@ -79,9 +80,11 @@ void main() {
     // (leaves lit from behind face away)
     if (dot(n, v) < 0.0) n = -n;
 
+    int slices = clamp(int(cam_up.w), 1, MAX_SLICES);
+    int steps = clamp(int(cam_fwd.w), 1, MAX_STEPS);
     float radius = tune.x;
     // the radius in pixels
-    float reach = clamp(radius / p.z * view.w * 0.5 / view.y, float(STEPS), 64.0);
+    float reach = clamp(radius / p.z * view.w * 0.5 / view.y, float(steps), 64.0);
     // past 0.385 of the radius, what is in the way counts for less and less
     float falloff_mul = -1.0 / (0.615 * radius);
     float falloff_add = (1.0 - 0.615) / 0.615 + 1.0;
@@ -93,8 +96,9 @@ void main() {
     float jitter = fract(52.9829189 * fract(dot(vec2(px) + frame * 5.588238, vec2(0.06711056, 0.00583715))));
 
     float visibility = 0.0;
-    for (int s = 0; s < SLICES; s++) {
-        float phi = (float(s) + turn) * PI / float(SLICES);
+    for (int s = 0; s < MAX_SLICES; s++) {
+        if (s >= slices) break;
+        float phi = (float(s) + turn) * PI / float(slices);
         vec2 omega = vec2(cos(phi), sin(phi));
         vec3 dir = vec3(omega, 0.0);
         vec3 ortho = dir - dot(dir, v) * v;
@@ -108,8 +112,9 @@ void main() {
         float low1 = cos(an - HALF_PI);
         float h0c = low0;
         float h1c = low1;
-        for (int j = 0; j < STEPS; j++) {
-            float t = (float(j) + jitter) / float(STEPS);
+        for (int j = 0; j < MAX_STEPS; j++) {
+            if (j >= steps) break;
+            float t = (float(j) + jitter) / float(steps);
             ivec2 o = ivec2(round(omega * (1.0 + t * t * (reach - 1.0))));
             vec3 d0 = position_at(px + o) - p;
             vec3 d1 = position_at(px - o) - p;
@@ -129,7 +134,7 @@ void main() {
         float arc1 = (cos_n + 2.0 * h1 * sin_n - cos(2.0 * h1 - an)) * 0.25;
         visibility += proj_len * (arc0 + arc1);
     }
-    visibility = clamp(visibility / float(SLICES), 0.03, 1.0);
+    visibility = clamp(visibility / float(slices), 0.03, 1.0);
     visibility = pow(visibility, tune.y);
     if (tune.w > 0.0) visibility = mix(visibility, 1.0, smoothstep(tune.z, tune.w, p.z));
     frag_color = vec4(visibility, p.z, clamp(dot(n, v), 0.0, 1.0), 1.0);

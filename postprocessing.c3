@@ -615,6 +615,11 @@ struct GTAOPass {
     // for a look where corners darken however they are lit
     float direct_occlusion;
     bool specular_occlusion;
+    // slices of the hemisphere above each pixel (up to 8), and steps along each side of one (up
+    // to 24): more is less noise for the blur and the frames to even out, at the cost of
+    // slices * steps * 2 depth reads a pixel. Default 2 and 6.
+    int slices;
+    int steps;
     RenderTarget* ao_target;
     ShaderPass gtao;
     ShaderPass gtao_ms;
@@ -630,7 +635,9 @@ fn GTAOPass* gtao_pass(Camera* camera) {
         .camera = camera,
         .radius = 0.5,
         .intensity = 1,
-        .specular_occlusion = true
+        .specular_occlusion = true,
+        .slices = 2,
+        .steps = 6
     };
     SgBackend backend = sg::query_backend();
     p.gtao.init(gtao_shader_desc(backend), "drie-gtao");
@@ -667,8 +674,8 @@ fn void GTAOPass.render_occlusion(&self, RenderTarget* target) {
         .view = { 1 / cam.projection_matrix[0][0], 1 / cam.projection_matrix[1][1], target.width, target.height },
         .tune = { self.radius, self.intensity, self.fade_start, self.fade_end },
         .cam_right = { m[0][0], m[0][1], m[0][2], (float)(self.frame % 64) },
-        .cam_up = { m[1][0], m[1][1], m[1][2], 0 },
-        .cam_fwd = { -m[2][0], -m[2][1], -m[2][2], 0 },
+        .cam_up = { m[1][0], m[1][1], m[1][2], self.slices },
+        .cam_fwd = { -m[2][0], -m[2][1], -m[2][2], self.steps },
     };
     self.frame++;
     ShaderPass* g = target.samples > 1 ? &self.gtao_ms : &self.gtao;
