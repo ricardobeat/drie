@@ -2504,11 +2504,13 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     fs.specular = { ...color_to_linear(mat.specular), (float)flags };
     fs.mat_params = { (float)mat.type, mat.roughness, mat.metalness, mat.shininess };
     fs.tex_params = { mat.map ? 1 : 0, mat.normal_map ? 1 : 0, (float)arm_bits, alpha_test };
+    bool parallax = mat.parallax_map && mat.type == STANDARD;
     fs.parallax_params = {
-        mat.parallax_map && mat.type == STANDARD ? mat.parallax_scale : 0,
+        parallax ? mat.parallax_scale : 0,
         mat.parallax_distance > 0 ? mat.parallax_distance : 30,
         mat.parallax_shadow,
-        0
+        // (the depth prepass and the shadows cut out the alpha as one patch: they'd disagree)
+        parallax || mat.alpha_test > 0 ? 0 : mat.hex_tiling
     };
     // a dashed line: its gaps are cut out by the distances along it (see Line.compute_line_distances)
     if (m.is_line() && mat.dash_size > 0 && mat.gap_size > 0) {
