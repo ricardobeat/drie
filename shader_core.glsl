@@ -360,7 +360,8 @@ layout(binding=1) uniform fs_params {
     vec4 material_custom[2];   // for the application's hooks: Material.custom
     vec4 frame_custom[2];      //   and Renderer.custom
     vec4 parallax_params;      // Material.parallax_map: x = depth (m; 0: none), y = distance (m) where
-                               //   it has faded out, z = self-shadowing toward the sun (0..1)
+                               //   it has faded out, z = self-shadowing toward the sun (0..1);
+                               //   w = Material.hex_tiling (0: none)
     vec4 line_dash;            // dashed lines: x = dash length, y = dash + gap, z = scale, w = 1: dashed
     vec4 transmission_params;  // Material.transmission: x = IOR, y = thickness (m), z = dispersion,
                                //   w = attenuation distance (m; 0: the volume does not tint)
@@ -681,6 +682,11 @@ vec3 g_parallax_gu;
 vec3 g_parallax_gv;
 float g_parallax_h;     // the height map where g_uv lands (0..1)
 float g_parallax_depth; // the depth after the distance fade (m)
+// Hex tiling (Material.hex_tiling): the three patches nearest the pixel, as offsets of g_uv
+// where each reads the texture, and how much of each it takes (see hex_setup)
+bool g_hex = false;
+vec2 g_hex_off[3];
+vec3 g_hex_w;
 
 // Direct light contribution, following three.js's (r155+) physically based light units.
 // Returns diffuse in rgb; adds specular to `spec`.
@@ -1342,9 +1348,10 @@ vec3 screen_reflection(vec3 n, vec3 geo_n, vec3 v, float rough, out float found)
     return vec3(0.0);
 }
 
-// A map slot's uv (see uv_rel), and how it changes from one pixel to the next.
-vec2 slot_uv(int slot) {
-    vec3 p = vec3(uv_rel[slot * 2].w > 0.5 ? v_uv1 : g_uv, 1.0);
+// A map slot's uv (see uv_rel), `shift` away from g_uv, and how it changes from one pixel to
+// the next.
+vec2 slot_uv(int slot, vec2 shift) {
+    vec3 p = vec3(uv_rel[slot * 2].w > 0.5 ? v_uv1 : g_uv + shift, 1.0);
     return vec2(dot(uv_rel[slot * 2].xyz, p), dot(uv_rel[slot * 2 + 1].xyz, p));
 }
 
@@ -1352,7 +1359,60 @@ vec2 slot_d(int slot, vec2 d) { return vec2(dot(uv_rel[slot * 2].xy, d), dot(uv_
 vec2 slot_dx(int slot) { return slot_d(slot, uv_rel[slot * 2].w > 0.5 ? g_duv1dx : g_duvdx); }
 vec2 slot_dy(int slot) { return slot_d(slot, uv_rel[slot * 2].w > 0.5 ? g_duv1dy : g_duvdy); }
 
-#define slot_texel(tex, slot) textureGrad(sampler2D(tex, tex_smp), slot_uv(slot), slot_dx(slot), slot_dy(slot))
+#define slot_texel_at(tex, slot, shift) textureGrad(sampler2D(tex, tex_smp), slot_uv(slot, shift), slot_dx(slot), slot_dy(slot))
+// (hex tiled: the three patches, with the color map's weights; not a map in the second uv set,
+// a light map's, say, which is laid out once over the surface)
+#define slot_texel(tex, slot) ((g_hex && uv_rel[(slot) * 2].w < 0.5) \
+    ? g_hex_w.x * slot_texel_at(tex, slot, g_hex_off[0]) + g_hex_w.y * slot_texel_at(tex, slot, g_hex_off[1]) \
+        + g_hex_w.z * slot_texel_at(tex, slot, g_hex_off[2]) \
+    : slot_texel_at(tex, slot, vec2(0.0)))
+
+// Hex tiling (Material.hex_tiling; Mikkelsen, "Practical Real-Time Hex-Tiling", JCGT 11(2),
+// 2022): the uv plane cut into hexagons `size` across, each reading the texture from its own
+// random place, so that a texture repeated over a wall doesn't show its repeats. The hexagons'
+// middles make a grid of triangles; a pixel takes the three corners of the one it is in,
+// weighted by how near it is to each, sharpened (the 7th power) so that a patch is mostly
+// itself and only blends into the next near their seam. Moved, not turned: what runs down the
+// texture still runs down, and the normal map's directions stay as they are.
+// (Dave Hoskins' hash22: no sin, whose precision goes far from 0, as a uv in world meters does)
+vec2 hex_hash(vec2 v) {
+    vec3 p = fract(v.xyx * vec3(0.1031, 0.1030, 0.0973));
+    p += dot(p, p.yzx + 33.33);
+    return fract((p.xx + p.yz) * p.zy);
+}
+
+void hex_setup(vec2 uv, float size) {
+    vec2 st = uv / size;
+    // the grid skewed so that its triangles are halves of unit squares
+    vec2 skewed = vec2(st.x - 0.57735027 * st.y, 1.15470054 * st.y);
+    vec2 cell = floor(skewed);
+    vec3 f = vec3(fract(skewed), 0.0);
+    f.z = 1.0 - f.x - f.y;
+    // the square's upper triangle (1) or lower (0), and the barycentric weights in it
+    float s = step(0.0, -f.z);
+    float s2 = 2.0 * s - 1.0;
+    vec3 w = vec3(-f.z * s2, s - f.y * s2, s - f.x * s2);
+    g_hex_off[0] = hex_hash(cell + vec2(s, s));
+    g_hex_off[1] = hex_hash(cell + vec2(s, 1.0 - s));
+    g_hex_off[2] = hex_hash(cell + vec2(1.0 - s, s));
+    vec3 w3 = w * w * w;
+    w = w3 * w3 * w;
+    g_hex_w = w / (w.x + w.y + w.z);
+    g_hex = true;
+}
+
+// The color map, hex tiled: where two patches meet, the brighter of them shows more (the
+// paper's luminance weighting, 0.6 of it), so the seam follows the texture's own dark marks
+// instead of fading one into the other; the other maps take the same weights.
+vec4 hex_color(vec2 uv, vec2 dx, vec2 dy) {
+    vec4 c0 = textureGrad(sampler2D(tex_map, tex_smp), uv + g_hex_off[0], dx, dy);
+    vec4 c1 = textureGrad(sampler2D(tex_map, tex_smp), uv + g_hex_off[1], dx, dy);
+    vec4 c2 = textureGrad(sampler2D(tex_map, tex_smp), uv + g_hex_off[2], dx, dy);
+    const vec3 luma = vec3(0.2126, 0.7152, 0.0722);
+    vec3 w = g_hex_w * mix(vec3(1.0), vec3(dot(c0.rgb, luma), dot(c1.rgb, luma), dot(c2.rgb, luma)), 0.6);
+    g_hex_w = w / max(w.x + w.y + w.z, 1e-6);
+    return g_hex_w.x * c0 + g_hex_w.y * c1 + g_hex_w.z * c2;
+}
 
 // The surface's tangent frame (three's tbn) around the normal n (facing the viewer): the
 // tangent t, along which the uv's u grows, and the bitangent b. From the vertex tangents where
@@ -1793,8 +1853,11 @@ void main() {
         float pd = length(pv);
         parallax_offset(pn, pv / max(pd, 1e-5), pd);
     }
+    // Material.hex_tiling
+    if (parallax_params.w > 0.0) hex_setup(g_uv, parallax_params.w);
     if (tex_params.x > 0.5) {
-        vec4 texel = textureGrad(sampler2D(tex_map, tex_smp), g_uv, g_duvdx, g_duvdy);  // (parallax: g_uv)
+        vec4 texel = g_hex ? hex_color(g_uv, g_duvdx, g_duvdy)
+                           : textureGrad(sampler2D(tex_map, tex_smp), g_uv, g_duvdx, g_duvdy);  // (parallax: g_uv)
         g_base *= texel;
         map_rgb = texel.rgb;
     }

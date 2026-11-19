@@ -82,6 +82,14 @@ struct Material {
     float parallax_scale;
     float parallax_distance;
     float parallax_shadow;
+    // Hex tiling (not in three.js; Mikkelsen's, 2022, as game engines have it): the maps are
+    // read in hexagonal patches, each from its own random place in the texture and blended into
+    // the next where they meet, so that a texture repeated over a large surface doesn't show its
+    // repeats. hex_tiling is how wide the patches are, in the color map's uv (0: off; 0.5: half
+    // the texture across). They are moved, not turned: what runs down the texture (stains,
+    // drips) still runs down. Three reads of each map instead of one. Not with a parallax_map or
+    // alpha_test, nor for the maps read from the second uv set (a light map).
+    float hex_tiling;
     // Opacity from the green channel of this map, times `opacity` (three's alphaMap).
     Texture* alpha_map;
     // What glows: emissive * emissive_intensity times this map's rgb (sRGB; three's emissiveMap).
