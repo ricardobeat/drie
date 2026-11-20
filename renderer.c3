@@ -2726,7 +2726,7 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     fs.ext_params = { (float)ext_bits, mat.ao_intensity, scale, (float)state.transmission_width };
     fs.map_slots = map_slots;
     fs.light_map_params = { mat.light_map_intensity, 0, 0, 0 };
-    fs.surface_params = { mat.bump_scale, mat.gradient_map && mat.gradient_map.nearest ? 1 : 0, 0, 0 };
+    fs.surface_params = { mat.bump_scale, mat.gradient_map && mat.gradient_map.nearest ? 1 : 0, mat.depth_packing.ordinal, 0 };
     // three's envMap on a basic, lambert or phong material (not the background's own)
     if (classic && mat.env_map && !backdrop) {
         fs.env_combine = { mat.reflectivity, (float)mat.combine.ordinal, mat.env_refraction ? mat.refraction_ratio : 0, 1 };

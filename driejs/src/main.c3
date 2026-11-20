@@ -507,6 +507,8 @@ fn void h_material(JsCtx ctx, void* udata)
         case 6:
             m = (Material*)drie::mesh_toon_material(color: color, emissive: emissive, opacity: opacity,
                                                      transparent: transparent, side: side);
+        case 7:
+            m = (Material*)drie::mesh_depth_material(opacity: opacity, transparent: transparent, side: side);
         default:
             m = (Material*)drie::mesh_basic_material(color: color, opacity: opacity, transparent: transparent,
                                                       side: side, wireframe: wireframe);
@@ -884,8 +886,9 @@ fn void h_material_env(JsCtx ctx, void* udata)
 }
 
 // materialSurface(material, bumpMap, bumpScale, matcap, gradientMap, displacementMap,
-// displacementScale, displacementBias): three's bumpMap and bumpScale, MeshMatcapMaterial's
-// matcap, MeshToonMaterial's gradientMap, and displacementMap with its scale and bias
+// displacementScale, displacementBias, depthPacking): three's bumpMap and bumpScale,
+// MeshMatcapMaterial's matcap, MeshToonMaterial's gradientMap, displacementMap with its scale
+// and bias, and MeshDepthMaterial's depthPacking
 fn void h_material_surface(JsCtx ctx, void* udata)
 {
     Material* m = get_material(num_arg(ctx, 0, -1));
@@ -897,6 +900,8 @@ fn void h_material_surface(JsCtx ctx, void* udata)
     m.displacement_map = get_texture(num_arg(ctx, 5, -1));
     m.displacement_scale = (float)num_arg(ctx, 6, 1);
     m.displacement_bias = (float)num_arg(ctx, 7, 0);
+    // (three's BasicDepthPacking is 3200, then RGBA, RGB and RG)
+    m.depth_packing = (DepthPacking)math::clamp((int)num_arg(ctx, 8, 3200) - 3200, 0, 3);
 }
 
 // materialOutline(material, thickness): drie's Material.outline
@@ -1792,7 +1797,7 @@ fn int main(String[] args)
     reg(natives, "shadowType", &h_shadow_type, 2);
     reg(natives, "materialLightMap", &h_material_light_map, 3);
     reg(natives, "materialEnv", &h_material_env, 6);
-    reg(natives, "materialSurface", &h_material_surface, 8);
+    reg(natives, "materialSurface", &h_material_surface, 9);
     reg(natives, "materialOutline", &h_material_outline, 2);
     reg(natives, "materialBlend", &h_material_blend, 9);
     reg(natives, "materialDepth", &h_material_depth, 3);

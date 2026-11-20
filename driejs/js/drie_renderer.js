@@ -23,7 +23,8 @@
 // outlines of js/outline_effect.js's OutlineEffect, DataTextures of bytes (RGBA, RG or red),
 // blending (every mode, premultipliedAlpha, and custom blending's equations and factors),
 // toneMapped, a texture's repeat and offset as they change, scene.background as a flat
-// texture, displacementMap (with its scale and bias), OrthographicCamera, and the maps of
+// texture, displacementMap (with its scale and bias), OrthographicCamera, MeshDepthMaterial
+// (depthPacking), and the maps of
 // MeshStandardMaterial and
 // MeshPhysicalMaterial: normal, roughness, metalness and ao maps, and the physical material's
 // transmission (with its maps), volume, ior, dispersion and specular color and intensity (with
@@ -93,6 +94,7 @@ if (profile) {
 }
 
 function materialKind(m) {
+	if (m.isMeshDepthMaterial) return 7;
 	if (m.isMeshToonMaterial) return 6;
 	if (m.isMeshMatcapMaterial) return 5;
 	if (m.isMeshNormalMaterial) return 4;
@@ -765,11 +767,11 @@ export class DrieRenderer {
 		const matcap = this._texture(material.matcap);
 		const gradient = this._texture(material.gradientMap);
 		const displacement = this._map(material.displacementMap);
-		const key = `${bump} ${material.bumpScale} ${matcap} ${gradient} ${displacement} ${material.displacementScale} ${material.displacementBias}`;
+		const key = `${bump} ${material.bumpScale} ${matcap} ${gradient} ${displacement} ${material.displacementScale} ${material.displacementBias} ${material.depthPacking}`;
 		if (material.__drieSurface === key) return;
 		material.__drieSurface = key;
 		N.materialSurface(material.__drie, bump, material.bumpScale ?? 1, matcap, gradient, displacement,
-			material.displacementScale ?? 1, material.displacementBias ?? 0);
+			material.displacementScale ?? 1, material.displacementBias ?? 0, material.depthPacking ?? 3200);
 	}
 
 	// blending, premultipliedAlpha and the custom blending's equations and factors (three sets

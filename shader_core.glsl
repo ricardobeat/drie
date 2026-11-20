@@ -409,7 +409,8 @@ layout(binding=1) uniform fs_params {
     vec4 camera_right;         // the camera's x and y axes in the world: with camera_pos, its view
     vec4 camera_up;            //   space (MeshNormalMaterial's and the matcap's normals)
     vec4 surface_params;       // x = Material.bump_scale (three's bumpScale), y = 1: the toon
-                               //   material's gradient map is read texel by texel (NearestFilter)
+                               //   material's gradient map is read texel by texel (NearestFilter),
+                               //   z = MeshDepthMaterial's packing (Material.depth_packing)
     vec4 env_combine;          // a basic, lambert or phong material's env_map (three's): x =
                                //   reflectivity, y = combine (0 multiply, 1 mix, 2 add), z = the
                                //   refraction ratio (0: it mirrors), w = 1: on
@@ -728,6 +729,27 @@ vec2 g_hex_off[3];
 vec3 g_hex_w;
 
 float toon_gradient(float ndl);
+
+// three's packDepthToRGBA, packDepthToRGB and packDepthToRG, or 1 - z as a gray (packing 0).
+vec4 pack_depth(float v, int packing, float alpha) {
+    if (packing == 0) return vec4(vec3(1.0 - v), alpha);
+    if (v <= 0.0) return packing == 1 ? vec4(0.0) : vec4(0.0, 0.0, 0.0, 1.0);
+    if (v >= 1.0) return packing == 3 ? vec4(1.0, 1.0, 0.0, 1.0) : vec4(1.0);
+    float vuf;
+    if (packing == 3) {
+        float gf = modf(v * 256.0, vuf);
+        return vec4(vuf / 255.0, gf, 0.0, 1.0);
+    }
+    if (packing == 2) {
+        float bf = modf(v * 65536.0, vuf);
+        float gf = modf(vuf / 256.0, vuf);
+        return vec4(vuf / 255.0, gf * 256.0 / 255.0, bf, 1.0);
+    }
+    float af = modf(v * 16777216.0, vuf);
+    float bf = modf(vuf / 256.0, vuf);
+    float gf = modf(vuf / 256.0, vuf);
+    return vec4(vuf / 255.0, gf * 256.0 / 255.0, bf * 256.0 / 255.0, af);
+}
 
 // Direct light contribution, following three.js's (r155+) physically based light units.
 // Returns diffuse in rgb; adds specular to `spec`.
@@ -2227,6 +2249,11 @@ void main() {
         // MeshNormalMaterial: the normal in view space as the color (bypasses color
         // management, like three)
         frag_color = vec4(normalize(to_view(n)) * 0.5 + 0.5, color.a);
+        return;
+    } else if (mode == 7) {
+        // MeshDepthMaterial: the window depth, packed as surface_params.z says (three's
+        // packing), not color managed
+        frag_color = pack_depth(gl_FragCoord.z, int(surface_params.z), color.a);
         return;
     } else if (mode == 5) {
         // MeshMatcapMaterial: the matcap image at the view-space normal, from a frame turned
