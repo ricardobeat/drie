@@ -9,6 +9,9 @@ in vec2 uv1;      // the second uv set (glTF's TEXCOORD_1, three's uv1), zeros w
 in vec4 inst0;
 in vec4 inst1;
 in vec4 inst2;
+// Material.displacement_map at the vertex (0 without one): it moves out along its normal by
+// this times the displacement's scale, plus its bias (see displaced)
+in float height;
 
 // Instances culled on the GPU (renderer.c3, kernels.glsl cull_cs) are not read from the
 // attributes above but from the storage buffers below: instance i of the draw is
@@ -75,6 +78,12 @@ vec4 material_custom[2];
 vec4 frame_custom[2];
 
 @include_block vertex_hooks
+
+// Material.displacement_map: `p` out along the vertex's normal by its height times d.x plus
+// d.y (d.z = 1: there is a map).
+vec3 displaced(vec3 p, vec4 d) {
+    return d.z > 0.5 ? p + normalize(normal) * (height * d.x + d.y) : p;
+}
 @end
 
 // The main vertex shader, as vs, and as vs_tangent (TANGENT) for geometries with tangents
@@ -106,6 +115,7 @@ layout(binding=0) uniform vs_params {
                         //   y = 1: the target's row 0 is its top (texel row r at v = (r + 0.5) / size)
     vec4 outline;       // x = Material.outline: how far the vertices are pushed out along their
                         //   normals, in clip space per unit of w (0: not)
+    vec4 displacement;  // see displaced
 };
 
 @include_block vertex_common
@@ -146,7 +156,7 @@ void main() {
         gl_Position = v_clip;
         return;
     }
-    vec3 ip = instance_point(position);
+    vec3 ip = instance_point(displaced(position, displacement));
     vec4 wp = model * vec4(ip, 1.0);
     wp.xyz = apply_sway(wp.xyz, ip.y, sway);
     material_custom[0] = vs_material_custom[0];
@@ -211,6 +221,7 @@ layout(binding=0) uniform shadow_vs_params {
     vec4 s_inst_cull;
     vec4 s_material_custom[2];
     vec4 s_frame_custom[2];
+    vec4 s_displacement;
 };
 
 @include_block vertex_common
@@ -223,7 +234,7 @@ void main() {
         gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
         return;
     }
-    vec3 ip = instance_point(position);
+    vec3 ip = instance_point(displaced(position, s_displacement));
     vec4 wp = s_model * vec4(ip, 1.0);
     wp.xyz = apply_sway(wp.xyz, ip.y, s_sway);
     material_custom[0] = s_material_custom[0];
@@ -233,7 +244,7 @@ void main() {
     vertex_hook(wp.xyz, ip, s_model);
     v_uv = vec2(dot(s_uv_transform[0].xyz, vec3(uv, 1.0)), dot(s_uv_transform[1].xyz, vec3(uv, 1.0)));
     // keep the unused attributes alive so both programs share one vertex layout
-    v_uv += (normal.xy + color0.xy + uv1) * 0.0;
+    v_uv += (normal.xy + color0.xy + uv1 + height) * 0.0;
     gl_Position = s_view_proj * vec4(wp.xyz - s_origin.xyz, 1.0);
 }
 @end

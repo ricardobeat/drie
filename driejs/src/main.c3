@@ -195,6 +195,17 @@ fn void h_camera(JsCtx ctx, void* udata)
     ctx.ret_number(reg_object((Object3D*)c));
 }
 
+// orthoCamera(left, right, top, bottom, near, far)
+fn void h_ortho_camera(JsCtx ctx, void* udata)
+{
+    OrthographicCamera* c = drie::orthographic_camera((float)num_arg(ctx, 0, -1), (float)num_arg(ctx, 1, 1),
+                                                      (float)num_arg(ctx, 2, 1), (float)num_arg(ctx, 3, -1),
+                                                      (float)num_arg(ctx, 4, 0.1), (float)num_arg(ctx, 5, 2000));
+    ctx.ret_number(reg_object((Object3D*)c));
+}
+
+// cameraUpdate(camera, fov, aspect, near, far, zoom, left, right, top, bottom): fov and aspect
+// for a perspective camera, left .. bottom for an orthographic one
 fn void h_camera_update(JsCtx ctx, void* udata)
 {
     Object3D* o = get_object(num_arg(ctx, 0, -1));
@@ -208,6 +219,14 @@ fn void h_camera_update(JsCtx ctx, void* udata)
         PerspectiveCamera* p = (PerspectiveCamera*)c;
         p.fov = (float)num_arg(ctx, 1, p.fov);
         p.aspect = (float)num_arg(ctx, 2, p.aspect);
+    }
+    else if (c.camera_type == ORTHOGRAPHIC)
+    {
+        OrthographicCamera* p = (OrthographicCamera*)c;
+        p.left = (float)num_arg(ctx, 6, p.left);
+        p.right = (float)num_arg(ctx, 7, p.right);
+        p.top = (float)num_arg(ctx, 8, p.top);
+        p.bottom = (float)num_arg(ctx, 9, p.bottom);
     }
     c.update_projection_matrix();
 }
@@ -671,8 +690,6 @@ fn void h_image_size(JsCtx ctx, void* udata)
     ctx.ret_number(num_arg(ctx, 1, 0) > 0.5 ? d.height : d.width);
 }
 
-// imagePixels(handle, out, width, height): its RGBA, stretched to width x height (bilinear,
-// as a canvas draws an image at another size), into the Uint8Array or Uint8ClampedArray
 // textMetrics(text, family, size, bold, italic, out): out (a Float32Array of 3) = the text's
 // width and how far it reaches above and below the baseline, in pixels
 fn void h_text_metrics(JsCtx ctx, void* udata)
@@ -866,8 +883,9 @@ fn void h_material_env(JsCtx ctx, void* udata)
     m.specular_map = get_texture(num_arg(ctx, 5, -1));
 }
 
-// materialSurface(material, bumpMap, bumpScale, matcap, gradientMap): three's bumpMap and
-// bumpScale, MeshMatcapMaterial's matcap and MeshToonMaterial's gradientMap
+// materialSurface(material, bumpMap, bumpScale, matcap, gradientMap, displacementMap,
+// displacementScale, displacementBias): three's bumpMap and bumpScale, MeshMatcapMaterial's
+// matcap, MeshToonMaterial's gradientMap, and displacementMap with its scale and bias
 fn void h_material_surface(JsCtx ctx, void* udata)
 {
     Material* m = get_material(num_arg(ctx, 0, -1));
@@ -876,6 +894,9 @@ fn void h_material_surface(JsCtx ctx, void* udata)
     m.bump_scale = (float)num_arg(ctx, 2, 1);
     m.matcap = get_texture(num_arg(ctx, 3, -1));
     m.gradient_map = get_texture(num_arg(ctx, 4, -1));
+    m.displacement_map = get_texture(num_arg(ctx, 5, -1));
+    m.displacement_scale = (float)num_arg(ctx, 6, 1);
+    m.displacement_bias = (float)num_arg(ctx, 7, 0);
 }
 
 // materialOutline(material, thickness): drie's Material.outline
@@ -1730,7 +1751,8 @@ fn int main(String[] args)
     reg(natives, "scene", &h_scene, 0);
     reg(natives, "group", &h_group, 0);
     reg(natives, "camera", &h_camera, 4);
-    reg(natives, "cameraUpdate", &h_camera_update, 6);
+    reg(natives, "cameraUpdate", &h_camera_update, 10);
+    reg(natives, "orthoCamera", &h_ortho_camera, 6);
     reg(natives, "light", &h_light, 8);
     reg(natives, "lightTarget", &h_light_target, 1);
     reg(natives, "geometry", &h_geometry, 9);
@@ -1770,7 +1792,7 @@ fn int main(String[] args)
     reg(natives, "shadowType", &h_shadow_type, 2);
     reg(natives, "materialLightMap", &h_material_light_map, 3);
     reg(natives, "materialEnv", &h_material_env, 6);
-    reg(natives, "materialSurface", &h_material_surface, 5);
+    reg(natives, "materialSurface", &h_material_surface, 8);
     reg(natives, "materialOutline", &h_material_outline, 2);
     reg(natives, "materialBlend", &h_material_blend, 9);
     reg(natives, "materialDepth", &h_material_depth, 3);

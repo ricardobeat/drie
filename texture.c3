@@ -52,6 +52,9 @@ struct Texture {
     // texture.channel). Only the maps besides the color map can take the second.
     char channel;
     bool generate_mipmaps;
+    // prepare() leaves `pixels` as they go to the GPU (bottom row first when flip_y), for the
+    // CPU to read (Material.displacement_map)
+    bool keep_pixels;
     int anisotropy;
     // Up close, each texel a sharp square instead of blended with its neighbours (three's
     // magFilter = NearestFilter).
@@ -545,8 +548,48 @@ fn void Texture.prepare(&self) {
         self.has_env_sh = true;
     }
     for (int i = 1; i < count; i++) mem::free(levels[i].ptr);
+    if (self.keep_pixels) return;
     mem::free(self.pixels.ptr);
     self.pixels = { };
+}
+
+// The red of a texture whose pixels prepare() has kept (keep_pixels) at `uv`, 0..1 (linear
+// light for an sRGB one), bilinear and wrapped as on the GPU. 0 without pixels.
+fn float Texture.red_at(&self, Vector2 uv) {
+    if (self.source) return self.source.red_at(uv);
+    if (!self.keep_pixels || self.preparing.load() != 2 || !self.pixels.len) return 0;
+    float x = wrap_coord(uv.x, self.wrap_s) * self.width - 0.5f;
+    float y = wrap_coord(uv.y, self.wrap_t) * self.height - 0.5f;
+    int x0 = (int)math::floor(x);
+    int y0 = (int)math::floor(y);
+    float fx = x - x0;
+    float fy = y - y0;
+    float r = 0;
+    for (int j = 0; j < 2; j++) {
+        for (int i = 0; i < 2; i++) {
+            int px = wrap_texel(x0 + i, self.width, self.wrap_s);
+            int py = wrap_texel(y0 + j, self.height, self.wrap_t);
+            float c = self.pixels[((sz)py * self.width + px) * 4] / 255.0f;
+            if (self.color_space == SRGB_COLOR_SPACE) c = srgb_to_linear(c);
+            r += c * (i == 0 ? 1 - fx : fx) * (j == 0 ? 1 - fy : fy);
+        }
+    }
+    return r;
+}
+
+fn float wrap_coord(float t, Wrapping w) @local {
+    switch (w) {
+        case REPEAT_WRAPPING: return t - math::floor(t);
+        case CLAMP_TO_EDGE_WRAPPING: return math::clamp(t, 0, 1);
+        case MIRRORED_REPEAT_WRAPPING:
+            float f = t - 2 * math::floor(t / 2);
+            return f > 1 ? 2 - f : f;
+    }
+}
+
+fn int wrap_texel(int i, int n, Wrapping w) @local {
+    if (w == REPEAT_WRAPPING) return ((i % n) + n) % n;
+    return math::clamp(i, 0, n - 1);
 }
 
 // Frees the GPU resources.

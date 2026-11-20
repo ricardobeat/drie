@@ -36,6 +36,8 @@ struct BufferGeometry {
     bool line_loop;
     uint index_count;
     bool uploaded;
+    // counts the uploads: what is worked out from the vertices knows when they change
+    uint version;
     // Bounding sphere in local space, computed on upload (or by compute_bounding_sphere).
     Vector3 bounds_center;
     float bounds_radius;
@@ -255,6 +257,7 @@ fn void BufferGeometry.free_cpu(&self) {
 // Uploads vertex/index data to the GPU (called by the renderer).
 fn void BufferGeometry.upload(&self) {
     if (self.uploaded) return;
+    self.version++;
     self.dispose();
     // (nothing to draw: Metal makes no buffer of no bytes)
     if (!self.indices.len() || !self.vertices.len()) return;
