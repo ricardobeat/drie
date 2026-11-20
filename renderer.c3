@@ -2406,7 +2406,8 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     bool refracts = standard && mat.transmission > 0;
     Renderer* lens = state.renderer;
     bool defocus = mat.defocus && lens.focus_map && lens.focus_aperture > 0;
-    Texture*[18] roles = {
+    bool classic = mat.type == BASIC || mat.type == LAMBERT || mat.type == PHONG;
+    Texture*[19] roles = {
         standard && mat.ao_intensity != 0 ? mat.ao_map : null,
         standard ? mat.specular_color_map : null,
         standard ? mat.specular_intensity_map : null,
@@ -2425,6 +2426,7 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
         standard && mat.anisotropy > 0 ? mat.anisotropy_map : null,
         mat.custom_map,
         defocus ? lens.focus_map : null,
+        classic ? mat.specular_map : null,
     };
     Texture*[6] slots;
     int used;
@@ -2500,8 +2502,9 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
         env_intensity *= scene.environment_intensity;
     }
     Texture* env = ready(env_map);
-    // its light from all around a normal, worked out at the upload
-    if (env_map && scene && env_map == scene.environment && env_map.has_env_sh) {
+    // its light from all around a normal, worked out at the upload (a standard material's own
+    // map lights it too, as three's envMap does)
+    if (env_map && env_map.has_env_sh && mat.type == STANDARD) {
         env_diffuse = true;
         foreach (i, c : env_map.env_sh) fs.env_sh[i] = { ...c, 0 };
     }
@@ -2586,6 +2589,12 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     fs.ext_params = { (float)ext_bits, mat.ao_intensity, scale, (float)state.transmission_width };
     fs.map_slots = map_slots;
     fs.light_map_params = { mat.light_map_intensity, 0, 0, 0 };
+    // three's envMap on a basic, lambert or phong material (not the background's own)
+    if (classic && mat.env_map && !backdrop) {
+        fs.env_combine = { mat.reflectivity, (float)mat.combine.ordinal, mat.env_refraction ? mat.refraction_ratio : 0, 1 };
+    } else {
+        fs.env_combine = { };
+    }
     fs.focus_params = { defocus ? state.renderer.focus_aperture : 0, state.renderer.focus_maxblur, 0, 0 };
     // each map's uv from the color map's
     Texture* base = uv_base(mat);

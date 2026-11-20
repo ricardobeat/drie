@@ -16,8 +16,10 @@
 // InstancedMesh's matrices, SkinnedMesh (three poses the skeleton, drie moves the vertices),
 // Line, LineSegments and LineLoop (a pixel wide, as in WebGL) with LineBasicMaterial and
 // LineDashedMaterial, scene.environment from js/pmrem.js's PMREMGenerator or an
-// equirectangular texture, scene.background as an equirectangular texture (with
-// backgroundBlurriness and backgroundIntensity), and the maps of MeshStandardMaterial and
+// equirectangular texture or a cube map (of images or of HDR DataTextures), scene.background
+// as either (with backgroundBlurriness and backgroundIntensity), the envMap of the basic,
+// lambert and phong materials (reflectivity, combine, refractionRatio and the refraction
+// mappings, specularMap), and the maps of MeshStandardMaterial and
 // MeshPhysicalMaterial: normal, roughness, metalness and ao maps, and the physical material's
 // transmission (with its maps), volume, ior, dispersion and specular color and intensity (with
 // theirs), clearcoat, sheen, iridescence and anisotropy (with the geometry's tangents). Any material's lightMap (on the first or the
@@ -28,7 +30,8 @@
 // draw ranges, renderOrder, toneMapped, points, sprites, morph targets, point light shadows,
 // an emissiveMap that isn't the map, render targets (getRenderTarget() is null,
 // setRenderTarget() does nothing) and post-processing.
-import { Color, EquirectangularReflectionMapping, EquirectangularRefractionMapping, Matrix4, NearestFilter } from "../vendor/three.core.js";
+import { Color, CubeRefractionMapping, EquirectangularReflectionMapping, EquirectangularRefractionMapping, Matrix4,
+	NearestFilter } from "../vendor/three.core.js";
 import { setCanvas } from "./dom.js";
 
 const N = globalThis.__drie;
@@ -542,8 +545,9 @@ export class DrieRenderer {
 
 	// An image drie loads from its file (`path`) or decodes from memory (`data`, from a Blob,
 	// as GLTFLoader makes them), or a DataTexture of half floats or floats (an HDR image, as
-	// UltraHDRLoader and HDRLoader make them).
-	_texture(texture) {
+	// UltraHDRLoader and HDRLoader make them). `equirectangular`: it is one whatever its
+	// mapping says (PMREMGenerator.fromEquirectangular's).
+	_texture(texture, equirectangular = false) {
 		// (a texture that drie made, as the light map of js/progressive_lightmap.js)
 		if (texture?.__drieNative !== undefined) return texture.__drieNative;
 		if (texture?.isCubeTexture) return this._cubeTexture(texture);
@@ -554,7 +558,8 @@ export class DrieRenderer {
 		if (source === undefined) return -1;
 		if (texture.__drie !== undefined && texture.__drieVersion === texture.version) return texture.__drie;
 		// (three's equirectangular maps have the sky at v = 1, drie's at v = 0: flipped the other way)
-		const equirect = texture.mapping === EquirectangularReflectionMapping || texture.mapping === EquirectangularRefractionMapping;
+		const equirect = equirectangular || texture.mapping === EquirectangularReflectionMapping
+			|| texture.mapping === EquirectangularRefractionMapping;
 		const flipY = equirect ? !texture.flipY : texture.flipY;
 		if (texture.isDataTexture && (source instanceof Uint16Array || source instanceof Float32Array)) {
 			if (!image.width || !image.height) return -1;
@@ -586,18 +591,23 @@ export class DrieRenderer {
 		return texture && texture.channel > 1 ? -1 : this._texture(texture);
 	}
 
-	// A CubeTexture of six DataTextures of half floats or floats (HDRCubeTextureLoader's), as
-	// drie's equirectangular map of it.
+	// A CubeTexture, as drie's equirectangular map of it: six images (CubeTextureLoader's) or
+	// six DataTextures of half floats or floats (HDRCubeTextureLoader's).
 	_cubeTexture(texture) {
 		if (texture.__drie !== undefined && texture.__drieVersion === texture.version) return texture.__drie;
 		const faces = texture.images ?? texture.image;
-		if (!Array.isArray(faces) || faces.length !== 6) return -1;
-		const data = faces.map((f) => f?.image?.data ?? f?.data);
-		const size = faces[0]?.image?.width ?? faces[0]?.width;
-		if (!size || data.some((d) => !(d instanceof Uint16Array || d instanceof Float32Array))) {
-			throw new Error("driejs: only cube maps of half floats or floats (HDRCubeTextureLoader) are supported");
+		if (!Array.isArray(faces) || faces.length !== 6 || faces.some((f) => !f)) return -1;
+		if (faces.every((f) => f.tagName === "IMG")) {
+			if (!faces.every((f) => f.complete)) return -1;
+			texture.__drie = N.cubeImages(...faces.map((f) => f.data ?? f.path), texture.colorSpace === "srgb");
+		} else {
+			const data = faces.map((f) => f?.image?.data ?? f?.data);
+			const size = faces[0]?.image?.width ?? faces[0]?.width;
+			if (!size || data.some((d) => !(d instanceof Uint16Array || d instanceof Float32Array))) {
+				throw new Error("driejs: a cube map's faces are images, or DataTextures of half floats or floats");
+			}
+			texture.__drie = N.cubeTexture(...data, size);
 		}
-		texture.__drie = N.cubeTexture(...data, size);
 		texture.__drieVersion = texture.version;
 		return texture.__drie;
 	}
@@ -623,7 +633,7 @@ export class DrieRenderer {
 			material.__drieMapEmissive ? -1 : this._map(material.emissiveMap),
 			// (its own surroundings, instead of the scene's environment)
 			material.envMap ? (material.envMap.__drieEnvironment ?? this._texture(material.envMap)) : -1,
-			material.envMapIntensity ?? 1];
+			material.isMeshStandardMaterial ? (material.envMapIntensity ?? 1) : 1];
 		const key = maps.join(" ");
 		if (material.__drieMaps === key) return;
 		material.__drieMaps = key;
@@ -639,6 +649,20 @@ export class DrieRenderer {
 		if (material.__drieLightMap === key) return;
 		material.__drieLightMap = key;
 		N.materialLightMap(material.__drie, map, intensity);
+	}
+
+	// How a basic, lambert or phong material's envMap shows (uniforms in three), sent when it
+	// changes.
+	_env(material) {
+		if (material.isMeshStandardMaterial || !material.envMap) return;
+		const refraction = material.envMap.mapping === CubeRefractionMapping
+			|| material.envMap.mapping === EquirectangularRefractionMapping;
+		const specular = this._map(material.specularMap);
+		const key = `${material.reflectivity} ${material.combine} ${refraction} ${material.refractionRatio} ${specular}`;
+		if (material.__drieEnv === key) return;
+		material.__drieEnv = key;
+		N.materialEnv(material.__drie, material.reflectivity ?? 1, material.combine ?? 0, refraction,
+			material.refractionRatio ?? 0.98, specular);
 	}
 
 	// depthTest and depthWrite (three sets them for each draw: no needsUpdate either).
@@ -673,6 +697,7 @@ export class DrieRenderer {
 			this._maps(material);
 			this._layers(material);
 			this._lightMap(material);
+			this._env(material);
 			this._depth(material);
 			return material.__drie;
 		}
@@ -698,10 +723,12 @@ export class DrieRenderer {
 		material.__drieLayers = undefined;
 		material.__drieLightMap = undefined;
 		material.__drieDepth = undefined;
+		material.__drieEnv = undefined;
 		this._materialValues(material);
 		this._maps(material);
 		this._layers(material);
 		this._lightMap(material);
+		this._env(material);
 		this._depth(material);
 		return material.__drie;
 	}

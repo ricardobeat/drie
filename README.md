@@ -198,6 +198,8 @@ A material's maps besides `map`, `normal_map` and `arm_map` share six texture sl
 ### Reflections
 
 - **Environment maps:** Equirectangular reflections with mip-based roughness blur (as wide as three's PMREM at each roughness, sampled towards the GGX lobe's dominant direction) and optional box projection.
+- **Cube maps:** `drie::cube_texture(...)` and `decode_cube_texture(...)` turn a cube map's six faces (floats, or 8-bit images as three's `CubeTextureLoader` gives them) into drie's equirectangular map, looked up as three looks up a `CubeTexture`.
+- **Classic environment maps:** on basic, lambert and phong materials, `env_map` is three's `envMap`: mirrored or (`env_refraction`, `refraction_ratio`) seen through, sharp, and put over the light by `combine` (`MULTIPLY_OPERATION`, `MIX_OPERATION`, `ADD_OPERATION`) and `reflectivity`, times `specular_map`'s red.
 - **Environment capture:** `renderer.capture_environment(...)` renders a 6-face light probe into an equirectangular `env_map` (reads back from the GPU; intended for load time). This is three.js's `CubeCamera` + `PMREMGenerator`.
 - **Room reflection probes:** `scene.reflection_probes` (`ReflectionProbes`) array texture of box-projected, cross-faded room probes for materials with `env_probes`.
 - **Screen-space reflections (SSR):** Previous-frame color/depth reflections with optional back-face thickness.
@@ -209,6 +211,7 @@ A material's maps besides `map`, `normal_map` and `arm_map` share six texture sl
 | Feature | Key API / Fields | Notes |
 | --- | --- | --- |
 | Environment map | `material.env_map`, `env_intensity`, `env_box_min`, `env_box_max`, `env_position` | — |
+| Classic env map | `material.env_map`, `combine`, `reflectivity`, `env_refraction`, `refraction_ratio`, `specular_map` | Basic, lambert and phong materials (three's `envMap`) |
 | Probe capture | `renderer.capture_environment(scene, position, on_face:, distance:)` | Optional `distance` raycaster callback stores surface distance in alpha for parallax-corrected glossy reflections |
 | Room probes | `drie::reflection_probes()`, `probes.add(map, position, box_min, box_max)` | Used by materials with `env_probes` |
 | SSR | `material.ssr`, `material.ssr_reach`, `renderer.set_reflection_source(color, depth, view_proj, back:)`, `renderer.render_back_faces(target)` | — |
