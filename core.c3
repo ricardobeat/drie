@@ -711,8 +711,10 @@ struct PointLight {
     inline Light light;
     float distance;
     float decay;
-    // Extension: size of the light source in meters. Softens the falloff close to the light
-    // and widens its highlights.
+    // Extension: radius of the light source in meters (a bulb). Softens the falloff close to
+    // the light, and its highlights are the bulb's own shape: on a smooth surface a sharp-edged
+    // disc as big as the bulb, on a rough one as before, with the same light in all (Karis'
+    // representative point, "Real Shading in Unreal Engine 4", 2013). 0: a point.
     float radius;
 }
 
@@ -773,9 +775,10 @@ struct SpotLight {
     // Fraction of the cone that fades out at the edge, 0..1.
     float penumbra;
     float decay;
-    // Extension: size of the light source in meters. Softens the falloff close to the light.
+    // Extension: radius of the light source in meters. Softens the falloff close to the light.
     float radius;
-    // Extension: size of the bright part seen in reflections, in meters (0 = `radius`). A lamp
+    // Extension: radius of the bright part seen in reflections, in meters (0 = `radius`): a
+    // sphere of that size, as PointLight.radius's highlights. A lamp
     // with a small bulb behind a big diffuser keeps sharp highlights on glossy surfaces.
     float specular_radius;
     // Extension: how much the light shows in fog with `light_scatter` (1 = as it is, 0 = not
