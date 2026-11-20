@@ -507,6 +507,8 @@ class Translator {
 				return this.bumpMap(n);
 			case "NormalMapNode":
 				return this.normalMap(n);
+			case "RotateNode":
+				return this.rotate(n);
 			case "FrontFacingNode":
 				return this.builtin(B.FRONT_FACING);
 			case "PropertyNode":
@@ -947,6 +949,38 @@ class Translator {
 		return this.call("normalize", this.sub(this.mul(this.call("abs", det), normal), grad));
 	}
 
+	// rotate(position, rotation): a vec2 turned by an angle, or a vec3 by an angle about each
+	// axis, the matrices in the node's order (XYZ: X * Y * Z, Z turning it first), as three's
+	rotate(n) {
+		const p = this.node(n.positionNode);
+		const r = this.node(n.rotationNode);
+		if (COMPONENTS[this.type(p)] === 2) {
+			const [c, s] = [this.call("cos", r), this.call("sin", r)];
+			const [x, y] = [this.swizzle(p, "x"), this.swizzle(p, "y")];
+			return this.join(T.vec2, this.sub(this.mul(c, x), this.mul(s, y)), this.add(this.mul(s, x), this.mul(c, y)));
+		}
+		const turn = (axis, v) => {
+			const a = this.swizzle(r, axis.toLowerCase());
+			const [c, s] = [this.call("cos", a), this.call("sin", a)];
+			const [x, y, z] = ["x", "y", "z"].map((k) => this.swizzle(v, k));
+			const along = (u, w) => [this.sub(this.mul(c, u), this.mul(s, w)), this.add(this.mul(s, u), this.mul(c, w))];
+			if (axis === "X") {
+				const [y2, z2] = along(y, z);
+				return this.join(T.vec3, x, y2, z2);
+			}
+			if (axis === "Y") {
+				const [z2, x2] = along(z, x);
+				return this.join(T.vec3, x2, y, z2);
+			}
+			const [x2, y2] = along(x, y);
+			return this.join(T.vec3, x2, y2, z);
+		};
+		const order = n.getOrder?.() ?? "XYZ";
+		let v = this.convert(p, T.vec3);
+		for (let i = 2; i >= 0; i--) v = turn(order[i], v);
+		return v;
+	}
+
 	// normalMap(color, scale): a tangent-space normal map in view space, on three's frame made
 	// of the derivatives of the view position and uv (Schüler, "Normal Mapping Without
 	// Precomputed Tangents"), turned over on back faces as three does
@@ -1177,7 +1211,13 @@ function envNodeTexture(renderer, n) {
 	return -1;
 }
 
-globalThis.__drieNodes = { sync, background, environment, envNodeTexture };
+// Whether a material that isn't a NodeMaterial has nodes in its slots all the same (three/webgpu
+// makes every material a node material: a glTF's MeshStandardMaterial given an outputNode)
+function hasSlots(material) {
+	return SLOTS.some((s) => material[s]?.isNode) || !!material.fragmentNode?.isNode;
+}
+
+globalThis.__drieNodes = { sync, background, environment, envNodeTexture, hasSlots };
 
 // three's CubeRenderTarget.fromEquirectangularTexture draws the map into a cube: drie's
 // environment maps are equirectangular, so its texture is the map itself.

@@ -1146,7 +1146,8 @@ export class DrieRenderer {
 	// materials, and any material in a scene with a fogNode (or that was in one)
 	_hasNodes(material) {
 		if (!globalThis.__drieNodes) return false;
-		return material.isNodeMaterial || !!this._nodeFrame?.scene?.fogNode || material.__drieNodes !== undefined;
+		return material.isNodeMaterial || !!this._nodeFrame?.scene?.fogNode || material.__drieNodes !== undefined
+			|| globalThis.__drieNodes.hasSlots(material);
 	}
 
 	// Colors and numbers that three reads into uniforms every frame, so changing them needs

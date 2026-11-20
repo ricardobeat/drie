@@ -63,7 +63,8 @@ lighting), `outputNode`, `maskNode` (which cuts the shadow too, as three's does 
 `maskShadowNode`), `envNode` (the reflection; the map it reads, if any, lights the material
 as an envMap), phong's `specularNode` and `shininessNode`, and `lightsNode` (`lights([...])`:
 each list of lights is a lighting channel of drie's, up to 24), and rebuilds the graph as drie
-nodes.
+nodes. A material that isn't a NodeMaterial takes nodes in these slots too, as three/webgpu
+makes every material a node material.
 In `outputNode`, `output` is a variable that a `Fn` can assign. It runs TSL's `Fn` bodies itself, one call at a time, to collect their statements:
 `toVar`, `assign`, `If`/`ElseIf`/`Else`, `Loop`, `Break`, `Continue` and `Discard`. drie then
 prints the graph in Metal, HLSL or GLSL. A graph is rebuilt when a slot changes or a texture it
@@ -78,6 +79,7 @@ The translator covers:
   component by component (a vector of 0 and 1, which `select` mixes by)
 - int and uint arithmetic with bitwise operators (MaterialX noise runs as it is)
 - `Fn` calls with layouts and overloads
+- `rotate`, of a vec2 by an angle or a vec3 about each axis
 - `bumpMap`, as three's `dHdxy_fwd` and `perturbNormalArb`
 - `normalMap` in tangent space, on three's frame from the derivatives of the position and uv
   (not the geometry's tangents)
