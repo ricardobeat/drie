@@ -1422,12 +1422,7 @@ fn bool js_frame(double time_ms)
         return false;
     }
     js.release(outcome);
-    if (catch js.get_runtime().drain_microtasks())
-    {
-        io::eprintfn("uncaught error in a promise job: %s", js.last_error());
-        return false;
-    }
-    return true;
+    return run_jobs();
 }
 
 // The window's mouse and keyboard, handed to js/dom.js (globalThis.__drieInput), which makes
@@ -1590,6 +1585,7 @@ fn int main(String[] args)
     start_clock = time::clock::now();
     js.create()!!;
     defer js.destroy();
+    track_rejections();
     if (jit && (!js.get_runtime().set_jit() || !js.get_runtime().set_jit_opt()))
     {
         io::eprintn("could not enable the JIT");
@@ -1719,11 +1715,7 @@ fn int main(String[] args)
         return 1;
     }
     js.release(loaded);
-    if (catch js.get_runtime().drain_microtasks())
-    {
-        io::eprintfn("uncaught error in a promise job: %s", js.last_error());
-        return 1;
-    }
+    if (!run_jobs()) return 1;
     wait_for_timers();
     if (js_loop.is_empty() || loop_renderer == null) return 0;
     if (frames > 0)

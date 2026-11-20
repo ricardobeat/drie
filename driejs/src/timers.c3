@@ -108,10 +108,7 @@ fn void timer_call(PendingTimer* t)
     {
         js.release(outcome);
     }
-    if (catch js.get_runtime().drain_microtasks())
-    {
-        io::eprintfn("uncaught error in a promise job: %s", js.last_error());
-    }
+    run_jobs();
 }
 
 // Runs the timers that are due. The cutoff is fixed: an interval put back by this batch,
@@ -208,4 +205,69 @@ fn void register_timers(JsValue global)
     reg(global, "setInterval", &h_set_interval, 2);
     reg(global, "clearTimeout", &h_clear_timer, 1);
     reg(global, "clearInterval", &h_clear_timer, 1);
+}
+
+// Promises rejected with no handler, reported after each microtask checkpoint as a browser
+// reports "Uncaught (in promise)": an async init() that throws, an error in a loader's
+// callback. A handler attached later in the same checkpoint takes the promise off the list.
+struct Rejection
+{
+    ulong promise;
+    JsValue reason;
+}
+
+List{Rejection} rejections;
+
+fn void on_rejection(JsRuntime* runtime, ulong promise, JsValue p, JsValue reason, bool handled, void* udata)
+{
+    if (handled)
+    {
+        foreach (i, r : rejections)
+        {
+            if (r.promise != promise) continue;
+            runtime.release(r.reason);
+            rejections.remove_at(i);
+            return;
+        }
+        return;
+    }
+    JsValue? kept = runtime.persist(reason);
+    if (catch kept) return;
+    rejections.push({ promise, kept });
+}
+
+fn void track_rejections()
+{
+    rejections.init(mem);
+    js.get_runtime().set_promise_rejection_tracker(&on_rejection);
+}
+
+// Runs the queued promise jobs, then reports what they left rejected (with js/dom.js's
+// reportError, which prints the error's stack). False if a job threw past the engine.
+fn bool run_jobs()
+{
+    if (catch js.get_runtime().drain_microtasks())
+    {
+        io::eprintfn("uncaught error in a promise job: %s", js.last_error());
+        return false;
+    }
+    while (!rejections.is_empty())
+    {
+        Rejection r = rejections.pop_first()!!;
+        JsValue? global = js.global();
+        if (try global)
+        {
+            JsValue? report = js.get(global, "reportError");
+            if (try report)
+            {
+                JsValue? outcome = js.call(report, { r.reason });
+                if (try outcome) js.release(outcome);
+                js.release(report);
+            }
+            js.release(global);
+        }
+        js.get_runtime().release(r.reason);
+        if (catch js.get_runtime().drain_microtasks()) return false;
+    }
+    return true;
 }
