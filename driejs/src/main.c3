@@ -1418,7 +1418,7 @@ fn bool js_frame(double time_ms)
     JsValue? outcome = js.call(js_loop, { t });
     if (catch outcome)
     {
-        io::eprintfn("uncaught error in the animation loop: %s", js.last_error());
+        report_uncaught("the animation loop");
         return false;
     }
     js.release(outcome);
@@ -1460,7 +1460,7 @@ fn bool input_event(Event* e)
     JsValue? outcome = js.call(js_input, values[..]);
     if (catch outcome)
     {
-        io::eprintfn("uncaught error in an input event: %s", js.last_error());
+        report_uncaught("an input event");
     }
     else
     {
@@ -1607,7 +1607,9 @@ fn int main(String[] args)
         "import \"%s/js/wasm.js\";\n"
         "export * from \"%s/vendor/three.core.js\";\n"
         "export { DrieRenderer as WebGLRenderer } from \"%s/js/drie_renderer.js\";\n"
-        "export { PMREMGenerator } from \"%s/js/pmrem.js\";\n", root, root, root, root, root))!!;
+        "export { PMREMGenerator } from \"%s/js/pmrem.js\";\n"
+        "export { ShaderChunk, ShaderLib, UniformsLib, UniformsUtils, WebGLRenderTarget, WebGLCubeRenderTarget, WebGLUtils }"
+        " from \"%s/vendor/three.module.js\";\n", root, root, root, root, root, root))!!;
     // three's Stats draws into the DOM: this one is drawn by the host
     js.define_module("three/addons/libs/stats.module.js",
                      string::tformat("export { default } from \"%s/js/stats.js\";\n", root))!!;
@@ -1711,7 +1713,15 @@ fn int main(String[] args)
     JsValue? loaded = js.eval_module((String)source, script_path);
     if (catch loaded)
     {
-        io::eprintfn("%s:%d: %s", script_path, js.last_error_line(), js.last_error());
+        // (a syntax error has a line; an error the module threw, a stack)
+        if (js.last_error_line() > 0)
+        {
+            io::eprintfn("%s:%d: %s", script_path, js.last_error_line(), js.last_error());
+        }
+        else
+        {
+            report_uncaught(script_path);
+        }
         return 1;
     }
     js.release(loaded);

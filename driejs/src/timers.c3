@@ -102,7 +102,7 @@ fn void timer_call(PendingTimer* t)
     JsValue? outcome = js.call(t.callback, t.args);
     if (catch outcome)
     {
-        io::eprintfn("uncaught error in a timer: %s", js.last_error());
+        report_uncaught("a timer");
     }
     else
     {
@@ -254,20 +254,38 @@ fn bool run_jobs()
     while (!rejections.is_empty())
     {
         Rejection r = rejections.pop_first()!!;
-        JsValue? global = js.global();
-        if (try global)
-        {
-            JsValue? report = js.get(global, "reportError");
-            if (try report)
-            {
-                JsValue? outcome = js.call(report, { r.reason });
-                if (try outcome) js.release(outcome);
-                js.release(report);
-            }
-            js.release(global);
-        }
+        report_value(r.reason);
         js.get_runtime().release(r.reason);
         if (catch js.get_runtime().drain_microtasks()) return false;
     }
+    return true;
+}
+
+// Reports the value the last failed call threw, with its stack (reportError), or the
+// engine's message when there is no value to report. `where` names what was running.
+fn void report_uncaught(String where)
+{
+    String message = js.last_error().copy(tmem);
+    JsValue? thrown = js.get_exception();
+    if (try thrown)
+    {
+        defer js.release(thrown);
+        if (js.type_of(thrown) != UNDEFINED && report_value(thrown)) return;
+    }
+    io::eprintfn("uncaught error in %s: %s", where, message);
+}
+
+fn bool report_value(JsValue value)
+{
+    JsValue? global = js.global();
+    if (catch global) return false;
+    defer js.release(global);
+    JsValue? report = js.get(global, "reportError");
+    if (catch report) return false;
+    defer js.release(report);
+    if (js.type_of(report) != FUNCTION) return false;
+    JsValue? outcome = js.call(report, { value });
+    if (catch outcome) return false;
+    js.release(outcome);
     return true;
 }
