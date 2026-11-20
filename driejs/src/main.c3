@@ -8,7 +8,7 @@
 //
 //   out/driejs demos/webgl_geometries.js                 in a window
 //   out/driejs --frames 600 demos/webgl_geometries.js    offscreen, timed
-//   out/driejs --frames 3 --png /tmp/shot.png demos/webgl_geometries.js
+//   out/driejs --frames 3 --png /tmp/shot.png demos/webgl_geometries.js   (time: the frames' own clock)
 //   out/driejs --frames 600 --profile ...   the same, with the time per part of a frame
 //   out/driejs --no-jit ...     interpreted only (boomkat's JIT, both tiers, is on by default)
 //
@@ -59,6 +59,10 @@ bool profile;
 // time spent in sg::commit after each frame
 long commit_ns;
 time::Clock start_clock;
+// --png without --profile: performance.now() is the frames' own clock (0 while the script
+// starts, then 1/60 s a frame), as three's screenshots are taken, so a script that moves
+// things by the time passed (THREE.Timer) shows the same picture however slow the machine
+double fixed_clock = -1;
 // time spent in drie's render, to tell it apart from the JS side of a frame
 long render_ns;
 
@@ -212,7 +216,8 @@ fn void h_camera_update(JsCtx ctx, void* udata)
 }
 
 // light(kind, color, intensity, distance, decay, angle, penumbra, groundColor)
-// kind: 0 ambient, 1 hemisphere, 2 directional, 3 point, 4 spot
+// kind: 0 ambient, 1 hemisphere, 2 directional, 3 point, 4 spot, 5 rect area (distance and
+// decay are its width and height)
 fn void h_light(JsCtx ctx, void* udata)
 {
     Color color = color_of(num_arg(ctx, 1, 0xffffff));
@@ -227,6 +232,7 @@ fn void h_light(JsCtx ctx, void* udata)
         case 3: l = (Light*)drie::point_light(color, intensity, distance, decay);
         case 4: l = (Light*)drie::spot_light(color, intensity, distance, (float)num_arg(ctx, 5, drie::PI / 3),
                                               (float)num_arg(ctx, 6, 0), decay);
+        case 5: l = (Light*)drie::rect_area_light(color, intensity, (float)num_arg(ctx, 3, 10), (float)num_arg(ctx, 4, 10));
         default: l = (Light*)drie::ambient_light(color, intensity);
     }
     ctx.ret_number(reg_object((Object3D*)l));
@@ -755,7 +761,7 @@ fn void h_shadow(JsCtx ctx, void* udata)
     o.receive_shadow = bool_arg(ctx, 2, false);
 }
 
-// lightUpdate(light, color, intensity, groundColor)
+// lightUpdate(light, color, intensity, groundColor, width, height) (the last two: a rect area light's)
 fn void h_light_update(JsCtx ctx, void* udata)
 {
     Object3D* o = get_object(num_arg(ctx, 0, -1));
@@ -764,6 +770,12 @@ fn void h_light_update(JsCtx ctx, void* udata)
     l.color = color_of(num_arg(ctx, 1, 0xffffff));
     l.intensity = (float)num_arg(ctx, 2, 1);
     if (l.light_type == HEMISPHERE) ((HemisphereLight*)l).ground_color = color_of(num_arg(ctx, 3, 0));
+    if (l.light_type == RECT_AREA)
+    {
+        RectAreaLight* ra = (RectAreaLight*)l;
+        ra.width = (float)num_arg(ctx, 4, ra.width);
+        ra.height = (float)num_arg(ctx, 5, ra.height);
+    }
 }
 
 // lightShadow(light, cast, mapSize, radius, near, far, extent, normalBias, intensity, bias,
@@ -1328,7 +1340,11 @@ fn void h_info(JsCtx ctx, void* udata)
 }
 
 // Milliseconds from an arbitrary start (boomkat has no `performance`).
-fn void h_now(JsCtx ctx, void* udata) => ctx.ret_number((double)(long)start_clock.to_now() / 1e6);
+fn void h_now(JsCtx ctx, void* udata)
+{
+    if (fixed_clock >= 0) { ctx.ret_number(fixed_clock); return; }
+    ctx.ret_number((double)(long)start_clock.to_now() / 1e6);
+}
 
 // stats(fps, fpsMin, fpsMax, ms, msMin, msMax), from js/stats.js each frame (fps -1 until
 // the first second has passed). The first call puts the panel over the picture.
@@ -1411,6 +1427,7 @@ fn void h_set_animation_loop(JsCtx ctx, void* udata)
 
 fn bool js_frame(double time_ms)
 {
+    if (fixed_clock >= 0) fixed_clock = time_ms;
     fire_timers();
     JsValue? t = js.number(time_ms);
     if (catch t) return false;
@@ -1588,6 +1605,7 @@ fn int main(String[] args)
     dracos.init(mem);
 
     start_clock = time::clock::now();
+    if (png_path.len && !profile) fixed_clock = 0;
     js.create()!!;
     defer js.destroy();
     if (jit && (!js.get_runtime().set_jit() || !js.get_runtime().set_jit_opt()))
@@ -1618,6 +1636,9 @@ fn int main(String[] args)
     // and lil-gui's panel is not drawn at all
     js.define_module("three/addons/libs/lil-gui.module.min.js",
                      string::tformat("export * from \"%s/js/gui.js\";\nexport { default } from \"%s/js/gui.js\";\n", root, root))!!;
+    // RectAreaLightUniformsLib fills WebGLRenderer's UniformsLib: drie has the tables itself
+    js.define_module("three/addons/lights/RectAreaLightUniformsLib.js",
+                     string::tformat("export * from \"%s/js/rect_area_light.js\";\n", root))!!;
     // three's ProgressiveLightMap draws with shaders of its own: this one has drie bake
     js.define_module("three/addons/misc/ProgressiveLightMap.js",
                      string::tformat("export * from \"%s/js/progressive_lightmap.js\";\n", root))!!;
@@ -1659,7 +1680,7 @@ fn int main(String[] args)
     reg(natives, "setAnimationLoop", &h_set_animation_loop, 2);
     reg(natives, "stats", &h_stats, 6);
     reg(natives, "shadow", &h_shadow, 3);
-    reg(natives, "lightUpdate", &h_light_update, 4);
+    reg(natives, "lightUpdate", &h_light_update, 6);
     reg(natives, "lightShadow", &h_light_shadow, 12);
     reg(natives, "shadowType", &h_shadow_type, 2);
     reg(natives, "materialLightMap", &h_material_light_map, 3);

@@ -78,6 +78,7 @@ function lightKind(l) {
 	if (l.isDirectionalLight) return 2;
 	if (l.isPointLight) return 3;
 	if (l.isSpotLight) return 4;
+	if (l.isRectAreaLight) return 5;
 	return 0;
 }
 
@@ -340,7 +341,9 @@ export class DrieRenderer {
 			o.__drieMaterial = (Array.isArray(o.material) ? o.material[0] : o.material).__drie;
 		} else if (o.isLight) {
 			_color.copy(o.color);
-			id = N.light(lightKind(o), _color.getHex(), o.intensity, o.distance ?? 0, o.decay ?? 2, o.angle ?? Math.PI / 3,
+			// (a RectAreaLight's width and height in place of distance and decay)
+			id = N.light(lightKind(o), _color.getHex(), o.intensity, o.isRectAreaLight ? o.width : o.distance ?? 0,
+				o.isRectAreaLight ? o.height : o.decay ?? 2, o.angle ?? Math.PI / 3,
 				o.penumbra ?? 0, o.groundColor ? o.groundColor.getHex() : 0xffffff);
 			if (o.target) {
 				const target = N.lightTarget(id);
@@ -459,7 +462,8 @@ export class DrieRenderer {
 		const v = (light.__drieValues ??= []);
 		const ground = light.groundColor;
 		if (v[0] !== light.color.r || v[1] !== light.color.g || v[2] !== light.color.b || v[3] !== light.intensity
-			|| (ground && (v[4] !== ground.r || v[5] !== ground.g || v[6] !== ground.b))) {
+			|| (ground && (v[4] !== ground.r || v[5] !== ground.g || v[6] !== ground.b))
+			|| (light.isRectAreaLight && (v[7] !== light.width || v[8] !== light.height))) {
 			v[0] = light.color.r;
 			v[1] = light.color.g;
 			v[2] = light.color.b;
@@ -469,7 +473,10 @@ export class DrieRenderer {
 				v[5] = ground.g;
 				v[6] = ground.b;
 			}
-			N.lightUpdate(light.__drie, light.color.getHex(), light.intensity, ground ? ground.getHex() : 0);
+			v[7] = light.width;
+			v[8] = light.height;
+			N.lightUpdate(light.__drie, light.color.getHex(), light.intensity, ground ? ground.getHex() : 0,
+				light.width ?? 0, light.height ?? 0);
 		}
 		if (!light.isDirectionalLight && !light.isSpotLight) return;
 		const shadow = light.shadow;
