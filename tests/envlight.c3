@@ -4,6 +4,8 @@
 // dark ground below it) and a sun 10 degrees above the horizon, a few texels that give a
 // surface facing it three times the light the sky does.
 //   - each direction within 10% of the integral (and 0.02 where that is near nothing)
+//   - a sky lit only from above, max(d.y, 0), and black below: a surface facing up within 3% of
+//     the integral (2 pi / 3), one facing down within 0.03 of none
 // No GPU: the coefficients are worked out on the CPU, as at a texture's upload.
 //
 //   just test envlight
@@ -88,6 +90,21 @@ fn int main(String[] args) {
         expect(ok, string::tformat("%s: %.3f %.3f %.3f, exact %.3f %.3f %.3f", names[k], got.x, got.y, got.z,
                                    exact.x, exact.y, exact.z));
     }
+
+    float[] above = mem::new_array(float, (usz)W * H * 4);
+    for (int y = 0; y < H; y++) {
+        for (int x = 0; x < W; x++) {
+            sz i = ((sz)y * W + x) * 4;
+            above[i] = math::max(dir_of(x, y).y, 0.0f);
+            above[i + 3] = 1;
+        }
+    }
+    drie::EnvLight sky = drie::env_light(above, { }, W, H, false);
+    float exact_up = 2 * drie::PI / 3;
+    float up = sky.irradiance({ 0, 1, 0 }).x;
+    float down = sky.irradiance({ 0, -1, 0 }).x;
+    expect(math::abs(up - exact_up) < exact_up * 0.03f && down < 0.03f,
+           string::tformat("lit from above: up %.3f (exact %.3f), down %.3f (exact 0)", up, exact_up, down));
     if (failures) io::printfn("%d failed", failures);
     return failures ? 1 : 0;
 }

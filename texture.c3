@@ -797,9 +797,11 @@ fn float env_omega(int y, int w, int h) @local => (2 * PI / w) * (PI / h) * math
 // The irradiance of a longitude/latitude image of radiance (rows as uploaded: the first at the
 // top, y up), as 9 coefficients c with irradiance(n) = sum c[i] * basis_i(n): the radiance
 // projected onto spherical harmonics up to band 2, convolved with the cosine lobe, and windowed
-// as little as keeps it from going negative where a small, bright light (a sun) would otherwise
-// ring on the far side (Sloan 2017, "Deringing Spherical Harmonics"). Pixels are `floats` (RGBA,
-// linear) or `bytes` (RGBA8, sRGB when `srgb`).
+// as little as keeps it from going below -3% of its average anywhere, where a small, bright
+// light would otherwise ring on the far side (Sloan 2017, "Deringing Spherical Harmonics"). The
+// shader clamps what is left below zero; a window strict enough to leave none would take a
+// sixth of the light off a surface facing a clear sky over a dark ground. Pixels are `floats`
+// (RGBA, linear) or `bytes` (RGBA8, sRGB when `srgb`).
 fn Vector3[9] env_sh_irradiance(float[] floats, char[] bytes, int w, int h, bool srgb) {
     Vector3[9] l;
     float[9] b;
@@ -826,7 +828,8 @@ fn Vector3[9] env_sh_irradiance(float[] floats, char[] bytes, int w, int h, bool
     Vector3[9] e;
     for (int k = 0; k < 9; k++) e[k] = l[k] * (SH_COSINE[(int)SH_BAND[k]] * SH_K[k]);
     if (sh_min(e) >= 0) return e;
-    // the least windowing, 1 / (1 + lambda * l^2 (l + 1)^2) for band l, that leaves no direction negative
+    // the least windowing, 1 / (1 + lambda * l^2 (l + 1)^2) for band l, that leaves no direction
+    // below the floor
     float lo = 0;
     float hi = 1;
     while (sh_min(sh_window(e, hi)) < 0 && hi < 1e6f) hi *= 4;
@@ -850,10 +853,13 @@ fn Vector3[9] sh_window(Vector3[9] e, float lambda) @local {
     return out;
 }
 
-// The smallest value of any channel over 512 directions spread evenly over the sphere.
+// The smallest value of any channel over 512 directions spread evenly over the sphere, less
+// the floor of that channel: -3% of its average (the constant band's).
 fn float sh_min(Vector3[9] e) @local {
     float lowest = 1e30f;
     float[9] b;
+    sh_basis({ 0, 1, 0 }, &b);
+    Vector3 floor = e[0] * (b[0] * -0.03f);
     for (int i = 0; i < 512; i++) {
         float y = 1 - (i + 0.5f) / 256;
         float r = math::sqrt(math::max(0.0f, 1 - y * y));
@@ -861,6 +867,7 @@ fn float sh_min(Vector3[9] e) @local {
         sh_basis({ math::cos(a) * r, y, math::sin(a) * r }, &b);
         Vector3 v;
         for (int k = 0; k < 9; k++) v += e[k] * b[k];
+        v -= floor;
         lowest = math::min(lowest, math::min(v.x, math::min(v.y, v.z)));
     }
     return lowest;
