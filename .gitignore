@@ -6,5 +6,6 @@ driejs/third_party/
 driejs/vendor/
 driejs/demos/models/
 driejs/demos/textures/
+driejs/demos/thumbs/
 /build/
 driejs/lib/boomkat.c3l/

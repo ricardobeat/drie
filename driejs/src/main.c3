@@ -1405,6 +1405,117 @@ fn void draw_stats()
     sdtx::draw();
 }
 
+// ----------------------------------------------------------------------------
+// For a script that picks others (demos/index.js): text over the picture, a folder's files,
+// and another script run in this one's place
+// ----------------------------------------------------------------------------
+
+struct Label
+{
+    String text;
+    float x;
+    float y;
+    char[3] color;
+}
+
+List{Label} labels;
+bool labels_shown;
+
+// label(text, x, y, r, g, b): a line of text over this frame's picture, its top left corner at
+// x, y in window points, in the stats panel's font (a glyph 8 by 8 canvas units, the canvas
+// about 720 units high); r, g, b from 0 to 255
+fn void h_label(JsCtx ctx, void* udata)
+{
+    String? text = ctx.arg(0).as_string();
+    // (offscreen there is no window to write over)
+    if (catch text) return;
+    if (!sapp::isvalid()) return;
+    if (!labels.is_initialized()) labels.init(mem);
+    labels.push({
+        text.copy(mem), (float)num_arg(ctx, 1, 0), (float)num_arg(ctx, 2, 0),
+        { (char)num_arg(ctx, 3, 255), (char)num_arg(ctx, 4, 255), (char)num_arg(ctx, 5, 255) }
+    });
+    if (labels_shown) return;
+    labels_shown = true;
+    drie::add_overlay(&draw_labels);
+}
+
+// labelScale(): how many window points a canvas unit of the labels is (a glyph is 8 units)
+fn void h_label_scale(JsCtx ctx, void* udata)
+{
+    if (!sapp::isvalid()) { ctx.ret_number(1); return; }
+    ctx.ret_number((double)(math::max(1.0f, math::round(sapp::heightf() / 720)) / sapp::dpi_scale()));
+}
+
+fn void draw_labels()
+{
+    ui::setup();
+    float scale = math::max(1.0f, math::round(sapp::heightf() / 720));
+    // (window points to canvas units)
+    float k = sapp::dpi_scale() / scale;
+    sdtx::set_context(sdtx::default_context());
+    sdtx::canvas(sapp::widthf() / scale, sapp::heightf() / scale);
+    sdtx::font(ui::FONT_ORIC);
+    sdtx::origin(0, 0);
+    foreach (l : labels)
+    {
+        sdtx::pos(l.x * k / 8, l.y * k / 8);
+        sdtx::color3b(l.color[0], l.color[1], l.color[2]);
+        sdtx::puts(l.text.zstr_tcopy());
+        l.text.free(mem);
+    }
+    labels.clear();
+    sdtx::draw();
+}
+
+// files(folder): the names of its files, one a line
+fn void h_files(JsCtx ctx, void* udata)
+{
+    String? folder = ctx.arg(0).as_string();
+    if (catch folder) { ctx.throw_error(TYPE, "files: expected a folder"); return; }
+    PathList? found = path::ls(tmem, path::tnew(folder) ?? path::tnew(".")!!);
+    if (catch found) { ctx.ret_string(""); return; }
+    DString names = dstring::temp();
+    foreach (f : found)
+    {
+        names.append((String)f);
+        names.append("\n");
+    }
+    ctx.ret_string(names.str_view());
+}
+
+extern fn int execv(ZString path, ZString* argv);
+
+String exe_path;
+// --back: the script Escape goes back to
+String back_path;
+
+// Runs `script` in this program's place (the same executable, started again), with `back` the
+// script Escape returns to ("": none).
+fn void relaunch(String script, String back)
+{
+    ZString[8] argv;
+    int n;
+    argv[n++] = exe_path.zstr_tcopy();
+    if (!jit) argv[n++] = "--no-jit";
+    if (back.len)
+    {
+        argv[n++] = "--back";
+        argv[n++] = back.zstr_tcopy();
+    }
+    argv[n++] = script.zstr_tcopy();
+    execv(argv[0], &argv);
+    io::eprintfn("could not run %s", script);
+}
+
+// run(script): the script in this one's place; Escape there comes back to this one
+fn void h_run(JsCtx ctx, void* udata)
+{
+    String? script = ctx.arg(0).as_string();
+    if (catch script) { ctx.throw_error(TYPE, "run: expected a script"); return; }
+    relaunch(script, script_path);
+}
+
 // The loop starts once the script has finished, so promises made while it set up (texture
 // loads) settle first.
 fn void h_set_animation_loop(JsCtx ctx, void* udata)
@@ -1475,6 +1586,9 @@ fn bool input_event(Event* e)
         default: return false;
     }
     // sokol gives framebuffer pixels, the DOM points
+    // (--back: Escape goes back, unless it is letting go of the pointer)
+    bool back = e.type == KEY_DOWN && e.key_code == ESCAPE && back_path.len && !sapp::mouse_locked();
+    defer if (back) relaunch(back_path, "");
     double scale = sapp::dpi_scale();
     double[6] args = { kind, e.mouse_x / scale, e.mouse_y / scale, a, dx, dy };
     JsValue[6] values;
@@ -1747,12 +1861,13 @@ fn void reg(JsValue obj, String name, JsHostFn handler, int arity)
 
 fn int usage()
 {
-    io::printn("usage: driejs [--no-jit] [--frames N] [--profile] [--png out.png] script.js");
+    io::printn("usage: driejs [--no-jit] [--frames N] [--profile] [--png out.png] [--back other.js] script.js");
     return 2;
 }
 
 fn int main(String[] args)
 {
+    exe_path = args[0];
     for (sz i = 1; i < args.len; i++)
     {
         switch (args[i])
@@ -1766,6 +1881,9 @@ fn int main(String[] args)
                 profile = true;
             case "--no-jit":
                 jit = false;
+            case "--back":
+                if (++i >= args.len) return usage();
+                back_path = args[i];
             case "--png":
                 if (++i >= args.len) return usage();
                 png_path = args[i];
@@ -1933,6 +2051,10 @@ fn int main(String[] args)
     reg(natives, "skyParams", &h_sky_params, 15);
     reg(natives, "sceneEnvironment", &h_scene_environment, 3);
     reg(natives, "xmlParse", &h_xml_parse, 1);
+    reg(natives, "label", &h_label, 6);
+    reg(natives, "labelScale", &h_label_scale, 0);
+    reg(natives, "files", &h_files, 1);
+    reg(natives, "run", &h_run, 1);
 
     JsValue flag = js.boolean(profile)!!;
     js.set(natives, "profile", flag)!!;

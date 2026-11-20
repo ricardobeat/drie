@@ -23,6 +23,23 @@ build: deps
 run +args: build
     out/driejs {{args}}
 
+# the demos' thumbnails, for demos/index.js (`just run demos/index.js`): each demo's picture
+# after `frames` frames, into demos/thumbs/ (not in git), a quarter of the size where sips is
+# there to shrink it. `just thumbs 30 webgl_geometries` renders that one only
+thumbs frames="30" *names: build
+    #!/bin/sh
+    mkdir -p demos/thumbs
+    names="{{names}}"
+    [ -n "$names" ] || names=$(ls demos/*.js | sed 's|demos/||; s|\.js$||' | grep -v '^index$')
+    for n in $names; do
+        if out/driejs --frames {{frames}} --png demos/thumbs/$n.png demos/$n.js > /dev/null 2>&1; then
+            command -v sips > /dev/null && sips -Z 640 demos/thumbs/$n.png > /dev/null 2>&1
+            echo "$n"
+        else
+            echo "$n: failed"
+        fi
+    done
+
 # BOOMKAT=path overrides ../../boomkat/out/boomkat (the -jit and -opt runs pass --jit and --opt:
 # point it at a build of the jit branch).
 [doc("the benchmark on one runtime (drie, drie-js, node, bun, node-jitless, boomkat, boomkat-jit, boomkat-opt) or all")]
