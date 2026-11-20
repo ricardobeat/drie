@@ -619,15 +619,8 @@ struct RendererState @private {
     // tangents [0] and with them [1]: each made the first time a draw takes it, and compiled
     // in the background before that when a render sees that it will (start_material_shaders):
     // the jobs, + 1 (0: none)
-    SgShader[NodeVariant::len][2] material_shaders;
-    int[NodeVariant::len][2] material_jobs;
-    // the engine's pipelines compiling in the background (start_pipelines), by get_pipeline's
-    // key: sg_warm_pipeline_begin's jobs
-    HashMap{ulong, int} pipeline_jobs;
-    // get_pipeline starts compiling the engine's pipelines and makes none (start_pipelines)
-    bool pipeline_prestart;
-    // unlit_source's copies of the main programs' sources: three, mrt, vsm, mrt_vsm
-    ZString[4] unlit_sources;
+    SgShader[8][2] material_shaders;
+    int[8][2] material_jobs;
     // the blur that makes the moments of Renderer.shadow_type = VSM's maps (vsm.glsl)
     SgShader vsm_blur_shader;
     SgPipeline vsm_blur_pipeline;
@@ -844,7 +837,6 @@ fn Renderer* renderer(bool antialias = true, int width = 800, int height = 600, 
     state.opaque.allocator = mem;
     state.transparent.allocator = mem;
     if (!state.pipelines.is_initialized()) state.pipelines.init(mem);
-    if (!state.pipeline_jobs.is_initialized()) state.pipeline_jobs.init(mem);
     state.casters.allocator = mem;
     state.spot_casters.allocator = mem;
     foreach (&l : state.sun_casters) l.allocator = mem;
@@ -1190,8 +1182,7 @@ fn SgPipeline get_pipeline(
     bool depth_test = true,
     bool depth_write = true,
     bool tangents = false,
-    NodeProgram* nodes = null,
-    bool unlit = false
+    NodeProgram* nodes = null
 ) @private {
     int target = rt ? (rt.samples > 1 ? 2 : 1) + (rt.mrt ? 4 : (rt.is_linear() ? 2 : 0)) : 0;
     if (rt && rt.samples != 1 && rt.samples != 4) abort("drie: render targets support 1 or 4 samples");
@@ -1200,9 +1191,6 @@ fn SgPipeline get_pipeline(
     // after the prepass, the coverage of the cut-out's edge is in the depth buffer's samples
     bool a2c      = alpha_test && !transparent && samples > 1 && kind != PRETESTED;
     if (kind == DEPTH) blend = 0;
-    // a basic material: the unlit program, which reads no tangents (see unlit_of)
-    unlit = unlit && !nodes && kind != DEPTH;
-    if (unlit) tangents = false;
     // VSM: the programs that read the maps' moments (the one that cuts holes for all: the
     // depth prepass has cut them for PRETESTED, and SOLID has none)
     bool vsm      = kind != DEPTH && state.renderer && state.renderer.shadow_type == VSM;
@@ -1217,8 +1205,7 @@ fn SgPipeline get_pipeline(
     // (a node material's: its program's own)
     ulong key = blend | (ulong)(tangents ? 1 : 0) << 27 | (ulong)depth << 28 | (ulong)(vsm ? 1 : 0) << 30
         | (ulong)kind.ordinal << 31 | (ulong)side.ordinal << 33 | (ulong)(wireframe ? 1 : 0) << 35
-        | (ulong)target << 36 | (ulong)(a2c ? 1 : 0) << 39 | (ulong)(transparent ? 1 : 0) << 40
-        | (ulong)(unlit ? 1 : 0) << 41;
+        | (ulong)target << 36 | (ulong)(a2c ? 1 : 0) << 39 | (ulong)(transparent ? 1 : 0) << 40;
     if (nodes) {
         SgPipeline? found = nodes.pipelines[key];
         if (try found) return found;
@@ -1238,7 +1225,6 @@ fn SgPipeline get_pipeline(
         .depth_test = depth_test,
         .depth_write = depth_write,
         .tangents = tangents,
-        .unlit = unlit,
         .vsm = vsm,
         .target_samples = window ? 0 : rt.samples,
         .target_format = window ? SgPixelFormat.DEFAULT : rt.pixel_format(),
@@ -1250,7 +1236,7 @@ fn SgPipeline get_pipeline(
         case BACK_SIDE: cull = FRONT;
         case DOUBLE_SIDE: cull = NONE;
     }
-    NodeVariant variant = variant_of(kind, rt, unlit);
+    NodeVariant variant = variant_of(kind, rt);
     bool mrt = rt && rt.mrt;
     // (the shader: see below)
     SgPipelineDesc desc = {
@@ -1307,22 +1293,6 @@ fn SgPipeline get_pipeline(
         return { };
     } else {
         desc.shader = material_shader(variant, tangents);
-        if (state.pipeline_prestart) {
-            if (!state.pipeline_jobs.has_key(key)) {
-                @pool() {
-                    SgShaderDesc shader = material_shader_desc(variant, tangents, false);
-                    int job = sg_warm_pipeline_begin(desc.shader, &shader, &desc);
-                    if (job >= 0) state.pipeline_jobs[key] = job;
-                };
-            }
-            return { };
-        }
-        // (compiling in the background: made from the driver's cache once it is done)
-        if (try job = state.pipeline_jobs.get(key)) {
-            while (sg_warm_state(job) == 0) thread::sleep_ms(1);
-            sg_warm_end(job);
-            state.pipeline_jobs.remove(key);
-        }
     }
     SgPipeline pip = sg::make_pipeline(&desc);
     if (!pip.id) abort("drie: sokol's pipeline pool is full (pipeline_pool_size in setup_gfx)");
@@ -1408,69 +1378,26 @@ fn void start_material_shaders(Renderer* r, Scene* scene, bool prepass) @local {
     RenderTarget* rt = r.render_target;
     // the background (draw_background: drawn as a cut-out)
     Material* bg = scene.background_material;
-    if (bg && !node_build_of(bg)) start_material_shader(variant_of(CUT, rt, unlit_of(bg)), false);
-    // (a background_texture: a basic material's sphere or quad)
-    if (!bg && scene.background_texture) start_material_shader(variant_of(CUT, rt, has_unlit_programs()), false);
+    if ((bg && !node_build_of(bg)) || scene.background_texture) start_material_shader(variant_of(CUT, rt), false);
     for (int list = 0; list < 2; list++) {
         foreach (&item : list == 0 ? state.opaque : state.transparent) {
             if (node_build_of(item.mesh.material)) continue;
-            bool unlit = unlit_of(item.mesh.material);
-            bool tangents = !unlit && uses_tangents(item);
+            bool tangents = uses_tangents(item);
             DrawKind kind = list == 1 || draws_lines(item) || has_holes(item) ? CUT : SOLID;
             if (list == 0 && kind == CUT && prepass && prepassed(item)) kind = PRETESTED;
-            start_material_shader(variant_of(kind, rt, unlit), tangents);
+            start_material_shader(variant_of(kind, rt), tangents);
             if (list == 0 && prepass && prepassed(item)) start_material_shader(DEPTH, tangents);
         }
     }
 }
 
-// Starts compiling, all at once on worker threads, the engine's pipelines that this render's
-// main pass will draw with and that aren't made yet (Metal). Apple's GPUs blend in the
-// fragment program, so each blend state is a compile of its own: a scene of many (three's
-// webgl_materials_blending_custom has 110) would otherwise compile them one after another.
-// (Glass that refracts is drawn in passes of its own: its pipelines are made when drawn.)
-fn void start_pipelines(Renderer* r, bool prepass) @local {
-    if (state.bake.on) return;
-    state.pipeline_prestart = true;
-    defer state.pipeline_prestart = false;
-    foreach (&item : state.opaque) {
-        if (refracts(item) || node_build_of(item.mesh.material)) continue;
-        if (prepass && prepassed(item)) (void)depth_item_pipeline(item);
-        DrawKind kind = SOLID;
-        if (draws_lines(item) || has_holes(item)) kind = prepass && prepassed(item) ? PRETESTED : CUT;
-        (void)item_pipeline(item, kind);
-    }
-    foreach (&item : state.transparent) {
-        if (refracts(item) || node_build_of(item.mesh.material)) continue;
-        (void)item_pipeline(item, CUT);
-    }
-}
-
-// The material shader's variant a draw of `kind` into `rt` takes (`unlit`: a basic
-// material's, see unlit_of).
-fn NodeVariant variant_of(DrawKind kind, RenderTarget* rt, bool unlit = false) @local {
+// The material shader's variant a draw of `kind` into `rt` takes.
+fn NodeVariant variant_of(DrawKind kind, RenderTarget* rt) @local {
     bool mrt = rt && rt.mrt;
     if (kind == DEPTH) return DEPTH;
-    bool vsm = state.renderer && state.renderer.shadow_type == VSM;
-    if (unlit) return vsm ? (mrt ? UNLIT_MRT_VSM : UNLIT_VSM) : (mrt ? UNLIT_MRT : UNLIT);
-    if (vsm) return mrt ? MRT_VSM : VSM;
+    if (state.renderer && state.renderer.shadow_type == VSM) return mrt ? MRT_VSM : VSM;
     if (kind == CUT) return mrt ? MRT : MAIN;
     return mrt ? OPAQUE_MRT : OPAQUE;
-}
-
-// Whether `mat` draws with the unlit program (shader_core.glsl's UNLIT): a basic material,
-// on Metal, when the material shader is the engine's (an application's, Renderer.shaders,
-// has hooks that the engine's unlit program would leave out).
-fn bool unlit_of(Material* mat) @local => mat.type == BASIC && has_unlit_programs();
-
-fn bool has_unlit_programs() @local {
-    if (state.renderer && state.renderer.shaders.main) return false;
-    switch (sg::query_backend()) {
-        case METAL_MACOS:
-        case METAL_IOS:
-        case METAL_SIMULATOR: return true;
-        default: return false;
-    }
 }
 
 // Whether the material shader has programs for geometries with tangents: the engine's has,
@@ -1507,7 +1434,7 @@ fn SgShaderDesc material_shader_desc(NodeVariant v, bool tangents, bool cuts) @p
             case VSM: return own ? a.main_vsm_tangent(backend) : shaders::three_vsm_tangent_shader_desc(backend);
             case MRT_VSM: return own ? a.main_mrt_vsm_tangent(backend) : shaders::three_mrt_vsm_tangent_shader_desc(backend);
             case DEPTH: return own ? a.depth_tangent(backend) : shaders::depth_tangent_shader_desc(backend);
-            default: break;
+            case SHADOW: break;
         }
     }
     switch (v) {
@@ -1524,36 +1451,8 @@ fn SgShaderDesc material_shader_desc(NodeVariant v, bool tangents, bool cuts) @p
             } else {
                 desc = a.shadow ? a.shadow(backend) : shaders::shadow_shader_desc(backend);
             }
-        // (the engine's main programs with UNLIT set, see unlit_source: only taken where
-        // has_unlit_programs)
-        case UNLIT:
-            desc = shaders::three_shader_desc(backend);
-            desc.fragment_func.source = unlit_source(desc.fragment_func.source, 0);
-        case UNLIT_MRT:
-            desc = shaders::three_mrt_shader_desc(backend);
-            desc.fragment_func.source = unlit_source(desc.fragment_func.source, 1);
-        case UNLIT_VSM:
-            desc = shaders::three_vsm_shader_desc(backend);
-            desc.fragment_func.source = unlit_source(desc.fragment_func.source, 2);
-        case UNLIT_MRT_VSM:
-            desc = shaders::three_mrt_vsm_shader_desc(backend);
-            desc.fragment_func.source = unlit_source(desc.fragment_func.source, 3);
     }
     return desc;
-}
-
-// A copy of a main program's Metal source `src` with shader_core.glsl's UNLIT set (its
-// function constant's default replaced), made once for each of the four (`slot`) and kept.
-fn ZString unlit_source(ZString src, int slot) @local {
-    if (state.unlit_sources[slot]) return state.unlit_sources[slot];
-    String text = src.str_view();
-    String unset = "constant int UNLIT = is_function_constant_defined(UNLIT_tmp) ? UNLIT_tmp : 0;";
-    sz? at = text.index_of(unset);
-    if (catch at) abort("drie: the material shader's source has no UNLIT constant");
-    usz cut = (usz)at;
-    String copy = string::format(mem, "%sconstant int UNLIT = 1;%s\0", text[:cut], text[cut + unset.len..]);
-    state.unlit_sources[slot] = (ZString)copy.ptr;
-    return state.unlit_sources[slot];
 }
 
 // A node material's uniforms (node_vs_params, and node_fs_params for `fragment`): the
@@ -3101,26 +3000,6 @@ fn VsParams vs_params_of(DrawItem* item, Mat4 view_proj, bool normals = true) @l
     return vs;
 }
 
-// The pipeline of draw_depth_item(item).
-fn SgPipeline depth_item_pipeline(DrawItem* item) @local {
-    Material* mat = item.mesh.material;
-    NodeBuild* nodes = node_build_of(mat);
-    // (a node material's programs read no tangents: its normal map's frame from the uv)
-    bool tangents = !nodes && uses_tangents(item);
-    return get_pipeline(mat.side, false, false, state.renderer.render_target, alpha_test_of(mat) > 0, 0, DEPTH,
-                        tangents: tangents, nodes: nodes ? nodes.program : null);
-}
-
-// The pipeline of draw_item(item, ..., kind), but for a light map's bake.
-fn SgPipeline item_pipeline(DrawItem* item, DrawKind kind) @local {
-    Material* mat = item.mesh.material;
-    NodeBuild* nodes = node_build_of(mat);
-    bool tangents = !nodes && uses_tangents(item);
-    return get_pipeline(mat.side, mat.transparent, draws_lines(item), state.renderer.render_target,
-                        alpha_test_of(mat) > 0, blend_key(mat), kind, mat.depth_test, mat.depth_write, tangents,
-                        nodes ? nodes.program : null, unlit_of(mat));
-}
-
 // The depth prepass's draw of an opaque item with holes (see Renderer.depth_prepass).
 fn void draw_depth_item(DrawItem* item, Mat4 view_proj) @local {
     Mesh* m           = item.mesh;
@@ -3129,8 +3008,12 @@ fn void draw_depth_item(DrawItem* item, Mat4 view_proj) @local {
     Renderer* r       = state.renderer;
     float alpha_test  = alpha_test_of(mat);
     NodeBuild* nodes  = node_build_of(mat);
+    // (a node material's programs read no tangents: its normal map's frame from the uv)
     bool tangents     = !nodes && uses_tangents(item);
-    SgPipeline pip = depth_item_pipeline(item);
+    SgPipeline pip = get_pipeline(
+        mat.side, false, false, r.render_target, alpha_test > 0, 0, DEPTH, tangents: tangents,
+        nodes: nodes ? nodes.program : null
+    );
     // (a node material's program still compiling: not drawn yet)
     if (nodes && (!pip.id || nodes.program.busy())) return;
     sg::apply_pipeline(pip);
@@ -3177,7 +3060,22 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     // (a light map's bake draws with the engine's own program)
     NodeBuild* nodes = state.bake.on ? null : node_build_of(mat);
     bool tangents = !state.bake.on && !nodes && uses_tangents(item);
-    SgPipeline pip = state.bake.on ? state.bake.pipeline : item_pipeline(item, kind);
+    SgPipeline pip = (
+        state.bake.on ? state.bake.pipeline
+            : get_pipeline(
+                mat.side,
+                mat.transparent,
+                lines,
+                r.render_target,
+                alpha_test > 0,
+                blend_key(mat),
+                kind,
+                mat.depth_test,
+                mat.depth_write,
+                tangents,
+                nodes ? nodes.program : null
+            )
+    );
     // (a node material's program still compiling: not drawn yet)
     if (nodes && (!pip.id || nodes.program.busy())) return;
     sg::apply_pipeline(pip);
@@ -4362,7 +4260,6 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera) {
         RenderTarget* rt = self.render_target;
         state.prepass_focal = camera.projection_matrix[1][1] * 0.5f * (rt ? rt.height : sapp::heightf());
     }
-    start_pipelines(self, prepass);
     if (prepass) {
         foreach (&item : state.opaque) {
             if (prepassed(item)) draw_depth_item(item, view_proj_rel);
