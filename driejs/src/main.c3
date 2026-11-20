@@ -2066,7 +2066,7 @@ fn void h_node_set(JsCtx ctx, void* udata)
 fn void h_node_builtin(JsCtx ctx, void* udata)
 {
     int kind = (int)num_arg(ctx, 0, 0);
-    if (kind < 0 || kind > NodeBuiltin.OUTPUT.ordinal) { ctx.throw_error(TYPE, "nodeBuiltin: no such builtin"); return; }
+    if (kind < 0 || kind > NodeBuiltin.ENV_ROUGHNESS.ordinal) { ctx.throw_error(TYPE, "nodeBuiltin: no such builtin"); return; }
     ctx.ret_number(drie::add_node({ .op = BUILTIN, .type = type_arg(ctx, 1), .kind = (char)kind }).id);
 }
 
@@ -2183,7 +2183,7 @@ fn void h_node_seq(JsCtx ctx, void* udata) => ctx.ret_number(drie::node_seq(node
 fn void h_node_type(JsCtx ctx, void* udata) => ctx.ret_number(node_arg(ctx, 0).type().ordinal);
 
 // materialNodes(material, color, opacity, normal, roughness, metalness, emissive, position,
-// output, mask): 0 for none
+// output, mask, env): 0 for none
 fn void h_material_nodes(JsCtx ctx, void* udata)
 {
     Material* m = get_material(num_arg(ctx, 0, -1));
@@ -2197,6 +2197,7 @@ fn void h_material_nodes(JsCtx ctx, void* udata)
     m.position_node = node_arg(ctx, 7);
     m.output_node = node_arg(ctx, 8);
     m.mask_node = node_arg(ctx, 9);
+    m.env_node = node_arg(ctx, 10);
 }
 
 // ----------------------------------------------------------------------------
@@ -2394,7 +2395,7 @@ fn int main(String[] args)
     reg(natives, "nodeAppend", &h_node_append, 2);
     reg(natives, "nodeSeq", &h_node_seq, 2);
     reg(natives, "nodeType", &h_node_type, 1);
-    reg(natives, "materialNodes", &h_material_nodes, 10);
+    reg(natives, "materialNodes", &h_material_nodes, 11);
     reg(natives, "floatTexture", &h_float_texture, 4);
     reg(natives, "imageDecode", &h_image_decode, 1);
     reg(natives, "imageSize", &h_image_size, 2);

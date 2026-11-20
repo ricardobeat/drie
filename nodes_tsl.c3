@@ -103,6 +103,9 @@ fn Node view_matrix() => builtin(VIEW_MATRIX, MAT4);
 fn Node projection_matrix() => builtin(PROJECTION_MATRIX, MAT4);
 // What the light made of the material, rgba (three's output): for Material.output_node.
 fn Node output() => builtin(OUTPUT, VEC4);
+// In Material.env_node: the direction the surface reflects (in the world), and its roughness.
+fn Node env_direction() => builtin(ENV_DIRECTION, VEC3);
+fn Node env_roughness() => builtin(ENV_ROUGHNESS, FLOAT);
 
 // `t` read at `at` (the mesh's uv by default): its rgba, as the material's maps (sRGB images
 // in linear values). `level`: a mip level (none: from the pixel's footprint).

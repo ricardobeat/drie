@@ -363,6 +363,9 @@ struct Material {
     //                  (nodes::output(); before the fog)
     //   mask_node      a bool: false cuts the fragment out, in every pass (the shadow maps
     //                  too), as three's maskNode
+    //   env_node       what the environment reflects, rgb, in nodes::env_direction() at
+    //                  nodes::env_roughness() (three's envNode; in place of the environment
+    //                  map's reflection, whose light on surfaces stays)
     Node color_node;
     Node opacity_node;
     Node normal_node;
@@ -372,6 +375,7 @@ struct Material {
     Node position_node;
     Node output_node;
     Node mask_node;
+    Node env_node;
     // The shaders built for them (at the first draw, and again when one changes).
     NodeBuild* node_build;
 }

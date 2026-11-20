@@ -114,6 +114,8 @@ enum NodeBuiltin : char {
     VIEW_MATRIX,
     PROJECTION_MATRIX,
     OUTPUT,           // the lit color, rgba (in output_node)
+    ENV_DIRECTION,    // the direction the surface reflects, in the world (in env_node)
+    ENV_ROUGHNESS,    // the roughness it reflects with (in env_node)
 }
 
 enum NodeBinary : char {
@@ -626,6 +628,7 @@ struct NodeProgram {
     String normal_body;
     String surface_body;
     String output_body;
+    String env_body;
     bool cuts;               // color_node or opacity_node can cut holes: a discard, or alpha
                              // (with the material's alpha_test), which the shadow maps cut too
     SgShader[8] shaders;     // by NodeVariant
@@ -635,7 +638,7 @@ struct NodeProgram {
 
 // A material's build: its graphs' program, and where its uniforms and textures go.
 struct NodeBuild {
-    Node[9] slots;           // the material's *_node fields it was built from
+    Node[10] slots;          // the material's *_node fields it was built from
     NodeProgram* program;
     List{Node} uniforms;     // in their order in node_params (a matrix takes four)
     Texture*[NODE_TEXTURES] textures; // node texture k is tex_ext(5 - k)
@@ -663,18 +666,19 @@ struct NodeGen @local {
     List{Node} varyings;
     int params;   // node_params used
     bool output;  // printing node_output's body (nodes::output() is there)
+    bool env;     // printing node_env's (nodes::env_direction() and env_roughness() are there)
     bool discards; // a discard printed
 }
 
-fn Node[9] node_slots(Material* mat) @local {
-    Node[9] s = {
+fn Node[10] node_slots(Material* mat) @local {
+    Node[10] s = {
         mat.color_node, mat.opacity_node, mat.normal_node, mat.roughness_node, mat.metalness_node,
-        mat.emissive_node, mat.position_node, mat.output_node, mat.mask_node
+        mat.emissive_node, mat.position_node, mat.output_node, mat.mask_node, mat.env_node
     };
     return s;
 }
 
-fn bool same_nodes(Node[9] a, Node[9] b) @local {
+fn bool same_nodes(Node[10] a, Node[10] b) @local {
     foreach (i, n : a) {
         if (n.id != b[i].id) return false;
     }
@@ -691,7 +695,7 @@ fn bool has_nodes(Material* mat) {
 // The material's build, made or remade if its nodes changed; null without nodes.
 fn NodeBuild* node_build_of(Material* mat) {
     if (!has_nodes(mat)) return null;
-    Node[9] slots = node_slots(mat);
+    Node[10] slots = node_slots(mat);
     NodeBuild* b = mat.node_build;
     if (b && same_nodes(b.slots, slots)) return b;
     // (its program stays: other materials may share it, and the same graphs may come back)
@@ -766,6 +770,11 @@ fn NodeBuild* node_build_of(Material* mat) {
             }
         }, mat);
         g.output = false;
+        g.env = true;
+        String env = g.body(fn void(NodeGen* g, Material* mat) {
+            if (mat.env_node.id) g.line("env = %s;", g.value_as(mat.env_node, VEC3));
+        }, mat);
+        g.env = false;
         String vertex = g.body(fn void(NodeGen* g, Material* mat) {
             g.stage = VERTEX;
             // the variables that varyings carry (TSL's varying(...).assign() in position_node):
@@ -793,7 +802,8 @@ fn NodeBuild* node_build_of(Material* mat) {
             }
             for (sz i = g.varyings.len(); i < NODE_VARYINGS; i++) g.line("vary%d = %s;", i, g.zero(VEC4));
         }, mat);
-        String key = string::tformat("%s\n--\n%s\n--\n%s\n--\n%s\n--\n%s\n--\n%s", vertex, color, normal, surface, output, cuts);
+        String key = string::tformat("%s\n--\n%s\n--\n%s\n--\n%s\n--\n%s\n--\n%s\n--\n%s", vertex, color, normal, surface, output,
+                                     env, cuts);
         if (!node_programs.is_initialized()) node_programs.init(mem);
         NodeProgram*? found = node_programs[key];
         if (try found) {
@@ -805,6 +815,7 @@ fn NodeBuild* node_build_of(Material* mat) {
             p.normal_body = normal.copy(mem);
             p.surface_body = surface.copy(mem);
             p.output_body = output.copy(mem);
+            p.env_body = env.copy(mem);
             p.cuts = cuts;
             p.pipelines.init(mem);
             node_programs[key.copy(mem)] = p;
@@ -1033,6 +1044,12 @@ fn String NodeGen.builtin(&self, Node n, NodeBuiltin b) {
         case OUTPUT:
             if (!self.output) abort("drie: nodes: output() is for output_node");
             return "result";
+        case ENV_DIRECTION:
+            if (!self.env) abort("drie: nodes: env_direction() is for env_node");
+            return "dir";
+        case ENV_ROUGHNESS:
+            if (!self.env) abort("drie: nodes: env_roughness() is for env_node");
+            return "rough";
     }
 }
 
@@ -1458,14 +1475,16 @@ fn SgShader NodeProgram.make_shader(&self, NodeVariant v, SgShaderDesc desc) {
             fs = splice_body(fs, "node_normal", self.normal_body);
             fs = splice_body(fs, "node_surface", self.surface_body);
             fs = splice_body(fs, "node_output", self.output_body);
+            // (a build of the shader from before node_env has none: fine without an env_node)
+            if (self.env_body.len || fs.contains("\nvoid node_env(")) fs = splice_body(fs, "node_env", self.env_body);
             desc.fragment_func.source = fs.zstr_tcopy();
         }
         desc.label = "drie-node-material";
         SgShader shader = sg::make_shader(&desc);
         if (sg::query_shader_state(shader) != VALID) {
             io::eprintfn("drie: a node material's shader failed to build. Its hooks:");
-            io::eprintfn("node_vertex:\n%snode_color:\n%snode_normal:\n%snode_surface:\n%snode_output:\n%s",
-                self.vertex_body, self.color_body, self.normal_body, self.surface_body, self.output_body);
+            io::eprintfn("node_vertex:\n%snode_color:\n%snode_normal:\n%snode_surface:\n%snode_output:\n%snode_env:\n%s",
+                self.vertex_body, self.color_body, self.normal_body, self.surface_body, self.output_body, self.env_body);
             abort("drie: a node material's shader failed to build");
         }
         return shader;

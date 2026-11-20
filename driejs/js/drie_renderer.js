@@ -376,17 +376,21 @@ export class DrieRenderer {
 	// is worked out at the first update and every 30th (that waits for the GPU). Before the
 	// first frame there is nothing to draw with: the update waits for the next render (or
 	// LightProbeGenerator).
-	_probe(cubeCamera, scene) {
+	_probe(cubeCamera, scene, at = null) {
 		const texture = cubeCamera.renderTarget.texture;
 		const sceneId = this._mirror(scene);
 		if (cubeCamera.parent === null) cubeCamera.updateMatrixWorld();
-		const p = new Vector3().setFromMatrixPosition(cubeCamera.matrixWorld);
+		const p = at ?? new Vector3().setFromMatrixPosition(cubeCamera.matrixWorld);
 		const face = cubeCamera.children[0];
 		const count = texture.__drieProbes ?? 0;
 		const id = N.renderProbe(this._id, sceneId, p.x, p.y, p.z, texture.__drieEnvironment ?? -1, cubeCamera.renderTarget.width,
 			face?.near ?? 0.1, face?.far ?? 1000, count % 30 === 0);
 		if (id < 0) {
-			(this._probes ??= new Map()).set(cubeCamera, scene);
+			// (drawn later as the scene is now: where the camera is and what is hidden, as a
+			// page hides what it doesn't want in the map just around the update)
+			const hidden = [];
+			scene.traverse((o) => { if (!o.visible) hidden.push(o); });
+			(this._probes ??= new Map()).set(cubeCamera, { scene, at: p, hidden });
 			return;
 		}
 		this._probes?.delete(cubeCamera);
@@ -395,7 +399,15 @@ export class DrieRenderer {
 	}
 
 	_runProbes() {
-		for (const [cubeCamera, scene] of [...this._probes]) this._probe(cubeCamera, scene);
+		for (const [cubeCamera, { scene, at, hidden }] of [...this._probes]) {
+			const shown = hidden.filter((o) => o.visible);
+			for (const o of shown) o.visible = false;
+			try {
+				this._probe(cubeCamera, scene, at);
+			} finally {
+				for (const o of shown) o.visible = true;
+			}
+		}
 	}
 
 	// LightProbeGenerator.fromCubeRenderTarget: the light on surfaces of a CubeCamera's map,
@@ -962,8 +974,10 @@ export class DrieRenderer {
 			this._map(material.anisotropyMap), this._map(material.alphaMap),
 			// (the color map, when it is the same image: drie's map_emissive)
 			material.__drieMapEmissive ? -1 : this._map(material.emissiveMap),
-			// (its own surroundings, instead of the scene's environment)
-			material.envMap ? (material.envMap.__drieEnvironment ?? this._texture(material.envMap)) : -1,
+			// (its own surroundings, instead of the scene's environment: its envMap, or the map
+			// its envNode reads)
+			material.envMap ? (material.envMap.__drieEnvironment ?? this._texture(material.envMap))
+				: material.envNode ? globalThis.__drieNodes.envNodeTexture(this, material.envNode) : -1,
 			material.isMeshStandardMaterial ? (material.envMapIntensity ?? 1) : 1];
 		const key = maps.join(" ");
 		if (material.__drieMaps === key) return;

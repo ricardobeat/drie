@@ -20,7 +20,7 @@
 
 import * as TSL from "../vendor/three.tsl.js";
 import { CubeRenderTarget, MeshBasicNodeMaterial } from "../vendor/three.webgpu.js";
-import { BackSide, Vector2 } from "../vendor/three.core.js";
+import { BackSide, DoubleSide, NormalGAPacking, NormalRGPacking, ObjectSpaceNormalMap, Vector2 } from "../vendor/three.core.js";
 
 const N = globalThis.__drie;
 
@@ -36,10 +36,10 @@ const typeOf = (scalar, n) => (scalar === "bool" ? T.bool : { float: 0, int: 6, 
 const B = {
 	UV: 0, UV1: 1, POSITION_LOCAL: 2, POSITION_WORLD: 3, NORMAL_LOCAL: 4, NORMAL_WORLD: 5, NORMAL_GEOMETRY: 6,
 	CAMERA_POSITION: 7, VIEW_DIRECTION: 8, TIME: 9, VERTEX_COLOR: 10, FRAG_COORD: 11, FRONT_FACING: 12,
-	MODEL_MATRIX: 13, VIEW_MATRIX: 14, PROJECTION_MATRIX: 15, OUTPUT: 16,
+	MODEL_MATRIX: 13, VIEW_MATRIX: 14, PROJECTION_MATRIX: 15, OUTPUT: 16, ENV_DIRECTION: 17, ENV_ROUGHNESS: 18,
 };
 const BUILTIN_TYPES = [T.vec2, T.vec2, T.vec3, T.vec3, T.vec3, T.vec3, T.vec3, T.vec3, T.vec3, T.float, T.vec4, T.vec2, T.bool,
-	T.mat4, T.mat4, T.mat4, T.vec4];
+	T.mat4, T.mat4, T.mat4, T.vec4, T.vec3, T.float];
 const OPS = {
 	"+": 0, "-": 1, "*": 2, "/": 3, "<": 4, "<=": 5, ">": 6, ">=": 7, "==": 8, "!=": 9, "&&": 10, "||": 11, "%": 12, "&": 13,
 	"|": 14, "^": 15, "<<": 16, ">>": 17, "^^": 18,
@@ -54,9 +54,9 @@ const LOOP = { "<": 0, "<=": 1, ">": 2, ">=": 3, while: 4 };
 
 // The slots of three's NodeMaterial that drie has (in materialNodes' order)
 const SLOTS = ["colorNode", "opacityNode", "normalNode", "roughnessNode", "metalnessNode", "emissiveNode", "positionNode", "outputNode",
-	"maskNode"];
+	"maskNode", "envNode"];
 // and those it hasn't
-const UNSUPPORTED = ["vertexNode", "lightsNode", "envNode", "aoNode", "alphaTestNode", "maskShadowNode", "mrtNode",
+const UNSUPPORTED = ["vertexNode", "lightsNode", "aoNode", "alphaTestNode", "maskShadowNode", "mrtNode",
 	"castShadowNode", "castShadowPositionNode", "receivedShadowNode", "receivedShadowPositionNode", "shadowPositionNode",
 	"depthNode", "backdropNode", "backdropAlphaNode", "clearcoatNode", "clearcoatRoughnessNode", "clearcoatNormalNode",
 	"sheenNode", "sheenRoughnessNode", "iridescenceNode", "iridescenceIORNode", "iridescenceThicknessNode", "specularIntensityNode",
@@ -435,7 +435,12 @@ class Translator {
 		if (isConditional(n)) {
 			if (typeof n.ifNode?.jsFunc === "function") unsupported("If() as a value (use select())");
 			const [a, b] = this.weak([n.ifNode, n.elseNode]);
-			return N.nodeSelect(this.convert(this.node(n.condNode), T.bool), a, b);
+			const cond = this.node(n.condNode);
+			if (COMPONENTS[this.type(cond)] > 1) {
+				const type = this.type(cond);
+				return this.call("mix", this.convert(b, type), this.convert(a, type), cond);
+			}
+			return N.nodeSelect(this.convert(cond, T.bool), a, b);
 		}
 		switch (nodeName(n)) {
 			case "ConvertNode": {
@@ -500,6 +505,8 @@ class Translator {
 				return this.overloaded(n);
 			case "BumpMapNode":
 				return this.bumpMap(n);
+			case "NormalMapNode":
+				return this.normalMap(n);
 			case "FrontFacingNode":
 				return this.builtin(B.FRONT_FACING);
 			case "PropertyNode":
@@ -590,7 +597,29 @@ class Translator {
 		if (OPS[op] === undefined) unsupported(`the operator ${op}`);
 		let [a, b] = this.weak([n.aNode, n.bNode]);
 		if (OPS[op] < OPS["<"] || OPS[op] >= OPS["%"]) [a, b] = this.widest([a, b]);
+		const comparison = OPS[op] >= OPS["<"] && OPS[op] <= OPS["!="];
+		if (comparison && Math.max(COMPONENTS[this.type(a)], COMPONENTS[this.type(b)]) > 1) return this.mask(op, a, b);
 		return this.bin(op, a, b);
+	}
+
+	// A comparison of vectors, component by component (TSL's bvec), as a vector of 1 where it
+	// holds and 0 where not: a select on a vector is a mix (on a vector of bools in TSL, the
+	// only one it selects on), and one of its components a bool.
+	mask(op, a, b) {
+		[a, b] = this.widest([a, b]);
+		const type = typeOf("float", COMPONENTS[this.type(a)]);
+		[a, b] = [this.convert(a, type), this.convert(b, type)];
+		const one = this.num(1, type);
+		let m;
+		switch (op) {
+			case ">=": m = this.call("step", b, a); break;
+			case "<=": m = this.call("step", a, b); break;
+			case ">": m = this.sub(one, this.call("step", a, b)); break;
+			case "<": m = this.sub(one, this.call("step", b, a)); break;
+			case "==": m = this.sub(one, this.call("abs", this.call("sign", this.sub(a, b)))); break;
+			case "!=": m = this.call("abs", this.call("sign", this.sub(a, b))); break;
+		}
+		return m;
 	}
 
 	math(n) {
@@ -694,10 +723,12 @@ class Translator {
 		const value = (make) => this.node(TSL.nodeObject(make));
 		let dir;
 		if (n.uvNode) dir = this.node(n.uvNode);
+		else if (this.envSlot) dir = this.builtin(B.ENV_DIRECTION);
 		else if (this.context.getUV) dir = value(this.context.getUV(n, this.builder));
 		else dir = this.reflectVector();
 		let level;
 		if (n.levelNode) level = this.node(n.levelNode);
+		else if (this.envSlot) level = this.builtin(B.ENV_ROUGHNESS);
 		else if (this.context.getTextureLevel) level = value(this.context.getTextureLevel(n));
 		else level = this.num(0);
 		return [id, dir, level];
@@ -901,6 +932,40 @@ class Translator {
 		return this.call("normalize", this.sub(this.mul(this.call("abs", det), normal), grad));
 	}
 
+	// normalMap(color, scale): a tangent-space normal map in view space, on three's frame made
+	// of the derivatives of the view position and uv (Schüler, "Normal Mapping Without
+	// Precomputed Tangents"), turned over on back faces as three does
+	normalMap(n) {
+		if (n.normalMapType === ObjectSpaceNormalMap) unsupported("an object-space normalMap");
+		let m = this.sub(this.mul(this.convert(this.node(n.node), T.vec4), this.num(2)), this.num(1));
+		if (n.unpackNormalMode === NormalRGPacking || n.unpackNormalMode === NormalGAPacking) {
+			const xy = this.swizzle(m, n.unpackNormalMode === NormalRGPacking ? "xy" : "yw");
+			const z = this.call("sqrt", this.call("clamp", this.sub(this.num(1), this.call("dot", xy, xy)), this.num(0), this.num(1)));
+			m = this.join(T.vec3, xy, z);
+		}
+		let xy = this.swizzle(m, "xy");
+		if (n.scaleNode) xy = this.mul(xy, this.node(n.scaleNode));
+		const pos = this.positionView();
+		const uv = this.builtin(B.UV);
+		const normal = this.toView(this.builtin(B.NORMAL_WORLD));
+		const q0 = this.call("dFdx", pos);
+		const q1 = this.call("dFdy", pos);
+		const st0 = this.call("dFdx", uv);
+		const st1 = this.call("dFdy", uv);
+		const q1perp = this.call("cross", q1, normal);
+		const q0perp = this.call("cross", normal, q0);
+		const t = this.add(this.mul(q1perp, this.swizzle(st0, "x")), this.mul(q0perp, this.swizzle(st1, "x")));
+		const b = this.add(this.mul(q1perp, this.swizzle(st0, "y")), this.mul(q0perp, this.swizzle(st1, "y")));
+		const det = this.call("max", this.call("dot", t, t), this.call("dot", b, b));
+		let scale = N.nodeSelect(this.bin("==", det, this.num(0)), this.num(0), this.call("inversesqrt", det));
+		const side = this.material?.side;
+		if (side === BackSide) scale = this.mul(scale, this.num(-1));
+		else if (side === DoubleSide) scale = this.mul(scale, N.nodeSelect(this.builtin(B.FRONT_FACING), this.num(1), this.num(-1)));
+		const tm = this.mul(this.mul(t, scale), this.swizzle(xy, "x"));
+		const bm = this.mul(this.mul(b, scale), this.swizzle(xy, "y"));
+		return this.call("normalize", this.add(this.add(tm, bm), this.mul(normal, this.swizzle(m, "z"))));
+	}
+
 	// A material slot's graph.
 	// outputNode's `output`: a variable that starts as what the light made, so that a Fn can
 	// assign it (declared first in the slot's block)
@@ -924,6 +989,18 @@ class Translator {
 				id = this.convert(this.node(step), T.vec4);
 				if (i < n.length - 1) this.emit(N.nodeAssign(this.outputVar, id));
 			});
+		} else if (name === "envNode") {
+			// (reflectVector and the maps' direction and level are the hook's: the graph is
+			// made again for this slot alone)
+			const [ids, overrides] = [this.ids, this.overrides];
+			this.ids = new Map();
+			this.overrides = new Map([...(overrides ?? []), [TSL.reflectVector, (t) => t.builtin(B.ENV_DIRECTION)]]);
+			this.envSlot = true;
+			// (a map as it is: read as pmremTexture, as three does)
+			if (n.isTextureNode && nodeName(n) !== "PMREMNode") id = this.pmrem({ value: n.value });
+			else id = this.convert(this.node(n), T.vec3);
+			this.envSlot = false;
+			[this.ids, this.overrides] = [ids, overrides];
 		} else {
 			id = this.node(n);
 		}
@@ -1077,7 +1154,15 @@ function environment(renderer, scene) {
 	return m.__drieMap;
 }
 
-globalThis.__drieNodes = { sync, background, environment };
+// The environment map behind a material's envNode (its light on surfaces lights the material),
+// or -1
+function envNodeTexture(renderer, n) {
+	if (nodeName(n) === "PMREMNode") return envTextureId(renderer, n._value ?? n.value);
+	if (n?.isTextureNode) return envTextureId(renderer, n.value);
+	return -1;
+}
+
+globalThis.__drieNodes = { sync, background, environment, envNodeTexture };
 
 // three's CubeRenderTarget.fromEquirectangularTexture draws the map into a cube: drie's
 // environment maps are equirectangular, so its texture is the map itself.
