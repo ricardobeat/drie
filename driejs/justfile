@@ -243,7 +243,8 @@ assets: \
     (asset "textures/cube/MilkyWay/dark-s_nz.jpg" "b8b9ffd16dbeb067454f95e85ed4723036e59296192898db1ea96f063c37e5ad") \
     (asset "textures/lava/lavatile.jpg" "8dd33ecfacd108323888479a85cdf10a2159fe82daa247c2f46978952730e76f") \
     (asset "textures/roughness_map.jpg" "261c6f32ab65a6ab1efa76a85702a1f46168081a3eeabd9d0b49de2f4ba4d7a1") \
-    (asset "fonts/helvetiker_regular.typeface.json" "d5c5467690f74061179a292af83bd85c4c551e0f106b2af99714f11184c96981")
+    (asset "fonts/helvetiker_regular.typeface.json" "d5c5467690f74061179a292af83bd85c4c551e0f106b2af99714f11184c96981") \
+    (asset "models/gltf/Michelle.glb" "7a87e15a99ccbc5e5877be66e1e4ecae0a581adcafa0cce1a5569f49909e968e")
 
 [private]
 asset path sha256: (fetch examples + "/" + path sha256 "demos/" + path)
