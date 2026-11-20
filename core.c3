@@ -668,6 +668,7 @@ enum LightType {
     DIRECTIONAL,
     POINT,
     SPOT,
+    RECT_AREA,
 }
 
 struct Light {
@@ -711,9 +712,18 @@ struct PointLight {
     inline Light light;
     float distance;
     float decay;
-    // Extension: size of the light source in meters. Softens the falloff close to the light
-    // and widens its highlights.
+    // Extension: radius of the light source in meters (a bulb). Softens the falloff close to
+    // the light, and its highlights are the bulb's own shape: on a smooth surface a sharp-edged
+    // disc as big as the bulb, on a rough one as before, with the same light in all (Karis'
+    // representative point, "Real Shading in Unreal Engine 4", 2013). 0: a point.
     float radius;
+    // Extension: a tube light (a fluorescent tube, a strip), `length` meters long along the
+    // light's own x axis (its world rotation's; scale is left out), centred on its position,
+    // `radius` thick. Its intensity is spread along it: the light falls off from the whole
+    // segment (with the distance to its nearest point for `distance`'s cutoff, and as the
+    // square of the distance whatever `decay`) and its highlights are long, the tube's own shape
+    // (Karis' tube lights). Casts no shadow, as point lights. 0: a ball of `radius`.
+    float length;
 }
 
 // Shadow settings of a light, like three's light.shadow.
@@ -773,9 +783,10 @@ struct SpotLight {
     // Fraction of the cone that fades out at the edge, 0..1.
     float penumbra;
     float decay;
-    // Extension: size of the light source in meters. Softens the falloff close to the light.
+    // Extension: radius of the light source in meters. Softens the falloff close to the light.
     float radius;
-    // Extension: size of the bright part seen in reflections, in meters (0 = `radius`). A lamp
+    // Extension: radius of the bright part seen in reflections, in meters (0 = `radius`): a
+    // sphere of that size, as PointLight.radius's highlights. A lamp
     // with a small bulb behind a big diffuser keeps sharp highlights on glossy surfaces.
     float specular_radius;
     // Extension: how much the light shows in fog with `light_scatter` (1 = as it is, 0 = not
@@ -783,6 +794,18 @@ struct SpotLight {
     float fog_glow;
     // Set `cast_shadow` on the light to enable.
     LightShadow shadow;
+}
+
+// Like three's RectAreaLight: a lit rectangle (a window, a light panel), `width` by `height`
+// meters, shining from its front, its -z (point it with look_at, as three). Its intensity is
+// in nits, its power in lumens intensity * width * height * PI (three r155+). Lights
+// MeshStandardMaterial (and its physical layers: the clear coat too) only, as three, with
+// linearly transformed cosines (Heitz et al. 2016, three's tables); no shadows. The light's
+// world rotation turns it; its scale is left out. Renderer.max_rect_area_lights of them at most.
+struct RectAreaLight {
+    inline Light light;
+    float width;
+    float height;
 }
 
 fn void Light.init_light(&self, LightType t, Color color, float intensity) {
@@ -823,6 +846,21 @@ fn PointLight* point_light(Color color = 0xffffff, float intensity = 1, float di
     l.distance = distance;
     l.decay = decay;
     return l;
+}
+
+fn RectAreaLight* rect_area_light(Color color = 0xffffff, float intensity = 1, float width = 10, float height = 10) {
+    RectAreaLight* l = mem::new(RectAreaLight);
+    l.init_light(RECT_AREA, color, intensity);
+    l.width = width;
+    l.height = height;
+    return l;
+}
+
+// three's RectAreaLight.power: the light it gives off in lumens.
+fn float RectAreaLight.power(&self) => self.intensity * self.width * self.height * (float)PI;
+
+fn void RectAreaLight.set_power(&self, float power) {
+    self.intensity = power / (self.width * self.height * (float)PI);
 }
 
 fn SpotLight* spot_light(

@@ -6,6 +6,13 @@
 // 
 // A picture in Display P3 says so in a cICP chunk (P3's primaries and white, sRGB's curve),
 // with cHRM and gAMA for readers that predate it; one in sRGB says so in an sRGB chunk.
+//
+// Chunks of your own go in with `extra` (text in an iTXt, data in a private chunk), and
+// find_chunk() gets one back out of a file's bytes:
+//
+//   png::write("shot.png", pixels, w, h, extra: { { "iTXt", text }, { "abCd", data } });
+//   char[] data;
+//   if (png::find_chunk(file_bytes, "abCd", &data)) ...
 module drie::png;
 import std::io, std::collections::list;
 
@@ -49,10 +56,19 @@ fn void chromaticities(List{char}* out, uint[8] xy) @local {
     chunk(out, "cHRM", data.entries[:(sz)data.len()]);
 }
 
+// A chunk to write along with the picture: `type` is its four letters (see the PNG spec for
+// what their case means; lowercase-uppercase-uppercase-lowercase, "abCd", is a private chunk
+// that readers skip and editors keep).
+struct Chunk {
+    String type;
+    char[] data;
+}
+
 // Writes `pixels` (top row first, `channels` bytes each: 4 for RGBA, 3 for RGB; alpha is left
 // out) to `path`. `bgra`: blue comes first. `p3`: the colors are Display P3's (the output of a
 // pass with DISPLAY_P3_COLOR_SPACE), not sRGB's.
-fn bool write(String path, char[] pixels, int width, int height, bool p3 = false, bool bgra = false, int channels = 4) {
+fn bool write(String path, char[] pixels, int width, int height, bool p3 = false, bool bgra = false, int channels = 4,
+               Chunk[] extra = {}) {
     // raw scanlines: filter byte + RGB
     List{char} raw;
     defer raw.free();
@@ -121,8 +137,26 @@ fn bool write(String path, char[] pixels, int width, int height, bool p3 = false
         char[1] intent = { 0 }; // perceptual
         chunk(&png, "sRGB", &intent);
     }
+    foreach (c : extra) chunk(&png, c.type, c.data);
     chunk(&png, "IDAT", z.entries[:(sz)z.len()]);
     chunk(&png, "IEND", { });
     if (catch file::save(path, png.entries[:(sz)png.len()])) return false;
     return true;
+}
+
+// The data of the first chunk of `type` in a PNG file's bytes (a slice of `file`). False if
+// there is none, or the file isn't a PNG.
+fn bool find_chunk(char[] file, String type, char[]* data) {
+    if (file.len < 8 || file[0] != 0x89 || file[1] != 'P' || file[2] != 'N' || file[3] != 'G') return false;
+    usz at = 8;
+    while (at + 12 <= file.len) {
+        usz len = (usz)file[at] << 24 | (usz)file[at + 1] << 16 | (usz)file[at + 2] << 8 | (usz)file[at + 3];
+        if (at + 12 + len > file.len) return false;
+        if ((String)file[at + 4:4] == type) {
+            *data = file[at + 8:len];
+            return true;
+        }
+        at += 12 + len;
+    }
+    return false;
 }

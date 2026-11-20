@@ -15,6 +15,16 @@ enum Blending {
     ADDITIVE_BLENDING,
 }
 
+// How a transmission material's volume bends the rays through it (Material.refraction_model;
+// not in three.js, as Unity HDRP's refraction models). SPHERE: every ray crosses `thickness`
+// of it, whatever its angle (three's). PLANE: it is a wall `thickness` thick, a pane or a
+// glass's side: a ray that meets it at a slant crosses more of it (thickness / cos), so it
+// is shifted further and tinted more toward the edges of a curved wall, as real glass is.
+enum RefractionModel {
+    SPHERE,
+    PLANE,
+}
+
 // Values match the shader's `mode`.
 constdef MaterialType : int {
     BASIC    = 0,
@@ -82,6 +92,14 @@ struct Material {
     float parallax_scale;
     float parallax_distance;
     float parallax_shadow;
+    // Hex tiling (not in three.js; Mikkelsen's, 2022, as game engines have it): the maps are
+    // read in hexagonal patches, each from its own random place in the texture and blended into
+    // the next where they meet, so that a texture repeated over a large surface doesn't show its
+    // repeats. hex_tiling is how wide the patches are, in the color map's uv (0: off; 0.5: half
+    // the texture across). They are moved, not turned: what runs down the texture (stains,
+    // drips) still runs down. Three reads of each map instead of one. Not with a parallax_map or
+    // alpha_test, nor for the maps read from the second uv set (a light map).
+    float hex_tiling;
     // Opacity from the green channel of this map, times `opacity` (three's alphaMap).
     Texture* alpha_map;
     // What glows: emissive * emissive_intensity times this map's rgb (sRGB; three's emissiveMap).
@@ -111,6 +129,8 @@ struct Material {
     float thickness;
     // times the green channel of this map
     Texture* thickness_map;
+    // SPHERE (three's) or PLANE: see RefractionModel.
+    RefractionModel refraction_model;
     // Index of refraction: how strongly it bends light (1.5: glass, 1.33: water). It also sets
     // how much a dielectric reflects head on: ((ior - 1) / (ior + 1))², 4% for 1.5.
     float ior;
@@ -195,6 +215,11 @@ struct Material {
     // A Reflector whose plane the surface lies on: it mirrors that picture of the scene (see
     // reflector.c3), and screen-space reflections (if on) only where they find something
     Reflector* reflector;
+    // Vertex colors as occlusion (not in three.js): besides tinting the surface (vertex_colors),
+    // their brightness dims all the light it gets, its reflections and highlights included, so
+    // that a surface fading into the dark (down a shaft, a pit) goes to true black there
+    // whatever lights it or mirrors in it.
+    bool vertex_occlusion;
     // Vertex colors are light baked into the geometry (from lamps that don't need to be real
     // lights) instead of a tint: they light the surface with this strength. 0 = off.
     float vertex_light;
@@ -213,6 +238,16 @@ struct Material {
     // For the application's own shader hooks (Renderer.shaders, see shader.glsl), which read
     // them as `material_custom[0]` and `[1]`. The engine's own shader ignores them.
     Vec4[2] custom;
+    // And a texture for them: a hook reads it with custom_map_texel(uv, dx, dy), at a uv of its
+    // own (world meters, say) and its change from one pixel to the next. It takes the
+    // material's sampler, its first map's (map, normal_map, arm_map, then the others), and so
+    // that one's wrapping.
+    Texture* custom_map;
+    // Blurred by how far it is out of focus, by its own distance (not three's): its maps are
+    // read over the blur of the lens's focus at its depth (Renderer.focus_map, from a
+    // BokehPass). For a transparent surface near the lens, a dirty pane, which a depth of field
+    // pass sees through: there, the blur goes by what is behind it.
+    bool defocus;
     // Node graphs (nodes.c3, drie::nodes; three's NodeMaterial and TSL), each in place of a part
     // of the material where it is set:
     //   color_node     the color, rgb or rgba (instead of color, the color map and vertex colors)

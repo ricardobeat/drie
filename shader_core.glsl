@@ -48,7 +48,6 @@ in vec3 normal;
 in vec2 uv;
 in vec4 color0;
 in vec2 uv1;      // the second uv set (glTF's TEXCOORD_1, three's uv1), zeros without one
-in vec4 tangent;  // the tangents (BufferGeometry.tangents: glTF's TANGENT), zeros without them
 // Rows of the per-instance 3x4 matrix (identity for plain meshes).
 in vec4 inst0;
 in vec4 inst1;
@@ -171,7 +170,10 @@ void run_node_vertex(inout vec3 local, vec3 local_normal, mat4 model, out vec4 v
 }
 @end
 
-@vs vs
+// The main vertex shader, as vs, and as vs_tangent (TANGENT) for geometries with tangents
+// (three's USE_TANGENT): the attribute and what it hands the fragment shader cost every vertex
+// drawn, so the others go without.
+@block vs_main
 layout(binding=0) uniform vs_params {
     // world -> clip space, measured from view_origin: gl_Position = view_proj * (world - origin).
     // Far from the world's origin (a farm 6 km out) a plain view_proj * world loses the depth:
@@ -199,12 +201,17 @@ layout(binding=0) uniform vs_params {
 };
 
 @include_block vertex_common
+#ifdef TANGENT
+in vec4 tangent;  // the tangents (BufferGeometry.tangents: glTF's TANGENT)
+#endif
 
 out vec3 v_world_pos;
 out vec3 v_normal;
 out vec2 v_uv;
 out vec2 v_uv1;
-out vec4 v_tangent;   // the tangent in the world, w = the bitangent's sign (zeros: none)
+#ifdef TANGENT
+out vec4 v_tangent;   // the tangent in the world, w = the bitangent's sign
+#endif
 out vec3 v_color;
 out float v_alpha;
 out vec4 v_clip;
@@ -229,7 +236,9 @@ void main() {
         v_normal = vec3(0.0, 1.0, 0.0);
         v_uv = vec2(0.0);
         v_uv1 = vec2(0.0);
+#ifdef TANGENT
         v_tangent = vec4(0.0);
+#endif
         v_color = vec3(0.0);
         v_alpha = 0.0;
         v_clip = vec4(2.0, 2.0, 2.0, 1.0);
@@ -258,8 +267,10 @@ void main() {
     v_normal = (normal_mat * vec4(instance_dir(normal), 0.0)).xyz;
     v_uv = vec2(dot(uv_transform[0].xyz, vec3(uv, 1.0)), dot(uv_transform[1].xyz, vec3(uv, 1.0)));
     v_uv1 = uv1;
+#ifdef TANGENT
     // (a direction along the surface: the model matrix's, as three's)
     v_tangent = vec4((model * vec4(instance_dir(tangent.xyz), 0.0)).xyz, tangent.w);
+#endif
     v_color = color0.rgb;
     v_alpha = color0.a;
     gl_Position = view_proj * vec4(wp.xyz - view_origin.xyz, 1.0);
@@ -280,6 +291,15 @@ void main() {
         v_prev_clip = prev_view_proj * wp;
     }
 }
+@end
+
+@vs vs
+@include_block vs_main
+@end
+
+@vs vs_tangent
+#define TANGENT
+@include_block vs_main
 @end
 
 @vs shadow_vs
@@ -402,7 +422,6 @@ void main() {
     v_uv = vec2(dot(s_uv_transform[0].xyz, vec3(uv, 1.0)), dot(s_uv_transform[1].xyz, vec3(uv, 1.0)));
     v_uv1 = uv1;
     v_color = color0;
-    v_uv += tangent.xy * 0.0;
     gl_Position = s_view_proj * vec4(wp.xyz - s_origin.xyz, 1.0);
 }
 @end
@@ -561,7 +580,7 @@ layout(binding=1) uniform fs_params {
                        //   tiles in fog_volume (0: no volumetric fog, the fog is worked out here)
     vec4 fog_slices;   // x = where its slices start (m of view depth), y = slices per unit of
                        //   log(depth / x)
-    vec4 counts;       // x = directional lights, y = point lights, z = spot lights (all of them, in
+    vec4 counts;       // x = directional lights, y = point lights, z = spot lights, w = rect area lights (all of them, in
                        //   dir_lights, point_lights and spot_lights)
     mat4 cluster_view_proj; // world -> the camera's clip space, for the fragment's cluster
     vec4 cluster_grid;      // xyz = clusters across, up and in depth
@@ -579,6 +598,7 @@ layout(binding=1) uniform fs_params {
     vec4 ssr_params;       // x = this material's screen-space reflections (0: none), y = reach (m),
                            //   z = noise seed, w = 1: the last frame's row 0 is its top
     vec4 ssr_thickness;    // x = 1: ssr_back has the last frame's back faces, y = this material's reach (m)
+    vec4 quality_params;   // x = Renderer.shadow_sample_scale, y = ssr_steps, z = ssr_max_step (px)
     mat4 reflector_view_proj;  // world -> the Reflector's picture's clip space (reflector.c3)
     vec4 reflector_params;     // x = strength (0: no reflector), y = distortion (m), z = blur
     vec4 probe_info;           // x = the scene's reflection probes (0: none; env_params.x = 2: this material uses them)
@@ -590,7 +610,8 @@ layout(binding=1) uniform fs_params {
     vec4 material_custom[2];   // for the application's hooks: Material.custom
     vec4 frame_custom[2];      //   and Renderer.custom
     vec4 parallax_params;      // Material.parallax_map: x = depth (m; 0: none), y = distance (m) where
-                               //   it has faded out, z = self-shadowing toward the sun (0..1)
+                               //   it has faded out, z = self-shadowing toward the sun (0..1);
+                               //   w = Material.hex_tiling (0: none)
     vec4 line_dash;            // dashed lines: x = dash length, y = dash + gap, z = scale, w = 1: dashed
     vec4 transmission_params;  // Material.transmission: x = IOR, y = thickness (m), z = dispersion,
                                //   w = attenuation distance (m; 0: the volume does not tint)
@@ -600,7 +621,7 @@ layout(binding=1) uniform fs_params {
     vec4 ext_params;           // x = 32: it is the scene's background, y = ao_intensity, z = the
                                //   object's scale (for the thickness), w = the width of
                                //   tex_transmission (pixels)
-    vec4 map_slots[4];         // which of tex_ext0..5 holds each of the maps (-1: none), by MAP_*
+    vec4 map_slots[5];         // which of tex_ext0..5 holds each of the maps (-1: none), by MAP_*
     vec4 clearcoat_params;     // Material.clearcoat: x = strength (0: none), y = roughness,
                                //   zw = clearcoat_normal_scale
     vec4 sheen_params;         // Material.sheen_color * sheen (linear rgb; 0: none), a = sheen_roughness
@@ -610,6 +631,7 @@ layout(binding=1) uniform fs_params {
                                //   Material.anisotropy's direction in the frame (the cos and sin
                                //   of anisotropy_rotation) times its strength (0: none)
     vec4 light_map_params;     // x = Material.light_map_intensity
+    vec4 focus_params;         // Material.defocus: x = Renderer.focus_aperture (0: not), y = focus_maxblur
     vec4 shadow_ext;           // x = the shadow casting directional light's shadow.bias (VSM)
     vec4 bake_params;          // baking a light map (lightmap.c3): x = 1, y = the new sample's
                                //   share (1 / blend window); ssr_color holds the last map
@@ -637,6 +659,8 @@ layout(binding=1) uniform fs_params {
 #define MAP_EMISSIVE 13             // rgb
 #define MAP_LIGHT 14                // rgb
 #define MAP_ANISOTROPY 15           // rg = direction, b = strength
+#define MAP_CUSTOM 16               // Material.custom_map, for the application's hooks
+#define MAP_FOCUS 17                // Renderer.focus_map (Material.defocus): r = the distance in focus
 
 // Lights live in storage buffers, as many as there are. Point and spot lights are sorted into
 // a grid of clusters (froxels: tiles of the screen, cut into slices of depth that grow
@@ -692,7 +716,9 @@ in vec3 v_world_pos;
 in vec3 v_normal;
 in vec2 v_uv;
 in vec2 v_uv1;
+#ifdef TANGENT
 in vec4 v_tangent;
+#endif
 in vec3 v_color;
 in float v_alpha;
 in vec4 v_clip;
@@ -796,14 +822,16 @@ const float RECIPROCAL_PI = 0.31830988618;
 
 @include_block tonemapping
 
+// three's window: the light fades out to nothing at `cutoff` (0: never)
+float distance_window(float d, float cutoff) {
+    if (cutoff <= 0.0) return 1.0;
+    float r = d / cutoff;
+    float f = clamp(1.0 - r * r * r * r, 0.0, 1.0);
+    return f * f;
+}
+
 float distance_attenuation(float d, float cutoff, float decay) {
-    float a = 1.0 / max(pow(d, decay), 0.01);
-    if (cutoff > 0.0) {
-        float r = d / cutoff;
-        float f = clamp(1.0 - r * r * r * r, 0.0, 1.0);
-        a *= f * f;
-    }
-    return a;
+    return distance_window(d, cutoff) / max(pow(d, decay), 0.01);
 }
 
 vec3 f_schlick(vec3 f0, float voh) {
@@ -952,7 +980,14 @@ float g_rough;
 float g_metal;
 vec3 g_f0;        // a standard material's reflectance head on, and at a grazing angle
 float g_f90;      //   (from ior, specular_color and specular_intensity; set after the maps)
-float g_radius;   // source radius of the light being evaluated
+// A light with a size (light_toward), set by the light loops before direct(): g_sized, the
+// direction of its highlight, and how much its shape widens one (x along a tube, y round a
+// ball: light_norm)
+bool g_sized = false;
+vec3 g_spec_l;
+vec2 g_spec_k;
+float g_nol = -1.0; // the light's cosine over the squared distance, when it is not a point's
+                  //   (a tube's, integrated along it): the radiance is then without its falloff
 // three's MeshPhysicalMaterial layers, set after the maps (0: off): a clear coat over the
 // surface (its own normal and roughness), a sheen of fibers on it, a thin film's rainbow
 float g_clearcoat;
@@ -983,15 +1018,62 @@ vec3 g_parallax_gu;
 vec3 g_parallax_gv;
 float g_parallax_h;     // the height map where g_uv lands (0..1)
 float g_parallax_depth; // the depth after the distance fade (m)
+// Hex tiling (Material.hex_tiling): the three patches nearest the pixel, as offsets of g_uv
+// where each reads the texture, and how much of each it takes (see hex_setup)
+bool g_hex = false;
+vec2 g_hex_off[3];
+vec3 g_hex_w;
+
+// A light with a size, seen in reflections (Karis, "Real Shading in Unreal Engine 4", 2013,
+// the representative point): sets g_spec_l, the direction toward the point of the light nearest
+// the ray `r` reflected off the surface, for the highlight, and g_spec_k for light_norm. `lv`
+// is from the surface to the light's centre, `seg` from its centre to one end (a tube), `radius`
+// its thickness. A tube first takes the point of its segment nearest the ray (his eq. 19), then
+// the ball of `radius` round that point the point of it nearest the ray (eq. 11).
+void light_toward(vec3 r, vec3 lv, vec3 seg, float radius) {
+    g_sized = true;
+    g_spec_k = vec2(0.0);
+    if (dot(seg, seg) > 0.0) {
+        vec3 l0 = lv - seg;
+        vec3 ld = 2.0 * seg;
+        float rld = dot(r, ld);
+        float t = (dot(r, l0) * rld - dot(l0, ld)) / max(dot(ld, ld) - rld * rld, 1e-8);
+        lv = l0 + clamp(t, 0.0, 1.0) * ld;
+        g_spec_k.x = length(seg) / (3.0 * max(length(lv), 1e-4));
+    }
+    if (radius > 0.0) {
+        g_spec_k.y = radius / (3.0 * max(length(lv), 1e-4));
+        // (the light's centre to the ray: Karis' eq. 11 with its sign put right)
+        vec3 to_ray = dot(lv, r) * r - lv;
+        lv += to_ray * clamp(radius / max(length(to_ray), 1e-6), 0.0, 1.0);
+    }
+    g_spec_l = normalize(lv);
+}
+
+// The light the highlight of light_toward's light keeps at roughness alpha `a`: the light stays
+// as bright as the point light at its centre, and this takes away what the highlight gains by
+// moving its source around on the light: a / a' along a tube (eq. 20, a widening in one
+// direction only) times (a / a')^2 for its ball (eq. 14), a' = saturate(a + half the length,
+// or the radius, / (3 distance)) (eq. 10).
+float light_norm(float a) {
+    float k = a / clamp(a + g_spec_k.y, 0.0, 1.0);
+    return a / clamp(a + g_spec_k.x, 0.0, 1.0) * k * k;
+}
 
 // Direct light contribution, following three.js's (r155+) physically based light units.
-// Returns diffuse in rgb; adds specular to `spec`.
+// Returns diffuse in rgb; adds specular to `spec`. `l` is toward the light's centre (the
+// diffuse light's direction); point and spot lights with a size (g_sized) take their
+// highlights from light_toward.
 vec3 direct(int mode, vec3 n, vec3 v, vec3 l, float dist, vec3 radiance, vec3 diffuse_color, inout vec3 spec) {
     bool foliage = (flags() & 2) != 0;
     float ndl = dot(n, l);
-    // thin leaves and blades: light wraps around and shines through
-    float nol = foliage ? 0.35 + 0.65 * abs(ndl) : clamp(ndl, 0.0, 1.0);
-    vec3 irradiance = nol * radiance;
+    // thin leaves and blades, lit from either side: on the side the light falls on, as any
+    // surface, with a little of it wrapping round; from the other, what shines through them,
+    // about half of it (a lamp by the eye lights only the faces it sees, and a blade turned
+    // edge-on to it stays dark)
+    float through = dot(n, v) * ndl < 0.0 ? 0.5 : 1.0;
+    float nol = foliage ? through * (0.1 + 0.9 * abs(ndl)) : clamp(ndl, 0.0, 1.0);
+    vec3 irradiance = (g_nol >= 0.0 ? g_nol : nol) * radiance;
     vec3 h = normalize(l + v);
     if (mode == 3) {
         if (g_clearcoat > 0.0) {
@@ -1000,9 +1082,15 @@ vec3 direct(int mode, vec3 n, vec3 v, vec3 l, float dist, vec3 radiance, vec3 di
             float a = g_clearcoat_rough * g_clearcoat_rough;
             float cnl = clamp(dot(cn, l), 0.0, 1.0);
             float cnv = clamp(dot(cn, v), 1e-4, 1.0);
-            float cnh = clamp(dot(cn, h), 0.0, 1.0);
-            float f = schlick(0.04, 1.0, clamp(dot(v, h), 0.0, 1.0));
-            g_clearcoat_direct += cnl * radiance * f * v_smith(cnv, cnl, a) * d_ggx(cnh, a);
+            // (a light with a size: the point of it the surface under the coat mirrors, as
+            // bright as the coat's roughness keeps it)
+            float cnorm = g_sized ? light_norm(a) : 1.0;
+            vec3 cl = g_sized ? g_spec_l : l;
+            vec3 ch = normalize(cl + v);
+            float cnh = clamp(dot(cn, ch), 0.0, 1.0);
+            float f = schlick(0.04, 1.0, clamp(dot(v, ch), 0.0, 1.0));
+            float ccl = clamp(dot(cn, cl), 0.0, 1.0);
+            g_clearcoat_direct += cnl * radiance * f * v_smith(cnv, ccl, a) * d_ggx(cnh, a) * cnorm;
         }
         if (g_sheen_rough > 0.0) {
             float snv = clamp(dot(n, v), 0.0, 1.0);
@@ -1016,34 +1104,93 @@ vec3 direct(int mode, vec3 n, vec3 v, vec3 l, float dist, vec3 radiance, vec3 di
     vec3 result = irradiance * diffuse_color * RECIPROCAL_PI;
     if (mode == 1) return result;
 
-    float noh = clamp(dot(n, h), 0.0, 1.0);
-    float voh = clamp(dot(v, h), 0.0, 1.0);
     if (mode == 2) {
+        float noh = clamp(dot(n, h), 0.0, 1.0);
+        float voh = clamp(dot(v, h), 0.0, 1.0);
         float shininess = mat_params.w;
         float d = RECIPROCAL_PI * (shininess * 0.5 + 1.0) * pow(noh, shininess);
         spec += irradiance * f_schlick(specular.rgb, voh) * 0.25 * d;
     } else {
         float rough = max(g_rough, 0.0525);
         float a = rough * rough;
-        // a light with a size gives a wider, dimmer highlight (Karis' sphere light normalization)
-        float a_wide = clamp(a + g_radius / (2.0 * max(dist, 1e-3)), 0.0, 1.0);
-        float norm = a / a_wide;
+        // a light with a size: the highlight is the light's own shape, seen in the surface
+        // (light_toward), as bright in all as the point light's
+        float norm = 1.0;
+        vec3 sl = l;
+        float snl = nol;
+        if (g_sized) {
+            sl = g_spec_l;
+            norm = light_norm(a);
+            h = normalize(sl + v);
+            snl = clamp(dot(n, sl), 0.0, 1.0);
+        }
+        float noh = clamp(dot(n, h), 0.0, 1.0);
+        float voh = clamp(dot(v, h), 0.0, 1.0);
         float nov = clamp(abs(dot(n, v)), 1e-4, 1.0);
         vec3 fresnel = g_f0 + (vec3(g_f90) - g_f0) * pow(1.0 - voh, 5.0);
         if (g_iridescence > 0.0) fresnel = mix(fresnel, g_iridescence_fresnel, g_iridescence);
-        float vis = v_smith(nov, nol, a_wide);
-        float d = d_ggx(noh, a_wide);
+        float vis = v_smith(nov, snl, a);
+        float d = d_ggx(noh, a);
         if (g_anisotropy > 0.0) {
             // rougher along g_anisotropy_t, by as much as it is anisotropic (three's alphaT)
-            float at = max(mix(a, 1.0, g_anisotropy * g_anisotropy), a_wide);
+            float at = max(mix(a, 1.0, g_anisotropy * g_anisotropy), a);
             vec3 t = g_anisotropy_t;
             vec3 b = g_anisotropy_b;
-            vis = v_smith_aniso(at, a_wide, dot(t, v), dot(b, v), dot(t, l), dot(b, l), nov, nol);
-            d = d_ggx_aniso(at, a_wide, noh, dot(t, h), dot(b, h));
+            vis = v_smith_aniso(at, a, dot(t, v), dot(b, v), dot(t, sl), dot(b, sl), nov, snl);
+            d = d_ggx_aniso(at, a, noh, dot(t, h), dot(b, h));
         }
-        spec += irradiance * fresnel * vis * d * norm * norm;
+        spec += irradiance * fresnel * vis * d * norm;
     }
     return result;
+}
+
+// RectAreaLight, as three's (lights_physical_pars_fragment: LTC_Uv, LTC_Evaluate and
+// RE_Direct_RectArea_Physical), with linearly transformed cosines (Heitz, Dupuy, Hill and
+// Neubelt 2016). The lights are in point_lights after the point lights, three vec4s each:
+// pos = centre + half width's x, color = color * intensity + half width's y, params = half
+// width's z + half height; and after them the two LTC tables (clusters.c3's ltc_entries),
+// a texel an entry (pos = LTC_1's, color = LTC_2's), read here with the bilinear filter
+// three's textures have.
+
+void ltc_tables(int base, vec3 n, vec3 v, float rough, out vec4 t1, out vec4 t2) {
+    // three's LTC_Uv: roughness across, sqrt(1 - n.v) down, at the texels' centres
+    vec2 uv = vec2(rough, sqrt(1.0 - clamp(dot(n, v), 0.0, 1.0))) * (63.0 / 64.0) + 0.5 / 64.0;
+    vec2 p = uv * 64.0 - 0.5;
+    vec2 f = fract(p);
+    ivec2 i0 = clamp(ivec2(floor(p)), ivec2(0), ivec2(63));
+    ivec2 i1 = min(i0 + 1, ivec2(63));
+    int a = base + i0.y * 64 + i0.x;
+    int b = base + i0.y * 64 + i1.x;
+    int c = base + i1.y * 64 + i0.x;
+    int d = base + i1.y * 64 + i1.x;
+    t1 = mix(mix(points[a].pos, points[b].pos, f.x), mix(points[c].pos, points[d].pos, f.x), f.y);
+    t2 = mix(mix(points[a].color, points[b].color, f.x), mix(points[c].color, points[d].color, f.x), f.y);
+}
+
+vec3 ltc_edge(vec3 v1, vec3 v2) {
+    float x = dot(v1, v2);
+    float y = abs(x);
+    float a = 0.8543985 + (0.4965155 + 0.0145206 * y) * y;
+    float b = 3.4175940 + (4.1616724 + y) * y;
+    float k = a / b;
+    float theta_sintheta = x > 0.0 ? k : 0.5 * inversesqrt(max(1.0 - x * x, 1e-7)) - k;
+    return cross(v1, v2) * theta_sintheta;
+}
+
+// How much of the cosine lobe, transformed by m_inv, the rectangle (corners q, from the
+// surface) covers: three's LTC_Evaluate.
+float ltc_evaluate(vec3 n, vec3 v, mat3 m_inv, vec3 q[4]) {
+    vec3 t1 = normalize(v - n * dot(v, n));
+    vec3 t2 = -cross(n, t1);
+    mat3 m = m_inv * transpose(mat3(t1, t2, n));
+    vec3 c0 = normalize(m * q[0]);
+    vec3 c1 = normalize(m * q[1]);
+    vec3 c2 = normalize(m * q[2]);
+    vec3 c3 = normalize(m * q[3]);
+    vec3 f = ltc_edge(c0, c1) + ltc_edge(c1, c2) + ltc_edge(c2, c3) + ltc_edge(c3, c0);
+    // three's LTC_ClippedSphereFormFactor
+    float l = length(f);
+    return max((l * l + f.z) / (l + 1.0), 0.0);
 }
 
 // Length of the part of the segment a-b that lies in the fog (outside the fog-free box).
@@ -1183,6 +1330,12 @@ float shadow_tap(bool tiled, vec4 rect, float texel, vec2 uv, float z) {
 #endif
 }
 
+// The soft shadows' taps: `base` of them (as many as Renderer.shadow_sample_scale 1 takes),
+// times that scale.
+const int SHADOW_MAX_TAPS = 40;
+float shadow_sample_scale() { return quality_params.x > 0.0 ? quality_params.x : 1.0; }
+int shadow_taps(float base) { return clamp(int(base * shadow_sample_scale() + 0.5), 4, SHADOW_MAX_TAPS); }
+
 // Shadow of spot light `s`, whose map is `si` in spot_shadows. Lights whose map is redrawn
 // every frame have shadow_map to themselves; the ones drawn once share shadow_atlas, a tile each.
 float spot_shadow_of(int s, int si, vec3 n) {
@@ -1221,7 +1374,7 @@ float spot_shadow_of(int s, int si, vec3 n) {
     // how the depth changes over the map along this surface, so that a wide blur does not
     // run the surface into its own shadow
     vec2 grad = vec2(0.0);
-    int most = 8;
+    int most = shadow_taps(8.0);
     if (soft.x > 0.0) {
         // A source with a size: the edge of a shadow is as wide as the source looks from there
         // past the thing that casts it. Sharp where the two touch, wide far behind. How far the
@@ -1229,13 +1382,16 @@ float spot_shadow_of(int s, int si, vec3 n) {
         float dr = shadow_distance(c.z, soft);
         float per_m = 1.0 / (abs(soft.w) * dr);
         float search = clamp(soft.x * 1.6 * per_m, r, 0.04);
-        most = 14;
+        most = shadow_taps(14.0);
         // the widest edge the source could make here is under a pixel: no need to look
         if (search > pixel) {
             float found = 0.0;
             float nearest = 0.0;
-            for (int k = 0; k < 7; k++) {
-                float a = float(k) * 1.0472;
+            // the middle and a ring round it
+            int looks = clamp(int(7.0 * shadow_sample_scale() + 0.5), 4, SHADOW_MAX_TAPS);
+            for (int k = 0; k < SHADOW_MAX_TAPS; k++) {
+                if (k >= looks) break;
+                float a = float(k) * 6.2831853 / float(looks - 1);
                 vec2 o = k == 0 ? vec2(0.0) : vec2(cos(a) * ca - sin(a) * sa, cos(a) * sa + sin(a) * ca) * search;
                 if (shadow_tap(tiled, rect, params.z, c.xy + o, c.z) > 0.5) continue;
                 float lo = soft.y;
@@ -1257,7 +1413,7 @@ float spot_shadow_of(int s, int si, vec3 n) {
     // about three taps per pixel across the blur, at least four (each tap is a bilinear 2x2)
     int taps = clamp(int(ceil(r / pixel * 3.0)), 4, most);
     float sum = 0.0;
-    for (int k = 0; k < 14; k++) {
+    for (int k = 0; k < SHADOW_MAX_TAPS; k++) {
         if (k >= taps) break;
         float a = float(k) * 2.39996;
         float rr = sqrt((float(k) + 0.5) / float(taps)) * r;
@@ -1315,12 +1471,15 @@ float dir_shadow_in(int i, vec3 n, vec3 l) {
     float sa = sin(angle);
     float texel = params.z / dir_cascade_rect[i].z;
     float r = texel * max(params.w / scale, min(params.w, 1.0));
+    int taps = shadow_taps(10.0);
     float sum = 0.0;
-    for (int k = 0; k < 10; k++) {
+    for (int k = 0; k < SHADOW_MAX_TAPS; k++) {
+        if (k >= taps) break;
         float a = float(k) * 2.39996;
-        vec2 o = vec2(cos(a), sin(a)) * (sqrt((float(k) + 0.5) / 10.0) * r);
+        vec2 o = vec2(cos(a), sin(a)) * (sqrt((float(k) + 0.5) / float(taps)) * r);
         sum += sun_tap(i, c.xy + vec2(o.x * ca - o.y * sa, o.x * sa + o.y * ca), c.z);
     }
+    sum *= 10.0 / float(taps);
 #endif
     if (dir_cascade_params.w < 0.5) return sum / 10.0;
     // one box: nothing is shadowed outside of it, fade towards its edge
@@ -1344,12 +1503,15 @@ float dir_tile_shadow(int si, vec3 n, vec3 l) {
     float ca = cos(angle);
     float sa = sin(angle);
     float r = params.z * params.w;
+    int taps = shadow_taps(10.0);
     float sum = 0.0;
-    for (int k = 0; k < 10; k++) {
+    for (int k = 0; k < SHADOW_MAX_TAPS; k++) {
+        if (k >= taps) break;
         float a = float(k) * 2.39996;
-        vec2 o = vec2(cos(a), sin(a)) * (sqrt((float(k) + 0.5) / 10.0) * r);
+        vec2 o = vec2(cos(a), sin(a)) * (sqrt((float(k) + 0.5) / float(taps)) * r);
         sum += shadow_tap(true, rect, params.z, c.xy + vec2(o.x * ca - o.y * sa, o.x * sa + o.y * ca), c.z);
     }
+    sum *= 10.0 / float(taps);
 #endif
     // fade out towards the box's edge
     vec2 edge = min(c.xy, 1.0 - c.xy);
@@ -1526,10 +1688,11 @@ vec3 planar_reflection(vec3 n, vec3 v, float rough, out float found) {
     return sum / 8.0;
 }
 
-// how many steps a reflected ray takes at most, and how far one goes on the screen at most (in
-// pixels of the reflection source)
-const int SSR_STEPS = 40;
-const float SSR_MAX_STEP_PX = 6.0;
+// how many steps a reflected ray takes at most (Renderer.ssr_steps), and how far one goes on
+// the screen at most (Renderer.ssr_max_step, in pixels of the reflection source)
+const int SSR_MAX_STEPS = 128;
+int ssr_steps() { return quality_params.y > 0.0 ? min(int(quality_params.y), SSR_MAX_STEPS) : 40; }
+float ssr_max_step_px() { return quality_params.z > 0.0 ? quality_params.z : 6.0; }
 
 // how much of a rough surface's lobe the ray itself is sent through (the inner part, by
 // chance: the frames add up to it); the rest is blurred from what the ray finds. All of it by
@@ -1575,7 +1738,10 @@ vec3 screen_reflection(vec3 n, vec3 geo_n, vec3 v, float rough, out float found)
     float step_len = 0.06;
     float t = step_len * (0.4 + n2);
     float t_prev = 0.0;
-    for (int i = 0; i < SSR_STEPS; i++) {
+    int steps = ssr_steps();
+    float max_step = ssr_max_step_px();
+    for (int i = 0; i < SSR_MAX_STEPS; i++) {
+        if (i >= steps) break;
         vec3 s = ssr_project(origin + r * t);
         if (s.z < 0.05 || s.x < 0.0 || s.y < 0.0 || s.x > 1.0 || s.y > 1.0) break;
         // behind what the camera saw there: where the ray went in lies between the step before
@@ -1633,16 +1799,17 @@ vec3 screen_reflection(vec3 n, vec3 geo_n, vec3 v, float rough, out float found)
         step_len *= 1.2;
         vec3 next = ssr_project(origin + r * (t + step_len));
         float px = length((next.xy - s.xy) * screen_px);
-        if (next.z > 0.05 && px > SSR_MAX_STEP_PX) step_len *= SSR_MAX_STEP_PX / px;
+        if (next.z > 0.05 && px > max_step) step_len *= max_step / px;
         t += step_len;
         if (t > ssr_thickness.y) break;
     }
     return vec3(0.0);
 }
 
-// A map slot's uv (see uv_rel), and how it changes from one pixel to the next.
-vec2 slot_uv(int slot) {
-    vec3 p = vec3(uv_rel[slot * 2].w > 0.5 ? v_uv1 : g_uv, 1.0);
+// A map slot's uv (see uv_rel), `shift` away from g_uv, and how it changes from one pixel to
+// the next.
+vec2 slot_uv(int slot, vec2 shift) {
+    vec3 p = vec3(uv_rel[slot * 2].w > 0.5 ? v_uv1 : g_uv + shift, 1.0);
     return vec2(dot(uv_rel[slot * 2].xyz, p), dot(uv_rel[slot * 2 + 1].xyz, p));
 }
 
@@ -1650,7 +1817,60 @@ vec2 slot_d(int slot, vec2 d) { return vec2(dot(uv_rel[slot * 2].xy, d), dot(uv_
 vec2 slot_dx(int slot) { return slot_d(slot, uv_rel[slot * 2].w > 0.5 ? g_duv1dx : g_duvdx); }
 vec2 slot_dy(int slot) { return slot_d(slot, uv_rel[slot * 2].w > 0.5 ? g_duv1dy : g_duvdy); }
 
-#define slot_texel(tex, slot) textureGrad(sampler2D(tex, tex_smp), slot_uv(slot), slot_dx(slot), slot_dy(slot))
+#define slot_texel_at(tex, slot, shift) textureGrad(sampler2D(tex, tex_smp), slot_uv(slot, shift), slot_dx(slot), slot_dy(slot))
+// (hex tiled: the three patches, with the color map's weights; not a map in the second uv set,
+// a light map's, say, which is laid out once over the surface)
+#define slot_texel(tex, slot) ((g_hex && uv_rel[(slot) * 2].w < 0.5) \
+    ? g_hex_w.x * slot_texel_at(tex, slot, g_hex_off[0]) + g_hex_w.y * slot_texel_at(tex, slot, g_hex_off[1]) \
+        + g_hex_w.z * slot_texel_at(tex, slot, g_hex_off[2]) \
+    : slot_texel_at(tex, slot, vec2(0.0)))
+
+// Hex tiling (Material.hex_tiling; Mikkelsen, "Practical Real-Time Hex-Tiling", JCGT 11(2),
+// 2022): the uv plane cut into hexagons `size` across, each reading the texture from its own
+// random place, so that a texture repeated over a wall doesn't show its repeats. The hexagons'
+// middles make a grid of triangles; a pixel takes the three corners of the one it is in,
+// weighted by how near it is to each, sharpened (the 7th power) so that a patch is mostly
+// itself and only blends into the next near their seam. Moved, not turned: what runs down the
+// texture still runs down, and the normal map's directions stay as they are.
+// (Dave Hoskins' hash22: no sin, whose precision goes far from 0, as a uv in world meters does)
+vec2 hex_hash(vec2 v) {
+    vec3 p = fract(v.xyx * vec3(0.1031, 0.1030, 0.0973));
+    p += dot(p, p.yzx + 33.33);
+    return fract((p.xx + p.yz) * p.zy);
+}
+
+void hex_setup(vec2 uv, float size) {
+    vec2 st = uv / size;
+    // the grid skewed so that its triangles are halves of unit squares
+    vec2 skewed = vec2(st.x - 0.57735027 * st.y, 1.15470054 * st.y);
+    vec2 cell = floor(skewed);
+    vec3 f = vec3(fract(skewed), 0.0);
+    f.z = 1.0 - f.x - f.y;
+    // the square's upper triangle (1) or lower (0), and the barycentric weights in it
+    float s = step(0.0, -f.z);
+    float s2 = 2.0 * s - 1.0;
+    vec3 w = vec3(-f.z * s2, s - f.y * s2, s - f.x * s2);
+    g_hex_off[0] = hex_hash(cell + vec2(s, s));
+    g_hex_off[1] = hex_hash(cell + vec2(s, 1.0 - s));
+    g_hex_off[2] = hex_hash(cell + vec2(1.0 - s, s));
+    vec3 w3 = w * w * w;
+    w = w3 * w3 * w;
+    g_hex_w = w / (w.x + w.y + w.z);
+    g_hex = true;
+}
+
+// The color map, hex tiled: where two patches meet, the brighter of them shows more (the
+// paper's luminance weighting, 0.6 of it), so the seam follows the texture's own dark marks
+// instead of fading one into the other; the other maps take the same weights.
+vec4 hex_color(vec2 uv, vec2 dx, vec2 dy) {
+    vec4 c0 = textureGrad(sampler2D(tex_map, tex_smp), uv + g_hex_off[0], dx, dy);
+    vec4 c1 = textureGrad(sampler2D(tex_map, tex_smp), uv + g_hex_off[1], dx, dy);
+    vec4 c2 = textureGrad(sampler2D(tex_map, tex_smp), uv + g_hex_off[2], dx, dy);
+    const vec3 luma = vec3(0.2126, 0.7152, 0.0722);
+    vec3 w = g_hex_w * mix(vec3(1.0), vec3(dot(c0.rgb, luma), dot(c1.rgb, luma), dot(c2.rgb, luma)), 0.6);
+    g_hex_w = w / max(w.x + w.y + w.z, 1e-6);
+    return g_hex_w.x * c0 + g_hex_w.y * c1 + g_hex_w.z * c2;
+}
 
 // The surface's tangent frame (three's tbn) around the normal n (facing the viewer): the
 // tangent t, along which the uv's u grows, and the bitangent b. From the vertex tangents where
@@ -1661,6 +1881,8 @@ void tangent_frame(vec3 n, vec2 duv1, vec2 duv2, out vec3 t, out vec3 b) {
     // a back face (its normal turned to the camera): the frame turned over too, as three's
     // tbn *= faceDirection
     bool back = dot(n, v_normal) < 0.0;
+#ifdef TANGENT
+    // (a vertex without one, all zeros: the frame from the uv instead)
     if (dot(v_tangent.xyz, v_tangent.xyz) > 0.0) {
         vec3 vn = normalize(v_normal);
         t = normalize(v_tangent.xyz);
@@ -1671,6 +1893,7 @@ void tangent_frame(vec3 n, vec2 duv1, vec2 duv2, out vec3 t, out vec3 b) {
         }
         return;
     }
+#endif
     vec3 dp2perp = cross(g_dpdy, n);
     vec3 dp1perp = cross(n, g_dpdx);
     t = dp2perp * duv1.x + dp1perp * duv2.x;
@@ -1713,6 +1936,30 @@ vec4 ext_texel(int slot) {
     if (slot == 3) return slot_texel(tex_ext3, 5);
     if (slot == 4) return slot_texel(tex_ext4, 6);
     if (slot == 5) return slot_texel(tex_ext5, 7);
+    return vec4(1.0);
+}
+
+// Material.custom_map at uv, for the application's hooks: a uv of the hook's own, and how it
+// changes from one pixel to the next (which picks the mip level); white without one.
+// One of the six shared map slots (tex_ext0..5), at its top level (white for none).
+vec4 ext_slot_texel(int slot, vec2 uv) {
+    if (slot == 0) return textureLod(sampler2D(tex_ext0, tex_smp), uv, 0.0);
+    if (slot == 1) return textureLod(sampler2D(tex_ext1, tex_smp), uv, 0.0);
+    if (slot == 2) return textureLod(sampler2D(tex_ext2, tex_smp), uv, 0.0);
+    if (slot == 3) return textureLod(sampler2D(tex_ext3, tex_smp), uv, 0.0);
+    if (slot == 4) return textureLod(sampler2D(tex_ext4, tex_smp), uv, 0.0);
+    if (slot == 5) return textureLod(sampler2D(tex_ext5, tex_smp), uv, 0.0);
+    return vec4(1.0);
+}
+
+vec4 custom_map_texel(vec2 uv, vec2 dx, vec2 dy) {
+    int slot = int(map_slots[MAP_CUSTOM / 4][MAP_CUSTOM % 4]);
+    if (slot == 0) return textureGrad(sampler2D(tex_ext0, tex_smp), uv, dx, dy);
+    if (slot == 1) return textureGrad(sampler2D(tex_ext1, tex_smp), uv, dx, dy);
+    if (slot == 2) return textureGrad(sampler2D(tex_ext2, tex_smp), uv, dx, dy);
+    if (slot == 3) return textureGrad(sampler2D(tex_ext3, tex_smp), uv, dx, dy);
+    if (slot == 4) return textureGrad(sampler2D(tex_ext4, tex_smp), uv, dx, dy);
+    if (slot == 5) return textureGrad(sampler2D(tex_ext5, tex_smp), uv, dx, dy);
     return vec4(1.0);
 }
 
@@ -2007,11 +2254,17 @@ vec3 transmission_sample(vec3 exit, float rough, float ior) {
 
 // The ray bent by `ior` as it enters, through `thickness` meters of the volume (times the
 // object's scale): three's getVolumeTransmissionRay.
+// With RefractionModel.PLANE (ext_params.x bit 64) the volume is a wall `thickness` across:
+// a slanted ray crosses thickness / cos of it (up to 12 times as much, at the silhouette of
+// a curved wall), so it is shifted and tinted more toward the edges.
 vec3 transmission_ray(vec3 n, vec3 v, float thickness, float ior) {
     vec3 ray = refract(-v, n, 1.0 / ior);
     // total internal reflection: no way through
     if (dot(ray, ray) < 1e-8) return vec3(0.0);
-    return normalize(ray) * thickness * ext_params.z;
+    ray = normalize(ray);
+    float across = thickness * ext_params.z;
+    if ((int(ext_params.x + 0.5) & 64) != 0) across /= max(dot(ray, -n), 1.0 / 12.0);
+    return ray * across;
 }
 
 // Beer's law over `distance` meters (transmission_params.w: attenuation distance; 0: none).
@@ -2099,6 +2352,18 @@ void main() {
     g_duvdy = dFdy(v_uv);
     g_duv1dx = dFdx(v_uv1);
     g_duv1dy = dFdy(v_uv1);
+    // Material.defocus: the maps read over the lens's blur at this distance, as wide as it is
+    // (the depth of field pass sees through what is transparent)
+    if (focus_params.x > 0.0) {
+        float f = max(ext_slot_texel(int(map_slots[MAP_FOCUS / 4][MAP_FOCUS % 4]), vec2(0.5)).r, 0.01);
+        float z = max(length(v_world_pos - camera_pos.xyz), 0.01);
+        float blur = min(focus_params.x / f * abs(1.0 - f / z), focus_params.y);
+        float widen = max(2.0 * blur, 1.0);
+        g_duvdx *= widen;
+        g_duvdy *= widen;
+        g_duv1dx *= widen;
+        g_duv1dy *= widen;
+    }
     g_parallax_depth = 0.0;
     if (parallax_params.x > 0.0 && mode != 0) {
         vec3 pn = normalize(v_normal);
@@ -2107,8 +2372,11 @@ void main() {
         float pd = length(pv);
         parallax_offset(pn, pv / max(pd, 1e-5), pd);
     }
+    // Material.hex_tiling
+    if (parallax_params.w > 0.0) hex_setup(g_uv, parallax_params.w);
     if (tex_params.x > 0.5) {
-        vec4 texel = textureGrad(sampler2D(tex_map, tex_smp), g_uv, g_duvdx, g_duvdy);  // (parallax: g_uv)
+        vec4 texel = g_hex ? hex_color(g_uv, g_duvdx, g_duvdy)
+                           : textureGrad(sampler2D(tex_map, tex_smp), g_uv, g_duvdx, g_duvdy);  // (parallax: g_uv)
         g_base *= texel;
         map_rgb = texel.rgb;
     }
@@ -2223,7 +2491,13 @@ void main() {
         g_rough = clamp(g_rough, 0.0, 1.0);
         g_metal = clamp(g_metal, 0.0, 1.0);
     }
-    if (mode != 0) surface_hook(geo_n, g_base, g_rough, g_metal);
+    if (mode != 0) {
+        // (the hook's opacity counts too, as its contract says: a water's edge fading out by
+        // the depth behind it, say)
+        float before = g_base.a;
+        surface_hook(geo_n, g_base, g_rough, g_metal);
+        if (before > 0.0) alpha *= clamp(g_base.a / before, 0.0, 1.0);
+    }
     // what it reflects head on: 4% for glass's IOR of 1.5, tinted and scaled by the specular
     // color and intensity (KHR_materials_specular); metals reflect their own color
     g_f0 = mix(vec3(0.04), g_base.rgb, g_metal);
@@ -2290,6 +2564,8 @@ void main() {
 
     vec3 outc;
     vec3 spec = vec3(0.0);
+    // the light the surface gives off itself (emissive, baked), which transmission leaves alone
+    vec3 own_light = vec3(0.0);
     // the indirect light in outc, diffuse and specular (for frag_indirect)
     vec3 ind_d = vec3(0.0);
     vec3 ind_s = vec3(0.0);
@@ -2342,8 +2618,13 @@ void main() {
         ind_d = outc;
 
         int ndir = int(counts.x);
+        g_sized = false;
+        g_nol = -1.0;
+        // where a light with a size is mirrored from (light_toward), with the material's
+        // surface (not a standard material's: not at all)
+        vec3 mirror_r = reflect(-v, n);
+        bool sized_ok = mode == 3;
         for (int i = 0; i < ndir; i++) {
-            g_radius = 0.0;
             vec3 l = normalize(dirs[i].dir.xyz);
             float lit = int(dir_shadow_params.x) == i + 1 ? dir_shadow(n, l) : 1.0;
             // the other shadowed ones: a tile of shadow_atlas each
@@ -2374,12 +2655,38 @@ void main() {
             vec3 lv = pl.pos.xyz - v_world_pos;
             float d = length(lv);
             // a light source with a size: falloff softens up close instead of blowing out
-            g_radius = pl.params.x;
-            float d_soft = sqrt(d * d + g_radius * g_radius);
-            vec3 radiance = pl.color.rgb * distance_attenuation(d_soft, pl.pos.w, pl.color.w);
+            float radius = pl.params.x;
+            vec3 seg = pl.params.yzw;
+            vec3 l = lv / d;
+            vec3 radiance;
+            g_sized = false;
+            if (sized_ok && radius + abs(seg.x) + abs(seg.y) + abs(seg.z) > 0.0) light_toward(mirror_r, lv, seg, radius);
+            if (dot(seg, seg) > 0.0) {
+                // a tube (PointLight.length): the light of the whole segment, its intensity
+                // spread along it (Karis' eq. 16, the radius softening it as a ball's
+                // falloff: d^2 + radius^2 at length 0), faded out by the distance to its
+                // nearest point
+                vec3 l0 = lv - seg;
+                vec3 l1 = lv + seg;
+                float d0 = length(l0);
+                float d1 = length(l1);
+                vec3 ld = 2.0 * seg;
+                vec3 near = l0 + clamp(-dot(l0, ld) / dot(ld, ld), 0.0, 1.0) * ld;
+                float dn = length(near);
+                g_nol = 2.0 * clamp(0.5 * dot(n, l0) / d0 + 0.5 * dot(n, l1) / d1, 0.0, 1.0)
+                    / max(d0 * d1 + dot(l0, l1) + 2.0 * radius * radius, 1e-4);
+                l = near / max(dn, 1e-6);
+                radiance = pl.color.rgb * distance_window(dn, pl.pos.w);
+            } else {
+                g_nol = -1.0;
+                float d_soft = sqrt(d * d + radius * radius);
+                radiance = pl.color.rgb * distance_attenuation(d_soft, pl.pos.w, pl.color.w);
+            }
             radiance *= fog_transmittance(fog_distance(pl.pos.xyz, v_world_pos));
-            outc += direct(mode, n, v, lv / d, d, radiance, diffuse_color, spec);
+            outc += direct(mode, n, v, l, d, radiance, diffuse_color, spec);
         }
+        g_sized = false;
+        g_nol = -1.0;
         for (int k = 0; k < nspot; k++) {
             int i = baking ? k : int(cluster_lights[first + npoint + k].index);
             vec3 lv = spots[i].pos.xyz - v_world_pos;
@@ -2389,13 +2696,50 @@ void main() {
             vec3 l = lv / d;
             float cone = smoothstep(spots[i].dir.w, spots[i].params.x, dot(-l, spots[i].dir.xyz));
             if (cone <= 0.0) continue;
-            g_radius = spots[i].params.y;
-            float d_soft = sqrt(d * d + g_radius * g_radius);
-            g_radius = spots[i].params.z;
+            float d_soft = sqrt(d * d + spots[i].params.y * spots[i].params.y);
+            g_sized = false;
+            if (sized_ok && spots[i].params.z > 0.0) light_toward(mirror_r, lv, vec3(0.0), spots[i].params.z);
             vec3 radiance = spots[i].color.rgb * cone * distance_attenuation(d_soft, spots[i].pos.w, spots[i].color.w);
             radiance *= fog_transmittance(fog_distance(spots[i].pos.xyz, v_world_pos));
             radiance *= shadow(i, geo_n);
             outc += direct(mode, n, v, l, d, radiance, diffuse_color, spec);
+        }
+        int nrect = int(counts.w);
+        // three's RectAreaLight lights standard and physical materials only
+        if (mode == 3 && nrect > 0) {
+            int ltc_base = int(counts.y) + nrect;
+            float rough = max(g_rough, 0.0525);
+            vec4 t1;
+            vec4 t2;
+            ltc_tables(ltc_base, n, v, rough, t1, t2);
+            mat3 m_inv = mat3(vec3(t1.x, 0.0, t1.y), vec3(0.0, 1.0, 0.0), vec3(t1.z, 0.0, t1.w));
+            vec3 fresnel = g_f0 * t2.x + (vec3(g_f90) - g_f0) * t2.y;
+            mat3 cc_inv = mat3(1.0);
+            float cc_fresnel = 0.0;
+            if (g_clearcoat > 0.0) {
+                vec4 c1;
+                vec4 c2;
+                ltc_tables(ltc_base, g_clearcoat_n, v, max(g_clearcoat_rough, 0.0525), c1, c2);
+                cc_inv = mat3(vec3(c1.x, 0.0, c1.y), vec3(0.0, 1.0, 0.0), vec3(c1.z, 0.0, c1.w));
+                cc_fresnel = 0.04 * c2.x + 0.96 * c2.y;
+            }
+            for (int k = 0; k < nrect; k++) {
+                gpu_point_light ra = points[int(counts.y) + k];
+                vec3 hw = vec3(ra.pos.w, ra.color.w, ra.params.x);
+                vec3 hh = ra.params.yzw;
+                vec3 to = ra.pos.xyz - v_world_pos;
+                // behind the light (it shines from its front only)
+                if (dot(cross(hw, hh), to) < 0.0) continue;
+                vec3 q[4];
+                q[0] = to + hw - hh;
+                q[1] = to - hw - hh;
+                q[2] = to - hw + hh;
+                q[3] = to + hw + hh;
+                vec3 c = ra.color.rgb * fog_transmittance(fog_distance(ra.pos.xyz, v_world_pos));
+                spec += c * fresnel * ltc_evaluate(n, v, m_inv, q);
+                outc += c * diffuse_color * ltc_evaluate(n, v, mat3(1.0), q);
+                if (g_clearcoat > 0.0) g_clearcoat_direct += c * cc_fresnel * ltc_evaluate(g_clearcoat_n, v, cc_inv, q);
+            }
         }
         spec *= ao;
         // Material.map_emissive: the color map glows too
@@ -2405,6 +2749,7 @@ void main() {
         // a node material's emissiveNode
         if (node_glow.w > 0.5) glow = node_glow.rgb;
         outc += glow;
+        own_light = glow;
         // light baked into the vertex colors, as if from fixed lamps
         if (baked) {
             vec3 b = diffuse_color * v_color * emissive.w * ao;
@@ -2490,7 +2835,8 @@ void main() {
             float thickness = max(transmission_params.y, 0.0);
             if (has_map(MAP_THICKNESS)) thickness *= material_map(MAP_THICKNESS).g;
             vec3 refracted = refracted_light(n, v, v_world_pos, g_rough, g_base.rgb * (1.0 - g_metal), thickness);
-            vec3 highlights = spec + env_term + mirror_term;
+            // (the light it gives off stays too: three's totalEmissiveRadiance)
+            vec3 highlights = spec + env_term + mirror_term + own_light;
             outc = mix(max(outc - highlights, vec3(0.0)), refracted, amount) + highlights;
         }
         // the physical material's layers over it all: the sheen, then the clear coat, which
@@ -2513,6 +2859,14 @@ void main() {
             float f = schlick(0.04, 1.0, clamp(dot(cn, v), 0.0, 1.0));
             outc = outc * (1.0 - g_clearcoat * f) + coat * g_clearcoat;
         }
+    }
+
+    // Material.vertex_occlusion: the vertex colors' brightness dims all of it
+    if ((fl & 128) != 0) {
+        float k = dot(v_color, vec3(0.2126, 0.7152, 0.0722));
+        outc *= k;
+        ind_d *= k;
+        ind_s *= k;
     }
 
     // a node material's outputNode: what the light made of it, and its alpha
@@ -2642,12 +2996,38 @@ void main() {
 @include_block fs_main
 @end
 
+// The geometries with tangents (vs_tangent): the four that can cut holes, the opaque ones'
+// draws too (each variant is a few MB of generated code)
+@fs fs_tangent
+#define TANGENT
+@include_block fs_main
+@end
+
+@fs fs_mrt_tangent
+#define TANGENT
+#define MRT
+@include_block fs_main
+@end
+
+@fs fs_vsm_tangent
+#define TANGENT
+#define VSM
+@include_block fs_main
+@end
+
+@fs fs_mrt_vsm_tangent
+#define TANGENT
+#define MRT
+#define VSM
+@include_block fs_main
+@end
+
 // The depth prepass (renderer.c3, Renderer.depth_prepass): depth only, for what has holes in
 // it (alpha tested, LOD cross-fades, the cull box). The main pass then draws those with
 // fs_opaque and an EQUAL depth test, so that no shader of the main pass discards (a shader
 // that can discard costs the GPU its early depth test, whatever it draws). Cuts out exactly
 // what fs does.
-@fs depth_fs
+@block depth_main
 layout(binding=0) uniform texture2D tex_map;
 layout(binding=0) uniform sampler tex_smp;
 layout(binding=1) uniform depth_fs_params {
@@ -2662,7 +3042,9 @@ in vec3 v_world_pos;
 in vec3 v_normal;
 in vec2 v_uv;
 in vec2 v_uv1;
+#ifdef TANGENT
 in vec4 v_tangent;
+#endif
 in vec3 v_color;
 in float v_alpha;
 in vec4 v_clip;
@@ -2699,9 +3081,24 @@ void main() {
     }
     // for alpha to coverage (the depth prepass writes no color); r = the distance from the
     // camera's plane, for Renderer.render_back_faces
-    frag_color = vec4(v_clip.w + (v_normal + v_color + v_world_pos + v_clip.xyz + v_prev_clip.xyz).x * 0.0
+    float unread = 0.0;
+#ifdef TANGENT
+    unread = v_tangent.x * 0.0;
+#endif
+    frag_color = vec4(v_clip.w + unread + (v_normal + v_color + v_world_pos + v_clip.xyz + v_prev_clip.xyz).x * 0.0
         + v_line_distance * 0.0 + (v_node0 + v_node1 + v_node2 + v_node3).x * 0.0, 0.0, 0.0, alpha);
 }
+@end
+
+@fs depth_fs
+@include_block depth_main
+@end
+
+// The same for geometries with tangents: the main pass tests against the depth of this pass
+// with EQUAL, which needs the same vertex shader (one compiled apart can place them a hair off)
+@fs depth_tangent_fs
+#define TANGENT
+@include_block depth_main
 @end
 
 @program three vs fs
@@ -2710,6 +3107,11 @@ void main() {
 @program three_opaque_mrt vs fs_opaque_mrt
 @program three_vsm vs fs_vsm
 @program three_mrt_vsm vs fs_mrt_vsm
+@program three_tangent vs_tangent fs_tangent
+@program three_mrt_tangent vs_tangent fs_mrt_tangent
+@program three_vsm_tangent vs_tangent fs_vsm_tangent
+@program three_mrt_vsm_tangent vs_tangent fs_mrt_vsm_tangent
 @program depth vs depth_fs
+@program depth_tangent vs_tangent depth_tangent_fs
 @program shadow shadow_vs shadow_fs
 @program shadow_nodes shadow_nodes_vs shadow_nodes_fs

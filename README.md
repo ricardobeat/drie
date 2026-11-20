@@ -72,7 +72,7 @@ three.js API coverage:
 | Geometry | ✅ | `box`, `plane`, `sphere`, `cylinder`, `cone`, `torus`, `lathe`, `buffer_geometry`, `merge` |
 | Materials | ✅ | `MeshBasic`, `MeshLambert`, `MeshPhong`, `MeshStandard`, `MeshNormal`, `MeshPhysical` (transmission, volume, IOR, dispersion, specular, clearcoat, sheen, iridescence, anisotropy), tangents (a geometry's own, or from the screen derivatives), parallax mapping (`parallaxUV`), `depthTest` / `depthWrite`, shader hooks (`onBeforeCompile`) |
 | Textures | ✅ | `load_texture` (PNG/JPEG), `data_texture`, `canvas_texture`, mipmaps, anisotropy, `repeat` / `offset` / `rotation` / `center` per map, `channel` (a geometry's second uv set, `uv1`), `nearest` (three's `NearestFilter` magnification) |
-| Lights | ✅ | `AmbientLight`, `HemisphereLight`, `DirectionalLight`, `PointLight`, `SpotLight`; light maps (`lightMap`, `lightMapIntensity`), `ProgressiveLightMap` |
+| Lights | ✅ | `AmbientLight`, `HemisphereLight`, `DirectionalLight`, `PointLight`, `SpotLight`, `RectAreaLight` (standard and physical materials, no shadows, as three; up to `renderer.max_rect_area_lights`); light maps (`lightMap`, `lightMapIntensity`), `ProgressiveLightMap` |
 | Lighting addons | ✅ | Clustered forward lighting (`ClusteredLighting`), irradiance volume (`LightProbeGrid`) |
 | Reflections | ✅ | Box-projected env maps, `CubeCamera` capture, SSR (`SSRNode`), planar `Reflector` |
 | Fog | ✅ | `Fog`, `FogExp2` |
@@ -132,7 +132,7 @@ Features not in three.js:
 | **Volumetric Fog** | Compute-marched froxel fog with light scatter, sun shafts, 3D noise, and clear boxes |
 | **Room Reflection Probes** | Box-projected, cross-faded room probes |
 | **GPU Culling** | Depth pre-pass and GPU instanced culling |
-| **Light Radius** | Softer close-range falloff on point and spot lights |
+| **Light Radius & Tubes** | Point and spot lights with a size: softer close-range falloff, highlights the shape and size of the bulb; tube lights (`point_light.length`) |
 | **Material Extensions** | Foliage wind sway, glass viewer silhouette, refraction with dispersion, clearcoat, sheen, iridescence |
 | **UI, Input & Tooling** | Menus, macOS GameController support, deterministic timeline rewind, profiling |
 
@@ -144,7 +144,7 @@ Features not in three.js:
 - **Glass & viewer silhouette:** `material.glass` preserves reflections regardless of opacity; `material.reflect_viewer` darkens glass reflections with a soft silhouette at the camera.
 - **Transmission & dispersion:** `material.transmission` shows what stands behind a surface, refracted through `thickness` meters of it at `ior` and blurred by its roughness; `dispersion` bends each color channel by its own index of refraction, fringing edges with rainbow colors, and `attenuation_color` / `attenuation_distance` tint the light as it crosses (Beer's law). `specular_color` / `specular_intensity` tint and scale what a dielectric reflects (KHR_materials_specular). Double-sided glass shows its own far side through the near one.
 - **Clearcoat, sheen, iridescence & anisotropy:** `material.clearcoat` lays a thin clear varnish over the surface, with its own `clearcoat_roughness` and normal map (car paint, lacquer); `sheen` / `sheen_color` / `sheen_roughness` give cloth its soft glow at glancing angles (velvet, fabric); `iridescence` is a thin film (soap bubbles, oil) whose colors come from its thickness, `iridescence_thickness_min` to `_max` nanometers, and `iridescence_ior`; `anisotropy` draws highlights and reflections out along the surface's tangent, turned by `anisotropy_rotation` and `anisotropy_map` (brushed metal). They are three's `MeshPhysicalMaterial` layers, from its shader code.
-- **Tangents:** normal and anisotropy maps are read in the geometry's own tangent frame (`geometry.tangents`, glTF's `TANGENT`), or without one in a frame from the screen derivatives of the position and uv. `normal_scale` is x and y, as three's `normalScale`: the glTF loader negates y on meshes without tangents, as three's GLTFLoader does.
+- **Tangents:** normal and anisotropy maps are read in the geometry's own tangent frame (`geometry.tangents`, glTF's `TANGENT`), or without one in a frame from the screen derivatives of the position and uv. `normal_scale` is x and y, as three's `normalScale`: the glTF loader negates y on meshes without tangents, as three's GLTFLoader does. As three's `USE_TANGENT`, only a geometry with tangents whose material reads them is drawn with the programs that take them (the tangent costs every vertex drawn); a custom `MaterialShaders` hands them over as `main_tangent`, `main_mrt_tangent`, `main_vsm_tangent`, `main_mrt_vsm_tangent` and `depth_tangent`.
 - **Alpha and emissive maps:** `material.alpha_map` (green: how opaque) and `emissive_map` (tints `emissive`).
 - **Depth test & write:** `material.depth_test` / `depth_write` (three.js `depthTest` / `depthWrite`); a material that isn't tested or doesn't write depth stays out of the depth pre-pass.
 - **Additive blending & draw order:** `material.blending = ADDITIVE_BLENDING` for transparent materials and `object.render_order` for explicit draw order, as in three.js.
@@ -178,7 +178,8 @@ A material's maps besides `map`, `normal_map` and `arm_map` share six texture sl
 
 ### Lighting, Shadows & Global Illumination
 
-- **Light source radius:** `light.radius` softens close-range falloff on point and spot lights; `spot_light.specular_radius` controls reflection highlight size.
+- **Light source radius:** `light.radius` softens close-range falloff on point and spot lights, and their highlights are the bulb's own shape (Karis' representative point with its energy normalization): a smooth surface mirrors a sharp disc as big as the bulb, a rough one gets the same light as from a point; `spot_light.specular_radius` sets the size seen in reflections. `just test lightsize`
+- **Tube lights:** `point_light.length` stretches a point light into a tube along its own x axis (`radius` thick): light from the whole segment (Karis' line irradiance) and long highlights of the tube's shape. No shadows (as point lights).
 - **Cached static shadows:** `light.shadow.auto_update = false` (three.js `shadow.autoUpdate`) caches static shadow maps in the shared atlas (`renderer.shadow_atlas_capacity`).
 - **Variance shadow maps:** `renderer.shadow_type = VSM` (three.js `VSMShadowMap`; default `PCF`, three's `PCFSoftShadowMap`) blurs each spot and directional map into its moments (`shadow.radius`, `shadow.blur_samples`, `shadow.bias`), in RG32F where the GPU can draw and filter it, else RG16F.
 - **Several shadowed directional lights:** as in three.js, every directional light can cast a shadow: the first is the cascaded sun, each other one a box (`light.shadow_extent`) in a tile of the shadow atlas.
@@ -194,6 +195,7 @@ A material's maps besides `map`, `normal_map` and `arm_map` share six texture sl
 | Feature | Key API / Fields | Notes |
 | --- | --- | --- |
 | Light radius | `light.radius`, `spot_light.specular_radius` | `specular_radius` defaults to `radius` when `0` |
+| Tube lights | `point_light.length` (m, along the light's x axis) | Intensity spread along the tube; falls off as the square of the distance whatever `decay`; `distance` cuts off from its nearest point |
 | Static shadow atlas | `light.shadow.auto_update = false`, `light.shadow.needs_update = true` | Set `needs_update = true` to redraw |
 | Shadow filtering | `renderer.shadow_type` (`PCF`, `VSM`), `light.shadow.radius` (`2`), `shadow.blur_samples` (`8`, VSM's blur taps), `shadow.bias` (`0`, VSM only; PCF uses `shadow.normal_bias`) | Point lights cast no shadows with either |
 | Shadow atlas capacity | `renderer.shadow_atlas_capacity` (`8`) | Tiles the atlas has room for at first: one per spot light with `shadow.auto_update = false` and per shadowed directional light besides the first; grows to what they need, up to 64 |
@@ -294,6 +296,14 @@ TBD. Currently the demo, with all advanced features on, runs at 40-60FPS on a Ma
 post-processing passes), `radiance_cs.c3`, `vsm.c3` (the variance shadow maps' blur) and `lightmap.c3` (the progressive light map's seams pass); the recipe then fixes sokol-shdc's storage image slot constants with macOS `sed -i ''`. An application with its own copy of the material
 shader generates it into its own sources, and regenerates it whenever `shader_core.glsl` changes.
 
+## RectAreaLight's tables
+
+`generated/ltc.c3` holds the linearly transformed cosines `RectAreaLight` is shaded with (Heitz,
+Dupuy, Hill and Neubelt 2016, [ltc_code](https://github.com/selfshadow/ltc_code)), taken from
+three.js's `RectAreaLightTexturesLib.js` (MIT) by `just ltc` (`third_party/ltc/ltc.py`). The shader
+has no view slot left for textures of their own: a frame with rect area lights appends the tables
+(192 KB) to the point lights' buffer, and the shader filters them itself.
+
 ## cgltf
 
 The glTF loader (`gltf.c3`) reads files with [cgltf](https://github.com/jkuhlmann/cgltf) 1.15
@@ -316,6 +326,7 @@ and by them with only the glowing cubes
 - `just test physical`: `tests/physical.c3` renders iridescence, a clear coat, sheen and double-sided glass side by side
 - `just test anisotropy`: `tests/anisotropy.c3` loads Khronos's AnisotropyRotationTest (CC-BY 4.0): every band's highlight
 should be a horizontal stripe, whether its direction comes from the tangents, `anisotropy_rotation` or the map
+- `just test lightsize`: `tests/lightsize.c3` lights a glossy floor and two balls with bulbs of radius 0, 0.05 and 0.3 m and tubes 0, 0.5 and 1.5 m long: each highlight on the floor should be the bulb's or the tube's shape at its size, and the rough ball should look about the same under all of them
 - `just test nodes`: `tests/nodes.c3` draws five balls with node materials (a texture times a uniform, stripes, rings pushed out by `position_node` through the depth pre-pass and the shadow maps, a `normal_node` with a fresnel glow, a varying), changes a uniform between two renders, renders with and without the pre-pass, with VSM and into MRT, checks a loop, a break and integer arithmetic against a constant, and discards a ball by a uniform, its shadow with it
 - `just test normals`: `tests/normals.c3` loads Khronos's NormalTangentTest (CC0, no tangents) and
 NormalTangentMirrorTest (CC-BY 4.0, tangents): each normal-mapped cell should reflect the horizon as the real geometry beside it does
