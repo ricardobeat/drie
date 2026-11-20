@@ -374,9 +374,13 @@ void main() {
 
 @fs shadow_fs
 layout(binding=0) uniform texture2D s_map;
+layout(binding=1) uniform texture2D s_alpha;
 layout(binding=0) uniform sampler s_smp;
+layout(binding=1) uniform sampler s_alpha_smp;
 layout(binding=1) uniform shadow_fs_params {
-    vec4 s_params;  // x = alpha test threshold (0 = off), y = material opacity
+    vec4 s_params;      // x = alpha test threshold (0 = off), y = material opacity, z = 1: has a
+                        //   map, w = 1: has an alpha map (s_alpha, three's alphaMap: its green)
+    vec4 s_alpha_uv[2]; // the alpha map's uv from v_uv, as uv_rel
 };
 
 in vec2 v_uv;
@@ -384,6 +388,10 @@ in vec2 v_uv;
 void main() {
     if (s_params.x > 0.0) {
         float a = texture(sampler2D(s_map, s_smp), v_uv).a * s_params.y;
+        if (s_params.w > 0.5) {
+            vec3 p = vec3(v_uv, 1.0);
+            a *= texture(sampler2D(s_alpha, s_alpha_smp), vec2(dot(s_alpha_uv[0].xyz, p), dot(s_alpha_uv[1].xyz, p))).g;
+        }
         if (a < s_params.x) discard;
     }
 }
@@ -466,7 +474,8 @@ layout(binding=30) uniform texture2D tex_ext4;
 layout(binding=31) uniform texture2D tex_ext5;
 layout(binding=0) uniform sampler tex_smp;
 layout(binding=1) uniform shadow_fs_params {
-    vec4 s_params;  // x = alpha test threshold (0 = off), y = material opacity, z = 1: has a map
+    vec4 s_params;      // as shadow_fs's
+    vec4 s_alpha_uv[2];
 };
 layout(binding=3) uniform node_fs_params {
     mat4 node_view;
@@ -720,6 +729,8 @@ struct gpu_dir_light {
 struct gpu_point_light {
     vec4 pos;    // w = distance cutoff
     vec4 color;  // w = decay
+    vec4 shadow; // x = the first of its six maps in spot_shadows (+x -x +y -y +z -z; -1: none),
+                 //   y = shadow intensity (0..1)
     vec4 params; // x = source radius
 };
 struct gpu_spot_light {
@@ -1408,18 +1419,19 @@ const int SHADOW_MAX_TAPS = 40;
 float shadow_sample_scale() { return quality_params.x > 0.0 ? quality_params.x : 1.0; }
 int shadow_taps(float base) { return clamp(int(base * shadow_sample_scale() + 0.5), 4, SHADOW_MAX_TAPS); }
 
-// Shadow of spot light `s`, whose map is `si` in spot_shadows. Lights whose map is redrawn
-// every frame have shadow_map to themselves; the ones drawn once share shadow_atlas, a tile each.
-float spot_shadow_of(int s, int si, vec3 n) {
+// Shadow of the light at `light_pos` (a spot light, or one face of a point light's) whose
+// map is `si` in spot_shadows. A spot light whose map is redrawn every frame has shadow_map to
+// itself; the other maps share shadow_atlas, a tile each.
+float light_shadow_of(vec3 light_pos, int si, vec3 n) {
     vec4 params = spot_shadow_data[si].params;
-    vec3 to_light = spots[s].pos.xyz - v_world_pos;
+    vec3 to_light = light_pos - v_world_pos;
     float dist = length(to_light);
     // push the lookup off the surface, more at grazing angles and far away where texels are big
     float slope = 1.0 - clamp(dot(n, to_light / dist), 0.0, 1.0);
     vec3 p = v_world_pos + n * params.y * dist * (0.4 + slope);
     // (the matrix takes the point from the light, see vs_params)
     mat4 m = spot_shadow_data[si].mat;
-    p -= spots[s].pos.xyz;
+    p -= light_pos;
     vec4 sp = m * vec4(p, 1.0);
     if (sp.w <= 0.0) return 1.0;
     vec3 c = sp.xyz / sp.w;
@@ -1499,7 +1511,17 @@ float spot_shadow_of(int s, int si, vec3 n) {
 float shadow(int s, vec3 n) {
     int si = int(spots[s].shadow.x);
     if (si < 0 || (flags() & 4) == 0) return 1.0;
-    return mix(1.0, spot_shadow_of(s, si, n), spots[s].shadow.y);
+    return mix(1.0, light_shadow_of(spots[s].pos.xyz, si, n), spots[s].shadow.y);
+}
+
+// Shadow of a point light: the face of its cube of maps that the point is in.
+float point_shadow(gpu_point_light pl, vec3 n) {
+    int si = int(pl.shadow.x);
+    if (si < 0 || (flags() & 4) == 0) return 1.0;
+    vec3 d = v_world_pos - pl.pos.xyz;
+    vec3 a = abs(d);
+    int face = a.x >= a.y && a.x >= a.z ? (d.x >= 0.0 ? 0 : 1) : a.y >= a.z ? (d.y >= 0.0 ? 2 : 3) : (d.z >= 0.0 ? 4 : 5);
+    return mix(1.0, light_shadow_of(pl.pos.xyz, si + face, n), pl.shadow.y);
 }
 
 // 1 where cascade `i` of the sun's map has nothing nearer than depth `z` at `uv` (0..1 in its tile).
@@ -1652,7 +1674,7 @@ float sun_in_fog(vec3 from, vec3 to, float sigma) {
 
 // Light from the scene's irradiance volumes for a surface facing `n`, already times `cover`:
 // how much of the point they cover, 1 inside a volume, 0 outside them all. Each volume covers
-// its box, fading out over its outermost half cell, in front of the ones before it. Each
+// its box and fades out over half a cell outside it, in front of the ones before it. Each
 // probe holds the light arriving from the six axis directions, side by side along x in the
 // volume's part of the texture.
 vec3 gi_irradiance(vec3 n, out float cover) {
@@ -1665,7 +1687,7 @@ vec3 gi_irradiance(vec3 n, out float cover) {
         vec3 res = gi_dims[i].xyz;
         vec3 p = (v_world_pos + n * gi_dims[i].w - gi_min[i].xyz) * gi_inv_size[i].xyz;
         vec3 edge = min(p, 1.0 - p) * res;
-        float fade = clamp(min(edge.x, min(edge.y, edge.z)) * 2.0, 0.0, 1.0);
+        float fade = clamp(1.0 + min(edge.x, min(edge.y, edge.z)) * 2.0, 0.0, 1.0);
         if (fade <= 0.0) continue;
         // stay inside the volume and a direction's slab
         p = clamp(p, 0.5 / res, 1.0 - 0.5 / res);
@@ -2855,6 +2877,7 @@ void main() {
                 radiance = pl.color.rgb * distance_attenuation(d_soft, pl.pos.w, pl.color.w);
             }
             radiance *= fog_transmittance(fog_distance(pl.pos.xyz, v_world_pos));
+            if (pl.shadow.x >= 0.0) radiance *= point_shadow(pl, geo_n);
             outc += direct(mode, n, v, l, d, radiance, diffuse_color, spec);
         }
         g_sized = false;
@@ -3227,13 +3250,17 @@ void main() {
 // what fs does.
 @block depth_main
 layout(binding=0) uniform texture2D tex_map;
+layout(binding=1) uniform texture2D tex_alpha;
 layout(binding=0) uniform sampler tex_smp;
+layout(binding=1) uniform sampler tex_alpha_smp;
 layout(binding=1) uniform depth_fs_params {
     vec4 d_color;          // a = the material's opacity
-    vec4 d_params;         // x = has a map, y = alpha test threshold, z = 1: vertex colors' alpha
+    vec4 d_params;         // x = has a map, y = alpha test threshold, z = 1: vertex colors' alpha,
+                           //   w = 1: has an alpha map (tex_alpha, three's alphaMap: its green)
     vec4 d_screen_params;  // as screen_params in fs
     vec4 d_cull_min;       // as cull_min in fs
     vec4 d_cull_max;
+    vec4 d_alpha_uv[2];    // the alpha map's uv from v_uv, as uv_rel
 };
 
 in vec3 v_world_pos;
@@ -3266,6 +3293,10 @@ void main() {
     if (d_params.y > 0.0) {
         alpha = d_color.a;
         if (d_params.x > 0.5) alpha *= texture(sampler2D(tex_map, tex_smp), v_uv).a;
+        if (d_params.w > 0.5) {
+            vec3 p = vec3(v_uv, 1.0);
+            alpha *= texture(sampler2D(tex_alpha, tex_alpha_smp), vec2(dot(d_alpha_uv[0].xyz, p), dot(d_alpha_uv[1].xyz, p))).g;
+        }
         if (d_params.z > 0.5) alpha *= v_alpha;
         if (d_params.x > 0.5) {
             vec2 texel = v_uv * vec2(textureSize(sampler2D(tex_map, tex_smp), 0));

@@ -128,14 +128,15 @@ fn Vector3 IrradianceVolume.sample(&self, Vector3 pos, Vector3 normal) {
     return sum * (fade * self.intensity);
 }
 
-// 1 inside the volume, falling to 0 over the outermost half cell. `p` is relative to min.
+// 1 inside the volume's box, falling to 0 over half a cell outside it: a room-sized volume
+// lights the room up to its walls, floor and ceiling. `p` is relative to min.
 fn float IrradianceVolume.edge_fade(&self, Vector3 p) {
     Vector3 c    = self.cell();
     Vector3 size = self.max - self.min;
     float fade   = 1;
     for (int a = 0; a < 3; a++) {
         float edge = math::min(p[a], size[a] - p[a]) / c[a];
-        fade = math::min(fade, clamp(edge * 2, 0, 1));
+        fade = math::min(fade, clamp(1 + edge * 2, 0, 1));
     }
     return fade;
 }

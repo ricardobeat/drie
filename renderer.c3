@@ -519,6 +519,8 @@ fn void Renderer.render_back_faces(&self, RenderTarget* target) {
         Texture* map   = ready(state.white);
         bind.views[shaders::VIEW_TEX_MAP] = map.view;
         bind.samplers[shaders::SMP_TEX_SMP] = map.sampler;
+        bind.views[shaders::VIEW_TEX_ALPHA] = map.view;
+        bind.samplers[shaders::SMP_TEX_ALPHA_SMP] = map.sampler;
         sg::apply_bindings(&bind);
         VsParams vs = vs_params_of(item, view_proj, false);
         vs.inst_cull = inst_cull;
@@ -1435,6 +1437,8 @@ fn void clear_atlas_tile() @local {
     Texture* white = ready(state.white);
     bind.views[shaders::VIEW_S_MAP] = white.view;
     bind.samplers[shaders::SMP_S_SMP] = white.sampler;
+    bind.views[shaders::VIEW_S_ALPHA] = white.view;
+    bind.samplers[shaders::SMP_S_ALPHA_SMP] = white.sampler;
     sg::apply_bindings(&bind);
     // the quad's x and y as they are, at depth 1 (clip z = w: the far plane in both of the
     // depth ranges)
@@ -1652,16 +1656,52 @@ fn int atlas_tile_of(Light* sl) @local {
     return -1;
 }
 
-// The shadow settings of a spot or directional light.
+// The shadow settings of a spot, point or directional light.
 fn LightShadow* light_shadow(Light* l) @local {
-    return l.light_type == SPOT ? &((SpotLight*)l).shadow : &((DirectionalLight*)l).shadow;
+    switch (l.light_type) {
+        case SPOT: return &((SpotLight*)l).shadow;
+        case POINT: return &((PointLight*)l).shadow;
+        default: return &((DirectionalLight*)l).shadow;
+    }
+}
+
+// Which of a point light's six faces atlas tile `i` is: the tiles before it that are the
+// same light's.
+fn int atlas_face(int i) @local {
+    int face = 0;
+    while (i - face > 0 && state.atlas_pending[(sz)(i - face - 1)] == state.atlas_pending[(sz)i]) face++;
+    return face;
+}
+
+// The directions of a point light's six shadow maps (+x -x +y -y +z -z) and their up.
+const Vector3[6] CUBE_FORWARD @local = { { 1, 0, 0 }, { -1, 0, 0 }, { 0, 1, 0 }, { 0, -1, 0 }, { 0, 0, 1 }, { 0, 0, -1 } };
+const Vector3[6] CUBE_UP @local = { { 0, 1, 0 }, { 0, 1, 0 }, { 0, 0, -1 }, { 0, 0, 1 }, { 0, 1, 0 }, { 0, 1, 0 } };
+// A point light's maps see a little more than a quarter turn: the taps of a soft edge by a
+// face's border stay inside its tile.
+const float POINT_SHADOW_FOV @local = 96;
+
+fn float point_shadow_far(PointLight* pl) @local {
+    return pl.shadow.far > 0 ? pl.shadow.far : (pl.distance > 0 ? pl.distance : 50.0f);
+}
+
+// View-projection of face `face` of a point light's shadow (`relative`: of world - the
+// light's position, as shadow_view_proj's).
+fn Mat4 point_shadow_view_proj(PointLight* pl, int face, bool relative = false) @local {
+    Vector3 pos = pl.matrix_world.get_position();
+    Mat4 world  = mat4_look_at(pos, pos + CUBE_FORWARD[face], CUBE_UP[face], true);
+    world[3] = { pos.x, pos.y, pos.z, 1 };
+    if (relative) world[3] = { 0, 0, 0, 1 };
+    Mat4 proj = mat4_perspective(POINT_SHADOW_FOV, 1, math::max(pl.shadow.near, 0.01f), point_shadow_far(pl), 1,
+                                 depth_zero_to_one());
+    return proj.mul(world.invert());
 }
 
 // View-projection of a light's map in the atlas: a spot light's frustum (`relative`: of world
 // - the light's position, see shadow_view_proj), or a directional light's one box (world), its
 // texels the atlas's.
-fn Mat4 light_view_proj(Light* l, Camera* camera, bool relative = false) @local {
+fn Mat4 light_view_proj(Light* l, Camera* camera, bool relative = false, int face = 0) @local {
     if (l.light_type == SPOT) return shadow_view_proj((SpotLight*)l, relative);
+    if (l.light_type == POINT) return point_shadow_view_proj((PointLight*)l, face, relative);
     return directional_shadow_view_proj((DirectionalLight*)l, camera, state.atlas_tile);
 }
 
@@ -1690,6 +1730,15 @@ fn void update_shadow_atlas(Scene* scene, Camera* camera, bool bake = false) @lo
         state.atlas_pending.push(sl);
         tile = math::max(tile, shadow_map_size(sl.shadow.map_size));
     }
+    // a point light's six faces: drawn once (or in a bake) with the spot lights, else every
+    // frame with the directional lights
+    foreach (l : state.lights) {
+        if (l.light_type != POINT || !l.cast_shadow || !l.visible || l.intensity <= 0) continue;
+        PointLight* pl = (PointLight*)l;
+        if ((pl.shadow.auto_update && !bake) || state.atlas_pending.len() + 6 > MAX_ATLAS_TILES) continue;
+        for (int f = 0; f < 6; f++) state.atlas_pending.push(pl);
+        tile = math::max(tile, shadow_map_size(pl.shadow.map_size));
+    }
     int statics = (int)state.atlas_pending.len();
     if (bake) statics = keep;
     foreach (l : state.lights) {
@@ -1697,6 +1746,15 @@ fn void update_shadow_atlas(Scene* scene, Camera* camera, bool bake = false) @lo
         if (l == state.sun_caster || state.atlas_pending.len() >= MAX_ATLAS_TILES) continue;
         state.atlas_pending.push(l);
         tile = math::max(tile, shadow_map_size(((DirectionalLight*)l).shadow.map_size));
+    }
+    if (!bake) {
+        foreach (l : state.lights) {
+            if (l.light_type != POINT || !l.cast_shadow || !l.visible || l.intensity <= 0) continue;
+            PointLight* pl = (PointLight*)l;
+            if (!pl.shadow.auto_update || state.atlas_pending.len() + 6 > MAX_ATLAS_TILES) continue;
+            for (int f = 0; f < 6; f++) state.atlas_pending.push(pl);
+            tile = math::max(tile, shadow_map_size(pl.shadow.map_size));
+        }
     }
     int count = (int)state.atlas_pending.len();
     int wanted;
@@ -1761,7 +1819,8 @@ fn void update_shadow_atlas(Scene* scene, Camera* camera, bool bake = false) @lo
         if (!l || (!all && !redraw[i])) continue;
         LightShadow* sh = light_shadow(l);
         sh.needs_update = false;
-        Mat4 light_vp = light_view_proj(l, camera);
+        int face      = l.light_type == POINT ? atlas_face(i) : 0;
+        Mat4 light_vp = light_view_proj(l, camera, false, face);
         state.atlas_view_proj[i] = light_vp;
         Frustum light_frustum = frustum_from(light_vp);
         state.casters.clear();
@@ -1772,8 +1831,8 @@ fn void update_shadow_atlas(Scene* scene, Camera* camera, bool bake = false) @lo
         sg::apply_viewport((i % columns) * tile, (i / columns) * tile, tile, tile, top_left);
         sg::apply_scissor_rect((i % columns) * tile, (i / columns) * tile, tile, tile, top_left);
         if (!all) clear_atlas_tile();
-        if (l.light_type == SPOT) {
-            Mat4 light_rel    = light_view_proj(l, camera, true);
+        if (l.light_type == SPOT || l.light_type == POINT) {
+            Mat4 light_rel    = light_view_proj(l, camera, true, face);
             Vector3 light_pos = l.matrix_world.get_position();
             foreach (&item : state.casters) draw_shadow_item(item, light_rel, light_pos);
         } else {
@@ -2300,13 +2359,31 @@ fn FsParams build_light_params(Scene* scene, Camera* camera, SpotLight* caster) 
                     float xl = x.length();
                     if (xl > 0) half = x * (pl.length * 0.5f / xl);
                 }
-                g.points.push(
-                    {
-                        .pos = { ...l.matrix_world.get_position(), pl.distance },
-                        .color = { ...c, pl.decay },
-                        .params = { pl.radius, half.x, half.y, half.z },
+                GpuPointLight gp = {
+                    .pos = { ...l.matrix_world.get_position(), pl.distance },
+                    .color = { ...c, pl.decay },
+                    .params = { pl.radius, half.x, half.y, half.z },
+                    .shadow = { -1, 1, 0, 0 },
+                };
+                // its six faces, from the tile of the first (see update_shadow_atlas)
+                int tile = pl.cast_shadow ? atlas_tile_of(pl) : -1;
+                if (tile >= 0 && (sz)tile + 6 <= state.atlas_lights.len()) {
+                    gp.shadow = { (float)g.shadows.len(), clamp(pl.shadow.intensity, 0, 1), 0, 0 };
+                    float width = 2 * math::tan(POINT_SHADOW_FOV * DEG2RAD * 0.5f);
+                    bool zo     = depth_zero_to_one();
+                    float cols  = (float)state.atlas_columns;
+                    float rows  = (float)state.atlas_rows;
+                    for (int f = 0; f < 6; f++) {
+                        GpuSpotShadow sh;
+                        sh.mat = shadow_bias().mul(point_shadow_view_proj(pl, f, true));
+                        sh.params = { 2, pl.shadow.normal_bias, 1.0f / state.atlas_tile, vsm ? pl.shadow.bias : pl.shadow.radius };
+                        sh.soft = { pl.shadow.softness, math::max(pl.shadow.near, 0.01f), point_shadow_far(pl), zo ? width : -width };
+                        int t = tile + f;
+                        sh.rect = { (float)(t % state.atlas_columns) / cols, (float)(t / state.atlas_columns) / rows, 1.0f / cols, 1.0f / rows };
+                        g.shadows.push(sh);
                     }
-                );
+                }
+                g.points.push(gp);
                 // a light that adds nothing needs no place in the clusters
                 LightBounds b = point_light_bounds(pl);
                 if (l.intensity <= 0) b = { { }, 0 };
@@ -2749,6 +2826,9 @@ fn void draw_depth_item(DrawItem* item, Mat4 view_proj) @local {
     Texture* map   = ready(mat.map);
     bind.views[shaders::VIEW_TEX_MAP] = map.view;
     bind.samplers[shaders::SMP_TEX_SMP] = map.sampler;
+    Texture* alpha_map = ready(mat.alpha_map);
+    bind.views[shaders::VIEW_TEX_ALPHA] = alpha_map.view;
+    bind.samplers[shaders::SMP_TEX_ALPHA_SMP] = alpha_map.sampler;
     sg::apply_bindings(&bind);
     VsParams vs = vs_params_of(item, view_proj, false);
     vs.inst_cull = inst_cull;
@@ -2757,10 +2837,11 @@ fn void draw_depth_item(DrawItem* item, Mat4 view_proj) @local {
     if (nodes) apply_node_params(nodes, m, false);
     DepthFsParams fs = {
         .d_color = { 0, 0, 0, mat.opacity },
-        .d_params = { mat.map ? 1 : 0, alpha_test, mat.vertex_colors ? 1 : 0, 0 },
+        .d_params = { mat.map ? 1 : 0, alpha_test, mat.vertex_colors ? 1 : 0, mat.alpha_map ? 1 : 0 },
         .d_screen_params = { 0, 0, item.fade, item.fade_dir },
         .d_cull_min = { ...r.cull_box_min, r.cull_box ? 1 : 0 },
         .d_cull_max = { ...r.cull_box_max, 0 },
+        .d_alpha_uv = uv_relative(uv_base(mat), mat.alpha_map),
     };
     sg::apply_uniforms(shaders::UB_DEPTH_FS_PARAMS, &&{ .ptr = &fs, .size = DepthFsParams::size });
     r.info.calls++;
@@ -3095,6 +3176,9 @@ fn void draw_shadow_item(DrawItem* item, Mat4 light_vp, Vector3 origin = { 0, 0,
     Vec4 inst_cull = cull_bind(&bind, item.job - 1);
     bind.views[shaders::VIEW_S_MAP] = map.view;
     bind.samplers[shaders::SMP_S_SMP] = map.sampler;
+    Texture* alpha_map = ready(mat.alpha_map);
+    bind.views[shaders::VIEW_S_ALPHA] = alpha_map.view;
+    bind.samplers[shaders::SMP_S_ALPHA_SMP] = alpha_map.sampler;
     // (shadow_nodes: tex_map and tex_smp in s_map's and s_smp's slots, and node texture k in
     // tex_ext(5 - k), as draw_item binds them)
     if (nodes && nodes.program.cuts) {
@@ -3120,7 +3204,13 @@ fn void draw_shadow_item(DrawItem* item, Mat4 light_vp, Vector3 origin = { 0, 0,
     bool cuts = nodes && nodes.program.cuts;
     if (nodes) apply_node_params(nodes, m, cuts);
     ShadowFsParams fs = {
-        .s_params = { (mat.map || cuts) && !state.renderer.prof_no_alpha_test ? mat.alpha_test : 0, mat.opacity, mat.map ? 1 : 0, 0 }
+        .s_params = {
+            (mat.map || mat.alpha_map || cuts) && !state.renderer.prof_no_alpha_test ? mat.alpha_test : 0,
+            mat.opacity,
+            mat.map ? 1 : 0,
+            mat.alpha_map ? 1 : 0
+        },
+        .s_alpha_uv = uv_relative(uv_base(mat), mat.alpha_map),
     };
     sg::apply_uniforms(shaders::UB_SHADOW_FS_PARAMS, &&{ .ptr = &fs, .size = ShadowFsParams::size });
     state.renderer.info.shadow_calls++;

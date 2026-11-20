@@ -366,7 +366,7 @@ struct Scene {
     IrradianceVolume* irradiance;
     // Extension: more volumes after `irradiance` (all of them together up to
     // MAX_IRRADIANCE_VOLUMES; the scene owns neither). Each one lights the materials inside
-    // its box in place of the ones before it, fading in over its outermost half cell. Whether
+    // its box in place of the ones before it, fading out over half a cell outside it. Whether
     // they add to the ambient light or replace it is the first one's replaces_ambient.
     IrradianceVolume*[] irradiance_volumes;
     // Extension: light bouncing around a box, traced every frame (see radiance.c3). Inside
@@ -765,8 +765,13 @@ struct PointLight {
     // `radius` thick. Its intensity is spread along it: the light falls off from the whole
     // segment (with the distance to its nearest point for `distance`'s cutoff, and as the
     // square of the distance whatever `decay`) and its highlights are long, the tube's own shape
-    // (Karis' tube lights). Casts no shadow, as point lights. 0: a ball of `radius`.
+    // (Karis' tube lights). Its shadow is cast from its centre. 0: a ball of `radius`.
     float length;
+    // Like three's PointLightShadow: with cast_shadow, six maps in the renderer's shadow
+    // atlas, one for each face of a cube round the light, from shadow.near to shadow.far (0:
+    // the light's distance, or 50). Each face takes a tile of the atlas, which holds
+    // MAX_ATLAS_TILES; with shadow.auto_update off they are drawn once (and on needs_update).
+    LightShadow shadow;
 }
 
 // Shadow settings of a light, like three's light.shadow.
@@ -888,6 +893,16 @@ fn PointLight* point_light(Color color = 0xffffff, float intensity = 1, float di
     l.init_light(POINT, color, intensity);
     l.distance = distance;
     l.decay = decay;
+    l.shadow = {
+        .map_size = 512,
+        .normal_bias = 0.006f,
+        .radius = 2,
+        .blur_samples = 8,
+        .intensity = 1,
+        .near = 0.1f,
+        .auto_update = true,
+        .needs_update = true
+    };
     return l;
 }
 
