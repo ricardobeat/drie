@@ -416,65 +416,35 @@ fn void h_cube_texture(JsCtx ctx, void* udata)
             for (usz i = 0; i < count; i++) faces[f][i] = drie::half_to_float(halfs[i]);
         }
     }
-    int w = size * 4;
-    int h = size * 2;
-    float[] px = mem::new_array(float, (sz)w * h * 4);
-    defer mem::free(px.ptr);
-    for (int y = 0; y < h; y++)
+    char[][6] none;
+    Texture* tex = drie::cube_texture(faces, none, size);
+    ctx.ret_number(@reg(textures, tex, TEXTURE_BASE));
+}
+
+// cubeImages(px, nx, py, ny, pz, nz, srgb): the same of six PNG or JPEG faces (three's
+// CubeTextureLoader), each a path or the file's bytes (a Uint8Array).
+fn void h_cube_images(JsCtx ctx, void* udata)
+{
+    char[][6] files;
+    bool[6] owned;
+    defer for (int f = 0; f < 6; f++) if (owned[f]) mem::free(files[f].ptr);
+    for (int f = 0; f < 6; f++)
     {
-        // drie's equirectangular maps: v = 0 straight up, u = 0.5 toward +x (see env_uv)
-        float theta = ((float)y + 0.5f) / h * (float)math::PI;
-        for (int x = 0; x < w; x++)
+        View v;
+        if (view_arg(ctx, (uint)f, &v) && v.cls == ObjClass.UINT8ARRAY)
         {
-            float phi = (((float)x + 0.5f) / w - 0.5f) * 2 * (float)math::PI;
-            // (three reads a CubeTexture with x mirrored: flipEnvMap)
-            Vector3 d = { -math::cos(phi) * math::sin(theta), math::cos(theta), math::sin(phi) * math::sin(theta) };
-            int face;
-            float sc;
-            float tc;
-            float ma;
-            Vector3 a = { math::abs(d.x), math::abs(d.y), math::abs(d.z) };
-            // GL's cube map faces: which one, and where in it
-            if (a.x >= a.y && a.x >= a.z)
-            {
-                face = d.x > 0 ? 0 : 1;
-                sc = d.x > 0 ? -d.z : d.z;
-                tc = -d.y;
-                ma = a.x;
-            }
-            else if (a.y >= a.z)
-            {
-                face = d.y > 0 ? 2 : 3;
-                sc = d.x;
-                tc = d.y > 0 ? d.z : -d.z;
-                ma = a.y;
-            }
-            else
-            {
-                face = d.z > 0 ? 4 : 5;
-                sc = d.z > 0 ? d.x : -d.x;
-                tc = -d.y;
-                ma = a.z;
-            }
-            float s = ((sc / ma + 1) * 0.5f) * size - 0.5f;
-            float t = ((tc / ma + 1) * 0.5f) * size - 0.5f;
-            int s0 = (int)math::floor(s);
-            int t0 = (int)math::floor(t);
-            float fs = s - s0;
-            float ft = t - t0;
-            sz o = ((sz)y * w + x) * 4;
-            for (int k = 0; k < 4; k++)
-            {
-                int si = math::clamp(s0 + (k & 1), 0, size - 1);
-                int ti = math::clamp(t0 + (k >> 1), 0, size - 1);
-                float wk = ((k & 1) != 0 ? fs : 1 - fs) * ((k >> 1) != 0 ? ft : 1 - ft);
-                sz i = ((sz)ti * size + si) * 4;
-                for (int c = 0; c < 3; c++) px[o + c] += faces[face][i + c] * wk;
-            }
-            px[o + 3] = 1;
+            files[f] = ((char*)v.data)[:v.len];
+            continue;
         }
+        String? path = ctx.arg((uint)f).as_string();
+        if (catch path) { ctx.throw_error(TYPE, "cubeImages: expected six paths or Uint8Arrays"); return; }
+        char[]? data = file::load(mem, path);
+        if (catch data) { ctx.throw_error(TYPE, "cubeImages: cannot read a face"); return; }
+        files[f] = data;
+        owned[f] = true;
     }
-    Texture* tex = drie::float_texture(px, w, h);
+    Texture*? tex = drie::decode_cube_texture(files, bool_arg(ctx, 6, true));
+    if (catch tex) { ctx.throw_error(TYPE, "cubeImages: cannot decode the faces (six square images of one size)"); return; }
     ctx.ret_number(@reg(textures, tex, TEXTURE_BASE));
 }
 
@@ -827,6 +797,21 @@ fn void h_material_light_map(JsCtx ctx, void* udata)
     if (m == null) { ctx.throw_error(TYPE, "materialLightMap: invalid material"); return; }
     m.light_map = get_texture(num_arg(ctx, 1, -1));
     m.light_map_intensity = (float)num_arg(ctx, 2, 1);
+}
+
+// materialEnv(material, reflectivity, combine, refraction, refractionRatio, specularMap):
+// how a basic, lambert or phong material's envMap shows (three's reflectivity, combine,
+// CubeRefractionMapping and refractionRatio, specularMap)
+fn void h_material_env(JsCtx ctx, void* udata)
+{
+    Material* m = get_material(num_arg(ctx, 0, -1));
+    if (m == null) { ctx.throw_error(TYPE, "materialEnv: invalid material"); return; }
+    m.reflectivity = (float)num_arg(ctx, 1, 1);
+    int combine = (int)num_arg(ctx, 2, 0);
+    m.combine = combine == 1 ? MIX_OPERATION : combine == 2 ? ADD_OPERATION : MULTIPLY_OPERATION;
+    m.env_refraction = bool_arg(ctx, 3, false);
+    m.refraction_ratio = (float)num_arg(ctx, 4, 0.98);
+    m.specular_map = get_texture(num_arg(ctx, 5, -1));
 }
 
 // materialDepth(material, depthTest, depthWrite)
@@ -1633,6 +1618,7 @@ fn int main(String[] args)
     reg(natives, "texture", &h_texture, 17);
     reg(natives, "textureClone", &h_texture_clone, 9);
     reg(natives, "cubeTexture", &h_cube_texture, 7);
+    reg(natives, "cubeImages", &h_cube_images, 7);
     reg(natives, "material", &h_material, 27);
     reg(natives, "materialUpdate", &h_material_update, 19);
     reg(natives, "materialMaps", &h_material_maps, 26);
@@ -1661,6 +1647,7 @@ fn int main(String[] args)
     reg(natives, "lightShadow", &h_light_shadow, 12);
     reg(natives, "shadowType", &h_shadow_type, 2);
     reg(natives, "materialLightMap", &h_material_light_map, 3);
+    reg(natives, "materialEnv", &h_material_env, 6);
     reg(natives, "materialDepth", &h_material_depth, 3);
     reg(natives, "lightmap", &h_lightmap, 3);
     reg(natives, "lightmapObjects", &h_lightmap_objects, 3);

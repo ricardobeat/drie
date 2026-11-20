@@ -382,6 +382,9 @@ layout(binding=1) uniform fs_params {
                                //   Material.anisotropy's direction in the frame (the cos and sin
                                //   of anisotropy_rotation) times its strength (0: none)
     vec4 light_map_params;     // x = Material.light_map_intensity
+    vec4 env_combine;          // a basic, lambert or phong material's env_map (three's): x =
+                               //   reflectivity, y = combine (0 multiply, 1 mix, 2 add), z = the
+                               //   refraction ratio (0: it mirrors), w = 1: on
     vec4 focus_params;         // Material.defocus: x = Renderer.focus_aperture (0: not), y = focus_maxblur
     vec4 shadow_ext;           // x = the shadow casting directional light's shadow.bias (VSM)
     vec4 bake_params;          // baking a light map (lightmap.c3): x = 1, y = the new sample's
@@ -411,6 +414,7 @@ layout(binding=1) uniform fs_params {
 #define MAP_ANISOTROPY 15           // rg = direction, b = strength
 #define MAP_CUSTOM 16               // Material.custom_map, for the application's hooks
 #define MAP_FOCUS 17                // Renderer.focus_map (Material.defocus): r = the distance in focus
+#define MAP_SPECULAR 18             // r: three's specularMap (basic, lambert and phong)
 
 // Lights live in storage buffers, as many as there are. Point and spot lights are sorted into
 // a grid of clusters (froxels: tiles of the screen, cut into slices of depth that grow
@@ -1614,6 +1618,18 @@ vec3 g_env_min;
 vec3 g_env_max;
 float g_env_range;   // as env_params.w
 
+// The material's map in direction d, sharp but read at the mip level its footprint on the
+// screen wants (as a cube map with mip levels is read): three's envMap on a basic, lambert or
+// phong material. (The u derivative wraps at the seam behind.)
+vec3 env_classic(vec3 d) {
+    vec2 uv = env_uv(d);
+    vec2 dx = dFdx(uv);
+    vec2 dy = dFdy(uv);
+    dx.x -= floor(dx.x + 0.5);
+    dy.x -= floor(dy.x + 0.5);
+    return textureGrad(sampler2D(tex_env, env_smp), uv, dx, dy).rgb;
+}
+
 vec4 env_texel(vec2 uv, float lod) {
     if (g_env_layer < 0.0) return textureLod(sampler2D(tex_env, env_smp), uv, lod);
     return textureLod(sampler2DArray(tex_probes, env_smp), vec3(uv, g_env_layer), lod);
@@ -2199,6 +2215,8 @@ void main() {
             radiance *= shadow(i, geo_n);
             outc += direct(mode, n, v, l, d, radiance, diffuse_color, spec);
         }
+        // three's specularMap: the highlights' strength
+        if (mode == 2 && has_map(MAP_SPECULAR)) spec *= material_map(MAP_SPECULAR).r;
         spec *= ao;
         // Material.map_emissive: the color map glows too
         vec3 glow = (fl & 64) != 0 ? emissive.rgb * map_rgb : emissive.rgb;
@@ -2230,7 +2248,7 @@ void main() {
         vec3 env_term = vec3(0.0);
         vec3 mirror_term = vec3(0.0);
         // (not the background: it is the surroundings)
-        if (env_params.x > 0.5 && mode != 1 && (ext_bits & 32) == 0) {
+        if (env_params.x > 0.5 && mode != 1 && (ext_bits & 32) == 0 && env_combine.w < 0.5) {
             // reflections of the surroundings, fading as the surface gets rougher
             float nov = clamp(dot(n, v), 0.0, 1.0);
             vec3 f0 = g_iridescence > 0.0 ? mix(g_f0, g_iridescence_f0, g_iridescence) : g_f0;
@@ -2315,6 +2333,20 @@ void main() {
             float f = schlick(0.04, 1.0, clamp(dot(cn, v), 0.0, 1.0));
             outc = outc * (1.0 - g_clearcoat * f) + coat * g_clearcoat;
         }
+    }
+
+    // three's envMap on a basic, lambert or phong material: what it mirrors (or what is seen
+    // through it) over all of its light, by its reflectivity times the specular map's red
+    if (env_combine.w > 0.5) {
+        vec3 to_frag = -v;
+        vec3 d = env_combine.z > 0.0 ? refract(to_frag, n, env_combine.z) : reflect(to_frag, n);
+        vec3 seen = env_classic(d) * env_params.y;
+        float k = env_combine.x;
+        if (has_map(MAP_SPECULAR)) k *= material_map(MAP_SPECULAR).r;
+        int combine = int(env_combine.y + 0.5);
+        if (combine == 0) outc = mix(outc, outc * seen, k);
+        else if (combine == 1) outc = mix(outc, seen, k);
+        else outc += seen * k;
     }
 
     // Material.vertex_occlusion: the vertex colors' brightness dims all of it

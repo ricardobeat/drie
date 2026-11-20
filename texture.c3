@@ -670,3 +670,89 @@ fn float sh_min(Vector3[9] e) @local {
     }
     return lowest;
 }
+// A cube map's six faces as an equirectangular map, the layout of drie's environment maps
+// and backgrounds (Scene.environment, Material.env_map): 4 * size by 2 * size texels, at most
+// 4096 wide, RGBA in linear light. It is looked up as three looks up a CubeTexture, x
+// mirrored (three's flipEnvMap). The faces are in GL's order (+x, -x, +y, -y, +z, -z), each
+// size * size RGBA, top row first: `floats` in linear light, or `bytes`, 8 bits a channel and
+// in sRGB when `srgb` (three's CubeTextureLoader). Give one of the two.
+fn Texture* cube_texture(float[][6] floats, char[][6] bytes, int size, bool srgb = true) {
+    float[256] lut;
+    for (int i = 0; i < 256; i++) lut[i] = srgb ? srgb_to_linear(i / 255.0f) : i / 255.0f;
+    bool byte_faces = bytes[0].len != 0;
+    int w = min(size * 4, 4096);
+    int h = w / 2;
+    float[] px = mem::new_array(float, (sz)w * h * 4);
+    defer mem::free(px.ptr);
+    for (int y = 0; y < h; y++) {
+        // drie's equirectangular maps: v = 0 straight up, u = 0.5 toward +x (see env_uv)
+        float theta = ((float)y + 0.5f) / h * (float)math::PI;
+        float st = math::sin(theta);
+        float ct = math::cos(theta);
+        for (int x = 0; x < w; x++) {
+            float phi = (((float)x + 0.5f) / w - 0.5f) * 2 * (float)math::PI;
+            // (three reads a CubeTexture with x mirrored: flipEnvMap)
+            Vector3 d = { -math::cos(phi) * st, ct, math::sin(phi) * st };
+            int face;
+            float sc;
+            float tc;
+            float ma;
+            Vector3 a = { math::abs(d.x), math::abs(d.y), math::abs(d.z) };
+            // GL's cube map faces: which one, and where in it
+            if (a.x >= a.y && a.x >= a.z) {
+                face = d.x > 0 ? 0 : 1;
+                sc = d.x > 0 ? -d.z : d.z;
+                tc = -d.y;
+                ma = a.x;
+            } else if (a.y >= a.z) {
+                face = d.y > 0 ? 2 : 3;
+                sc = d.x;
+                tc = d.y > 0 ? d.z : -d.z;
+                ma = a.y;
+            } else {
+                face = d.z > 0 ? 4 : 5;
+                sc = d.z > 0 ? d.x : -d.x;
+                tc = -d.y;
+                ma = a.z;
+            }
+            float s = ((sc / ma + 1) * 0.5f) * size - 0.5f;
+            float t = ((tc / ma + 1) * 0.5f) * size - 0.5f;
+            int s0 = (int)math::floor(s);
+            int t0 = (int)math::floor(t);
+            float fs = s - s0;
+            float ft = t - t0;
+            sz o = ((sz)y * w + x) * 4;
+            for (int k = 0; k < 4; k++) {
+                int si = math::clamp(s0 + (k & 1), 0, size - 1);
+                int ti = math::clamp(t0 + (k >> 1), 0, size - 1);
+                float wk = ((k & 1) != 0 ? fs : 1 - fs) * ((k >> 1) != 0 ? ft : 1 - ft);
+                sz i = ((sz)ti * size + si) * 4;
+                if (byte_faces) {
+                    for (int c = 0; c < 3; c++) px[o + c] += lut[bytes[face][i + c]] * wk;
+                } else {
+                    for (int c = 0; c < 3; c++) px[o + c] += floats[face][i + c] * wk;
+                }
+            }
+            px[o + 3] = 1;
+        }
+    }
+    return float_texture(px, w, h);
+}
+
+// The same from six PNG or JPEG images held in memory (three's CubeTextureLoader).
+fn Texture*? decode_cube_texture(char[][6] encoded, bool srgb = true) {
+    char[][6] faces;
+    char*[6] decoded;
+    defer for (int f = 0; f < 6; f++) if (decoded[f]) imageio::free_pixels(decoded[f]);
+    int size = 0;
+    for (int f = 0; f < 6; f++) {
+        CInt w;
+        CInt h;
+        decoded[f] = imageio::decode(encoded[f].ptr, (usz)encoded[f].len, &w, &h);
+        if (!decoded[f] || w != h || (f > 0 && w != size)) return io::FILE_NOT_VALID~;
+        size = w;
+        faces[f] = decoded[f][:(sz)w * h * 4];
+    }
+    float[][6] none;
+    return cube_texture(none, faces, size, srgb);
+}

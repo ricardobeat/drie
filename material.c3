@@ -25,6 +25,15 @@ enum RefractionModel {
     PLANE,
 }
 
+// How a basic, lambert or phong material's env_map is put over its light (three's `combine`):
+// the light times the reflection, the reflection in place of the light, or the two added,
+// each by Material.reflectivity.
+enum Combine {
+    MULTIPLY_OPERATION,
+    MIX_OPERATION,
+    ADD_OPERATION,
+}
+
 // Values match the shader's `mode`.
 constdef MaterialType : int {
     BASIC    = 0,
@@ -194,6 +203,16 @@ struct Material {
     // Reflections of the surroundings: an equirectangular map, for example from
     // Renderer.capture_environment (like three's envMap). Rougher surfaces blur it.
     Texture* env_map;
+    // On a basic, lambert or phong material, the env_map is three's: what the surface mirrors
+    // (or, with env_refraction, what is seen through it, bent by refraction_ratio: the ratio of
+    // the two IORs, three's refractionRatio), sharp, put over its light as `combine` says by
+    // `reflectivity` (0: not at all) times the red channel of specular_map, which also scales
+    // a phong material's highlights (three's specularMap).
+    Combine combine;
+    float reflectivity;
+    bool env_refraction;
+    float refraction_ratio;
+    Texture* specular_map;
     // Without an env_map: mirrors the scene's reflection probes (Scene.reflection_probes),
     // each point the probe of the box it is in.
     bool env_probes;
@@ -312,6 +331,8 @@ fn void Material.init_base(
     self.specular_color = { 1, 1, 1 };
     self.ao_intensity = 1;
     self.light_map_intensity = 1;
+    self.reflectivity = 1;
+    self.refraction_ratio = 0.98f;
     self.clearcoat_normal_scale = { 1, 1 };
     self.sheen_roughness = 1;
     self.iridescence_ior = 1.3f;

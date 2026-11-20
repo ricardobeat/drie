@@ -147,7 +147,36 @@ assets: \
     (asset "textures/water/Water_1_M_Normal.jpg" "6d7825469a374ff84700b4fb1a2890bd1fce0ca1f777bdd4d5ecdaf15833a804") \
     (asset "textures/golfball.jpg" "7d5f075891eac89ee55620cd8753efe8a969d89cdd73b54fe0ee444ee5da0b15") \
     (asset "textures/pbr/Scratched_gold/Scratched_gold_01_1K_Normal.png" "f6cbad89a8d43188007532a2545f382e225e6def85778fc530681588fb9f6f9c") \
-    (asset "models/gltf/ShadowmappableMesh.glb" "1a5d49c27bf0b884b5cf70562c9023a3b931a90e05944eed02f3c5c226ff1c5d")
+    (asset "models/gltf/ShadowmappableMesh.glb" "1a5d49c27bf0b884b5cf70562c9023a3b931a90e05944eed02f3c5c226ff1c5d") \
+    (asset "models/obj/walt/WaltHead.obj" "b8276ca88369af967a2329792c9c3df202ce8c02612790ff3842eba3d0dd44b5") \
+    (asset "textures/cube/SwedishRoyalCastle/px.jpg" "10a786132bc7eef6b142bd0d4b00ea94ffc1a1bfccfb1a6ec0baedf966d80734") \
+    (asset "textures/cube/SwedishRoyalCastle/nx.jpg" "53a8d90cea6bab188d462c44676b84e5993424e465785c93829d810bbf7c5076") \
+    (asset "textures/cube/SwedishRoyalCastle/py.jpg" "8b88f7f9af85fa5b442f28fb27532e534a197aba68ae60548bf4b3750f0d50f0") \
+    (asset "textures/cube/SwedishRoyalCastle/ny.jpg" "17953cc33b9fec703c286266d4aca6033d758edd17ba0384fb3ebd7630085fd4") \
+    (asset "textures/cube/SwedishRoyalCastle/pz.jpg" "cc9252ba994a79c320ac4aed03aac9000f810c1358179e70a69b598d56e129db") \
+    (asset "textures/cube/SwedishRoyalCastle/nz.jpg" "10149242ae21ba4c00663a0673f01a6722da63f201511fdc01941930d800ccff") \
+    (asset "models/ply/binary/Lucy100k.ply" "837f769e67155dc4a6e9a90683a61d6f6b4571a2a97d79586831011f450e66e2") \
+    (asset "textures/cube/Park3Med/px.jpg" "271ef2f791ff6b6f7e5ab45347279ac7195d5f8dab38eb08880036e4bac7d157") \
+    (asset "textures/cube/Park3Med/nx.jpg" "6e27cd535b8ce0400dfec87298f1d7b009aeca54a69b38c8b00834c9d52ce438") \
+    (asset "textures/cube/Park3Med/py.jpg" "27588b1f84b2b7075c56681b2b4893b01ff6c81ab50638884fa9ca8e40266af1") \
+    (asset "textures/cube/Park3Med/ny.jpg" "9c58ffbc9a0a71a61f6b71c002f9367abf3a77e01bea8c6ba7e008c01695ab90") \
+    (asset "textures/cube/Park3Med/pz.jpg" "f97d0a20187c419622949a4bdb2afb652742bedb6924b9771d00e01d9fd428c7") \
+    (asset "textures/cube/Park3Med/nz.jpg" "ee32866c05c8221121856b5027d52d1ce0dbcd57185c2295135a5bab656d7503") \
+    (asset "textures/2294472375_24a3b8ef46_o.jpg" "3efa22071f3f84ec26248ee58aa05aba635a0a9d810bca93da5a94f33e907524") \
+    (asset "textures/cube/Bridge2/posx.jpg" "bfea380ae3b2f2b44d3040c9fe7a8f3e325450a12b7a0f29561b5ca175f1a250") \
+    (asset "textures/cube/Bridge2/negx.jpg" "047052e77f698a819903f1d2fe27b40ee56930150fc38913da7e1c58e8dcae70") \
+    (asset "textures/cube/Bridge2/posy.jpg" "cc467777340037ee8f95460b19772a8ae6a71c125af1714bfd408db2c1c33d98") \
+    (asset "textures/cube/Bridge2/negy.jpg" "52b4b95125c777d48ac9ea568d79d55fd3fb62e24a7da37600720cdddb7ab333") \
+    (asset "textures/cube/Bridge2/posz.jpg" "d56085e5da2e8f2cee13694519ed153995045f5a11b1d41d25be70380cf15548") \
+    (asset "textures/cube/Bridge2/negz.jpg" "1bc79f442f31931576d734565821b41b331a017dd86f2ac6a60ac6d3bbbbe6ba") \
+    (asset "textures/cube/pisa/px.png" "11d859640e7da526ac0654dbfa1cc18f40dd8fc100db197730485218a7c9d24d") \
+    (asset "textures/cube/pisa/nx.png" "cf01cfc9a168e7c71bf66d0bed8dcad3a4fd353f528e73caaba62d1a097c49a1") \
+    (asset "textures/cube/pisa/py.png" "b34a1cec12e62327c9555ca9f82a38bea73f519915e1368fa69bbd51c82ec712") \
+    (asset "textures/cube/pisa/ny.png" "61a94678f04f9853509d7a864fd839cf688c6705ee9df02fc4e42bfca858270b") \
+    (asset "textures/cube/pisa/pz.png" "bd528b739e9e0ea6c1e8627e949caa950991719069c983e8abdc3a8640039667") \
+    (asset "textures/cube/pisa/nz.png" "e5c1774f9a41d8124f8f223c9810e95d277f256104f8aee57ad2e5ef73a64424") \
+    (asset "textures/piz_compressed.exr" "7ff75b7f52379d579aa462c8a34b8321109023b9deb1d67a8b41d35f475c17b3") \
+    (asset "textures/equirectangular.png" "d99861d29c0ca31379911ae0f76d57dce68c8b23f617a70cd1d85fa38d61e06d")
 
 [private]
 asset path sha256: (fetch examples + "/" + path sha256 "demos/" + path)

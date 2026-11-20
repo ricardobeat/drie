@@ -4,7 +4,8 @@
 // drie's environment map, for scene.environment or a material's envMap. drie blurs the map
 // for rough surfaces itself, so `sigma` is not needed.
 //
-// Not here: fromEquirectangular and fromCubemap.
+// fromEquirectangular and fromCubemap give the image itself as drie's environment map (a cube
+// map as drie's equirectangular map of it), which drie blurs the same way.
 import { Texture, Vector3 } from "../vendor/three.core.js";
 
 const N = globalThis.__drie;
@@ -36,12 +37,24 @@ export class PMREMGenerator {
 		return { texture, isWebGLRenderTarget: true, width: 1024, height: 512, dispose() {} };
 	}
 
-	fromEquirectangular() {
-		throw new Error("driejs: PMREMGenerator.fromEquirectangular is not supported");
+	fromEquirectangular(equirectangular) {
+		return this._of(equirectangular, true);
 	}
 
-	fromCubemap() {
-		throw new Error("driejs: PMREMGenerator.fromCubemap is not supported");
+	fromCubemap(cubemap) {
+		return this._of(cubemap, false);
+	}
+
+	// A render target whose texture is `source` as drie's environment map (uploaded when first
+	// used: the image may still be loading).
+	_of(source, equirectangular) {
+		const renderer = this._renderer;
+		const texture = new Texture();
+		texture.isPMREMTexture = true;
+		Object.defineProperty(texture, "__drieEnvironment", {
+			get: () => renderer._texture(source, equirectangular),
+		});
+		return { texture, isWebGLRenderTarget: true, width: 1024, height: 512, dispose() {} };
 	}
 
 	compileCubemapShader() {}
