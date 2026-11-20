@@ -58,8 +58,9 @@ is drie's renderer (`init()` resolves at once), and the node materials
 (`MeshStandardNodeMaterial`, `MeshBasicNodeMaterial`...) are drawn with drie's node materials
 (see drie's README). three's NodeBuilder does not run. `js/drie_nodes.js` walks each material's
 `colorNode`, `opacityNode`, `normalNode` (view space, as in three), `roughnessNode`,
-`metalnessNode`, `emissiveNode`, `positionNode`, `outputNode` and `maskNode` (which cuts the
-shadow too, as three's does without a `maskShadowNode`), and rebuilds the graph as drie nodes.
+`metalnessNode`, `emissiveNode`, `positionNode`, `fragmentNode` (the color in place of the
+lighting), `outputNode` and `maskNode` (which cuts the shadow too, as three's does without a
+`maskShadowNode`), and rebuilds the graph as drie nodes.
 In `outputNode`, `output` is a variable that a `Fn` can assign. It runs TSL's `Fn` bodies itself, one call at a time, to collect their statements:
 `toVar`, `assign`, `If`/`ElseIf`/`Else`, `Loop`, `Break`, `Continue` and `Discard`. drie then
 prints the graph in Metal, HLSL or GLSL. A graph is rebuilt when a slot changes or a texture it
@@ -74,15 +75,24 @@ The translator covers:
 - int and uint arithmetic with bitwise operators (MaterialX noise runs as it is)
 - `Fn` calls with layouts and overloads
 - `bumpMap`, as three's `dHdxy_fwd` and `perturbNormalArb`
+- `uniformArray` elements, at a constant index or one worked out in the shader
+- `cubeTexture` and `pmremTexture`, read from drie's equirectangular map of the cube map
+- `scene.backgroundNode`, and `scene.environmentNode` drawn into an environment map on the GPU
+  (drie's `render_environment`)
 - the builtins: `positionLocal`/`World`/`View`, `normalLocal`/`World`/`View` and their
   geometry's, `cameraPosition`, `time`, `modelWorldMatrix`, `cameraViewMatrix`,
   `cameraProjectionMatrix`, `screenCoordinate`, `frontFacing`, `faceDirection`, `output`
 
-Any other node class throws an error that names it. Slots drie lacks (`fragmentNode`,
-`vertexNode`, `aoNode`, `maskShadowNode`...) are left out with a warning. Compute, post-processing nodes and
+Any other node class throws an error that names it. Slots drie lacks (`vertexNode`, `aoNode`, `maskShadowNode`...) are left out with a warning. Compute, post-processing nodes and
 `wgslFn` are not supported. A graph that drie rejects while printing it (types that don't
 combine, a texture in `positionNode`, more than 32 vec4s of uniforms or four varyings) stops the
 program with drie's message.
+
+`CubeCamera.update` draws the scene around the camera into a drie environment map on the GPU
+(`render_probe`), which the render target's texture stands for as an `envMap`, `environment` or
+background. `LightProbeGenerator.fromCubeRenderTarget` reads that map's light on surfaces, and
+`CubeRenderTarget.fromEquirectangularTexture` uses the equirectangular map as it is. Before the
+first frame there is nothing to draw with, so an update waits for the next render.
 
 The demos `webgpu_tsl_earth.js`, `webgpu_tsl_raging_sea.js`, `webgpu_tsl_procedural_terrain.js`
 and `webgpu_tsl_angular_slicing.js` are r187's examples, unchanged. Their `Inspector` is a lil-gui panel that is not drawn.

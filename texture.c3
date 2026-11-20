@@ -703,6 +703,30 @@ fn Vector3 EnvLight.irradiance(&self, Vector3 n) {
     return e + self.sun * math::max(n.dot(self.sun_dir), 0.0f);
 }
 
+// The light on surfaces as 9 coefficients alone (sh_basis' order, as EnvLight.sh), the sun in
+// them too: its clamped cosine to band 2 (1/4, 1/2 and 5/16 of the Legendre polynomials), for
+// whatever takes spherical harmonics only (three's LightProbe).
+fn Vector3[9] EnvLight.harmonics(&self) {
+    Vector3[9] e = self.sh;
+    Vector3 l = self.sun_dir;
+    Vector3 s = self.sun;
+    // E = s (1/4 + 1/2 cos + 5/16 (3 cos^2 - 1) / 2), with cos^2 in the basis: x^2 and y^2
+    // through x^2 + y^2 + z^2 = 1 and x^2 - y^2, z^2 through 3 z^2 - 1
+    const float C2 = 0.46875f;
+    float flat = (l.x * l.x + l.y * l.y) / 2;
+    float zz = (l.z * l.z - flat) / 3;
+    e[0] += s * (0.09375f + C2 * (flat + zz));
+    e[1] += s * (0.5f * l.y);
+    e[2] += s * (0.5f * l.z);
+    e[3] += s * (0.5f * l.x);
+    e[4] += s * (C2 * 2 * l.x * l.y);
+    e[5] += s * (C2 * 2 * l.y * l.z);
+    e[6] += s * (C2 * zz);
+    e[7] += s * (C2 * 2 * l.x * l.z);
+    e[8] += s * (C2 * (l.x * l.x - l.y * l.y) / 2);
+    return e;
+}
+
 // The diffuse light of a longitude/latitude image of radiance (see env_sh_irradiance for the
 // layout and the pixels). A sun (a small spot far brighter than the rest: its brightest pixel
 // SUN_CONTRAST times the image's average) is taken out of the harmonics, which would spread it

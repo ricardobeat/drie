@@ -38,8 +38,8 @@
 // draw ranges, renderOrder, points, sprites, morph targets, point light shadows, an
 // emissiveMap that isn't the map, render targets (getRenderTarget() is null, setRenderTarget()
 // does nothing) and post-processing.
-import { BackSide, Color, CubeRefractionMapping, EquirectangularReflectionMapping, EquirectangularRefractionMapping, Matrix4,
-	MeshBasicMaterial, NearestFilter, RedFormat, RGBAFormat, RGFormat, Vector4 } from "../vendor/three.core.js";
+import { BackSide, Color, CubeCamera, CubeRefractionMapping, EquirectangularReflectionMapping, EquirectangularRefractionMapping,
+	LightProbe, Matrix4, MeshBasicMaterial, NearestFilter, RedFormat, RGBAFormat, RGFormat, Vector3, Vector4 } from "../vendor/three.core.js";
 import { setCanvas } from "./dom.js";
 
 const N = globalThis.__drie;
@@ -307,8 +307,8 @@ export class DrieRenderer {
 	// A page that renders only when something changes (OrbitControls' "change" event, no
 	// animation loop): its last picture is drawn again every frame, so the window has one.
 	_redraw() {
-		const [scene, camera] = this._last;
-		this.render(scene, camera);
+		if (this._probes?.size) this._runProbes();
+		if (this._last) this.render(...this._last);
 	}
 
 	getContext() {
@@ -347,6 +347,7 @@ export class DrieRenderer {
 	}
 
 	render(scene, camera) {
+		if (this._probes?.size) this._runProbes();
 		if (!this._last && !this._loop) N.setAnimationLoop(this._id, () => this._redraw());
 		this._last = [scene, camera];
 		const sceneId = this._mirror(scene, camera);
@@ -369,6 +370,52 @@ export class DrieRenderer {
 
 	// Brings the scene's drie mirror up to date (with `camera` in it, if given) and returns its
 	// drie handle.
+	// three's CubeCamera.update: the scene drawn in every direction from the camera into drie's
+	// environment map (Renderer.render_probe, on the GPU), which its render target's texture
+	// stands for (as an envMap, scene.environment or scene.background). Its light on surfaces
+	// is worked out at the first update and every 30th (that waits for the GPU). Before the
+	// first frame there is nothing to draw with: the update waits for the next render (or
+	// LightProbeGenerator).
+	_probe(cubeCamera, scene) {
+		const texture = cubeCamera.renderTarget.texture;
+		const sceneId = this._mirror(scene);
+		if (cubeCamera.parent === null) cubeCamera.updateMatrixWorld();
+		const p = new Vector3().setFromMatrixPosition(cubeCamera.matrixWorld);
+		const face = cubeCamera.children[0];
+		const count = texture.__drieProbes ?? 0;
+		const id = N.renderProbe(this._id, sceneId, p.x, p.y, p.z, texture.__drieEnvironment ?? -1, cubeCamera.renderTarget.width,
+			face?.near ?? 0.1, face?.far ?? 1000, count % 30 === 0);
+		if (id < 0) {
+			(this._probes ??= new Map()).set(cubeCamera, scene);
+			return;
+		}
+		this._probes?.delete(cubeCamera);
+		texture.__drieEnvironment = id;
+		texture.__drieProbes = count + 1;
+	}
+
+	_runProbes() {
+		for (const [cubeCamera, scene] of [...this._probes]) this._probe(cubeCamera, scene);
+	}
+
+	// LightProbeGenerator.fromCubeRenderTarget: the light on surfaces of a CubeCamera's map,
+	// once it has been drawn, as three's LightProbe. (Frames run meanwhile, for a page that
+	// renders once it has the probe: the first draws it.)
+	async _lightProbe(cubeRenderTarget) {
+		const texture = cubeRenderTarget.texture;
+		const sh = new Float32Array(27);
+		if (!this._last && !this._loop) N.setAnimationLoop(this._id, () => this._redraw());
+		for (;;) {
+			if (this._probes?.size) this._runProbes();
+			const id = texture.__drieEnvironment;
+			if (id !== undefined && id >= 0 && N.textureLightProbe(id, sh)) break;
+			await new Promise((resolve) => setTimeout(resolve, 16));
+		}
+		const probe = new LightProbe();
+		probe.sh.fromArray(sh);
+		return probe;
+	}
+
 	_mirror(scene, camera = null) {
 		let t = 0;
 		if (profile) {
@@ -876,6 +923,8 @@ export class DrieRenderer {
 	// A CubeTexture, as drie's equirectangular map of it: six images (CubeTextureLoader's) or
 	// six DataTextures of half floats or floats (HDRCubeTextureLoader's).
 	_cubeTexture(texture) {
+		// (a CubeCamera's, drawn by drie: see _probe)
+		if (texture.isRenderTargetTexture) return -1;
 		if (texture.__drie !== undefined && texture.__drieVersion === texture.version) return texture.__drie;
 		const faces = texture.images ?? texture.image;
 		if (!Array.isArray(faces) || faces.length !== 6 || faces.some((f) => !f)) return -1;
@@ -1103,3 +1152,8 @@ export class DrieRenderer {
 			c.bottom ?? -1);
 	}
 }
+
+// (see DrieRenderer._probe)
+CubeCamera.prototype.update = function (renderer, scene) {
+	renderer._probe(this, scene);
+};
