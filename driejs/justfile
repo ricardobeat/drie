@@ -225,7 +225,8 @@ assets: \
     (asset "textures/planets/earth_day_4096.jpg" "cd7712d3e891425d9948ea5ac18d3bb1e7e834ea038188587897e689a7b35d0f") \
     (asset "textures/planets/earth_night_4096.jpg" "17a868f79c7be40fa1f557e6114d7889d907f18f7a3fce51f33b0b830ef50242") \
     (asset "textures/planets/earth_bump_roughness_clouds_4096.jpg" "0796f4211c209d1afe9e26a06a283cdc21434430a780a25457b2417568a8591e") \
-    (asset "models/gltf/gears.glb" "059c442459e127e0f79b8337a5b0ea26a6cab3e609723c93ce60cac52d8430af")
+    (asset "models/gltf/gears.glb" "059c442459e127e0f79b8337a5b0ea26a6cab3e609723c93ce60cac52d8430af") \
+    (asset "models/gltf/venice_mask.glb" "b9003245b0b73e31673600b53dd7050bb16af8220cf7cf5643347b4dc9bf4d34")
 
 [private]
 asset path sha256: (fetch examples + "/" + path sha256 "demos/" + path)
