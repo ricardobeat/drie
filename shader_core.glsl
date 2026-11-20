@@ -2317,6 +2317,14 @@ void main() {
         }
     }
 
+    // Material.vertex_occlusion: the vertex colors' brightness dims all of it
+    if ((fl & 128) != 0) {
+        float k = dot(v_color, vec3(0.2126, 0.7152, 0.0722));
+        outc *= k;
+        ind_d *= k;
+        ind_s *= k;
+    }
+
     int fog_mode = int(fog_params.w);
     if (fog_mode != 0 && fog_grid.w > 0.0) {
         vec4 fv = fog_volume_at(v_world_pos);

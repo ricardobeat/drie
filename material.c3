@@ -215,6 +215,11 @@ struct Material {
     // A Reflector whose plane the surface lies on: it mirrors that picture of the scene (see
     // reflector.c3), and screen-space reflections (if on) only where they find something
     Reflector* reflector;
+    // Vertex colors as occlusion (not in three.js): besides tinting the surface (vertex_colors),
+    // their brightness dims all the light it gets, its reflections and highlights included, so
+    // that a surface fading into the dark (down a shaft, a pit) goes to true black there
+    // whatever lights it or mirrors in it.
+    bool vertex_occlusion;
     // Vertex colors are light baked into the geometry (from lamps that don't need to be real
     // lights) instead of a tint: they light the surface with this strength. 0 = off.
     float vertex_light;

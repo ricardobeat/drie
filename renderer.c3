@@ -2536,7 +2536,8 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
         : 0) | (mat.foliage ? 2
             : 0) | (m.receive_shadow ? 4
                 : 0) | (mat.glass ? 8
-                    : 0) | (mat.vertex_light > 0 ? 16 : 0) | (mat.screen_target ? 32 : 0) | (mat.map_emissive ? 64 : 0);
+                    : 0) | (mat.vertex_light > 0 ? 16 : 0) | (mat.screen_target ? 32 : 0) | (mat.map_emissive ? 64 : 0)
+        | (mat.vertex_occlusion && mat.vertex_colors ? 128 : 0);
     fs.color = { ...color_to_linear(mat.color) * (mat.color_scale > 0 ? mat.color_scale : 1), mat.opacity };
     fs.emissive = { ...color_to_linear(mat.emissive) * mat.emissive_intensity, mat.vertex_light };
     if (state.bake.on) {
