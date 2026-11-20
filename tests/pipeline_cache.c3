@@ -55,7 +55,7 @@ fn int main(String[] args) {
     drie::commit();
 
     String text = renderer.pipeline_cache(tmem);
-    expect(text.starts_with("drie-pipelines 2\n"), "the list has its header");
+    expect(text.starts_with("drie-pipelines 3\n"), "the list has its header");
     expect(count_lines(text, "N ") == 1, "it has the node material's program");
     expect(count_lines(text, "P -1 ") >= 1, "and the engine's pipeline");
     expect(count_lines(text, "P 0 ") >= 1, "and the node material's");
