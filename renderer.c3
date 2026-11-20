@@ -3319,6 +3319,15 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera) {
             Side side = mat.side;
             // (its back faces are drawn already)
             if (split && backs && side == DOUBLE_SIDE && refracts(item)) mat.side = FRONT_SIDE;
+            // Double-sided glass without the split: its back faces, then its front faces, as
+            // three draws a transparent double-sided material (one draw without culling
+            // would blend them in the order of the triangles, and where a back face comes
+            // after the front one over it, it would cover the near side's own reflection)
+            if (!split && side == DOUBLE_SIDE && refracts(item)) {
+                mat.side = BACK_SIDE;
+                draw_item(item, view_proj_rel, &fs);
+                mat.side = FRONT_SIDE;
+            }
             draw_item(item, view_proj_rel, &fs);
             mat.side = side;
         }
