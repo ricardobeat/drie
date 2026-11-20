@@ -19,6 +19,8 @@
 // for a material whose isNodeMaterial is set.
 
 import * as TSL from "../vendor/three.tsl.js";
+import { MeshBasicNodeMaterial } from "../vendor/three.webgpu.js";
+import { BackSide, Vector2 } from "../vendor/three.core.js";
 
 const N = globalThis.__drie;
 
@@ -86,10 +88,13 @@ builtin("normalLocal", (t) => t.builtin(B.NORMAL_LOCAL));
 builtin("normalGeometry", (t) => t.builtin(B.NORMAL_LOCAL));
 builtin("normalWorld", (t) => t.builtin(B.NORMAL_WORLD));
 builtin("transformedNormalWorld", (t) => t.builtin(B.NORMAL_WORLD));
-builtin("normalWorldGeometry", (t) => t.builtin(B.NORMAL_GEOMETRY));
+// (three's geometry normals are the geometry's own, drie's turned toward the camera)
+builtin("normalWorldGeometry", (t) => t.geometryNormal());
 builtin("normalView", (t) => t.toView(t.builtin(B.NORMAL_WORLD)));
 builtin("transformedNormalView", (t) => t.toView(t.builtin(B.NORMAL_WORLD)));
-builtin("normalViewGeometry", (t) => t.toView(t.builtin(B.NORMAL_GEOMETRY)));
+builtin("normalViewGeometry", (t) => t.toView(t.geometryNormal()));
+builtin("reflectVector", (t) => t.reflectVector());
+builtin("reflectView", (t) => t.toView(t.reflectVector()));
 builtin("cameraPosition", (t) => t.builtin(B.CAMERA_POSITION));
 builtin("time", (t) => t.builtin(B.TIME));
 builtin("modelWorldMatrix", (t) => t.builtin(B.MODEL_MATRIX));
@@ -132,14 +137,23 @@ class Translator {
 		this.uvShift = null;        // bumpMap's: textures read a pixel over ("dFdx") or down ("dFdy")
 		this.block = null;          // the statements being made: { first, last }
 		this.outputVar = 0;         // outputNode's `output` (see output())
+		this.usesTime = false;      // the graph reads `time`
+		// TSL's context(): what PMREMNode reads its direction and level from when it isn't
+		// given them (getUV, getTextureLevel)
+		this.context = material.__drieContext ?? {};
+		// builtins that stand for something else in this material (see environment())
+		this.overrides = material.__drieOverrides ?? null;
+		const translator = this;
 		this.builder = new Proxy({
 			material,
 			shaderStage: "fragment",
-			context: {},
+			get context() { return translator.context; },
 			isAvailable: () => true,
 		}, {
 			get: (target, property) => {
 				if (property in target) return target[property];
+				// (as three's: a Fn whose parameters are an array, called with none, gets none)
+				if (property === Symbol.iterator) return function* () { yield undefined; };
 				if (typeof property === "symbol") return undefined;
 				return () => unsupported(`three's node builder (${String(property)}), asked for by a TSL function`);
 			},
@@ -162,7 +176,20 @@ class Translator {
 	}
 
 	builtin(b) {
+		if (b === B.TIME) this.usesTime = true;
 		return N.nodeBuiltin(b, BUILTIN_TYPES[b]);
+	}
+
+	// the geometry's normal in the world, not turned toward the camera
+	geometryNormal() {
+		const n = this.builtin(B.NORMAL_GEOMETRY);
+		return N.nodeSelect(this.builtin(B.FRONT_FACING), n, this.mul(n, this.num(-1)));
+	}
+
+	// the view mirrored by the normal, in the world (three's reflectVector)
+	reflectVector() {
+		const d = this.call("normalize", this.sub(this.builtin(B.POSITION_WORLD), this.builtin(B.CAMERA_POSITION)));
+		return this.call("reflect", d, this.builtin(B.NORMAL_WORLD));
 	}
 
 	bin(op, a, b) {
@@ -377,7 +404,7 @@ class Translator {
 		if (typeof n === "number" || typeof n === "boolean") return this.constant(TSL.nodeObject(n));
 		let id = this.ids.get(n);
 		if (id !== undefined) return id;
-		const make = BUILTINS.get(n);
+		const make = this.overrides?.get(n) ?? BUILTINS.get(n);
 		id = make ? make(this) : this.make(n);
 		this.ids.set(n, id);
 		return id;
@@ -443,9 +470,25 @@ class Translator {
 				this.types.set(v, type);
 				return N.nodeVarying(v);
 			}
+			case "ContextNode": {
+				const saved = this.context;
+				this.context = { ...saved, ...n.value };
+				try {
+					return this.node(n.node);
+				} finally {
+					this.context = saved;
+				}
+			}
+			case "PMREMNode":
+				return this.pmrem(n);
+			case "ScreenNode":
+				return this.screen(n.scope);
+			case "TextureSizeNode":
+				return this.textureSize(n);
+			case "ReferenceNode":
+				return this.reference(n);
 			case "SubBuild":
 			case "SubBuildNode":
-			case "ContextNode":
 			case "IsolateNode":
 			case "CacheNode":
 				return this.node(n.node);
@@ -606,7 +649,7 @@ class Translator {
 		}
 		const texture = n.value;
 		const id = this.renderer._texture(texture);
-		this.textures.push([texture, id]);
+		this.textures.push([texture, id, false]);
 		let at = n.uvNode ? this.convert(this.node(n.uvNode), T.vec2) : 0;
 		if (this.uvShift) {
 			if (!at) at = this.builtin(B.UV);
@@ -614,6 +657,95 @@ class Translator {
 		}
 		const level = n.levelNode ? this.convert(this.node(n.levelNode), T.float) : 0;
 		return N.nodeTexture(id, at, level);
+	}
+
+	// pmremTexture(texture, direction, roughness): the environment map in a direction (by default
+	// the context's, or reflectVector), blurred for a roughness (by default the context's, or
+	// none), as drie's environment maps are read (the shader's env_uv, env_blur and env_lod)
+	pmrem(n) {
+		const texture = n._value ?? n.value;
+		const id = envTextureId(this.renderer, texture);
+		this.textures.push([texture, id, true]);
+		const value = (make) => this.node(TSL.nodeObject(make));
+		let dir;
+		if (n.uvNode) dir = this.node(n.uvNode);
+		else if (this.context.getUV) dir = value(this.context.getUV(n, this.builder));
+		else dir = this.reflectVector();
+		let rough;
+		if (n.levelNode) rough = this.node(n.levelNode);
+		else if (this.context.getTextureLevel) rough = value(this.context.getTextureLevel(n));
+		else rough = this.num(0);
+		const d = this.call("normalize", this.convert(dir, T.vec3));
+		const u = this.add(this.mul(this.call("atan2", this.swizzle(d, "z"), this.swizzle(d, "x")), this.num(0.5 / Math.PI)), this.num(0.5));
+		const v = this.mul(this.call("acos", this.call("clamp", this.swizzle(d, "y"), this.num(-1), this.num(1))), this.num(1 / Math.PI));
+		const r = this.convert(rough, T.float);
+		const lerp = (r0, r1, s0, s1) => this.call("mix", this.num(s0), this.num(s1), this.call("saturate", this.mul(this.sub(r, this.num(r0)), this.num(1 / (r1 - r0)))));
+		const at = (x) => this.bin(">=", r, this.num(x));
+		const sigma = N.nodeSelect(at(0.8), lerp(0.8, 1, 0.526, 0.582), N.nodeSelect(at(0.4), lerp(0.4, 0.8, 0.215, 0.526),
+			N.nodeSelect(at(0.305), lerp(0.305, 0.4, 0.125, 0.215), N.nodeSelect(at(0.21), lerp(0.21, 0.305, 0.06, 0.125),
+				this.mul(this.num(1.37), this.mul(r, r))))));
+		const width = this.swizzle(N.nodeTextureSize(id), "x");
+		const lod = this.call("max", this.call("log2", this.call("max", this.mul(sigma, this.mul(width, this.num(1 / Math.PI))), this.num(1e-6))), this.num(0));
+		return this.swizzle(N.nodeTexture(id, this.join(T.vec2, u, v), lod), "xyz");
+	}
+
+	// screenUV, screenSize, viewport...: the pixel's place in the target drawn into, from its
+	// top left (a viewport is the whole target)
+	screen(scope) {
+		if (scope === "coordinate") return this.builtin(B.FRAG_COORD);
+		if (this.screenSize === undefined) {
+			const renderer = this.renderer;
+			const size = new Vector2();
+			const id = N.nodeUniform(T.vec2);
+			this.types.set(id, T.vec2);
+			const get = () => {
+				const target = renderer.getRenderTarget();
+				return target ? size.set(target.width, target.height) : renderer.getDrawingBufferSize(size);
+			};
+			const u = { node: null, id, type: T.vec2, key: undefined, get };
+			this.uniforms.push(u);
+			setUniform(u);
+			this.screenSize = id;
+		}
+		if (scope === "size") return this.screenSize;
+		if (scope === "uv") return this.bin("/", this.builtin(B.FRAG_COORD), this.screenSize);
+		if (scope === "viewport") return this.join(T.vec4, this.num(0, T.vec2), this.screenSize);
+		unsupported(`the screen node "${scope}"`);
+	}
+
+	// textureSize(texture, level): its size at a level, in texels (an ivec2, as three's)
+	textureSize(n) {
+		const texture = n.textureNode.value;
+		const id = this.renderer._texture(texture);
+		this.textures.push([texture, id, false]);
+		let size = N.nodeTextureSize(id);
+		if (n.levelNode) {
+			const level = this.convert(this.node(n.levelNode), T.float);
+			size = this.call("max", this.call("floor", this.bin("/", size, this.call("exp2", level))), this.num(1));
+		}
+		return this.convert(size, T.ivec2);
+	}
+
+	// reference(property, type, object): a uniform that is object's property (by default the
+	// material's), read every frame
+	reference(n) {
+		const made = this.uniformIds.get(n);
+		if (made !== undefined) return made;
+		const type = typeId(n.uniformType);
+		if (n.count !== null && n.count !== undefined) unsupported("a reference to an array");
+		const id = N.nodeUniform(type);
+		this.types.set(id, type);
+		const material = this.material;
+		const get = () => {
+			let o = n.object ?? material;
+			for (const p of n.properties ?? String(n.property).split(".")) o = o?.[p];
+			return o;
+		};
+		const u = { node: n, id, type, key: undefined, get };
+		this.uniformIds.set(n, id);
+		this.uniforms.push(u);
+		setUniform(u);
+		return id;
 	}
 
 	// A call of a TSL Fn: its body run here, with the call's arguments.
@@ -724,7 +856,8 @@ class Translator {
 		return this.outputVar;
 	}
 
-	slot(name, n) {
+	// `fog` (outputNode's): the scene's fogNode, on what `n` (or the light) made
+	slot(name, n, fog = null) {
 		this.block = { first: 0, last: 0 };
 		TSL.setCurrentStack(null);
 		this.outputVar = 0;
@@ -733,7 +866,13 @@ class Translator {
 			this.types.set(this.outputVar, T.vec4);
 			this.emit(this.outputVar);
 		}
-		let id = this.node(n);
+		let id;
+		if (fog) {
+			if (n) this.emit(N.nodeAssign(this.outputVar, this.convert(this.node(n), T.vec4)));
+			id = this.node(fog);
+		} else {
+			id = this.node(n);
+		}
 		if (this.block.first !== 0) id = N.nodeSeq(this.block.first, id);
 		this.block = null;
 		if (name === "normalNode") id = this.fromView(this.convert(id, T.vec3));
@@ -741,30 +880,41 @@ class Translator {
 	}
 }
 
-// A uniform's value into drie, when it changed.
+// A uniform's value into drie, when it changed (then true).
 function setUniform(u) {
-	const v = u.node.value;
+	const v = u.get ? u.get() : u.node.value;
 	if (typeof v === "number" || typeof v === "boolean") {
 		const x = Number(v);
-		if (u.key === x) return;
+		if (u.key === x) return false;
 		u.key = x;
 		N.nodeSet(u.id, x, 0, 0, 0);
 	} else if (v && v.isColor) {
 		const key = `${v.r} ${v.g} ${v.b}`;
-		if (u.key === key) return;
+		if (u.key === key) return false;
 		u.key = key;
 		N.nodeSet(u.id, v.r, v.g, v.b, 0);
 	} else if (v && (v.isVector2 || v.isVector3 || v.isVector4)) {
 		const key = `${v.x} ${v.y} ${v.z} ${v.w}`;
-		if (u.key === key) return;
+		if (u.key === key) return false;
 		u.key = key;
 		N.nodeSet(u.id, v.x, v.y, v.z ?? 0, v.w ?? 0);
 	} else if (v && v.isMatrix4) {
 		const key = v.elements.join(" ");
-		if (u.key === key) return;
+		if (u.key === key) return false;
 		u.key = key;
 		N.nodeSet(u.id, new Float32Array(v.elements));
+	} else {
+		return false;
 	}
+	return true;
+}
+
+// The drie texture of an environment map that pmremTexture reads: a PMREMGenerator's, a cube
+// map (as drie's equirectangular map of it), or an equirectangular image.
+function envTextureId(renderer, texture) {
+	if (!texture) return -1;
+	if (texture.__drieEnvironment !== undefined) return texture.__drieEnvironment;
+	return renderer._texture(texture, !texture.isCubeTexture);
 }
 
 const warned = new WeakSet();
@@ -773,9 +923,12 @@ const warned = new WeakSet();
 // it reads arrives); its uniforms' values every frame.
 function sync(renderer, material, frame) {
 	const slots = SLOTS.map((s) => material[s] ?? null);
+	// (three/webgpu's scene.fogNode: the last step of every material that takes fog)
+	const fog = frame?.scene?.fogNode && material.fog !== false ? frame.scene.fogNode : null;
+	slots.push(fog);
 	let state = material.__drieNodes;
 	const stale = state === undefined || state.material !== material.__drie || slots.some((s, i) => s !== state.slots[i])
-		|| state.textures.some(([t, id]) => renderer._texture(t) !== id);
+		|| state.textures.some(([t, id, env]) => (env ? envTextureId(renderer, t) : renderer._texture(t)) !== id);
 	if (stale) {
 		if (!warned.has(material)) {
 			warned.add(material);
@@ -784,18 +937,86 @@ function sync(renderer, material, frame) {
 			}
 		}
 		const t = new Translator(renderer, material);
-		const ids = SLOTS.map((s, i) => (slots[i] && slots[i].isNode ? t.slot(s, slots[i]) : 0));
+		const ids = SLOTS.map((s, i) => {
+			const n = slots[i] && slots[i].isNode ? slots[i] : null;
+			if (s === "outputNode" && fog) return t.slot(s, n, fog);
+			return n ? t.slot(s, n) : 0;
+		});
 		N.materialNodes(material.__drie, ...ids);
-		state = { material: material.__drie, slots, textures: t.textures, uniforms: t.uniforms };
+		state = { material: material.__drie, slots, textures: t.textures, uniforms: t.uniforms, usesTime: t.usesTime };
+		state.rebuilt = true;
 		material.__drieNodes = state;
 	}
+	// (whether the graph's result may differ from the last frame's: environment() draws it again)
+	if (!stale) state.rebuilt = false;
+	let changed = stale || state.usesTime;
 	for (const u of state.uniforms) {
 		const n = u.node;
-		if (n.updateType && n.updateType !== "none" && typeof n.update === "function") {
+		if (!u.get && n.updateType && n.updateType !== "none" && typeof n.update === "function") {
 			n.update({ time: frame.time, deltaTime: frame.deltaTime, frameId: frame.id, renderer, material, camera: frame.camera, scene: frame.scene });
 		}
-		setUniform(u);
+		if (setUniform(u)) changed = true;
 	}
+	state.changed = changed;
 }
 
-globalThis.__drieNodes = { sync };
+// three's scene.backgroundNode: a material drie draws behind everything (Scene.background_material),
+// as three's Background.js makes it: the graph times backgroundIntensity, its environment maps
+// read in the direction of the view (the background sphere's normal), blurred by
+// backgroundBlurriness. Returns drie's material.
+function background(renderer, scene) {
+	let m = scene.__drieBackgroundNode;
+	if (m === undefined || m.__drieGraph !== scene.backgroundNode) {
+		m = new MeshBasicNodeMaterial({ side: BackSide, depthWrite: false, fog: false });
+		m.__drieGraph = scene.backgroundNode;
+		m.__drieIntensity = TSL.uniform(1);
+		m.__drieBlurriness = TSL.uniform(0);
+		m.colorNode = TSL.vec4(scene.backgroundNode).mul(m.__drieIntensity);
+		m.__drieContext = { getUV: () => TSL.normalWorldGeometry, getTextureLevel: () => m.__drieBlurriness };
+		scene.__drieBackgroundNode = m;
+	}
+	m.__drieIntensity.value = scene.backgroundIntensity ?? 1;
+	m.__drieBlurriness.value = scene.backgroundBlurriness ?? 0;
+	return renderer._material(m, renderer._frame);
+}
+
+// Builtins as they are when environment() draws a graph: from the middle of the scene, the
+// surface turned toward each direction it draws.
+const ENV_OVERRIDES = new Map([
+	[TSL.positionWorld, (t) => t.num(0, T.vec3)],
+	[TSL.reflectVector, (t) => t.geometryNormal()],
+	[TSL.normalWorld, (t) => t.geometryNormal()],
+	[TSL.transformedNormalWorld, (t) => t.geometryNormal()],
+].filter(([k]) => k));
+
+// three's scene.environmentNode: its graph drawn into an environment map (drie's
+// Renderer.render_environment), which lights the scene as Scene.environment does, and drawn
+// again when it may have changed (its uniforms, its textures, time). three works the graph out
+// at every pixel lit by it; here it is worked out once for each direction, at the middle of the
+// scene (a graph that reads the position gets the origin's), and the map's mip levels blur
+// it for rough surfaces. Its light on surfaces comes from a small drawing read back from the
+// GPU, which an animated graph takes every tenth frame. Returns drie's texture (-1 before
+// the first frame).
+function environment(renderer, scene) {
+	let m = scene.__drieEnvironmentNode;
+	if (m === undefined || m.__drieGraph !== scene.environmentNode) {
+		m = new MeshBasicNodeMaterial({ fog: false });
+		m.__drieGraph = scene.environmentNode;
+		m.colorNode = scene.environmentNode;
+		m.__drieContext = { getUV: () => TSL.normalWorldGeometry, getTextureLevel: () => TSL.float(0) };
+		m.__drieOverrides = ENV_OVERRIDES;
+		m.__drieMap = -1;
+		m.__drieDiffuse = 0;
+		scene.__drieEnvironmentNode = m;
+	}
+	const id = renderer._material(m, renderer._frame);
+	const state = m.__drieNodes;
+	if (m.__drieMap < 0 || state.changed) {
+		// (time alone: the light on surfaces every tenth frame)
+		const diffuse = m.__drieMap < 0 || state.rebuilt || !state.usesTime || m.__drieDiffuse++ % 10 === 0;
+		m.__drieMap = N.renderEnvironment(renderer._id, id, m.__drieMap, 512, diffuse);
+	}
+	return m.__drieMap;
+}
+
+globalThis.__drieNodes = { sync, background, environment };

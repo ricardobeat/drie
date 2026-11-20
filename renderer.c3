@@ -777,6 +777,15 @@ struct RendererState @local {
     Mesh* background;
     // the scene's background_texture when it is flat: a quad that fills the view
     Mesh* background_quad;
+    // the sphere the scene's background_material is drawn on
+    Mesh* background_sphere;
+    // Renderer.render_environment's: the grid it draws a material on, its scene and camera, the
+    // small drawing read back for the diffuse light, and the maps it drew into
+    Scene* env_scene;
+    Mesh* env_grid;
+    OrthographicCamera* env_camera;
+    RenderTarget* env_small;
+    List{EnvTarget} env_targets;
     // baking a light map (render_bake): what it draws with, the objects that cast the shadows
     // (not in the bake's scene of lights), and its pipelines: [VSM][RGBA32F]
     BakeState bake;
@@ -3506,6 +3515,20 @@ fn void draw_backdrop(Scene* scene, Camera* camera, Mat4 view_proj, FsParams* fs
 // a sphere around the camera, just inside its far plane, that shows the map in each direction
 // (see the shader's background mode). Drawn before the opaque scene, without writing depth.
 fn void draw_background(Scene* scene, Camera* camera, Mat4 view_proj, FsParams* fs) @local {
+    if (scene.background_material) {
+        if (!state.background_sphere) {
+            state.background_sphere = mesh(sphere_geometry(1, 32, 16), scene.background_material);
+            state.background_sphere.receive_shadow = false;
+        }
+        Mesh* m = state.background_sphere;
+        m.material = scene.background_material;
+        float r = camera.far * 0.9f;
+        m.matrix_world = mat4_compose(camera.matrix_world.get_position(), { 0, 0, 0 }, { r, r, r });
+        m.geometry.upload();
+        DrawItem item = { m, 0, 0, 0, 0, 1 };
+        draw_item(&item, view_proj, fs);
+        return;
+    }
     if (scene.background_texture && scene.background_flat) {
         draw_flat_background(scene, camera, view_proj, fs);
         return;
@@ -3602,6 +3625,11 @@ fn void transmission_levels(int width, int height) @local {
             &&{ .color_attachment = { .image = state.transmission_mips, .mip_level = i } }
         );
     }
+    mip_pipeline();
+}
+
+// The pipeline and sampler that copy a picture into a mip level, filtered (fill_levels).
+fn void mip_pipeline() @local {
     if (!state.mip_pipeline.id) {
         // (the output pass's shader, without tone mapping or sRGB: a copy, filtered)
         state.mip_pipeline = sg::make_pipeline(
@@ -3625,19 +3653,26 @@ fn void transmission_levels(int width, int height) @local {
     }
 }
 
-// Fills the mip levels from the resolved transmission picture: level 0 a copy of it, each next
-// one the last one halved (one bilinear tap between four texels: their average, as
-// generateMipmap does).
+// Fills the mip levels from the resolved transmission picture (fill_levels).
 fn void fill_transmission_levels(SgView source, int width, int height) @local {
     transmission_levels(width, height);
+    fill_levels(source, state.transmission_level_views[:state.transmission_levels],
+                state.transmission_level_attachments[:state.transmission_levels]);
+}
+
+// Fills an image's mip levels (`attachments`, a view of each) from `source`: level 0 a copy
+// of it, each next one the last one halved (one bilinear tap between four texels: their
+// average, as generateMipmap does). `views`: each level to read from.
+fn void fill_levels(SgView source, SgView[] views, SgView[] attachments) @local {
+    mip_pipeline();
     postprocessing::OutputParams p = { .params = { 0, 1, 0, 1 } };
-    for (int i = 0; i < state.transmission_levels; i++) {
-        SgView level = i == 0 ? source : state.transmission_level_views[i - 1];
+    for (int i = 0; i < attachments.len; i++) {
+        SgView level = i == 0 ? source : views[i - 1];
         profile::begin_pass(
             &&{
                 .action.colors[0] = { .load_action = DONTCARE, .store_action = STORE },
-                .attachments.colors[0] = state.transmission_level_attachments[i],
-                .label = "drie-transmission-mip",
+                .attachments.colors[0] = attachments[i],
+                .label = "drie-mip",
             }
         );
         sg::apply_pipeline(state.mip_pipeline);
@@ -4481,6 +4516,166 @@ fn Texture* Renderer.capture_environment(
     Texture* map = hdr ? float_texture(fpx, width, height) : data_texture(px, width, height);
     if (distance) map.env_distance_range = distance_range;
     return map;
+}
+
+// A map Renderer.render_environment draws into: the drawing, and the map's levels to draw into
+// and read from.
+struct EnvTarget @local {
+    Texture* texture;
+    RenderTarget* rt;
+    int levels;
+    SgView[12] level_views;
+    SgView[12] attachments;
+}
+
+// Draws `material` into an equirectangular environment map `width` texels around, all on the
+// GPU, for Scene.environment or a material's env_map: each texel is the material as it is in
+// that direction, which its node graph reads from normal_geometry (it is drawn on a grid whose
+// normals are the map's directions, from straight ahead; a basic material is unlit). three's
+// scene.environmentNode, worked out once per texel of a map rather than for every pixel
+// drawn with it; rough surfaces read its mip levels as they do any environment map's.
+// Into `into`, a map this drew before (drawn again: an animated graph, every frame), or a new
+// map. With `diffuse`, its light on surfaces (Texture.env_light) is worked out from a 64 x 32
+// drawing of it read back from the GPU, which waits for it; without, the map keeps the light it
+// had (none, the first time).
+fn Texture* Renderer.render_environment(&self, Material* material, Texture* into = null, int width = 512, bool diffuse = true) {
+    width = math::max(width & ~1, 8);
+    int height = width / 2;
+    if (!state.env_scene) {
+        const int COLS = 128;
+        const int ROWS = 64;
+        // (the map's first row, straight up, at the top of the drawing, which is its first
+        // row in memory but in GL)
+        float up = depth_zero_to_one() ? 1 : -1;
+        BufferGeometry* g = mem::new(BufferGeometry);
+        for (int j = 0; j <= ROWS; j++) {
+            for (int i = 0; i <= COLS; i++) {
+                float u = (float)i / COLS;
+                float v = (float)j / ROWS;
+                float theta = (u - 0.5f) * 2 * PI;
+                float phi = v * PI;
+                Vector3 d = { math::cos(theta) * math::sin(phi), math::cos(phi), math::sin(theta) * math::sin(phi) };
+                g.add_vertex({ u * 2 - 1, up * (1 - 2 * v), 0 }, d, { u, 1 - v });
+            }
+        }
+        for (uint j = 0; j < ROWS; j++) {
+            for (uint i = 0; i < COLS; i++) {
+                uint a = j * (COLS + 1) + i;
+                uint c = a + COLS + 1;
+                // (counterclockwise as the camera sees them)
+                if (up > 0) {
+                    g.add_triangle(a, c, a + 1);
+                    g.add_triangle(a + 1, c, c + 1);
+                } else {
+                    g.add_triangle(a, a + 1, c);
+                    g.add_triangle(a + 1, c + 1, c);
+                }
+            }
+        }
+        state.env_scene = scene();
+        state.env_grid = mesh(g, material);
+        state.env_grid.frustum_culled = false;
+        state.env_grid.receive_shadow = false;
+        state.env_scene.add(state.env_grid);
+        state.env_camera = orthographic_camera(-1, 1, 1, -1, 0.1, 10);
+        state.env_camera.position = { 0, 0, 1 };
+        state.env_camera.update_matrix_world();
+        state.env_small = render_target(64, 32, 1, RGBA16F, depth_buffer: false);
+    }
+    state.env_grid.material = material;
+
+    EnvTarget* et;
+    if (into) {
+        foreach (&t : state.env_targets) {
+            if (t.texture == into) et = t;
+        }
+        if (!et) abort("drie: render_environment into a map it didn't draw");
+    }
+    if (et && (et.texture.width != width || et.texture.height != height)) {
+        et.rt.dispose();
+        free(et.rt);
+        for (int i = 0; i < et.levels; i++) {
+            sg::destroy_view(et.level_views[i]);
+            sg::destroy_view(et.attachments[i]);
+        }
+        sg::destroy_view(et.texture.view);
+        sg::destroy_image(et.texture.image);
+        sg::destroy_sampler(et.texture.sampler);
+        et.texture.uploaded = false;
+    }
+    if (!et) {
+        Texture* t = mem::new(Texture);
+        *t = { .color_space = NO_COLOR_SPACE, .repeat = { 1, 1 }, .generate_mipmaps = true, .min_filter = LINEAR_MIPMAP_LINEAR };
+        state.env_targets.push({ .texture = t });
+        et = &state.env_targets[state.env_targets.len() - 1];
+    }
+    Texture* t = et.texture;
+    if (!t.uploaded) {
+        int levels = 1;
+        while (levels < 12 && width >> levels > 0) levels++;
+        t.width = width;
+        t.height = height;
+        t.image = sg::make_image(
+            &&{
+                .usage = { .color_attachment = true },
+                .width = width,
+                .height = height,
+                .num_mipmaps = levels,
+                .sample_count = 1,
+                .pixel_format = RGBA16F,
+                .label = "drie-environment",
+            }
+        );
+        t.view = sg::make_view(&&{ .texture = { .image = t.image } });
+        t.sampler = sg::make_sampler(
+            &&{
+                .min_filter = LINEAR,
+                .mag_filter = LINEAR,
+                .mipmap_filter = LINEAR,
+                .wrap_u = REPEAT,
+                .wrap_v = CLAMP_TO_EDGE,
+            }
+        );
+        for (int i = 0; i < levels; i++) {
+            et.level_views[i] = sg::make_view(&&{ .texture = { .image = t.image, .mip_levels = { .base = i, .count = 1 } } });
+            et.attachments[i] = sg::make_view(&&{ .color_attachment = { .image = t.image, .mip_level = i } });
+        }
+        et.levels = levels;
+        et.rt = render_target(width, height, 1, RGBA16F, depth_buffer: false);
+        t.uploaded = true;
+    }
+
+    RenderTarget* prev_target = self.render_target;
+    bool prev_auto = self.auto_aspect;
+    bool prev_auto_clear = self.auto_clear;
+    bool prev_scissor_test = self.scissor_test;
+    int[4] prev_viewport = self.viewport;
+    self.auto_aspect = false;
+    self.auto_clear = true;
+    self.scissor_test = false;
+    self.viewport = { };
+    self.set_render_target(et.rt);
+    self.render(state.env_scene, state.env_camera);
+    fill_levels(et.rt.texture, et.level_views[:et.levels], et.attachments[:et.levels]);
+    if (diffuse) {
+        self.set_render_target(state.env_small);
+        self.render(state.env_scene, state.env_camera);
+        commit();
+        ushort[] halves = mem::new_array(ushort, 64 * 32 * 4);
+        defer free(halves);
+        readback::read_image(state.env_small.texture_image, 64, 32, (char*)halves.ptr, 8);
+        float[] floats = mem::new_array(float, 64 * 32 * 4);
+        defer free(floats);
+        foreach (i, h : halves) floats[i] = half_to_float(h);
+        t.env_light = env_light(floats, { }, 64, 32, false);
+        t.has_env_sh = true;
+    }
+    self.set_render_target(prev_target);
+    self.auto_aspect = prev_auto;
+    self.auto_clear = prev_auto_clear;
+    self.scissor_test = prev_scissor_test;
+    self.viewport = prev_viewport;
+    return t;
 }
 
 fn void commit() {

@@ -65,7 +65,8 @@ enum NodeOp : char {
     CONST,    // value
     UNIFORM,  // value (Node.set)
     BUILTIN,  // fn: a NodeBuiltin
-    TEXTURE,  // texture; args[0] = uv, args[1] = the level (0: from the derivatives)
+    TEXTURE,  // texture; args[0] = uv, args[1] = the level (0: from the derivatives); kind 1:
+              //   its size instead (a vec2)
     VARYING,  // args[0], worked out per vertex
     BINARY,   // fn: a NodeBinary
     CALL,     // fn: a NodeFn, args
@@ -1035,7 +1036,7 @@ fn String NodeGen.builtin(&self, Node n, NodeBuiltin b) {
     }
 }
 
-fn String NodeGen.texture(&self, NodeData* d) {
+fn String NodeGen.texture(&self, Node n, NodeData* d) {
     if (self.stage != FRAGMENT) abort("drie: nodes: textures are read in the fragment stage (not in position_node)");
     NodeBuild* b = self.build;
     int k = -1;
@@ -1048,6 +1049,17 @@ fn String NodeGen.texture(&self, NodeData* d) {
         b.textures[k] = d.texture;
     }
     int slot = NODE_TEXTURES - 1 - k;
+    if (d.kind == 1) {
+        switch (self.lang) {
+            case GLSL: return string::tformat("vec2(textureSize(tex_ext%d_tex_smp, 0))", slot);
+            case MSL: return string::tformat("float2(tex_ext%d.get_width(), tex_ext%d.get_height())", slot, slot);
+            case HLSL:
+                String size = string::tformat("ts%d", n.id);
+                self.line("uint2 %s;", size);
+                self.line("tex_ext%d.GetDimensions(%s.x, %s.y);", slot, size, size);
+                return string::tformat("float2(%s)", size);
+        }
+    }
     String uv = self.value_as({ d.args[0] }, VEC2);
     bool lod = d.args[1] != 0;
     String level = lod ? self.value_as({ d.args[1] }, FLOAT) : "";
@@ -1280,7 +1292,7 @@ fn String NodeGen.emit(&self, Node n) {
         case BUILTIN:
             e = self.builtin(n, (NodeBuiltin)d.kind);
         case TEXTURE:
-            e = self.texture(&d);
+            e = self.texture(n, &d);
         case VARYING:
             e = self.stage == FRAGMENT ? self.read_varying(n) : self.emit({ d.args[0] });
         case BINARY:
