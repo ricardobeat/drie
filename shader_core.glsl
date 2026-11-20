@@ -499,14 +499,16 @@ const float RECIPROCAL_PI = 0.31830988618;
 
 @include_block tonemapping
 
+// three's window: the light fades out to nothing at `cutoff` (0: never)
+float distance_window(float d, float cutoff) {
+    if (cutoff <= 0.0) return 1.0;
+    float r = d / cutoff;
+    float f = clamp(1.0 - r * r * r * r, 0.0, 1.0);
+    return f * f;
+}
+
 float distance_attenuation(float d, float cutoff, float decay) {
-    float a = 1.0 / max(pow(d, decay), 0.01);
-    if (cutoff > 0.0) {
-        float r = d / cutoff;
-        float f = clamp(1.0 - r * r * r * r, 0.0, 1.0);
-        a *= f * f;
-    }
-    return a;
+    return distance_window(d, cutoff) / max(pow(d, decay), 0.01);
 }
 
 vec3 f_schlick(vec3 f0, float voh) {
@@ -657,6 +659,9 @@ vec3 g_f0;        // a standard material's reflectance head on, and at a grazing
 float g_f90;      //   (from ior, specular_color and specular_intensity; set after the maps)
 float g_radius;   // source radius of the light being evaluated (its highlights')
 vec3 g_light_vec; // from the surface to the centre of the point or spot light being evaluated
+vec3 g_half;      // a tube light's half: from its centre to one end (0: a ball or a point)
+float g_nol = -1.0; // the light's cosine over the squared distance, when it is not a point's
+                  //   (a tube's, integrated along it): the radiance is then without its falloff
 // three's MeshPhysicalMaterial layers, set after the maps (0: off): a clear coat over the
 // surface (its own normal and roughness), a sheen of fibers on it, a thin film's rainbow
 float g_clearcoat;
@@ -698,10 +703,21 @@ vec3 g_hex_w;
 // reflected off the surface, for the highlight. The light stays as bright as the point light at
 // its centre; `norm` takes away what the highlight gains by moving its source around on the
 // light, (a / a')^2 for a sphere with a' = saturate(a + radius / (3 distance)) (his eq. 10, 11
-// and 14). Without a radius: the direction to the centre and 1.
+// and 14). A tube (g_half) first takes the point of its segment nearest the ray (his eq. 19)
+// and a / a' with a' = saturate(a + half its length / (3 distance)) (eq. 20, a widening along
+// one direction only), then the ball of `g_radius` around that point. Without a size: the
+// direction to the centre and 1.
 vec3 light_toward(vec3 r, float a, out float norm) {
     vec3 lv = g_light_vec;
     norm = 1.0;
+    if (dot(g_half, g_half) > 0.0) {
+        vec3 l0 = lv - g_half;
+        vec3 ld = 2.0 * g_half;
+        float rld = dot(r, ld);
+        float t = (dot(r, l0) * rld - dot(l0, ld)) / max(dot(ld, ld) - rld * rld, 1e-8);
+        lv = l0 + clamp(t, 0.0, 1.0) * ld;
+        norm = a / clamp(a + length(g_half) / (3.0 * max(length(lv), 1e-4)), 0.0, 1.0);
+    }
     if (g_radius > 0.0) {
         float d = length(lv);
         // (the light's centre to the ray: Karis' eq. 11 with its sign put right)
@@ -726,7 +742,7 @@ vec3 direct(int mode, vec3 n, vec3 v, vec3 l, float dist, vec3 radiance, vec3 di
     // edge-on to it stays dark)
     float through = dot(n, v) * ndl < 0.0 ? 0.5 : 1.0;
     float nol = foliage ? through * (0.1 + 0.9 * abs(ndl)) : clamp(ndl, 0.0, 1.0);
-    vec3 irradiance = nol * radiance;
+    vec3 irradiance = (g_nol >= 0.0 ? g_nol : nol) * radiance;
     vec3 h = normalize(l + v);
     if (mode == 3) {
         if (g_clearcoat > 0.0) {
@@ -737,7 +753,7 @@ vec3 direct(int mode, vec3 n, vec3 v, vec3 l, float dist, vec3 radiance, vec3 di
             float cnv = clamp(dot(cn, v), 1e-4, 1.0);
             // (a light with a size: its highlight on the coat, off the coat's own reflection)
             float cnorm = 1.0;
-            vec3 cl = g_radius > 0.0 ? light_toward(reflect(-v, cn), a, cnorm) : l;
+            vec3 cl = g_radius > 0.0 || dot(g_half, g_half) > 0.0 ? light_toward(reflect(-v, cn), a, cnorm) : l;
             vec3 ch = normalize(cl + v);
             float cnh = clamp(dot(cn, ch), 0.0, 1.0);
             float f = schlick(0.04, 1.0, clamp(dot(v, ch), 0.0, 1.0));
@@ -770,7 +786,7 @@ vec3 direct(int mode, vec3 n, vec3 v, vec3 l, float dist, vec3 radiance, vec3 di
         float norm = 1.0;
         vec3 sl = l;
         float snl = nol;
-        if (g_radius > 0.0) {
+        if (g_radius > 0.0 || dot(g_half, g_half) > 0.0) {
             sl = light_toward(reflect(-v, n), a, norm);
             h = normalize(sl + v);
             snl = clamp(dot(n, sl), 0.0, 1.0);
@@ -2181,6 +2197,8 @@ void main() {
         ind_d = outc;
 
         int ndir = int(counts.x);
+        g_half = vec3(0.0);
+        g_nol = -1.0;
         for (int i = 0; i < ndir; i++) {
             g_radius = 0.0;
             vec3 l = normalize(dirs[i].dir.xyz);
@@ -2215,11 +2233,35 @@ void main() {
             // a light source with a size: falloff softens up close instead of blowing out
             g_radius = pl.params.x;
             g_light_vec = lv;
-            float d_soft = sqrt(d * d + g_radius * g_radius);
-            vec3 radiance = pl.color.rgb * distance_attenuation(d_soft, pl.pos.w, pl.color.w);
+            g_half = pl.params.yzw;
+            vec3 l = lv / d;
+            vec3 radiance;
+            if (dot(g_half, g_half) > 0.0) {
+                // a tube (PointLight.length): the light of the whole segment, its intensity
+                // spread along it (Karis' eq. 16, the radius softening it as a ball's
+                // falloff: d^2 + radius^2 at length 0), faded out by the distance to its
+                // nearest point
+                vec3 l0 = lv - g_half;
+                vec3 l1 = lv + g_half;
+                float d0 = length(l0);
+                float d1 = length(l1);
+                vec3 ld = 2.0 * g_half;
+                vec3 near = l0 + clamp(-dot(l0, ld) / dot(ld, ld), 0.0, 1.0) * ld;
+                float dn = length(near);
+                g_nol = 2.0 * clamp(0.5 * dot(n, l0) / d0 + 0.5 * dot(n, l1) / d1, 0.0, 1.0)
+                    / max(d0 * d1 + dot(l0, l1) + 2.0 * g_radius * g_radius, 1e-4);
+                l = near / max(dn, 1e-6);
+                radiance = pl.color.rgb * distance_window(dn, pl.pos.w);
+            } else {
+                g_nol = -1.0;
+                float d_soft = sqrt(d * d + g_radius * g_radius);
+                radiance = pl.color.rgb * distance_attenuation(d_soft, pl.pos.w, pl.color.w);
+            }
             radiance *= fog_transmittance(fog_distance(pl.pos.xyz, v_world_pos));
-            outc += direct(mode, n, v, lv / d, d, radiance, diffuse_color, spec);
+            outc += direct(mode, n, v, l, d, radiance, diffuse_color, spec);
         }
+        g_half = vec3(0.0);
+        g_nol = -1.0;
         for (int k = 0; k < nspot; k++) {
             int i = baking ? k : int(cluster_lights[first + npoint + k].index);
             vec3 lv = spots[i].pos.xyz - v_world_pos;

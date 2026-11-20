@@ -2001,11 +2001,19 @@ fn FsParams build_light_params(Scene* scene, Camera* camera, SpotLight* caster) 
             case POINT:
                 if (!g.room(g.points.len(), r.max_lights)) break;
                 PointLight* pl = (PointLight*)l;
+                // a tube: from its centre to one end, along the light's x axis
+                Vector3 half;
+                if (pl.length > 0) {
+                    Mat4 m = l.matrix_world;
+                    Vector3 x = { m[0][0], m[0][1], m[0][2] };
+                    float xl = x.length();
+                    if (xl > 0) half = x * (pl.length * 0.5f / xl);
+                }
                 g.points.push(
                     {
                         .pos = { ...l.matrix_world.get_position(), pl.distance },
                         .color = { ...c, pl.decay },
-                        .params = { pl.radius, 0, 0, 0 },
+                        .params = { pl.radius, half.x, half.y, half.z },
                     }
                 );
                 // a light that adds nothing needs no place in the clusters
