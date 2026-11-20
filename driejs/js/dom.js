@@ -314,19 +314,53 @@ class Context2D {
 	}
 }
 
-// An image is not decoded here: the renderer hands drie its `path`, or the bytes of a Blob
-// it came from (`data`). `load` fires once the current job is done, as in a browser.
+// An image is not decoded to be shown: the renderer hands drie its `path`, or the bytes of a
+// Blob it came from (`data`). `load` fires once the current job is done, as in a browser. Its
+// width and height, or drawing it into a canvas, decode it here (once).
 class Image extends Element {
 	constructor() {
 		super("img");
 		this._src = "";
 		this.complete = false;
+		this._decoded = undefined;
+	}
+	_handle() {
+		if (this._decoded === undefined) {
+			let bytes = this.data;
+			if (!bytes && this.path) {
+				bytes = new Uint8Array(N.fileSize(this.path));
+				N.readFile(this.path, bytes);
+			}
+			this._decoded = bytes ? N.imageDecode(bytes) : -1;
+			if (this._decoded < 0) throw new Error(`driejs: the image ${this._src} cannot be decoded`);
+		}
+		return this._decoded;
+	}
+	// (a width or height set on the element wins, as the attributes do)
+	get width() {
+		return this._width || this.naturalWidth;
+	}
+	set width(v) {
+		this._width = v;
+	}
+	get height() {
+		return this._height || this.naturalHeight;
+	}
+	set height(v) {
+		this._height = v;
+	}
+	get naturalWidth() {
+		return this.complete ? N.imageSize(this._handle(), 0) : 0;
+	}
+	get naturalHeight() {
+		return this.complete ? N.imageSize(this._handle(), 1) : 0;
 	}
 	get src() {
 		return this._src;
 	}
 	set src(url) {
 		this._src = url;
+		this._decoded = undefined;
 		const blob = blobs.get(url);
 		if (blob) this.data = blob.bytes();
 		else this.path = url.startsWith("/") ? url : N.baseDir + url;

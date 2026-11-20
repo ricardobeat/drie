@@ -24,20 +24,20 @@
 // blending (every mode, premultipliedAlpha, and custom blending's equations and factors),
 // toneMapped, a texture's repeat and offset as they change, scene.background as a flat
 // texture, displacementMap (with its scale and bias), OrthographicCamera, MeshDepthMaterial
-// (depthPacking), and the maps of
-// MeshStandardMaterial and
-// MeshPhysicalMaterial: normal, roughness, metalness and ao maps, and the physical material's
-// transmission (with its maps), volume, ior, dispersion and specular color and intensity (with
-// theirs), clearcoat, sheen, iridescence and anisotropy (with the geometry's tangents). Any material's lightMap (on the first or the
-// second uv set: texture.channel) and lightMapIntensity, depthTest and depthWrite. Light maps
-// baked by js/progressive_lightmap.js's ProgressiveLightMap.
+// (depthPacking), setViewport, setScissor and setScissorTest, autoClear and clear(), and the
+// maps of MeshStandardMaterial and MeshPhysicalMaterial: normal, roughness, metalness and ao
+// maps, and the physical material's transmission (with its maps), volume, ior, dispersion and
+// specular color and intensity (with theirs), clearcoat, sheen, iridescence and anisotropy
+// (with the geometry's tangents). Any material's lightMap (on the first or the second uv set:
+// texture.channel) and lightMapIntensity, depthTest and depthWrite. Light maps baked by
+// js/progressive_lightmap.js's ProgressiveLightMap.
 //
 // Not mirrored yet: changes to a material's flags without `needsUpdate`, geometry groups and
-// draw ranges, renderOrder, points, sprites, morph targets, point light shadows,
-// an emissiveMap that isn't the map, render targets (getRenderTarget() is null,
-// setRenderTarget() does nothing) and post-processing.
+// draw ranges, renderOrder, points, sprites, morph targets, point light shadows, an
+// emissiveMap that isn't the map, render targets (getRenderTarget() is null, setRenderTarget()
+// does nothing) and post-processing.
 import { BackSide, Color, CubeRefractionMapping, EquirectangularReflectionMapping, EquirectangularRefractionMapping, Matrix4,
-	MeshBasicMaterial, NearestFilter, RedFormat, RGBAFormat, RGFormat } from "../vendor/three.core.js";
+	MeshBasicMaterial, NearestFilter, RedFormat, RGBAFormat, RGFormat, Vector4 } from "../vendor/three.core.js";
 import { setCanvas } from "./dom.js";
 
 const N = globalThis.__drie;
@@ -183,6 +183,9 @@ export class DrieRenderer {
 		this._width = window.innerWidth;
 		this._height = window.innerHeight;
 		this._pixelRatio = 1;
+		this._viewport = new Vector4(0, 0, this._width, this._height);
+		this._scissor = new Vector4(0, 0, this._width, this._height);
+		this._scissorTest = false;
 		this._id = N.renderer(parameters.antialias !== false, this._width, this._height, document.title);
 		this._records = new Float32Array(1024 * STRIDE);
 		this._count = 0;
@@ -210,11 +213,72 @@ export class DrieRenderer {
 	setSize(width, height) {
 		this._width = width;
 		this._height = height;
+		this._viewport.set(0, 0, width, height);
+		this._scissor.set(0, 0, width, height);
 		N.setSize(this._id, width, height);
 	}
 
-	setClearColor(color) {
-		N.setClearColor(this._id, _color.set(color).getHex());
+	setClearColor(color, alpha) {
+		this._clearColor = new Color(color);
+		N.setClearColor(this._id, _color.set(color).getHex(), alpha ?? 1);
+	}
+
+	getClearColor(target) {
+		return target.copy(this._clearColor ?? _color.set(0x000000));
+	}
+
+	// The viewport and the scissor box (CSS pixels from the bottom left: three's), their test,
+	// and autoClear, sent before each render() and clear() that changes them.
+	setViewport(x, y, width, height) {
+		if (x.isVector4) this._viewport.copy(x);
+		else this._viewport.set(x, y, width, height);
+	}
+
+	getViewport(target) {
+		return target.copy(this._viewport);
+	}
+
+	setScissor(x, y, width, height) {
+		if (x.isVector4) this._scissor.copy(x);
+		else this._scissor.set(x, y, width, height);
+	}
+
+	getScissor(target) {
+		return target.copy(this._scissor);
+	}
+
+	setScissorTest(on) {
+		this._scissorTest = on;
+	}
+
+	getScissorTest() {
+		return this._scissorTest;
+	}
+
+	_viewState() {
+		const v = this._viewport;
+		const s = this._scissor;
+		// (the whole canvas is no viewport of its own: it follows the window)
+		const whole = v.x === 0 && v.y === 0 && v.z === this._width && v.w === this._height;
+		const key = `${this.autoClear} ${v.x} ${v.y} ${v.z} ${v.w} ${s.x} ${s.y} ${s.z} ${s.w} ${this._scissorTest}`;
+		if (this._viewKey === key) return;
+		this._viewKey = key;
+		N.viewState(this._id, this.autoClear, whole ? 0 : v.x, whole ? 0 : v.y, whole ? 0 : v.z, whole ? 0 : v.w,
+			s.x, s.y, s.z, s.w, this._scissorTest);
+	}
+
+	// (color, depth and stencil together: drie clears them as one)
+	clear() {
+		this._viewState();
+		N.clear(this._id);
+	}
+
+	clearColor() {
+		this.clear();
+	}
+
+	clearDepth() {
+		this.clear();
 	}
 
 	setAnimationLoop(callback) {
@@ -249,6 +313,7 @@ export class DrieRenderer {
 		if (!this._last && !this._loop) N.setAnimationLoop(this._id, () => this._redraw());
 		this._last = [scene, camera];
 		const sceneId = this._mirror(scene, camera);
+		this._viewState();
 		const t = profile ? N.now() : 0;
 		N.render(this._id, sceneId, camera.__drie);
 		this.info.render.frame++;
