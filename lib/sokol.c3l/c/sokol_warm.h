@@ -11,9 +11,6 @@
 //
 // sg_warm_shader_begin(&shader_desc) compiles the shader alone (its two functions), for a
 // program whose pipelines are made later: several of them at once, on as many threads.
-// sg_warm_pipeline_begin(shader, &shader_desc, &pipeline_desc) compiles a pipeline of a
-// shader made already (its description for the storage buffers' mutability): on Apple's
-// GPUs, each blend state and target format is a compile of the fragment function of its own.
 //
 // Metal only. Included at the end of sokol.c, with sokol_gfx's implementation.
 #if defined(SOKOL_IMPL)
@@ -26,11 +23,24 @@
 // per job: 0 free, 1 running, 2 done, 3 failed
 static _Atomic int _sg_warm_jobs[SG_WARM_JOBS];
 
-// The pipeline's description, as _sg_mtl_create_pipeline makes it (but for the functions):
-// retained, for the caller to release.
-static MTLRenderPipelineDescriptor* _sg_warm_rp_desc(const sg_shader_desc* shader_desc, const sg_pipeline_desc* pipeline_desc) {
-    const sg_shader_desc sd = *shader_desc;
-    const sg_pipeline_desc pd = *pipeline_desc;
+int sg_warm_begin(const sg_shader_desc* shader_desc, const sg_pipeline_desc* pipeline_desc) {
+    if (!_sg.valid || !shader_desc || !pipeline_desc) return -1;
+    sg_shader_desc sd = _sg_shader_desc_defaults(shader_desc);
+    sg_pipeline_desc pd = _sg_pipeline_desc_defaults(pipeline_desc);
+    if (!sd.vertex_func.source || !sd.fragment_func.source || sd.vertex_func.bytecode.ptr || sd.fragment_func.bytecode.ptr) {
+        return -1;
+    }
+    int job = -1;
+    for (int i = 0; i < SG_WARM_JOBS; i++) {
+        int free_slot = 0;
+        if (atomic_compare_exchange_strong(&_sg_warm_jobs[i], &free_slot, 1)) {
+            job = i;
+            break;
+        }
+    }
+    if (job < 0) return -1;
+
+    // the pipeline's description, as _sg_mtl_create_pipeline makes it (but for the functions)
     bool layout_active[SG_MAX_VERTEXBUFFER_BINDSLOTS] = { false };
     MTLVertexDescriptor* vtx_desc = [MTLVertexDescriptor vertexDescriptor];
     for (NSUInteger i = 0; i < SG_MAX_VERTEX_ATTRIBUTES; i++) {
@@ -84,27 +94,6 @@ static MTLRenderPipelineDescriptor* _sg_warm_rp_desc(const sg_shader_desc* shade
             rp_desc.fragmentBuffers[slot].mutability = MTLMutabilityImmutable;
         }
     }
-    return rp_desc;
-}
-
-int sg_warm_begin(const sg_shader_desc* shader_desc, const sg_pipeline_desc* pipeline_desc) {
-    if (!_sg.valid || !shader_desc || !pipeline_desc) return -1;
-    sg_shader_desc sd = _sg_shader_desc_defaults(shader_desc);
-    sg_pipeline_desc pd = _sg_pipeline_desc_defaults(pipeline_desc);
-    if (!sd.vertex_func.source || !sd.fragment_func.source || sd.vertex_func.bytecode.ptr || sd.fragment_func.bytecode.ptr) {
-        return -1;
-    }
-    int job = -1;
-    for (int i = 0; i < SG_WARM_JOBS; i++) {
-        int free_slot = 0;
-        if (atomic_compare_exchange_strong(&_sg_warm_jobs[i], &free_slot, 1)) {
-            job = i;
-            break;
-        }
-    }
-    if (job < 0) return -1;
-
-    MTLRenderPipelineDescriptor* rp_desc = _sg_warm_rp_desc(&sd, &pd);
 
     // (copies: the descriptions' strings are the caller's)
     NSString* vs_src = [[NSString alloc] initWithUTF8String:sd.vertex_func.source];
@@ -179,42 +168,6 @@ int sg_warm_shader_begin(const sg_shader_desc* shader_desc) {
     return job;
 }
 
-int sg_warm_pipeline_begin(sg_shader shader, const sg_shader_desc* shader_desc, const sg_pipeline_desc* pipeline_desc) {
-    if (!_sg.valid || !shader_desc || !pipeline_desc) return -1;
-    _sg_shader_t* shd = _sg_lookup_shader(shader.id);
-    if (!shd || shd->slot.state != SG_RESOURCESTATE_VALID) return -1;
-    if (shd->mtl.vertex_func.mtl_func == _SG_MTL_INVALID_SLOT_INDEX || shd->mtl.fragment_func.mtl_func == _SG_MTL_INVALID_SLOT_INDEX) {
-        return -1;
-    }
-    sg_shader_desc sd = _sg_shader_desc_defaults(shader_desc);
-    sg_pipeline_desc pd = _sg_pipeline_desc_defaults(pipeline_desc);
-    int job = -1;
-    for (int i = 0; i < SG_WARM_JOBS; i++) {
-        int free_slot = 0;
-        if (atomic_compare_exchange_strong(&_sg_warm_jobs[i], &free_slot, 1)) {
-            job = i;
-            break;
-        }
-    }
-    if (job < 0) return -1;
-    MTLRenderPipelineDescriptor* rp_desc = _sg_warm_rp_desc(&sd, &pd);
-    rp_desc.vertexFunction = _sg_mtl_id(shd->mtl.vertex_func.mtl_func);
-    rp_desc.fragmentFunction = _sg_mtl_id(shd->mtl.fragment_func.mtl_func);
-    id<MTLDevice> device = _sg.mtl.device;
-    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        @autoreleasepool {
-            NSError* err = nil;
-            id<MTLRenderPipelineState> rps = [device newRenderPipelineStateWithDescriptor:rp_desc error:&err];
-            int state = rps ? 2 : 3;
-            _SG_OBJC_RELEASE(rps);
-            atomic_store(&_sg_warm_jobs[job], state);
-        }
-    });
-    // (the block holds its own references to what it uses, the functions with the description)
-    _SG_OBJC_RELEASE(rp_desc);
-    return job;
-}
-
 int sg_warm_state(int job) {
     if (job < 0 || job >= SG_WARM_JOBS) return 2;
     int s = atomic_load(&_sg_warm_jobs[job]);
@@ -238,13 +191,6 @@ int sg_warm_begin(const sg_shader_desc* shader_desc, const sg_pipeline_desc* pip
 
 int sg_warm_shader_begin(const sg_shader_desc* shader_desc) {
     (void)shader_desc;
-    return -1;
-}
-
-int sg_warm_pipeline_begin(sg_shader shader, const sg_shader_desc* shader_desc, const sg_pipeline_desc* pipeline_desc) {
-    (void)shader;
-    (void)shader_desc;
-    (void)pipeline_desc;
     return -1;
 }
 

@@ -540,12 +540,6 @@ void main() {
 
 @block fs_main
 @include_block node_common
-// 1: a basic material's program, everything that lights a surface left out. Metal only:
-// renderer.c3's unlit_source sets it in a copy of the program's source, and the compiler
-// drops what it leaves unused (Apple's GPUs blend in the fragment program, so the driver
-// compiles each pipeline's fragment function again for its blend state: a fraction of the
-// work then). It stays 0 elsewhere, and in the programs generated from this file.
-layout(constant_id = 0) const int UNLIT = 0;
 layout(binding=0) uniform texture2D tex_map;
 layout(binding=1) uniform texture2D tex_normal;
 layout(binding=2) uniform texture2D tex_arm;
@@ -2541,7 +2535,7 @@ vec3 refracted_light(vec3 n, vec3 v, vec3 world_pos, float rough, vec3 diffuse_c
 }
 
 void main() {
-    int mode = UNLIT != 0 ? 0 : int(mat_params.x);
+    int mode = int(mat_params.x);
     int fl = flags();
     bool foliage = (fl & 2) != 0;
 #ifdef MRT
@@ -2615,8 +2609,7 @@ void main() {
     }
     // three's alphaMap: its green channel
     if (has_map(MAP_ALPHA)) g_base.a *= material_map(MAP_ALPHA).g;
-    // (a node material has programs of its own)
-    bool nodes = UNLIT == 0 && node_flags.x > 0.5;
+    bool nodes = node_flags.x > 0.5;
     NodeIn ni;
     if (nodes) {
         vec3 fn = normalize(v_normal);
@@ -2630,9 +2623,6 @@ void main() {
     // cut out by the depth prepass already (depth_fs): whatever is drawn here is covered
     if (tex_params.w < 0.0) alpha = 1.0;
 #else
-    // (UNLIT: one program for the opaque draws and the cut-outs; those the depth prepass cut
-    // out already have an alpha test of -1, as for fs_opaque)
-    if (UNLIT != 0 && tex_params.w < 0.0) alpha = 1.0;
     if (tex_params.w > 0.0) {
         // far away the texture's smaller levels average leaves and gaps into an alpha under
         // the cutoff, and the whole plant would go: make up for it, so as much stays covered
