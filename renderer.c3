@@ -1294,6 +1294,7 @@ fn void clear_atlas_tile() @local {
         .vertex_buffers[0] = g.vbuf,
         .vertex_buffers[1] = state.identity_instance,
         .vertex_buffers[2] = zeros(g.vertex_count()),
+        .vertex_buffers[4] = zeros(g.vertex_count()),
         .index_buffer = g.ibuf
     };
     Vec4 inst_cull = cull_bind(&bind, -1);
@@ -2447,8 +2448,8 @@ fn VsParams vs_params_of(DrawItem* item, Mat4 view_proj, bool normals = true) @l
         vs.motion = { moved ? 2 : 1, state.motion_prev_time, state.motion_jitter.x, state.motion_jitter.y };
     }
     if (state.bake.on) vs.bake = { 1, depth_zero_to_one() ? 1 : 0, 0, 0 };
-    vs.outline = { mat.outline, 0, 0, 0 };
-    vs.displacement = displacement_params(mat);
+    Vec4 d = displacement_params(mat);
+    vs.surface_vs = { mat.outline, d.x, d.y, d.z };
     return vs;
 }
 

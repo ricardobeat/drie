@@ -113,9 +113,10 @@ layout(binding=0) uniform vs_params {
                         //   jitter (in clip space, per unit of w), left out of the motion
     vec4 bake;          // x = 1: baking a light map (lightmap.c3): drawn where v_uv1 is in it,
                         //   y = 1: the target's row 0 is its top (texel row r at v = (r + 0.5) / size)
-    vec4 outline;       // x = Material.outline: how far the vertices are pushed out along their
-                        //   normals, in clip space per unit of w (0: not)
-    vec4 displacement;  // see displaced
+    vec4 surface_vs;    // x = Material.outline: how far the vertices are pushed out along their
+                        //   normals, in clip space per unit of w (0: not); yzw = the displacement
+                        //   (see displaced). (The block is 512 bytes: sokol rounds a draw's
+                        //   uniforms up to 256, and a bake draws thousands of times a frame)
 };
 
 @include_block vertex_common
@@ -156,7 +157,7 @@ void main() {
         gl_Position = v_clip;
         return;
     }
-    vec3 ip = instance_point(displaced(position, displacement));
+    vec3 ip = instance_point(displaced(position, vec4(surface_vs.yzw, 0.0)));
     vec4 wp = model * vec4(ip, 1.0);
     wp.xyz = apply_sway(wp.xyz, ip.y, sway);
     material_custom[0] = vs_material_custom[0];
@@ -176,12 +177,12 @@ void main() {
     v_color = color0.rgb;
     v_alpha = color0.a;
     gl_Position = view_proj * vec4(wp.xyz - view_origin.xyz, 1.0);
-    if (outline.x > 0.0) {
+    if (surface_vs.x > 0.0) {
         // Material.outline: out along the normal as the screen sees it, the same width at any
         // distance (three's OutlineEffect)
         vec3 inward = wp.xyz - (model * vec4(instance_dir(normal), 0.0)).xyz;
         vec4 p2 = view_proj * vec4(inward - view_origin.xyz, 1.0);
-        gl_Position += normalize(gl_Position - p2) * outline.x * gl_Position.w;
+        gl_Position += normalize(gl_Position - p2) * surface_vs.x * gl_Position.w;
     }
     v_clip = gl_Position;
     v_clip.xy -= motion.zw * v_clip.w;
