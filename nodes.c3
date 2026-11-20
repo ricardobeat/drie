@@ -675,6 +675,7 @@ const ulong NODE_SHADOW_KEY = ~(ulong)0;
 extern fn int sg_warm_begin(SgShaderDesc* shader, SgPipelineDesc* pipeline) @cname("sg_warm_begin");
 extern fn int sg_warm_state(int job) @cname("sg_warm_state");
 extern fn void sg_warm_end(int job) @cname("sg_warm_end");
+extern fn int sg_warm_shader_begin(SgShaderDesc* shader) @cname("sg_warm_shader_begin");
 
 // A new one each render (Renderer.render): what NodeProgram.busy says holds for all of a
 // render's passes, so that a program the depth prepass left out is left out of the main pass
