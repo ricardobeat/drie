@@ -309,6 +309,13 @@ struct Renderer {
     // For the application's own shader hooks (see `shaders`), which read them as
     // `frame_custom[0]` and `[1]`, the same for every draw.
     Vec4[2] custom;
+    // The lens's focus, for Material.defocus: a 1x1 map whose r is the distance in focus (m;
+    // BokehPass.focus_map()), and the blur of something at distance z, in pixels of the
+    // render: min(focus_aperture / f * |1 - f / z|, focus_maxblur) (BokehPass's aperture and
+    // maxblur). Unset, nothing is defocused.
+    Texture* focus_map;
+    float focus_aperture;
+    float focus_maxblur;
     // The application's own build of the material shader, with its hooks (see shader.glsl).
     // Unset, the engine's (no hooks). Read when the renderer starts.
     MaterialShaders shaders;
@@ -2392,7 +2399,9 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     // by role, in the order of the shader's MAP_*; one image in two roles takes one slot
     bool standard = mat.type == STANDARD;
     bool refracts = standard && mat.transmission > 0;
-    Texture*[17] roles = {
+    Renderer* lens = state.renderer;
+    bool defocus = mat.defocus && lens.focus_map && lens.focus_aperture > 0;
+    Texture*[18] roles = {
         standard && mat.ao_intensity != 0 ? mat.ao_map : null,
         standard ? mat.specular_color_map : null,
         standard ? mat.specular_intensity_map : null,
@@ -2410,6 +2419,7 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
         mat.type != NORMAL ? mat.light_map : null,
         standard && mat.anisotropy > 0 ? mat.anisotropy_map : null,
         mat.custom_map,
+        defocus ? lens.focus_map : null,
     };
     Texture*[6] slots;
     int used;
@@ -2570,6 +2580,7 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     fs.ext_params = { (float)ext_bits, mat.ao_intensity, scale, (float)state.transmission_width };
     fs.map_slots = map_slots;
     fs.light_map_params = { mat.light_map_intensity, 0, 0, 0 };
+    fs.focus_params = { defocus ? state.renderer.focus_aperture : 0, state.renderer.focus_maxblur, 0, 0 };
     // each map's uv from the color map's
     Texture* base = uv_base(mat);
     Vec4[2] rel = uv_relative(base, mat.normal_map);

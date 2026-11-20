@@ -382,6 +382,7 @@ layout(binding=1) uniform fs_params {
                                //   Material.anisotropy's direction in the frame (the cos and sin
                                //   of anisotropy_rotation) times its strength (0: none)
     vec4 light_map_params;     // x = Material.light_map_intensity
+    vec4 focus_params;         // Material.defocus: x = Renderer.focus_aperture (0: not), y = focus_maxblur
     vec4 shadow_ext;           // x = the shadow casting directional light's shadow.bias (VSM)
     vec4 bake_params;          // baking a light map (lightmap.c3): x = 1, y = the new sample's
                                //   share (1 / blend window); ssr_color holds the last map
@@ -409,6 +410,7 @@ layout(binding=1) uniform fs_params {
 #define MAP_LIGHT 14                // rgb
 #define MAP_ANISOTROPY 15           // rg = direction, b = strength
 #define MAP_CUSTOM 16               // Material.custom_map, for the application's hooks
+#define MAP_FOCUS 17                // Renderer.focus_map (Material.defocus): r = the distance in focus
 
 // Lights live in storage buffers, as many as there are. Point and spot lights are sorted into
 // a grid of clusters (froxels: tiles of the screen, cut into slices of depth that grow
@@ -1504,6 +1506,17 @@ vec4 ext_texel(int slot) {
 
 // Material.custom_map at uv, for the application's hooks: a uv of the hook's own, and how it
 // changes from one pixel to the next (which picks the mip level); white without one.
+// One of the six shared map slots (tex_ext0..5), at its top level (white for none).
+vec4 ext_slot_texel(int slot, vec2 uv) {
+    if (slot == 0) return textureLod(sampler2D(tex_ext0, tex_smp), uv, 0.0);
+    if (slot == 1) return textureLod(sampler2D(tex_ext1, tex_smp), uv, 0.0);
+    if (slot == 2) return textureLod(sampler2D(tex_ext2, tex_smp), uv, 0.0);
+    if (slot == 3) return textureLod(sampler2D(tex_ext3, tex_smp), uv, 0.0);
+    if (slot == 4) return textureLod(sampler2D(tex_ext4, tex_smp), uv, 0.0);
+    if (slot == 5) return textureLod(sampler2D(tex_ext5, tex_smp), uv, 0.0);
+    return vec4(1.0);
+}
+
 vec4 custom_map_texel(vec2 uv, vec2 dx, vec2 dy) {
     int slot = int(map_slots[MAP_CUSTOM / 4][MAP_CUSTOM % 4]);
     if (slot == 0) return textureGrad(sampler2D(tex_ext0, tex_smp), uv, dx, dy);
@@ -1885,6 +1898,18 @@ void main() {
     g_duvdy = dFdy(v_uv);
     g_duv1dx = dFdx(v_uv1);
     g_duv1dy = dFdy(v_uv1);
+    // Material.defocus: the maps read over the lens's blur at this distance, as wide as it is
+    // (the depth of field pass sees through what is transparent)
+    if (focus_params.x > 0.0) {
+        float f = max(ext_slot_texel(int(map_slots[MAP_FOCUS / 4][MAP_FOCUS % 4]), vec2(0.5)).r, 0.01);
+        float z = max(length(v_world_pos - camera_pos.xyz), 0.01);
+        float blur = min(focus_params.x / f * abs(1.0 - f / z), focus_params.y);
+        float widen = max(2.0 * blur, 1.0);
+        g_duvdx *= widen;
+        g_duvdy *= widen;
+        g_duv1dx *= widen;
+        g_duv1dy *= widen;
+    }
     g_parallax_depth = 0.0;
     if (parallax_params.x > 0.0 && mode != 0) {
         vec3 pn = normalize(v_normal);
