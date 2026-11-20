@@ -547,7 +547,8 @@ export class DrieRenderer {
 			this._record(id, drawn, o.matrixWorld.elements);
 			if (o.isSky) this._sky(o, id);
 			else if (o.isBatchedMesh) this._batch(o, drawn, frame);
-			else if (o.isMesh || o.isLine) this._refresh(o, frame, drawn);
+			else if (o.isMesh || o.isLine || o.isSprite) this._refresh(o, frame, drawn);
+			if (o.isMesh || o.isSprite) this._billboard(o);
 			if (o.__drieGroups !== undefined || (o.isMesh && Array.isArray(o.material))) this._groups(o, drawn, frame);
 			if (o.isInstancedMesh) this._instances(o);
 			if (o.isLightProbeGrid && shown && o.__drieVolume !== undefined) this._scene.grids.push(o);
@@ -582,7 +583,7 @@ export class DrieRenderer {
 		} else if (o.isBatchedMesh) {
 			// (drawn by a drie mesh for each of its geometries: see _batch)
 			id = N.group();
-		} else if (o.isMesh || o.isLine) {
+		} else if (o.isMesh || o.isLine || o.isSprite) {
 			id = this._newMesh(o, this._geometry(o.geometry, this._frame), this._material(o.material, this._frame));
 			o.__drieGeometry = o.geometry.__drie;
 			o.__drieMaterial = (Array.isArray(o.material) ? o.material[0] : o.material).__drie;
@@ -747,8 +748,25 @@ export class DrieRenderer {
 		mesh.__drie = id;
 		mesh.__drieShadow = undefined;
 		mesh.__drieRange = undefined;
+		mesh.__drieBillboard = undefined;
 		this._record(id, drawn, mesh.matrixWorld.elements);
 		this._shadowFlags(mesh);
+	}
+
+	// A Sprite, and a mesh drawn as one (a SpriteNodeMaterial's, or one whose vertexNode is TSL's
+	// billboarding()): drie's Mesh.billboard, turned toward the camera as it is drawn.
+	_billboard(o) {
+		const material = Array.isArray(o.material) ? o.material[0] : o.material;
+		const b = globalThis.__drieNodes ? globalThis.__drieNodes.billboard(o, material)
+			: o.isSprite ? [1, material.sizeAttenuation ?? true, material.rotation ?? 0, o.center.x, o.center.y] : null;
+		const key = b ? b.join(" ") : "";
+		// (a new drie mesh is no billboard)
+		if (o.__drieBillboard === key || (o.__drieBillboard === undefined && key === "")) {
+			o.__drieBillboard = key;
+			return;
+		}
+		o.__drieBillboard = key;
+		N.meshBillboard(o.__drie, ...(b ?? [0, true, 0, 0.5, 0.5]));
 	}
 
 	// A mesh with an array of materials: each of its geometry's groups drawn with its own

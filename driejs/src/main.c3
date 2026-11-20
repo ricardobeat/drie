@@ -1260,6 +1260,21 @@ fn void h_mesh_draw_range(JsCtx ctx, void* udata)
     m.draw_count = (int)num_arg(ctx, 2, 0);
 }
 
+// meshBillboard(mesh, kind, sizeAttenuation, rotation, centerX, centerY): Mesh.billboard (kind:
+// a Billboard's ordinal, 0 none) and how it is turned
+fn void h_mesh_billboard(JsCtx ctx, void* udata)
+{
+    Object3D* o = get_object(num_arg(ctx, 0, -1));
+    if (o == null || o.kind != MESH) return;
+    Mesh* m = (Mesh*)o;
+    int kind = (int)num_arg(ctx, 1, 0);
+    if (kind < 0 || kind > Billboard.UPRIGHT.ordinal) kind = 0;
+    m.billboard = (Billboard)kind;
+    m.billboard_fixed_size = !bool_arg(ctx, 2, true);
+    m.billboard_rotation = (float)num_arg(ctx, 3, 0);
+    m.billboard_center = { (float)num_arg(ctx, 4, 0.5), (float)num_arg(ctx, 5, 0.5) };
+}
+
 // lineDash(material, dashSize, gapSize, scale): LineDashedMaterial's dashes (0, 0: solid)
 fn void h_line_dash(JsCtx ctx, void* udata)
 {
@@ -2276,7 +2291,7 @@ fn void h_node_set(JsCtx ctx, void* udata)
 fn void h_node_builtin(JsCtx ctx, void* udata)
 {
     int kind = (int)num_arg(ctx, 0, 0);
-    if (kind < 0 || kind > NodeBuiltin.ENV_ROUGHNESS.ordinal) { ctx.throw_error(TYPE, "nodeBuiltin: no such builtin"); return; }
+    if (kind < 0 || kind > NodeBuiltin.INSTANCE_INDEX.ordinal) { ctx.throw_error(TYPE, "nodeBuiltin: no such builtin"); return; }
     ctx.ret_number(drie::add_node({ .op = BUILTIN, .type = type_arg(ctx, 1), .kind = (char)kind }).id);
 }
 
@@ -2632,6 +2647,7 @@ fn int main(String[] args)
     reg(natives, "renderProbe", &h_render_probe, 10);
     reg(natives, "lightChannels", &h_light_channels, 2);
     reg(natives, "meshDrawRange", &h_mesh_draw_range, 3);
+    reg(natives, "meshBillboard", &h_mesh_billboard, 6);
     reg(natives, "materialLightChannels", &h_material_light_channels, 2);
     reg(natives, "textureLightProbe", &h_texture_light_probe, 2);
     reg(natives, "textureUv", &h_texture_uv, 8);

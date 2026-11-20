@@ -37,9 +37,10 @@ const B = {
 	UV: 0, UV1: 1, POSITION_LOCAL: 2, POSITION_WORLD: 3, NORMAL_LOCAL: 4, NORMAL_WORLD: 5, NORMAL_GEOMETRY: 6,
 	CAMERA_POSITION: 7, VIEW_DIRECTION: 8, TIME: 9, VERTEX_COLOR: 10, FRAG_COORD: 11, FRONT_FACING: 12,
 	MODEL_MATRIX: 13, VIEW_MATRIX: 14, PROJECTION_MATRIX: 15, OUTPUT: 16, ENV_DIRECTION: 17, ENV_ROUGHNESS: 18,
+	INSTANCE_INDEX: 19,
 };
 const BUILTIN_TYPES = [T.vec2, T.vec2, T.vec3, T.vec3, T.vec3, T.vec3, T.vec3, T.vec3, T.vec3, T.float, T.vec4, T.vec2, T.bool,
-	T.mat4, T.mat4, T.mat4, T.vec4, T.vec3, T.float];
+	T.mat4, T.mat4, T.mat4, T.vec4, T.vec3, T.float, T.float];
 const OPS = {
 	"+": 0, "-": 1, "*": 2, "/": 3, "<": 4, "<=": 5, ">": 6, ">=": 7, "==": 8, "!=": 9, "&&": 10, "||": 11, "%": 12, "&": 13,
 	"|": 14, "^": 15, "<<": 16, ">>": 17, "^^": 18,
@@ -105,6 +106,7 @@ builtin("screenCoordinate", (t) => t.builtin(B.FRAG_COORD));
 builtin("frontFacing", (t) => t.builtin(B.FRONT_FACING));
 builtin("faceDirection", (t) => N.nodeSelect(t.builtin(B.FRONT_FACING), t.num(1), t.num(-1)));
 builtin("output", (t) => t.output());
+builtin("instanceIndex", (t) => t.convert(t.builtin(B.INSTANCE_INDEX), T.uint));
 
 // TSL functions drie does itself (by their Fn's body)
 const FUNCTIONS = new Map();
@@ -546,6 +548,8 @@ class Translator {
 			}
 			case "FrontFacingNode":
 				return this.builtin(B.FRONT_FACING);
+			case "RangeNode":
+				return this.range(n);
 			case "PropertyNode":
 				if (n.name === "Output" || n.name === "output") return this.output();
 				unsupported(`the property "${n.name}"`);
@@ -1002,6 +1006,57 @@ class Translator {
 		return this.call("normalize", this.sub(this.mul(this.call("abs", det), normal), grad));
 	}
 
+	// range(min, max): each instance's value between the two, as three's RangeNode makes it:
+	// hashed from the instance's index and the node's salt (three's seed for the object,
+	// objectSeed, is left out: the values differ from three's, as random)
+	range(n) {
+		const value = (m) => {
+			let c = null;
+			m.traverse((x) => {
+				if (x.isConstNode) c = x;
+			});
+			if (c === null) unsupported("range() of something other than constants");
+			return c.value;
+		};
+		const parts = (v) => (typeof v === "number" ? [v, v, v, v] : v.isColor ? [v.r, v.g, v.b, 1] : [v.x, v.y, v.z ?? 0, v.w ?? 0]);
+		const length = (v) => (typeof v === "number" ? 1 : v.isColor || v.isVector3 ? 3 : v.isVector2 ? 2 : 4);
+		const [lo, hi] = [value(n.minNode), value(n.maxNode)];
+		const index = TSL.instanceIndex.mul(4).add(TSL.uint(n._salt));
+		const random = TSL.vec4(TSL.hash(index), TSL.hash(index.add(1)), TSL.hash(index.add(2)), TSL.hash(index.add(3)));
+		const v = this.node(TSL.mix(TSL.vec4(...parts(lo)), TSL.vec4(...parts(hi)), random));
+		const c = Math.max(length(lo), length(hi));
+		return c === 4 ? v : this.swizzle(v, "xyzw".slice(0, c));
+	}
+
+	// A SpriteNodeMaterial's positionNode (where the sprite's middle goes, in the object) and
+	// scaleNode (its size, times the object's), as the vertex in the quad's own frame: drie
+	// draws the quad turned toward the camera (Mesh.billboard), its x and y along the view's
+	// right and up (turned by the material's rotation) and as long as the object's axes, so
+	// three's offset in the view, setupPositionView's, comes in that frame. (The quad is scaled
+	// about its middle, wherever the sprite's center is; and without sizeAttenuation the
+	// position moves the sprite as if it had it.)
+	spritePosition(material) {
+		let local = this.builtin(B.POSITION_LOCAL);
+		if (material.scaleNode) {
+			const xy = this.mul(this.swizzle(local, "xy"), this.convert(this.node(material.scaleNode), T.vec2));
+			local = this.join(T.vec3, xy, this.num(0));
+		}
+		if (!material.positionNode) return local;
+		const model = this.builtin(B.MODEL_MATRIX);
+		const p = this.convert(this.node(material.positionNode), T.vec3);
+		const world = this.bin("*", model, this.join(T.vec4, p, this.num(0)));
+		const d = this.swizzle(this.bin("*", this.builtin(B.VIEW_MATRIX), world), "xyz");
+		const axis = (x, y) => this.call("length", this.swizzle(this.bin("*", model, N.nodeConst(T.vec4, x, y, 0, 0)), "xyz"));
+		const rotation = this.convert(this.node(TSL.materialReference("rotation", "float")), T.float);
+		const [c, s] = [this.call("cos", rotation), this.call("sin", rotation)];
+		const [x, y] = [this.swizzle(d, "x"), this.swizzle(d, "y")];
+		const turned = this.join(T.vec3,
+			this.bin("/", this.add(this.mul(c, x), this.mul(s, y)), axis(1, 0)),
+			this.bin("/", this.sub(this.mul(c, y), this.mul(s, x)), axis(0, 1)),
+			this.swizzle(d, "z"));
+		return this.add(local, turned);
+	}
+
 	// rotate(position, rotation): a vec2 turned by an angle, or a vec3 by an angle about each
 	// axis, the matrices in the node's order (XYZ: X * Y * Z, Z turning it first), as three's
 	rotate(n) {
@@ -1103,6 +1158,8 @@ class Translator {
 			else id = this.convert(this.node(n), T.vec3);
 			this.envSlot = false;
 			[this.ids, this.overrides] = [ids, overrides];
+		} else if (n.sprite) {
+			id = this.spritePosition(n.sprite);
 		} else {
 			id = this.node(n);
 		}
@@ -1160,6 +1217,7 @@ function sync(renderer, material, frame) {
 	const fog = frame?.scene?.fogNode && material.fog !== false ? frame.scene.fogNode : null;
 	const fragment = material.fragmentNode ?? null;
 	slots.push(fog, fragment);
+	if (material.isSpriteNodeMaterial) slots.push(material.scaleNode ?? null);
 	let state = material.__drieNodes;
 	const stale = state === undefined || state.material !== material.__drie || slots.some((s, i) => s !== state.slots[i])
 		|| state.textures.some(([t, id, env]) => (env ? envTextureId(renderer, t) : renderer._texture(t)) !== id);
@@ -1167,7 +1225,12 @@ function sync(renderer, material, frame) {
 		if (!warned.has(material)) {
 			warned.add(material);
 			for (const s of UNSUPPORTED) {
+				// (billboarding(), drie's Mesh.billboard: see billboard())
+				if (s === "vertexNode" && billboarding(material[s])) continue;
 				if (material[s]) console.warn(`driejs: ${material.type}.${s} isn't supported by drie (left out)`);
+			}
+			if (material.isSpriteNodeMaterial && material.rotationNode) {
+				console.warn(`driejs: ${material.type}.rotationNode isn't supported by drie (its rotation is used)`);
 			}
 		}
 		const t = new Translator(renderer, material);
@@ -1176,6 +1239,9 @@ function sync(renderer, material, frame) {
 			if (s === "outputNode") {
 				const steps = [fragment, n, fog].filter((x) => x && x.isNode);
 				return steps.length ? t.slot(s, steps) : 0;
+			}
+			if (s === "positionNode" && material.isSpriteNodeMaterial) {
+				return material.positionNode || material.scaleNode ? t.slot(s, { sprite: material }) : 0;
 			}
 			return n ? t.slot(s, n) : 0;
 		});
@@ -1270,7 +1336,34 @@ function hasSlots(material) {
 	return SLOTS.some((s) => material[s]?.isNode) || !!material.fragmentNode?.isNode;
 }
 
-globalThis.__drieNodes = { sync, background, environment, envNodeTexture, hasSlots };
+// The parameters of a vertexNode that is TSL's billboarding(), or null
+function billboarding(n) {
+	if (!n?.isShaderCallNodeInternal || !TSL.billboarding || n.shaderNode !== TSL.billboarding.shaderNode) return null;
+	const raw = n.rawInputs?.[0];
+	return raw && typeof raw === "object" && !raw.isNode ? raw : {};
+}
+
+// How an object is turned toward the camera, as drie's meshBillboard takes it: [kind (a
+// Billboard: 0 none, 1 FACING, 2 KEEP_Y, 3 KEEP_X, 4 UPRIGHT), sizeAttenuation, rotation,
+// center x, center y]. A Sprite, a mesh with a SpriteNodeMaterial, or one whose vertexNode is
+// billboarding() (three's quad there turns about its middle, the sprite's center left out).
+function billboard(object, material) {
+	const params = billboarding(material?.vertexNode);
+	if (params) {
+		if (params.position) console.warn("driejs: billboarding({ position }) isn't supported by drie (the object's position is used)");
+		const h = params.horizontal ?? true;
+		const v = params.vertical ?? false;
+		const kind = params.horizontalRotation ? 4 : h && v ? 1 : h ? 2 : v ? 3 : 0;
+		return [kind, true, 0, 0.5, 0.5];
+	}
+	if (object.isSprite || material?.isSpriteNodeMaterial || material?.isSpriteMaterial) {
+		const center = object.center ?? { x: 0.5, y: 0.5 };
+		return [1, material?.sizeAttenuation ?? true, material?.rotation ?? 0, center.x, center.y];
+	}
+	return null;
+}
+
+globalThis.__drieNodes = { sync, background, environment, envNodeTexture, hasSlots, billboard };
 
 // three's CubeRenderTarget.fromEquirectangularTexture draws the map into a cube: drie's
 // environment maps are equirectangular, so its texture is the map itself.
