@@ -650,6 +650,12 @@ struct NodeGen @local {
     uint[] memo;
     uint[] memo_epoch;
     uint[] serial;
+    // per node, its number in the body being printed (0: none yet), which its name carries:
+    // the same graph prints the same text wherever its nodes sit in node_graph, so the driver's
+    // cache of compiled shaders knows it (and node_programs shares it) after other graphs were
+    // made
+    uint[] local;
+    uint locals;
     char[] reads_var;   // 0: not known, 1: no, 2: it reads a variable
     List{bool} scope_open; // by scope (from 1)
     uint scope;
@@ -718,6 +724,7 @@ fn NodeBuild* node_build_of(Material* mat) {
         g.memo = mem::temp_array(uint, count);
         g.memo_epoch = mem::temp_array(uint, count);
         g.serial = mem::temp_array(uint, count);
+        g.local = mem::temp_array(uint, count);
         g.reads_var = mem::temp_array(char, count);
         g.kept = mem::temp_array(String, count);
         // the fragment stage first: it finds the varyings the vertex stage writes
@@ -814,6 +821,8 @@ fn NodeBuild* node_build_of(Material* mat) {
 // Prints one hook's body: `fill` writes its lines.
 fn String NodeGen.body(&self, NodeBodyFn fill, Material* mat) {
     self.out = dstring::temp();
+    for (sz i = 0; i < self.local.len; i++) self.local[i] = 0;
+    self.locals = 0;
     self.reset();
     fill(self, mat);
     return self.out.str_view();
@@ -908,9 +917,10 @@ fn String component_literal(NodeType t, float[16]* v, int i) @local {
 // again, after its scope closed or a variable it reads changed, takes a suffix)
 fn String NodeGen.name(&self, Node n) {
     String prefix = self.stage == VERTEX_OUT ? "no" : "nd";
+    uint id = self.local[n.id];
     uint k = self.serial[n.id];
-    if (k <= 1) return string::tformat("%s%d", prefix, n.id);
-    return string::tformat("%s%d_%d", prefix, n.id, k);
+    if (k <= 1) return string::tformat("%s%d", prefix, id);
+    return string::tformat("%s%d_%d", prefix, id, k);
 }
 
 // `x` (of type `from`) as a `to`, as TSL converts: a number fills a vector, a narrower vector
@@ -1138,6 +1148,7 @@ fn bool NodeGen.printed(&self, Node n) {
 
 // `n` printed, here: its (new) name.
 fn String NodeGen.mark(&self, Node n) {
+    if (!self.local[n.id]) self.local[n.id] = ++self.locals;
     self.memo[n.id] = self.scope;
     self.memo_epoch[n.id] = self.epoch;
     self.serial[n.id]++;
