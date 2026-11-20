@@ -58,6 +58,24 @@ fn IrradianceVolume* irradiance_volume(Vector3 min, Vector3 max, float spacing =
     return v;
 }
 
+// A volume over the box min..max with nx by ny by nz probes (three's LightProbeGrid and its
+// resolution).
+fn IrradianceVolume* irradiance_grid(Vector3 min, Vector3 max, int nx, int ny, int nz) {
+    IrradianceVolume* v = mem::new(IrradianceVolume);
+    *v = {
+        .min = min,
+        .max = max,
+        .nx = math::max(nx, 1),
+        .ny = math::max(ny, 1),
+        .nz = math::max(nz, 1),
+        .intensity = 1,
+    };
+    Vector3 c = v.cell();
+    v.normal_offset = math::min(c.x, math::min(c.y, c.z)) * 0.5f;
+    v.data = mem::new_array(float, (sz)v.nx * v.ny * v.nz * 18);
+    return v;
+}
+
 fn Vector3 IrradianceVolume.cell(&self) {
     Vector3 size = self.max - self.min;
     return { size.x / self.nx, size.y / self.ny, size.z / self.nz };
@@ -133,6 +151,26 @@ fn ushort half_float(float f) @local {
 }
 
 // Uploads the probes as a 3D texture: the six directions side by side along x.
+// Writes the probes into px, the half-float RGBA pixels of a 3D texture `width` by `height`
+// (by at least nz) pixels, from column x0: the light from each of the six directions in a
+// slab nx pixels wide, side by side.
+fn void IrradianceVolume.fill(&self, ushort[] px, int width, int height, int x0) {
+    for (int z = 0; z < self.nz; z++) {
+        for (int y = 0; y < self.ny; y++) {
+            for (int x = 0; x < self.nx; x++) {
+                for (int d = 0; d < 6; d++) {
+                    Vector3 e = self.get(x, y, z, d);
+                    sz o      = (((sz)z * height + y) * width + (sz)(x0 + d * self.nx + x)) * 4;
+                    px[o] = half_float(math::max(e.x, 0.0f));
+                    px[o + 1] = half_float(math::max(e.y, 0.0f));
+                    px[o + 2] = half_float(math::max(e.z, 0.0f));
+                    px[o + 3] = half_float(1);
+                }
+            }
+        }
+    }
+}
+
 fn void IrradianceVolume.upload(&self) {
     if (self.uploaded) return;
     if (self.image.id) {
@@ -152,20 +190,7 @@ fn void IrradianceVolume.upload(&self) {
     int width   = self.nx * 6;
     ushort[] px = mem::new_array(ushort, (sz)width * self.ny * self.nz * 4);
     defer free(px);
-    for (int z = 0; z < self.nz; z++) {
-        for (int y = 0; y < self.ny; y++) {
-            for (int x = 0; x < self.nx; x++) {
-                for (int d = 0; d < 6; d++) {
-                    Vector3 e = self.get(x, y, z, d);
-                    sz o      = (((sz)z * self.ny + y) * width + (sz)(d * self.nx + x)) * 4;
-                    px[o] = half_float(math::max(e.x, 0.0f));
-                    px[o + 1] = half_float(math::max(e.y, 0.0f));
-                    px[o + 2] = half_float(math::max(e.z, 0.0f));
-                    px[o + 3] = half_float(1);
-                }
-            }
-        }
-    }
+    self.fill(px, width, self.ny, 0);
     self.image = sg::make_image(
         &&{
             .type = TYPE_3D,

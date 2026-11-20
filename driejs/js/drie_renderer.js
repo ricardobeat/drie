@@ -331,7 +331,7 @@ export class DrieRenderer {
 	// hide the ones that left the scene), how many render() came across this frame, its
 	// lights, and [light, drie handle of its target].
 	_state(scene) {
-		return (scene.__drieState ??= { mirrored: [], visited: 0, lights: [], targets: [] });
+		return (scene.__drieState ??= { mirrored: [], visited: 0, lights: [], targets: [], grids: [] });
 	}
 
 	// Brings the scene's drie mirror up to date (with `camera` in it, if given) and returns its
@@ -378,6 +378,7 @@ export class DrieRenderer {
 
 		this._count = 0;
 		state.visited = 0;
+		state.grids.length = 0;
 		// (what the camera sees: an object on none of its layers is hidden, its children not)
 		this._layerMask = camera ? camera.layers.mask : 0xffffffff;
 		this._walk(scene, true, sceneId, frame);
@@ -396,6 +397,12 @@ export class DrieRenderer {
 		}
 
 		for (const [light, id] of state.targets) this._record(id, true, light.target.matrixWorld.elements);
+		// the light probe grids that light the scene (js/light_probe_grid.js), the one with the
+		// highest priority in front, as three's
+		const grids = state.grids.sort((a, b) => a.priority - b.priority || a.id - b.id).slice(-4);
+		const volumes = [0, 1, 2, 3].map((i) => (grids[i] ? grids[i].__drieVolume : -1));
+		const key = volumes.join();
+		if (scene.__drieIrradiance !== key) N.sceneIrradiance(sceneId, ...volumes), (scene.__drieIrradiance = key);
 		for (let i = 0; i < state.lights.length; i++) this._light(state.lights[i]);
 
 		// what was mirrored before and is gone from the scene now (only looked for when fewer
@@ -431,6 +438,7 @@ export class DrieRenderer {
 			if (o.isSky) this._sky(o, id);
 			else if (o.isMesh || o.isLine) this._refresh(o, frame, drawn);
 			if (o.isInstancedMesh) this._instances(o);
+			if (o.isLightProbeGrid && shown && o.__drieVolume !== undefined) this._scene.grids.push(o);
 			if (o.isSkinnedMesh && drawn) this._skin(o, frame);
 			if (o.isMesh && (this._outline || o.__drieOutline !== undefined)) this._outlineOf(o, drawn, sceneId, frame);
 			if (o.children.length !== 0) this._walk(o, shown, sceneId, frame);
@@ -463,6 +471,8 @@ export class DrieRenderer {
 			id = this._newMesh(o, this._geometry(o.geometry, this._frame), this._material(o.material, this._frame));
 			o.__drieGeometry = o.geometry.__drie;
 			o.__drieMaterial = (Array.isArray(o.material) ? o.material[0] : o.material).__drie;
+		} else if (o.isLightProbeGrid) {
+			id = N.group();
 		} else if (o.isLight) {
 			_color.copy(o.color);
 			id = N.light(lightKind(o), _color.getHex(), o.intensity, o.distance ?? 0, o.decay ?? 2, o.angle ?? Math.PI / 3,

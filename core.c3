@@ -364,6 +364,11 @@ struct Scene {
     Fog* fog;
     // Extension: bounced light for the materials inside its box (see irradiance.c3).
     IrradianceVolume* irradiance;
+    // Extension: more volumes after `irradiance` (all of them together up to
+    // MAX_IRRADIANCE_VOLUMES; the scene owns neither). Each one lights the materials inside
+    // its box in place of the ones before it, fading in over its outermost half cell. Whether
+    // they add to the ambient light or replace it is the first one's replaces_ambient.
+    IrradianceVolume*[] irradiance_volumes;
     // Extension: light bouncing around a box, traced every frame (see radiance.c3). Inside
     // the box it takes the place of the ambient and hemisphere lights and of `irradiance`.
     RadianceCascades* radiance;

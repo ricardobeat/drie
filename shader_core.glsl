@@ -345,9 +345,11 @@ layout(binding=1) uniform fs_params {
     vec4 ambient;      // summed ambient light
     vec4 hemi_sky;
     vec4 hemi_ground;
-    vec4 gi_min;       // irradiance volume: its box, w = 1 when there is one, 2 when it replaces the ambient light
-    vec4 gi_inv_size;  // w = intensity
-    vec4 gi_dims;      // probes along x, y, z, w = lookup offset along the normal (m)
+    // irradiance volumes (Scene.irradiance and irradiance_volumes, MAX_IRRADIANCE_VOLUMES):
+    vec4 gi_min[4];       // each one's box, w = 1 (the first's 2 when they replace the ambient light), 0 past the last
+    vec4 gi_inv_size[4];  // w = intensity
+    vec4 gi_dims[4];      // probes along x, y, z, w = lookup offset along the normal (m)
+    vec4 gi_atlas[4];     // where it is in tex_gi: x = its first column, y = its width, z = height, w = depth (0..1)
     vec4 fog_color;    // w = how strongly lights glow in the fog
     vec4 fog_params;   // x = near, y = far, z = density, w = mode (0 none, 1 linear, 2 exp2, 3 exp)
     vec4 fog_box_min;  // fog-free box, w = 1 when enabled
@@ -1210,27 +1212,38 @@ float sun_in_fog(vec3 from, vec3 to, float sigma) {
     return all_fog > 1e-5 ? mix(1.0, clamp(lit / all_fog, 0.0, 1.0), dir_cascade_fwd.w) : 1.0;
 }
 
-// Light from the scene's irradiance volume, for a surface facing `n`; `fade` is 1 inside the
-// volume, 0 outside it, between the two over its outermost half cell. Each probe holds the
-// light arriving from the six axis directions, side by side along x in the texture.
-vec3 gi_irradiance(vec3 n, out float fade) {
-    fade = 0.0;
-    if (gi_min.w < 0.5) return vec3(0.0);
-    vec3 p = (v_world_pos + n * gi_dims.w - gi_min.xyz) * gi_inv_size.xyz;
-    vec3 edge = min(p, 1.0 - p) * gi_dims.xyz;
-    fade = clamp(min(edge.x, min(edge.y, edge.z)) * 2.0, 0.0, 1.0);
-    if (fade <= 0.0) return vec3(0.0);
-    // stay inside a direction's slab
-    float x = clamp(p.x, 0.5 / gi_dims.x, 1.0 - 0.5 / gi_dims.x) / 6.0;
+// Light from the scene's irradiance volumes for a surface facing `n`, already times `cover`:
+// how much of the point they cover, 1 inside a volume, 0 outside them all. Each volume covers
+// its box, fading out over its outermost half cell, in front of the ones before it. Each
+// probe holds the light arriving from the six axis directions, side by side along x in the
+// volume's part of the texture.
+vec3 gi_irradiance(vec3 n, out float cover) {
+    cover = 0.0;
+    vec3 e = vec3(0.0);
     vec3 slab = vec3(n.x >= 0.0 ? 0.0 : 1.0, n.y >= 0.0 ? 2.0 : 3.0, n.z >= 0.0 ? 4.0 : 5.0) / 6.0;
     vec3 w = n * n;
-    vec3 e = textureLod(sampler3D(tex_gi, gi_smp), vec3(x + slab.x, p.y, p.z), 0.0).rgb * w.x
-           + textureLod(sampler3D(tex_gi, gi_smp), vec3(x + slab.y, p.y, p.z), 0.0).rgb * w.y
-           + textureLod(sampler3D(tex_gi, gi_smp), vec3(x + slab.z, p.y, p.z), 0.0).rgb * w.z;
-    return e * gi_inv_size.w;
+    for (int i = 0; i < 4; i++) {
+        if (gi_min[i].w < 0.5) break;
+        vec3 res = gi_dims[i].xyz;
+        vec3 p = (v_world_pos + n * gi_dims[i].w - gi_min[i].xyz) * gi_inv_size[i].xyz;
+        vec3 edge = min(p, 1.0 - p) * res;
+        float fade = clamp(min(edge.x, min(edge.y, edge.z)) * 2.0, 0.0, 1.0);
+        if (fade <= 0.0) continue;
+        // stay inside the volume and a direction's slab
+        p = clamp(p, 0.5 / res, 1.0 - 0.5 / res);
+        vec3 u = gi_atlas[i].x + (p.x / 6.0 + slab) * gi_atlas[i].y;
+        vec2 yz = p.yz * gi_atlas[i].zw;
+        vec3 l = textureLod(sampler3D(tex_gi, gi_smp), vec3(u.x, yz), 0.0).rgb * w.x
+               + textureLod(sampler3D(tex_gi, gi_smp), vec3(u.y, yz), 0.0).rgb * w.y
+               + textureLod(sampler3D(tex_gi, gi_smp), vec3(u.z, yz), 0.0).rgb * w.z;
+        e = mix(e, l * gi_inv_size[i].w, fade);
+        cover = mix(cover, 1.0, fade);
+    }
+    return e;
 }
 
-// Light from the scene's radiance cascades for a surface facing `n`; `fade` as gi_irradiance's.
+// Light from the scene's radiance cascades for a surface facing `n`; `fade` is 1 inside their
+// box, 0 outside it, between the two over its outermost half cell.
 // Blended between the 8 probes around, leaving out those inside things and those behind the
 // surface's own plane: a wall takes none of the light of the room behind it.
 vec3 rc_irradiance(vec3 n, out float fade) {
@@ -2280,9 +2293,9 @@ void main() {
         vec3 sky_light = ambient.rgb + mix(hemi_ground.rgb, hemi_sky.rgb, 0.5 * n.y + 0.5);
         // the scene's environment (Scene.environment): the light from all around n
         if (env_params.z > 0.0) sky_light += env_params.y * env_irradiance(n);
-        float gi_fade;
-        vec3 gi = gi_irradiance(n, gi_fade);
-        vec3 irradiance = gi_min.w > 1.5 ? mix(sky_light, gi, gi_fade) : sky_light + gi * gi_fade;
+        float gi_cover;
+        vec3 gi = gi_irradiance(n, gi_cover);
+        vec3 irradiance = gi_min[0].w > 1.5 ? sky_light * (1.0 - gi_cover) + gi : sky_light + gi;
         if (rc_size.w > 0.0) {
             // radiance cascades: all the indirect light inside their box
             float rc_fade;

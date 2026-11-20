@@ -34,6 +34,7 @@ const double MATERIAL_BASE = 2_000_000;
 const double TEXTURE_BASE = 3_000_000;
 const double RENDERER_BASE = 5_000_000;
 const double LIGHTMAP_BASE = 6_000_000;
+const double VOLUME_BASE = 7_000_000;
 
 // one record of `sync`: handle, visible, then the 16 numbers of the world matrix
 const int SYNC_STRIDE = 18;
@@ -44,6 +45,7 @@ List{Material*} materials;
 List{Texture*} textures;
 List{Renderer*} renderers;
 List{ProgressiveLightMap*} lightmaps;
+List{IrradianceVolume*} volumes;
 
 JsContext js;
 JsValue js_loop;
@@ -97,6 +99,7 @@ fn Material* get_material(double id) => @get(materials, id, MATERIAL_BASE);
 fn Texture* get_texture(double id) => @get(textures, id, TEXTURE_BASE);
 fn Renderer* get_renderer(double id) => @get(renderers, id, RENDERER_BASE);
 fn ProgressiveLightMap* get_lightmap(double id) => @get(lightmaps, id, LIGHTMAP_BASE);
+fn IrradianceVolume* get_volume(double id) => @get(volumes, id, VOLUME_BASE);
 
 // ----------------------------------------------------------------------------
 // Arguments
@@ -1404,6 +1407,63 @@ fn void run_captures(Renderer* r)
     captures.clear();
 }
 
+// ----------------------------------------------------------------------------
+// Light probe grids (js/light_probe_grid.js): drie's irradiance volumes
+// ----------------------------------------------------------------------------
+
+// irradianceGrid(minX, minY, minZ, maxX, maxY, maxZ, nx, ny, nz): a volume handle, dark
+// until baked
+fn void h_irradiance_grid(JsCtx ctx, void* udata)
+{
+    IrradianceVolume* v = drie::irradiance_grid(
+        { (float)num_arg(ctx, 0, -0.5), (float)num_arg(ctx, 1, -0.5), (float)num_arg(ctx, 2, -0.5) },
+        { (float)num_arg(ctx, 3, 0.5), (float)num_arg(ctx, 4, 0.5), (float)num_arg(ctx, 5, 0.5) },
+        (int)num_arg(ctx, 6, 1), (int)num_arg(ctx, 7, 1), (int)num_arg(ctx, 8, 1));
+    ctx.ret_number(@reg(volumes, v, VOLUME_BASE));
+}
+
+// A bake that LightProbeGridWebGL.bake asked for, done at the next render (drie needs the
+// GPU running for it).
+struct Bake
+{
+    IrradianceVolume* volume;
+    Scene* scene;
+    int face_size;
+    float near;
+    float far;
+    int bounces;
+}
+List{Bake} bakes;
+
+// bakeIrradiance(volume, scene, faceSize, near, far, bounces): Renderer.bake_irradiance at
+// the next render
+fn void h_bake_irradiance(JsCtx ctx, void* udata)
+{
+    IrradianceVolume* v = get_volume(num_arg(ctx, 0, -1));
+    Object3D* o = get_object(num_arg(ctx, 1, -1));
+    if (v == null || o == null || o.kind != SCENE) { ctx.throw_error(TYPE, "bakeIrradiance: invalid argument"); return; }
+    bakes.push({ v, (Scene*)o, (int)num_arg(ctx, 2, 8), (float)num_arg(ctx, 3, 0.1), (float)num_arg(ctx, 4, 100),
+                 (int)num_arg(ctx, 5, 0) });
+}
+
+fn void run_bakes(Renderer* r)
+{
+    foreach (b : bakes) r.bake_irradiance(b.scene, b.volume, b.face_size, b.near, b.far, b.bounces);
+    bakes.clear();
+}
+
+// sceneIrradiance(scene, v0, v1, v2, v3): the volumes that light the scene (its probe grids,
+// -1 past the last), each one in front of the ones before it
+fn void h_scene_irradiance(JsCtx ctx, void* udata)
+{
+    Object3D* o = get_object(num_arg(ctx, 0, -1));
+    if (o == null || o.kind != SCENE) { ctx.throw_error(TYPE, "sceneIrradiance: not a scene"); return; }
+    Scene* s = (Scene*)o;
+    if (!s.irradiance_volumes.len) s.irradiance_volumes = mem::new_array(IrradianceVolume*, drie::MAX_IRRADIANCE_VOLUMES - 1);
+    s.irradiance = get_volume(num_arg(ctx, 1, -1));
+    for (uint i = 0; i < drie::MAX_IRRADIANCE_VOLUMES - 1; i++) s.irradiance_volumes[i] = get_volume(num_arg(ctx, 2 + i, -1));
+}
+
 // sceneEnvironment(scene, texture or -1, intensity)
 fn void h_scene_environment(JsCtx ctx, void* udata)
 {
@@ -1483,6 +1543,7 @@ fn void h_render(JsCtx ctx, void* udata)
     }
     time::Clock t = time::clock::now();
     if (captures.len()) run_captures(r);
+    if (bakes.len()) run_bakes(r);
     Camera* cam = (Camera*)co;
     follow_skies({ cam.matrix_world[3][0], cam.matrix_world[3][1], cam.matrix_world[3][2] }, cam.far);
     r.render((Scene*)so, cam);
@@ -1790,6 +1851,7 @@ fn int main(String[] args)
     textures.init(mem);
     renderers.init(mem);
     lightmaps.init(mem);
+    volumes.init(mem);
     dracos.init(mem);
 
     start_clock = time::clock::now();
@@ -1830,6 +1892,12 @@ fn int main(String[] args)
     // outlines with drie's Material.outline
     js.define_module("three/addons/effects/OutlineEffect.js",
                      string::tformat("export * from \"%s/js/outline_effect.js\";\n", root))!!;
+    // three's LightProbeGridWebGL bakes and draws with shaders of its own: this one is drie's
+    // irradiance volume, baked by drie
+    js.define_module("three/addons/lighting/LightProbeGridWebGL.js",
+                     string::tformat("export { LightProbeGridWebGL } from \"%s/js/light_probe_grid.js\";\n", root))!!;
+    js.define_module("three/addons/helpers/LightProbeGridHelperWebGL.js",
+                     string::tformat("export { LightProbeGridHelperWebGL } from \"%s/js/light_probe_grid.js\";\n", root))!!;
     // three's ProgressiveLightMap draws with shaders of its own: this one has drie bake
     js.define_module("three/addons/misc/ProgressiveLightMap.js",
                      string::tformat("export * from \"%s/js/progressive_lightmap.js\";\n", root))!!;
@@ -1846,6 +1914,9 @@ fn int main(String[] args)
     reg(natives, "lightTarget", &h_light_target, 1);
     reg(natives, "geometry", &h_geometry, 9);
     reg(natives, "instanceColors", &h_instance_colors, 3);
+    reg(natives, "irradianceGrid", &h_irradiance_grid, 9);
+    reg(natives, "bakeIrradiance", &h_bake_irradiance, 6);
+    reg(natives, "sceneIrradiance", &h_scene_irradiance, 5);
     reg(natives, "texture", &h_texture, 19);
     reg(natives, "textureMipmap", &h_texture_mipmap, 4);
     reg(natives, "textureClone", &h_texture_clone, 9);

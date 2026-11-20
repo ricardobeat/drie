@@ -186,7 +186,7 @@ A material's maps besides `map`, `normal_map` and `arm_map` share six texture sl
 - **Light maps:** `material.light_map` and `light_map_intensity` (three.js `lightMap`, `lightMapIntensity`) add baked light to the indirect irradiance, read from the uv set of the texture's `channel` (`1`: the geometry's `uv1`).
 - **Progressive light maps** (`lightmap.c3`): `drie::progressive_lightmap(renderer, res)` (three.js `ProgressiveLightMap`) bakes light into the objects' `uv1` a little at a time, from lights that may move (jittered, they give soft shadows); `renderer.render_bake` draws the samples.
 - **Cascaded shadow maps:** `DirectionalLight` supports 1–4 texel-snapped cascades with blending and debug visualization.
-- **Irradiance volume** (`irradiance.c3`): `scene.irradiance` (`IrradianceVolume`) probe grid for user-populated indirect bounce light.
+- **Irradiance volume** (`irradiance.c3`): `scene.irradiance` (`IrradianceVolume`), a probe grid of indirect bounce light, filled by the application or by `renderer.bake_irradiance(scene, volume)` (three's `LightProbeGrid.bake`: six small faces drawn around each probe, optionally with bounces); `irradiance_grid(min, max, nx, ny, nz)` makes one by probe counts. `scene.irradiance_volumes` adds more (up to `MAX_IRRADIANCE_VOLUMES` in all), each lighting its own box in front of the ones before it.
 - **Radiance Cascades GI** (`radiance.c3`): `scene.radiance` (`RadianceCascades`) computes real-time GPU GI and emissive bounce, replacing ambient/hemisphere lights and `scene.irradiance` inside its box.
 
 <details>
