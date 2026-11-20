@@ -11,6 +11,10 @@ just run --frames 3 --png shot.png demos/webgl_geometries.js   # offscreen
 just bench node                             # the benchmark on one runtime (`just` lists them)
 ```
 
+With `--png` (and not `--profile`), `performance.now()` runs on the frames' clock, 1/60 s a frame
+from 0, as three's screenshots are taken: a script that moves things by the time passed (a
+`THREE.Timer`) gives the same picture on any machine.
+
 From drie's folder, the same recipes are `just driejs::build` and so on. boomkat's `jit` branch
 is a dependency in `project.json`, fetched from `https://c3.ricar.do/github.com:ricardobeat/boomkat@jit`
 into `lib/boomkat.c3l` the first time you build (delete that folder to fetch it again).

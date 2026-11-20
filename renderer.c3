@@ -8,8 +8,9 @@ alias EventListener = fn void(SappEvent* event);
 alias Event = SappEvent;
 alias KeyCode = SappKeycode;
 
-// Defaults of Renderer.max_lights and Renderer.shadow_atlas_capacity.
+// Defaults of Renderer.max_lights, max_rect_area_lights and shadow_atlas_capacity.
 const int DEFAULT_MAX_LIGHTS            = 1024;
+const int DEFAULT_MAX_RECT_AREA_LIGHTS  = 16;
 const int DEFAULT_SHADOW_ATLAS_CAPACITY = 8;
 // The most tiles the shadow atlas has.
 const int MAX_ATLAS_TILES @local        = 64;
@@ -309,6 +310,13 @@ struct Renderer {
     // For the application's own shader hooks (see `shaders`), which read them as
     // `frame_custom[0]` and `[1]`, the same for every draw.
     Vec4[2] custom;
+    // The lens's focus, for Material.defocus: a 1x1 map whose r is the distance in focus (m;
+    // BokehPass.focus_map()), and the blur of something at distance z, in pixels of the
+    // render: min(focus_aperture / f * |1 - f / z|, focus_maxblur) (BokehPass's aperture and
+    // maxblur). Unset, nothing is defocused.
+    Texture* focus_map;
+    float focus_aperture;
+    float focus_maxblur;
     // The application's own build of the material shader, with its hooks (see shader.glsl).
     // Unset, the engine's (no hooks). Read when the renderer starts.
     MaterialShaders shaders;
@@ -328,6 +336,10 @@ struct Renderer {
     // Extension: how many lights of each kind (directional, point, spot) a render takes at
     // most; the buffers that hold them grow up to it. 0 = no limit.
     int max_lights;
+    // Extension: how many RectAreaLights a render takes at most (16). Every one of them lights
+    // every pixel of a standard material in view (three's have no reach to cut them off, so
+    // they are not sorted into the clusters).
+    int max_rect_area_lights;
     // Extension: how many tiles the shadow atlas has room for at first: one per spot light with
     // shadow.auto_update off, and per shadowed directional light besides the first; it grows to
     // what they need, up to 64 (the atlas has max(4, sqrt(n)) columns of tiles).
@@ -360,6 +372,25 @@ struct Renderer {
     // Extension: tint what each cascade of the directional light's shadow covers (red, green,
     // blue, yellow, nearest first), to see where they fall.
     bool debug_cascades;
+    // Extensions, for graphics settings (quality against frame time; 1 and the defaults are as
+    // drie draws without them):
+    // every light's shadow map is drawn at this many times its shadow.map_size (texels across);
+    float shadow_map_scale;
+    // the soft shadows take this many times their taps (smoother edges, less noise to average
+    // out over frames), up to 40 per lookup;
+    float shadow_sample_scale;
+    // a screen-space reflection's ray takes at most ssr_steps steps (up to 128), none longer
+    // than ssr_max_step pixels on the screen (shorter misses less of what is thin, reaches less
+    // far in as many steps). Default 40 and 6;
+    int ssr_steps;
+    float ssr_max_step;
+    // the volumetric fog's grid has this many times its cells across, up and in depth
+    // (Fog.resolution, Fog.slices).
+    float fog_resolution_scale;
+    // The picture the transmission materials refract is this size times the target's (three's
+    // transmissionResolutionScale; default 1). Not when it is the main pass's own picture,
+    // copied half way through (into a linear target, see copy_for_transmission).
+    float transmission_resolution_scale;
     // What materials with `ssr` reflect (see set_reflection_source).
     SgView ssr_color;
     SgView ssr_depth;
@@ -431,7 +462,7 @@ fn void Renderer.render_back_faces(&self, RenderTarget* target) {
                         shaders::ATTR_THREE_UV,
                         shaders::ATTR_THREE_COLOR0,
                         shaders::ATTR_THREE_UV1,
-                        shaders::ATTR_THREE_TANGENT,
+                        -1,
                         shaders::ATTR_THREE_INST0,
                         shaders::ATTR_THREE_INST1,
                         shaders::ATTR_THREE_INST2
@@ -561,6 +592,12 @@ struct RendererState @local {
     // that makes them (vsm.glsl)
     SgShader vsm_shader;
     SgShader mrt_vsm_shader;
+    // for geometries with tangents (none: they go without, see uses_tangents)
+    SgShader tangent_shader;
+    SgShader mrt_tangent_shader;
+    SgShader vsm_tangent_shader;
+    SgShader mrt_vsm_tangent_shader;
+    SgShader depth_tangent_shader;
     SgShader vsm_blur_shader;
     SgPipeline vsm_blur_pipeline;
     SgSampler vsm_sampler;
@@ -594,7 +631,7 @@ struct RendererState @local {
     // depth_write)][VSM][DrawKind][side][opaque, transparent, additive][wireframe][target:
     // swapchain, RGBA8 1x, RGBA8 4x, RGBA16F 1x, RGBA16F 4x, MRT 1x, MRT 4x][alpha to coverage]
     // (C3 declares array dimensions innermost first)
-    SgPipeline[2][7][2][3][3][4][2][4] pipelines;
+    SgPipeline[2][7][2][3][3][4][2][4][2] pipelines;
     SgPipeline shadow_pipeline;
     // writes the far depth wherever it draws: clears one tile of the shadow atlas
     SgPipeline tile_clear_pipeline;
@@ -721,7 +758,14 @@ fn Renderer* renderer(bool antialias = true, int width = 800, int height = 600, 
         .shadow_map_auto_update = true,
         .depth_prepass_pixels = 1.5f,
         .max_lights = DEFAULT_MAX_LIGHTS,
+        .max_rect_area_lights = DEFAULT_MAX_RECT_AREA_LIGHTS,
         .shadow_atlas_capacity = DEFAULT_SHADOW_ATLAS_CAPACITY,
+        .shadow_map_scale = 1,
+        .shadow_sample_scale = 1,
+        .ssr_steps = 40,
+        .ssr_max_step = 6,
+        .fog_resolution_scale = 1,
+        .transmission_resolution_scale = 1,
     };
     state.renderer = r;
     state.opaque.allocator = mem;
@@ -798,8 +842,11 @@ alias ShaderDescFn = fn SgShaderDesc(SgBackend backend);
 // includes shader_core.glsl: `my_module::three_shader_desc`, `three_opaque_shader_desc`,
 // `depth_shader_desc`, `shadow_shader_desc`, and for RenderTarget.mrt `three_mrt_shader_desc`
 // and `three_opaque_mrt_shader_desc`; for Renderer.shadow_type = VSM `three_vsm_shader_desc`
-// and `three_mrt_vsm_shader_desc`; for the shadows of node materials that cut holes
-// `shadow_nodes_shader_desc` (null: the engine's).
+// and `three_mrt_vsm_shader_desc`; for geometries with tangents `three_tangent_shader_desc`,
+// `three_mrt_tangent_shader_desc`, `three_vsm_tangent_shader_desc`,
+// `three_mrt_vsm_tangent_shader_desc` and `depth_tangent_shader_desc` (null: the engine's; with a `main` of its own and no
+// tangents' programs, those geometries' normal maps take their frame from the uv instead); for the
+// shadows of node materials that cut holes `shadow_nodes_shader_desc`.
 struct MaterialShaders {
     ShaderDescFn main;
     ShaderDescFn opaque;
@@ -809,6 +856,11 @@ struct MaterialShaders {
     ShaderDescFn opaque_mrt;
     ShaderDescFn main_vsm;
     ShaderDescFn main_mrt_vsm;
+    ShaderDescFn main_tangent;
+    ShaderDescFn main_mrt_tangent;
+    ShaderDescFn main_vsm_tangent;
+    ShaderDescFn main_mrt_vsm_tangent;
+    ShaderDescFn depth_tangent;
     ShaderDescFn shadow_nodes;
 }
 
@@ -848,6 +900,20 @@ fn void setup_gfx(SgEnvironment environment) @local {
     state.mrt_vsm_shader = sg::make_shader(
         &&(s.main_mrt_vsm ? s.main_mrt_vsm(backend) : shaders::three_mrt_vsm_shader_desc(backend))
     );
+    // the tangents' programs: a material shader's own, the engine's if it has none of its own
+    // (all of them or none)
+    ShaderDescFn[5] tangent_descs = s.main
+        ? { s.main_tangent, s.main_mrt_tangent, s.main_vsm_tangent, s.main_mrt_vsm_tangent, s.depth_tangent }
+        : { &shaders::three_tangent_shader_desc, &shaders::three_mrt_tangent_shader_desc,
+            &shaders::three_vsm_tangent_shader_desc, &shaders::three_mrt_vsm_tangent_shader_desc,
+            &shaders::depth_tangent_shader_desc };
+    SgShader*[5] tangent_shaders = { &state.tangent_shader, &state.mrt_tangent_shader, &state.vsm_tangent_shader,
+                                     &state.mrt_vsm_tangent_shader, &state.depth_tangent_shader };
+    bool all = true;
+    foreach (desc : tangent_descs) all = all && desc;
+    if (all) {
+        foreach (i, desc : tangent_descs) *tangent_shaders[i] = sg::make_shader(&&desc(backend));
+    }
     state.vsm_blur_shader = sg::make_shader(&&shaders::vsm_shader_desc(backend));
     state.white = data_texture({ 255, 255, 255, 255 }, 1, 1, NO_COLOR_SPACE);
     float[12] identity = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0 };
@@ -881,7 +947,14 @@ alias EventFilter = fn bool(Event* e);
 fn void add_frame_hook(FrameHook hook) => state.frame_hooks.push(hook);
 
 // Gives every window event to `filter` first: when it returns true, the event is used up.
-fn void add_event_filter(EventFilter filter) => state.event_filters.push(filter);
+// `first`: ahead of the filters added before it (the menus', say), not after them.
+fn void add_event_filter(EventFilter filter, bool first = false) {
+    if (first) {
+        state.event_filters.insert_at(0, filter);
+    } else {
+        state.event_filters.push(filter);
+    }
+}
 
 // Draws `overlay` over the picture whenever a frame goes into the window (render() to the
 // window, postprocessing's end_screen(), or draw_overlays() in a pass of the application's).
@@ -936,19 +1009,21 @@ fn void on_event(SappEvent* e) @local {
 
 // position, normal, uv, color, uv1, tangent, and the instance's three rows. Buffer 0: the
 // geometry's vertices, 1: the instances, 2: the second uv set, 3: the tangents (see
-// bind_instances).
+// bind_instances), only for a program that reads them (tangent -1: none).
 fn SgVertexLayoutState vertex_layout(int[9] attrs) @local {
     SgVertexLayoutState layout;
     layout.buffers[0].stride = FLOATS_PER_VERTEX * float::size;
     layout.buffers[1] = { .stride = 12 * float::size, .step_func = PER_INSTANCE };
     layout.buffers[2].stride = 2 * float::size;
-    layout.buffers[3].stride = 4 * float::size;
     layout.attrs[attrs[0]] = { .format = FLOAT3, .offset = 0 };
     layout.attrs[attrs[1]] = { .format = FLOAT3, .offset = 12 };
     layout.attrs[attrs[2]] = { .format = FLOAT2, .offset = 24 };
     layout.attrs[attrs[3]] = { .format = FLOAT4, .offset = 32 };
     layout.attrs[attrs[4]] = { .format = FLOAT2, .offset = 0, .buffer_index = 2 };
-    layout.attrs[attrs[5]] = { .format = FLOAT4, .offset = 0, .buffer_index = 3 };
+    if (attrs[5] >= 0) {
+        layout.buffers[3].stride = 4 * float::size;
+        layout.attrs[attrs[5]] = { .format = FLOAT4, .offset = 0, .buffer_index = 3 };
+    }
     layout.attrs[attrs[6]] = { .format = FLOAT4, .offset = 0, .buffer_index = 1 };
     layout.attrs[attrs[7]] = { .format = FLOAT4, .offset = 16, .buffer_index = 1 };
     layout.attrs[attrs[8]] = { .format = FLOAT4, .offset = 32, .buffer_index = 1 };
@@ -977,6 +1052,7 @@ fn SgPipeline get_pipeline(
     DrawKind kind = CUT,
     bool depth_test = true,
     bool depth_write = true,
+    bool tangents = false,
     NodeProgram* nodes = null
 ) @local {
     int target = rt ? (rt.samples > 1 ? 2 : 1) + (rt.mrt ? 4 : (rt.is_linear() ? 2 : 0)) : 0;
@@ -998,6 +1074,8 @@ fn SgPipeline get_pipeline(
     int blend = transparent ? (additive ? 2 : 1) : 0;
     SgPipeline made;
     SgPipeline* pip = &made;
+    // the geometry's tangents: a program that reads them (the depth prepass too: the main pass
+    // tests against its depth with EQUAL, which wants the same vertex shader)
     // (a node material's: its program's own)
     ulong key = (ulong)depth | (ulong)(vsm ? 1 : 0) << 2 | (ulong)kind.ordinal << 3 | (ulong)side.ordinal << 5
         | (ulong)blend << 7 | (ulong)(wireframe ? 1 : 0) << 9 | (ulong)target << 10 | (ulong)(a2c ? 1 : 0) << 14;
@@ -1005,7 +1083,7 @@ fn SgPipeline get_pipeline(
         SgPipeline? found = nodes.pipelines[key];
         if (try found) return found;
     } else {
-        pip = &state.pipelines[depth][vsm ? 1 : 0][kind.ordinal][side.ordinal][blend][wireframe ? 1 : 0][target][a2c ? 1 : 0];
+        pip = &state.pipelines[tangents ? 1 : 0][depth][vsm ? 1 : 0][kind.ordinal][side.ordinal][blend][wireframe ? 1 : 0][target][a2c ? 1 : 0];
         if (pip.id) return *pip;
     }
     SgCullMode cull;
@@ -1033,6 +1111,12 @@ fn SgPipeline get_pipeline(
         shader = mrt ? state.mrt_vsm_shader : state.vsm_shader;
         variant = mrt ? MRT_VSM : VSM;
     }
+    // (the tangents' programs can all cut holes: the opaque draws take them too)
+    if (tangents) {
+        shader = kind == DEPTH ? state.depth_tangent_shader
+            : vsm ? (mrt ? state.mrt_vsm_tangent_shader : state.vsm_tangent_shader)
+            : (mrt ? state.mrt_tangent_shader : state.tangent_shader);
+    }
     if (nodes) shader = node_shader(nodes, variant);
     SgPipelineDesc desc = {
         .shader = shader,
@@ -1047,7 +1131,7 @@ fn SgPipeline get_pipeline(
                 shaders::ATTR_THREE_UV,
                 shaders::ATTR_THREE_COLOR0,
                 shaders::ATTR_THREE_UV1,
-                shaders::ATTR_THREE_TANGENT,
+                tangents ? shaders::ATTR_THREE_TANGENT_TANGENT : -1,
                 shaders::ATTR_THREE_INST0,
                 shaders::ATTR_THREE_INST1,
                 shaders::ATTR_THREE_INST2
@@ -1152,7 +1236,7 @@ fn SgPipeline get_shadow_pipeline(NodeProgram* nodes = null) @local {
                     shaders::ATTR_SHADOW_UV,
                     shaders::ATTR_SHADOW_COLOR0,
                     shaders::ATTR_SHADOW_UV1,
-                    shaders::ATTR_SHADOW_TANGENT,
+                    -1,
                     shaders::ATTR_SHADOW_INST0,
                     shaders::ATTR_SHADOW_INST1,
                     shaders::ATTR_SHADOW_INST2
@@ -1187,7 +1271,7 @@ fn void clear_atlas_tile() @local {
                         shaders::ATTR_SHADOW_UV,
                         shaders::ATTR_SHADOW_COLOR0,
                         shaders::ATTR_SHADOW_UV1,
-                        shaders::ATTR_SHADOW_TANGENT,
+                        -1,
                         shaders::ATTR_SHADOW_INST0,
                         shaders::ATTR_SHADOW_INST1,
                         shaders::ATTR_SHADOW_INST2
@@ -1209,7 +1293,6 @@ fn void clear_atlas_tile() @local {
         .vertex_buffers[0] = g.vbuf,
         .vertex_buffers[1] = state.identity_instance,
         .vertex_buffers[2] = zeros(g.vertex_count()),
-        .vertex_buffers[3] = zeros(g.vertex_count()),
         .index_buffer = g.ibuf
     };
     Vec4 inst_cull = cull_bind(&bind, -1);
@@ -1233,6 +1316,13 @@ fn void clear_atlas_tile() @local {
     sg::apply_uniforms(shaders::UB_SHADOW_FS_PARAMS, &&{ .ptr = &fs, .size = ShadowFsParams::size });
     sg::draw(0, (int)g.index_count, 1);
     sg::apply_pipeline(get_shadow_pipeline());
+}
+
+// The size a light's shadow map is drawn at: its shadow.map_size times
+// Renderer.shadow_map_scale.
+fn int shadow_map_size(int map_size) @local {
+    float scale = state.renderer.shadow_map_scale > 0 ? state.renderer.shadow_map_scale : 1;
+    return math::clamp((int)(map_size * scale + 0.5f), 4, 16384);
 }
 
 fn void ensure_shadow_map(int size) @local {
@@ -1462,7 +1552,7 @@ fn void update_shadow_atlas(Scene* scene, Camera* camera, bool bake = false) @lo
         SpotLight* sl = (SpotLight*)l;
         if ((sl.shadow.auto_update && !bake) || state.atlas_pending.len() >= MAX_ATLAS_TILES) continue;
         state.atlas_pending.push(sl);
-        tile = math::max(tile, sl.shadow.map_size);
+        tile = math::max(tile, shadow_map_size(sl.shadow.map_size));
     }
     int statics = (int)state.atlas_pending.len();
     if (bake) statics = keep;
@@ -1470,7 +1560,7 @@ fn void update_shadow_atlas(Scene* scene, Camera* camera, bool bake = false) @lo
         if (l.light_type != DIRECTIONAL || !l.cast_shadow || !l.visible || l.intensity <= 0) continue;
         if (l == state.sun_caster || state.atlas_pending.len() >= MAX_ATLAS_TILES) continue;
         state.atlas_pending.push(l);
-        tile = math::max(tile, ((DirectionalLight*)l).shadow.map_size);
+        tile = math::max(tile, shadow_map_size(((DirectionalLight*)l).shadow.map_size));
     }
     int count = (int)state.atlas_pending.len();
     int wanted;
@@ -1715,7 +1805,7 @@ fn Mat4 directional_shadow_view_proj(DirectionalLight* d, Camera* camera, int si
         Vector3 ahead = { -cw[2][0], 0, -cw[2][2] };
         if (ahead.length() > 1e-4f) center = at + ahead.normalize() * (extent * 0.55f);
     }
-    return sun_box_view_proj(d, dir, center, extent, size ?: d.shadow.map_size);
+    return sun_box_view_proj(d, dir, center, extent, size ?: shadow_map_size(d.shadow.map_size));
 }
 
 // View-projection of a box of parallel rays towards `dir`, `radius` meters around `center`,
@@ -1761,7 +1851,7 @@ fn int fit_sun_cascades(DirectionalLight* d, Camera* camera, Vector3 dir) @local
     Vector3 at = cw.get_position();
     Vector3 fwd = ((Vector3) { -cw[2][0], -cw[2][1], -cw[2][2] }).normalize();
     state.sun_forward = fwd;
-    int tile   = math::max(d.shadow.map_size, 4);
+    int tile   = shadow_map_size(d.shadow.map_size);
     float from = near;
     for (int i = 0; i < n; i++) {
         float f      = (float)(i + 1) / (float)n;
@@ -1789,7 +1879,7 @@ fn void prepare_sun_shadow(Scene* scene, Camera* camera, DirectionalLight* sun) 
     }
     Vector3 target = sun.target ? sun.target.get_world_position() : (Vector3) { 0, 0, 0 };
     Vector3 dir    = (sun.matrix_world.get_position() - target).normalize();
-    int tile       = math::max(sun.shadow.map_size, 4);
+    int tile       = shadow_map_size(sun.shadow.map_size);
     int n          = fit_sun_cascades(sun, camera, dir);
     state.sun_cascades = n;
     if (!n) {
@@ -1808,7 +1898,7 @@ fn void prepare_sun_shadow(Scene* scene, Camera* camera, DirectionalLight* sun) 
 fn void draw_sun_shadow(DirectionalLight* sun) @local {
     if (!sun) return;
     int n         = state.sun_cascades;
-    int tile      = math::max(sun.shadow.map_size, 4);
+    int tile      = shadow_map_size(sun.shadow.map_size);
     bool top_left = depth_zero_to_one();
     profile::begin_pass(
         &&{ // depth is not stored by default: ask for it, the main pass samples this map
@@ -1993,17 +2083,45 @@ fn FsParams build_light_params(Scene* scene, Camera* camera, SpotLight* caster) 
             case POINT:
                 if (!g.room(g.points.len(), r.max_lights)) break;
                 PointLight* pl = (PointLight*)l;
+                // a tube: from its centre to one end, along the light's x axis
+                Vector3 half;
+                if (pl.length > 0) {
+                    Mat4 m = l.matrix_world;
+                    Vector3 x = { m[0][0], m[0][1], m[0][2] };
+                    float xl = x.length();
+                    if (xl > 0) half = x * (pl.length * 0.5f / xl);
+                }
                 g.points.push(
                     {
                         .pos = { ...l.matrix_world.get_position(), pl.distance },
                         .color = { ...c, pl.decay },
-                        .params = { pl.radius, 0, 0, 0 },
+                        .params = { pl.radius, half.x, half.y, half.z },
                     }
                 );
                 // a light that adds nothing needs no place in the clusters
                 LightBounds b = point_light_bounds(pl);
                 if (l.intensity <= 0) b = { { }, 0 };
                 g.point_bounds.push(b);
+            case RECT_AREA:
+                // three's: the color times the intensity (nits), and half of each side along
+                // the light's x and y, turned as it is (without its scale)
+                RectAreaLight* ra = (RectAreaLight*)l;
+                if (l.intensity <= 0 || !g.room(g.rects.len(), r.max_rect_area_lights)) break;
+                Mat4 m = l.matrix_world;
+                Vector3 x = { m[0][0], m[0][1], m[0][2] };
+                Vector3 y = { m[1][0], m[1][1], m[1][2] };
+                float xl = x.length();
+                float yl = y.length();
+                Vector3 hw = xl > 0 ? x * (ra.width * 0.5f / xl) : (Vector3) { };
+                Vector3 hh = yl > 0 ? y * (ra.height * 0.5f / yl) : (Vector3) { };
+                // (as a point light's three vectors: see ltc_tables in shader_core.glsl)
+                g.rects.push(
+                    {
+                        .pos = { ...m.get_position(), hw.x },
+                        .color = { ...c, hw.y },
+                        .params = { hw.z, hh.x, hh.y, hh.z },
+                    }
+                );
             case SPOT:
                 SpotLight* sl = (SpotLight*)l;
                 if (!g.room(g.spots.len(), r.max_lights)) break;
@@ -2067,12 +2185,13 @@ fn FsParams build_light_params(Scene* scene, Camera* camera, SpotLight* caster) 
     int ndir         = (int)g.dirs.len();
     int npoint       = (int)g.points.len();
     int nspot        = (int)g.spots.len();
+    int nrect        = (int)g.rects.len();
     ClusterGrid grid = cluster_grid(camera);
     p.cluster_view_proj = camera.projection_matrix.mul(camera.matrix_world_inverse);
     p.cluster_grid = { CLUSTER_X, CLUSTER_Y, CLUSTER_Z, 0 };
     p.cluster_depth = { grid.near, grid.log_scale, grid.far, 0 };
     g.upload(&grid, r.assign_clusters, r.check_compute);
-    p.counts = { ndir, npoint, nspot, 0 };
+    p.counts = { ndir, npoint, nspot, nrect };
     if (scene.irradiance) {
         IrradianceVolume* v = scene.irradiance;
         Vector3 size        = v.max - v.min;
@@ -2185,7 +2304,7 @@ fn Vec4[2] uv_relative(Texture* base, Texture* t) @local {
 }
 
 // A buffer of zeros, four floats for each of `vertices` vertices, grown as needed: the second
-// uv set and the tangents of a geometry without them.
+// uv set of a geometry without one.
 fn SgBuffer zeros(uint vertices) @local {
     if (state.zeros.id && state.zeros_vertices >= vertices) return state.zeros;
     if (state.zeros.id) sg::destroy_buffer(state.zeros);
@@ -2324,11 +2443,16 @@ fn void draw_depth_item(DrawItem* item, Mat4 view_proj) @local {
     Renderer* r       = state.renderer;
     float alpha_test  = alpha_test_of(mat);
     NodeBuild* nodes  = node_build_of(mat);
+    // (a node material's programs read no tangents: its normal map's frame from the uv)
+    bool tangents     = !nodes && uses_tangents(item);
     sg::apply_pipeline(
-        get_pipeline(mat.side, false, false, r.render_target, alpha_test > 0, mat.blending, DEPTH, nodes: nodes ? nodes.program : null)
+        get_pipeline(
+            mat.side, false, false, r.render_target, alpha_test > 0, mat.blending, DEPTH, tangents: tangents,
+            nodes: nodes ? nodes.program : null
+        )
     );
     SgBindings bind = { .vertex_buffers[0] = g.vbuf, .index_buffer = g.ibuf };
-    bind_instances(&bind, item);
+    bind_instances(&bind, item, tangents);
     Vec4 inst_cull = cull_bind(&bind, item.job - 1);
     Texture* map   = ready(mat.map);
     bind.views[shaders::VIEW_TEX_MAP] = map.view;
@@ -2365,6 +2489,7 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     float alpha_test = alpha_test_of(mat);
     // (a light map's bake draws with the engine's own program)
     NodeBuild* nodes = state.bake.on ? null : node_build_of(mat);
+    bool tangents = !state.bake.on && !nodes && uses_tangents(item);
     sg::apply_pipeline(
         state.bake.on ? state.bake.pipeline
             : get_pipeline(
@@ -2377,6 +2502,7 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
                 kind,
                 mat.depth_test,
                 mat.depth_write,
+                tangents,
                 nodes ? nodes.program : null
             )
     );
@@ -2386,7 +2512,7 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
         .vertex_buffers[0] = g.vbuf,
         .index_buffer = indices,
     };
-    bind_instances(&bind, item);
+    bind_instances(&bind, item, tangents);
     Vec4 inst_cull = cull_bind(&bind, item.job - 1);
     bind.views[shaders::VIEW_TEX_MAP] = map.view;
     bind.views[shaders::VIEW_TEX_NORMAL] = ready(mat.normal_map).view;
@@ -2403,7 +2529,9 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     // by role, in the order of the shader's MAP_*; one image in two roles takes one slot
     bool standard = mat.type == STANDARD;
     bool refracts = standard && mat.transmission > 0;
-    Texture*[16] roles = {
+    Renderer* lens = state.renderer;
+    bool defocus = mat.defocus && lens.focus_map && lens.focus_aperture > 0;
+    Texture*[18] roles = {
         standard && mat.ao_intensity != 0 ? mat.ao_map : null,
         standard ? mat.specular_color_map : null,
         standard ? mat.specular_intensity_map : null,
@@ -2420,10 +2548,12 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
         mat.emissive_map,
         mat.type != NORMAL ? mat.light_map : null,
         standard && mat.anisotropy > 0 ? mat.anisotropy_map : null,
+        mat.custom_map,
+        defocus ? lens.focus_map : null,
     };
     Texture*[6] slots;
     int used;
-    Vec4[4] map_slots;
+    Vec4[5] map_slots;
     // (a node material's textures take the last slots: see NodeBuild.textures)
     int room = slots.len - (nodes ? nodes.texture_count : 0);
     foreach (i, t : roles) {
@@ -2446,6 +2576,8 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     for (int k = 0; k < slots.len; k++) bind.views[shaders::VIEW_TEX_EXT0 + k] = ready(slots[k]).view;
     bool backdrop = m == state.background;
     int ext_bits = backdrop ? 32 : 0;
+    // a transmission material whose volume is a wall (RefractionModel.PLANE)
+    if (mat.refraction_model == PLANE) ext_bits |= 64;
     // (the parallax map: white, none, where the material has none)
     bind.views[shaders::VIEW_TEX_PARALLAX] = ready(mat.parallax_map).view;
     bool vsm = vsm_on();
@@ -2538,7 +2670,8 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
         : 0) | (mat.foliage ? 2
             : 0) | (m.receive_shadow ? 4
                 : 0) | (mat.glass ? 8
-                    : 0) | (mat.vertex_light > 0 ? 16 : 0) | (mat.screen_target ? 32 : 0) | (mat.map_emissive ? 64 : 0);
+                    : 0) | (mat.vertex_light > 0 ? 16 : 0) | (mat.screen_target ? 32 : 0) | (mat.map_emissive ? 64 : 0)
+        | (mat.vertex_occlusion && mat.vertex_colors ? 128 : 0);
     fs.color = { ...color_to_linear(mat.color) * (mat.color_scale > 0 ? mat.color_scale : 1), mat.opacity };
     fs.emissive = { ...color_to_linear(mat.emissive) * mat.emissive_intensity, mat.vertex_light };
     if (state.bake.on) {
@@ -2551,11 +2684,13 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     fs.specular = { ...color_to_linear(mat.specular), (float)flags };
     fs.mat_params = { (float)mat.type, mat.roughness, mat.metalness, mat.shininess };
     fs.tex_params = { mat.map ? 1 : 0, mat.normal_map ? 1 : 0, (float)arm_bits, alpha_test };
+    bool parallax = mat.parallax_map && mat.type == STANDARD;
     fs.parallax_params = {
-        mat.parallax_map && mat.type == STANDARD ? mat.parallax_scale : 0,
+        parallax ? mat.parallax_scale : 0,
         mat.parallax_distance > 0 ? mat.parallax_distance : 30,
         mat.parallax_shadow,
-        0
+        // (the depth prepass and the shadows cut out the alpha as one patch: they'd disagree)
+        parallax || mat.alpha_test > 0 ? 0 : mat.hex_tiling
     };
     // a dashed line: its gaps are cut out by the distances along it (see Line.compute_line_distances)
     if (m.is_line() && mat.dash_size > 0 && mat.gap_size > 0) {
@@ -2585,6 +2720,7 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     fs.ext_params = { (float)ext_bits, mat.ao_intensity, scale, (float)state.transmission_width };
     fs.map_slots = map_slots;
     fs.light_map_params = { mat.light_map_intensity, 0, 0, 0 };
+    fs.focus_params = { defocus ? state.renderer.focus_aperture : 0, state.renderer.focus_maxblur, 0, 0 };
     // each map's uv from the color map's
     Texture* base = uv_base(mat);
     Vec4[2] rel = uv_relative(base, mat.normal_map);
@@ -2614,6 +2750,7 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     fs.ssr_view_proj = r.ssr_view_proj;
     fs.ssr_params = { ssr ? mat.ssr : 0, r.ssr_reach, (float)(r.ssr_frame % 64), depth_zero_to_one() ? 1 : 0 };
     fs.ssr_thickness = { ssr && r.ssr_back.id ? 1 : 0, mat.ssr_reach > 0 ? mat.ssr_reach : r.ssr_reach, 0, 0 };
+    fs.quality_params = { r.shadow_sample_scale, r.ssr_steps, r.ssr_max_step, 0 };
     if (mirror) {
         fs.reflector_view_proj = mirror.view_proj;
         fs.reflector_params = { mirror.strength, mirror.distortion, mirror.blur, 0 };
@@ -2684,12 +2821,12 @@ fn void draw_shadow_item(DrawItem* item, Mat4 light_vp, Vector3 origin = { 0, 0,
 }
 
 // The instance attributes of a draw (one identity instance for a plain mesh), and its
-// geometry's second uv set and tangents.
-fn void bind_instances(SgBindings* bind, DrawItem* item) @local {
+// geometry's second uv set, and its tangents for a program that reads them (uses_tangents).
+fn void bind_instances(SgBindings* bind, DrawItem* item, bool tangents = false) @local {
     Mesh* m = item.mesh;
     BufferGeometry* g = m.geometry;
     bind.vertex_buffers[2] = g.uv1buf.id ? g.uv1buf : zeros(g.vertex_count());
-    bind.vertex_buffers[3] = g.tangent_buf.id ? g.tangent_buf : zeros(g.vertex_count());
+    if (tangents) bind.vertex_buffers[3] = g.tangent_buf;
     if (!m.instance_data.len()) {
         bind.vertex_buffers[1] = state.identity_instance;
         return;
@@ -2953,8 +3090,9 @@ fn void fill_transmission_levels(SgView source, int width, int height) @local {
 // the frame's lights, then its mip levels (for rough surfaces). The main pass then samples it
 // where each refraction ray leaves the surface.
 fn void render_transmission(Renderer* r, Scene* scene, Camera* camera, Mat4 view_proj, FsParams* fs) @local {
-    int width   = r.render_target ? r.render_target.width : sapp::width();
-    int height  = r.render_target ? r.render_target.height : sapp::height();
+    float scale = r.transmission_resolution_scale > 0 ? r.transmission_resolution_scale : 1;
+    int width   = max((int)((r.render_target ? r.render_target.width : sapp::width()) * scale + 0.5f), 1);
+    int height  = max((int)((r.render_target ? r.render_target.height : sapp::height()) * scale + 0.5f), 1);
     // one sample: the glass's edges are smoothed in the main pass, and what shows through it
     // is bent (and blurred by roughness) anyway
     int samples = 1;
@@ -3035,6 +3173,16 @@ fn void copy_for_transmission(Renderer* r, SgPass* pass) @local {
     profile::begin_pass(&again);
 }
 
+// A draw that takes its geometry's tangents (as three's vertexTangents): it has them, its
+// material a map that is read along them (a normal map, the clear coat's, anisotropy), and
+// the material shader the programs for them (MaterialShaders).
+fn bool uses_tangents(DrawItem* item) @local {
+    Material* mat = item.mesh.material;
+    BufferGeometry* g = item.mesh.geometry;
+    if (!state.tangent_shader.id || (usz)g.tangents.len() < (usz)g.vertex_count() * 4) return false;
+    return mat.normal_map || (mat.type == STANDARD && (mat.clearcoat_normal_map || mat.anisotropy != 0));
+}
+
 // A transmission material: it shows the picture of what is behind it (render_transmission).
 fn bool refracts(DrawItem* item) @local => item.mesh.material.transmission > 0 && item.mesh.material.type == STANDARD;
 
@@ -3050,7 +3198,7 @@ fn SpotLight* prepare_and_draw_shadows(Scene* scene, Camera* camera, bool bake =
     SpotLight* caster = bake ? null : shadow_light();
     // without a caster keep whatever map there is: renders that switch shadows off (a portal
     // view, say) must not reallocate it every frame
-    ensure_shadow_map(caster ? caster.shadow.map_size : (state.shadow_size ?: 4));
+    ensure_shadow_map(caster ? shadow_map_size(caster.shadow.map_size) : (state.shadow_size ?: 4));
     Mat4 caster_vp;
     bool shadows = state.renderer.shadow_map_auto_update || bake;
     if (shadows) state.spot_casters.clear();
@@ -3225,7 +3373,8 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera) {
             rt ? rt.width : sapp::width(),
             rt ? rt.height : sapp::height(),
             views,
-            self.time
+            self.time,
+            self.fog_resolution_scale
         );
     }
     profile::stop("render: volumetric fog", pt);
@@ -3339,6 +3488,15 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera) {
             Side side = mat.side;
             // (its back faces are drawn already)
             if (split && backs && side == DOUBLE_SIDE && refracts(item)) mat.side = FRONT_SIDE;
+            // Double-sided glass without the split: its back faces, then its front faces, as
+            // three draws a transparent double-sided material (one draw without culling
+            // would blend them in the order of the triangles, and where a back face comes
+            // after the front one over it, it would cover the near side's own reflection)
+            if (!split && side == DOUBLE_SIDE && refracts(item)) {
+                mat.side = BACK_SIDE;
+                draw_item(item, view_proj_rel, &fs);
+                mat.side = FRONT_SIDE;
+            }
             draw_item(item, view_proj_rel, &fs);
             mat.side = side;
         }
@@ -3370,7 +3528,7 @@ fn SgPipeline bake_pipeline(SgPixelFormat format) @local {
                     shaders::ATTR_THREE_UV,
                     shaders::ATTR_THREE_COLOR0,
                     shaders::ATTR_THREE_UV1,
-                    shaders::ATTR_THREE_TANGENT,
+                    -1,
                     shaders::ATTR_THREE_INST0,
                     shaders::ATTR_THREE_INST1,
                     shaders::ATTR_THREE_INST2
