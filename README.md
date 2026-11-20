@@ -110,6 +110,11 @@ three.js API coverage:
 - A `Mesh` draws `draw_count` of its geometry's indices from `draw_start` when `draw_count` is
   above 0 (three's `drawRange`). Meshes that share a geometry and each draw a range of it with
   their own material are three's geometry groups with an array of materials.
+- A mesh can be a billboard, turned toward the camera as it is drawn (`Mesh.billboard`, three's
+  `Sprite`): `FACING` in the view's plane, with `billboard_center`, `billboard_rotation` and
+  `billboard_fixed_size` (three's `sizeAttenuation` false); `KEEP_Y` and `KEEP_X` keep one of
+  the mesh's own axes; `UPRIGHT` turns about the world's up toward the camera. A node
+  material's `model_matrix()` is the mesh's `matrix_world` as it is, before it is turned.
 - A material's maps share one sampler in the shader: the color map's, or else a repeating
   map's. A map that wraps otherwise has its wrapping done on its uv (`Texture.wrap_s`, `wrap_t`).
 - `Lod` (three.js `LOD`) levels are added with `lod.add_level(object, distance)`, in increasing

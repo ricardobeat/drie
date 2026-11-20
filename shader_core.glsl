@@ -28,7 +28,8 @@ struct NodeIn {
     vec2 uv;
     vec2 uv1;
     vec4 color;          // the vertex color, a = its alpha
-    vec4 frag;           // fragment stage: xy = gl_FragCoord.xy, z = 1 on a front face, 0 on a back one
+    vec4 frag;           // fragment stage: xy = gl_FragCoord.xy, z = 1 on a front face, 0 on a back one;
+                         // vertex stage: w = the instance's index (inst_id)
     vec4 vary0;          // what node_vertex passed on (fragment stage)
     vec4 vary1;
     vec4 vary2;
@@ -74,6 +75,8 @@ layout(binding=18) readonly buffer inst_counts { inst_index counts[]; };
 vec4 m0;
 vec4 m1;
 vec4 m2;
+// the instance's index among its mesh's instances (0 for a mesh without), as fetch_instance found it
+uint inst_id;
 
 // Picks this vertex's instance matrix. `cull`: x = 1 if culled on the GPU, y = its first entry
 // in visible, z = its job (in counts). False: an instance past the survivors, not drawn.
@@ -82,11 +85,13 @@ bool fetch_instance(vec4 cull) {
         m0 = inst0;
         m1 = inst1;
         m2 = inst2;
+        inst_id = uint(gl_InstanceIndex);
         return true;
     }
     uint i = uint(gl_InstanceIndex);
     if (i >= counts[uint(cull.z)].index) return false;
-    uint s = visible[uint(cull.y) + i].index * 3;
+    inst_id = visible[uint(cull.y) + i].index;
+    uint s = inst_id * 3;
     m0 = rows[s].row;
     m1 = rows[s + 1].row;
     m2 = rows[s + 2].row;
@@ -158,12 +163,13 @@ void run_node_vertex(inout vec3 local, vec3 local_normal, mat4 model, out vec4 v
     ni.uv = uv;
     ni.uv1 = uv1;
     ni.color = color0;
-    ni.frag = vec4(0.0);
+    ni.frag = vec4(0.0, 0.0, 0.0, float(inst_id));
     ni.vary0 = vec4(0.0);
     ni.vary1 = vec4(0.0);
     ni.vary2 = vec4(0.0);
     ni.vary3 = vec4(0.0);
-    ni.model = model;
+    // (the mesh's matrix_world: a billboard's is drawn turned, `model`)
+    ni.model = node_model;
     ni.view = node_view;
     ni.proj = node_proj;
     ni.info = node_info;

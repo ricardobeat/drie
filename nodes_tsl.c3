@@ -106,6 +106,8 @@ fn Node output() => builtin(OUTPUT, VEC4);
 // In Material.env_node: the direction the surface reflects (in the world), and its roughness.
 fn Node env_direction() => builtin(ENV_DIRECTION, VEC3);
 fn Node env_roughness() => builtin(ENV_ROUGHNESS, FLOAT);
+// The instance's index in its InstancedMesh (0 for a plain mesh), a float (three's instanceIndex).
+fn Node instance_index() => builtin(INSTANCE_INDEX, FLOAT);
 
 // `t` read at `at` (the mesh's uv by default): its rgba, as the material's maps (sRGB images
 // in linear values). `level`: a mip level (none: from the pixel's footprint).
