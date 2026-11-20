@@ -853,7 +853,7 @@ fn void h_fog(JsCtx ctx, void* udata)
     }
 }
 
-// toneMapping(renderer, three's constant, exposure)
+// toneMapping(renderer, three's constant, exposure, transmissionResolutionScale)
 fn void h_tone_mapping(JsCtx ctx, void* udata)
 {
     Renderer* r = get_renderer(num_arg(ctx, 0, -1));
@@ -869,6 +869,7 @@ fn void h_tone_mapping(JsCtx ctx, void* udata)
         default: r.tone_mapping = NO_TONE_MAPPING;
     }
     r.tone_mapping_exposure = (float)num_arg(ctx, 2, 1);
+    r.transmission_resolution_scale = (float)num_arg(ctx, 3, 1);
 }
 
 // fileSize(path): bytes, or -1 if it cannot be read
@@ -1668,7 +1669,7 @@ fn int main(String[] args)
     reg(natives, "lightmapUpdate", &h_lightmap_update, 4);
     reg(natives, "lightmapTexture", &h_lightmap_texture, 2);
     reg(natives, "fog", &h_fog, 6);
-    reg(natives, "toneMapping", &h_tone_mapping, 3);
+    reg(natives, "toneMapping", &h_tone_mapping, 4);
     reg(natives, "fileSize", &h_file_size, 1);
     reg(natives, "readFile", &h_read_file, 2);
     reg(natives, "dracoDecode", &h_draco_decode, 1);

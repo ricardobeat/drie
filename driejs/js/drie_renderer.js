@@ -124,6 +124,8 @@ export class DrieRenderer {
 		this.shadowMap = { enabled: false, type: 1 };
 		this.toneMapping = 0;
 		this.toneMappingExposure = 1;
+		// the size of the picture transmission materials refract, times the canvas's (three's)
+		this.transmissionResolutionScale = 1;
 		this.outputColorSpace = "srgb";
 		this.info = {
 			render: { frame: 0, calls: 0, triangles: 0, points: 0, lines: 0 },
@@ -244,10 +246,12 @@ export class DrieRenderer {
 			scene.__drieEnvironmentIntensity = envIntensity;
 			N.sceneEnvironment(sceneId, env, envIntensity);
 		}
-		if (this._toneMapping !== this.toneMapping || this._exposure !== this.toneMappingExposure) {
+		if (this._toneMapping !== this.toneMapping || this._exposure !== this.toneMappingExposure
+			|| this._transmissionScale !== this.transmissionResolutionScale) {
 			this._toneMapping = this.toneMapping;
 			this._exposure = this.toneMappingExposure;
-			N.toneMapping(this._id, this.toneMapping, this.toneMappingExposure);
+			this._transmissionScale = this.transmissionResolutionScale;
+			N.toneMapping(this._id, this.toneMapping, this.toneMappingExposure, this.transmissionResolutionScale ?? 1);
 		}
 		if (this._shadowType !== this.shadowMap.type) {
 			this._shadowType = this.shadowMap.type;

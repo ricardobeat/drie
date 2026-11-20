@@ -382,6 +382,10 @@ struct Renderer {
     // the volumetric fog's grid has this many times its cells across, up and in depth
     // (Fog.resolution, Fog.slices).
     float fog_resolution_scale;
+    // The picture the transmission materials refract is this size times the target's (three's
+    // transmissionResolutionScale; default 1). Not when it is the main pass's own picture,
+    // copied half way through (into a linear target, see copy_for_transmission).
+    float transmission_resolution_scale;
     // What materials with `ssr` reflect (see set_reflection_source).
     SgView ssr_color;
     SgView ssr_depth;
@@ -751,6 +755,7 @@ fn Renderer* renderer(bool antialias = true, int width = 800, int height = 600, 
         .ssr_steps = 40,
         .ssr_max_step = 6,
         .fog_resolution_scale = 1,
+        .transmission_resolution_scale = 1,
     };
     state.renderer = r;
     state.opaque.allocator = mem;
@@ -2934,8 +2939,9 @@ fn void fill_transmission_levels(SgView source, int width, int height) @local {
 // the frame's lights, then its mip levels (for rough surfaces). The main pass then samples it
 // where each refraction ray leaves the surface.
 fn void render_transmission(Renderer* r, Scene* scene, Camera* camera, Mat4 view_proj, FsParams* fs) @local {
-    int width   = r.render_target ? r.render_target.width : sapp::width();
-    int height  = r.render_target ? r.render_target.height : sapp::height();
+    float scale = r.transmission_resolution_scale > 0 ? r.transmission_resolution_scale : 1;
+    int width   = max((int)((r.render_target ? r.render_target.width : sapp::width()) * scale + 0.5f), 1);
+    int height  = max((int)((r.render_target ? r.render_target.height : sapp::height()) * scale + 0.5f), 1);
     // one sample: the glass's edges are smoothed in the main pass, and what shows through it
     // is bent (and blurred by roughness) anyway
     int samples = 1;
