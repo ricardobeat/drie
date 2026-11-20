@@ -499,6 +499,16 @@ globalThis.cancelAnimationFrame = () => {};
 
 // The renderer's canvas: where mouse events start when the pointer is not locked.
 let canvas = null;
+
+// Called by the host when another script takes the running one's place (run() in
+// demos/index.js): a new page, with none of the old one's listeners.
+globalThis.__drieReset = () => {
+	globalThis.document = new Document();
+	windowTarget._listeners = {};
+	canvas = null;
+	buttons = 0;
+	for (const k in modifiers) modifiers[k] = false;
+};
 export function setCanvas(element) {
 	canvas = element;
 }

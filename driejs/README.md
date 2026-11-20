@@ -13,12 +13,23 @@ just thumbs                                 # render the demos' thumbnails into 
 just run demos/index.js                     # pick a demo from a page of them
 ```
 
-`demos/index.js` shows every script in `demos/` as a thumbnail with its name. A click runs that
-demo in the same window's place (driejs starts itself again with the script), and Escape there
-comes back to the page, unless the demo holds the pointer, when Escape lets go of it first. The
+`demos/index.js` shows every script in `demos/` as a thumbnail with its name. A click loads that
+demo's script in the same process and window, in the page's place, and Escape there loads the
+page again, unless the demo holds the pointer, when Escape lets go of it first. The script
+that leaves loses its animation loop, timers and event listeners, and the next one draws with
+the same renderer; what the old one made in drie (meshes, textures) stays in memory until
+driejs quits. The
 wheel and the arrow keys scroll. Thumbnails are not in git: `just thumbs` renders them (30
 frames in; `just thumbs 120 webgl_geometries` for another moment of one demo), and a demo
 without one shows as a grey tile.
+
+Each thumbnail also holds the pipelines its demo drew with: drie's pipeline cache, deflated in
+a `drPc` chunk of the PNG (`--png-width N` writes it, with the picture shrunk to N pixels
+across). The page loads every thumbnail's list when it starts and has the pipelines compiled
+in the background, with a small bar in its top right corner until they are, so a demo, a TSL
+one above all, opens without its shaders' second or two. The host has the cache for scripts
+of their own too: `__drie.savePipelineCache(path)`, `loadPipelineCache(path)` (a text file, or
+a PNG with a `drPc` chunk) and `pipelineCacheProgress()` (0 to 1).
 
 With `--png` (and not `--profile`), `performance.now()` runs on the frames' clock, 1/60 s a frame
 from 0, as three's screenshots are taken: a script that moves things by the time passed (a

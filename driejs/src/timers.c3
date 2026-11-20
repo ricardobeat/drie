@@ -135,6 +135,18 @@ fn void fire_timers()
     }
 }
 
+// Drops every timer (a script taking another's place: main.c3, switch_script).
+fn void clear_timers()
+{
+    while (timer_heap.len())
+    {
+        PendingTimer* t = timer_heap[0];
+        timer_remove(t);
+        timer_ids.remove(t.id);
+        timer_free(t);
+    }
+}
+
 // Until there is an animation loop or no timer is left: sleeps until the next one is due,
 // then runs it.
 fn void wait_for_timers()
