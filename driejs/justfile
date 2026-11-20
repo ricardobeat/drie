@@ -24,16 +24,19 @@ run +args: build
     out/driejs {{args}}
 
 # the demos' thumbnails, for demos/index.js (`just run demos/index.js`): each demo's picture
-# after `frames` frames, into demos/thumbs/ (not in git), a quarter of the size where sips is
-# there to shrink it. `just thumbs 30 webgl_geometries` renders that one only
-thumbs frames="30" *names: build
+# after `frames` frames, 640 pixels across, into demos/thumbs/ (not in git), each with the
+# pipelines the demo drew with (a pipeline cache: the page compiles them all in the background
+# while it is up, so the demos open without compiling). `just thumbs 30 webgl_geometries`
+# renders that one only. It uses out/driejs as it is (`just build` first after a change)
+thumbs frames="30" *names:
     #!/bin/sh
+    # (the driejs there is: built only if there is none)
+    [ -x out/driejs ] || just build || exit 1
     mkdir -p demos/thumbs
     names="{{names}}"
     [ -n "$names" ] || names=$(ls demos/*.js | sed 's|demos/||; s|\.js$||' | grep -v '^index$')
     for n in $names; do
-        if out/driejs --frames {{frames}} --png demos/thumbs/$n.png demos/$n.js > /dev/null 2>&1; then
-            command -v sips > /dev/null && sips -Z 640 demos/thumbs/$n.png > /dev/null 2>&1
+        if out/driejs --frames {{frames}} --png demos/thumbs/$n.png --png-width 640 demos/$n.js > /dev/null 2>&1; then
             echo "$n"
         else
             echo "$n: failed"

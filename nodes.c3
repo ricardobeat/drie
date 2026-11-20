@@ -622,6 +622,10 @@ const int NODE_TEXTURES = 6;
 
 // The shaders a graph prints into (shared by the materials whose graphs print the same), and
 // their pipelines.
+// The hooks a node program fills: node_vertex, node_color, node_normal, node_surface,
+// node_output, node_env and node_specular (NodeProgram's bodies, in this order).
+const int NODE_HOOKS = 7;
+
 struct NodeProgram {
     String vertex_body;
     String color_body;
@@ -635,6 +639,81 @@ struct NodeProgram {
     SgShader[8] shaders;     // by NodeVariant
     HashMap{ulong, SgPipeline} pipelines;
     SgPipeline shadow_pipeline;
+    // its pipelines being compiled in the background (sg_warm_begin), by their pipelines' keys:
+    // the job, or -1 once done; the program draws nothing while one runs (busy)
+    HashMap{ulong, int} warming;
+    uint busy_epoch;
+    bool busy_now;
+}
+
+// Its pipelines compiled in the background, and how many are still running: { running, all }.
+// (Those done are let go of: their pipelines are then made at once, from the driver's cache.)
+fn int[2] NodeProgram.compiling(&self) {
+    int[2] n;
+    if (!self.warming.is_initialized()) return n;
+    List{ulong} done;
+    done.tinit();
+    self.warming.@each(; ulong key, int job) {
+        n[1]++;
+        if (job >= 0) {
+            if (sg_warm_state(job) == 0) {
+                n[0]++;
+            } else {
+                sg_warm_end(job);
+                done.push(key);
+            }
+        }
+    };
+    foreach (key : done) self.warming[key] = -1;
+    return n;
+}
+
+// The key of a node program's shadow pipeline among its pipelines' (see get_pipeline).
+const ulong NODE_SHADOW_KEY = ~(ulong)0;
+
+extern fn int sg_warm_begin(SgShaderDesc* shader, SgPipelineDesc* pipeline) @cname("sg_warm_begin");
+extern fn int sg_warm_state(int job) @cname("sg_warm_state");
+extern fn void sg_warm_end(int job) @cname("sg_warm_end");
+
+// A new one each render (Renderer.render): what NodeProgram.busy says holds for all of a
+// render's passes, so that a program the depth prepass left out is left out of the main pass
+// too.
+uint node_epoch;
+
+// Whether one of the program's pipelines is still being compiled in the background: then
+// nothing of it is drawn, in any pass.
+fn bool NodeProgram.busy(&self) {
+    if (self.busy_epoch == node_epoch) return self.busy_now;
+    self.busy_epoch = node_epoch;
+    @pool() {
+        self.busy_now = self.compiling()[0] > 0;
+    };
+    return self.busy_now;
+}
+
+// Whether the pipeline `key` of the program (variant `v`, `desc` but for its shader) can be made
+// now without the driver compiling for long: it was compiled in the background, or can't be
+// (not Metal, or not `background`: Renderer.compile_in_background). Otherwise starts that and
+// returns false.
+fn bool NodeProgram.pipeline_ready(&self, ulong key, NodeVariant v, SgShaderDesc base, SgPipelineDesc* desc, bool background) {
+    if (!self.warming.is_initialized()) self.warming.init(mem);
+    if (!background) return true;
+    int? job = self.warming[key];
+    if (try job) {
+        if (job < 0) return true;
+        if (sg_warm_state(job) == 0) return false;
+        sg_warm_end(job);
+        self.warming[key] = -1;
+        return true;
+    }
+    @pool() {
+        SgShaderDesc spliced = self.spliced(v, base);
+        int j = sg_warm_begin(&spliced, desc);
+        self.warming[key] = j;
+        // (busy from now on, in this render too)
+        if (j >= 0 && self.busy_epoch == node_epoch) self.busy_now = true;
+        return j < 0;
+    };
 }
 
 // A material's build: its graphs' program, and where its uniforms and textures go.
@@ -657,6 +736,12 @@ struct NodeGen @local {
     uint[] memo;
     uint[] memo_epoch;
     uint[] serial;
+    // per node, its number in the body being printed (0: none yet), which its name carries:
+    // the same graph prints the same text wherever its nodes sit in node_graph, so the driver's
+    // cache of compiled shaders knows it (and node_programs shares it) after other graphs were
+    // made
+    uint[] local;
+    uint locals;
     char[] reads_var;   // 0: not known, 1: no, 2: it reads a variable
     List{bool} scope_open; // by scope (from 1)
     uint scope;
@@ -727,6 +812,7 @@ fn NodeBuild* node_build_of(Material* mat) {
         g.memo = mem::temp_array(uint, count);
         g.memo_epoch = mem::temp_array(uint, count);
         g.serial = mem::temp_array(uint, count);
+        g.local = mem::temp_array(uint, count);
         g.reads_var = mem::temp_array(char, count);
         g.kept = mem::temp_array(String, count);
         // the fragment stage first: it finds the varyings the vertex stage writes
@@ -808,33 +894,41 @@ fn NodeBuild* node_build_of(Material* mat) {
             }
             for (sz i = g.varyings.len(); i < NODE_VARYINGS; i++) g.line("vary%d = %s;", i, g.zero(VEC4));
         }, mat);
-        String key = string::tformat("%s\n--\n%s\n--\n%s\n--\n%s\n--\n%s\n--\n%s\n--\n%s\n--\n%s", vertex, color, normal, surface,
-                                     output, env, specular, cuts);
-        if (!node_programs.is_initialized()) node_programs.init(mem);
-        NodeProgram*? found = node_programs[key];
-        if (try found) {
-            b.program = found;
-        } else {
-            NodeProgram* p = mem::new(NodeProgram);
-            p.vertex_body = vertex.copy(mem);
-            p.color_body = color.copy(mem);
-            p.normal_body = normal.copy(mem);
-            p.surface_body = surface.copy(mem);
-            p.output_body = output.copy(mem);
-            p.env_body = env.copy(mem);
-            p.specular_body = specular.copy(mem);
-            p.cuts = cuts;
-            p.pipelines.init(mem);
-            node_programs[key.copy(mem)] = p;
-            b.program = p;
-        }
+        b.program = node_program({ vertex, color, normal, surface, output, env, specular }, cuts);
     };
     return b;
 }
 
+// The program of these hook bodies (vertex, color, normal, surface, output), made the first
+// time: shared by the materials whose graphs print them.
+fn NodeProgram* node_program(String[NODE_HOOKS] bodies, bool cuts) @private {
+    @pool() {
+        String key = string::tformat("%s\n--\n%s\n--\n%s\n--\n%s\n--\n%s\n--\n%s\n--\n%s\n--\n%s", bodies[0], bodies[1],
+                                     bodies[2], bodies[3], bodies[4], bodies[5], bodies[6], cuts);
+        if (!node_programs.is_initialized()) node_programs.init(mem);
+        NodeProgram*? found = node_programs[key];
+        if (try found) return found;
+        NodeProgram* p = mem::new(NodeProgram);
+        p.vertex_body = bodies[0].copy(mem);
+        p.color_body = bodies[1].copy(mem);
+        p.normal_body = bodies[2].copy(mem);
+        p.surface_body = bodies[3].copy(mem);
+        p.output_body = bodies[4].copy(mem);
+        p.env_body = bodies[5].copy(mem);
+        p.specular_body = bodies[6].copy(mem);
+        p.cuts = cuts;
+        p.pipelines.init(mem);
+        node_programs[key.copy(mem)] = p;
+        return p;
+    };
+}
+
+
 // Prints one hook's body: `fill` writes its lines.
 fn String NodeGen.body(&self, NodeBodyFn fill, Material* mat) {
     self.out = dstring::temp();
+    for (sz i = 0; i < self.local.len; i++) self.local[i] = 0;
+    self.locals = 0;
     self.reset();
     fill(self, mat);
     return self.out.str_view();
@@ -929,9 +1023,10 @@ fn String component_literal(NodeType t, float[16]* v, int i) @local {
 // again, after its scope closed or a variable it reads changed, takes a suffix)
 fn String NodeGen.name(&self, Node n) {
     String prefix = self.stage == VERTEX_OUT ? "no" : "nd";
+    uint id = self.local[n.id];
     uint k = self.serial[n.id];
-    if (k <= 1) return string::tformat("%s%d", prefix, n.id);
-    return string::tformat("%s%d_%d", prefix, n.id, k);
+    if (k <= 1) return string::tformat("%s%d", prefix, id);
+    return string::tformat("%s%d_%d", prefix, id, k);
 }
 
 // `x` (of type `from`) as a `to`, as TSL converts: a number fills a vector, a narrower vector
@@ -1176,6 +1271,7 @@ fn bool NodeGen.printed(&self, Node n) {
 
 // `n` printed, here: its (new) name.
 fn String NodeGen.mark(&self, Node n) {
+    if (!self.local[n.id]) self.local[n.id] = ++self.locals;
     self.memo[n.id] = self.scope;
     self.memo_epoch[n.id] = self.epoch;
     self.serial[n.id]++;
@@ -1466,31 +1562,38 @@ fn String splice_body(String src, String name, String body) @local {
     return string::tformat("%s%s%s", src[:from], body, src[to..]);
 }
 
+// `desc` (the engine's or the application's program) with the hooks' bodies swapped, its
+// sources in temporary memory.
+fn SgShaderDesc NodeProgram.spliced(&self, NodeVariant v, SgShaderDesc desc) {
+    String vs = splice_body(((ZString)desc.vertex_func.source).str_view(), "node_vertex", self.vertex_body);
+    desc.vertex_func.source = vs.zstr_tcopy();
+    if (v == SHADOW && self.cuts) {
+        // (shadow_nodes: node_color only)
+        String fs = splice_body(((ZString)desc.fragment_func.source).str_view(), "node_color", self.color_body);
+        desc.fragment_func.source = fs.zstr_tcopy();
+    } else if (v != DEPTH && v != SHADOW) {
+        String fs = ((ZString)desc.fragment_func.source).str_view();
+        fs = splice_body(fs, "node_color", self.color_body);
+        fs = splice_body(fs, "node_normal", self.normal_body);
+        fs = splice_body(fs, "node_surface", self.surface_body);
+        fs = splice_body(fs, "node_output", self.output_body);
+        // (a build of the shader from before node_env or node_specular has none: fine
+        // without the slots they are for)
+        if (self.env_body.len || fs.contains("\nvoid node_env(")) fs = splice_body(fs, "node_env", self.env_body);
+        if (self.specular_body.len || fs.contains("\nvoid node_specular(")) {
+            fs = splice_body(fs, "node_specular", self.specular_body);
+        }
+        desc.fragment_func.source = fs.zstr_tcopy();
+    }
+    desc.label = "drie-node-material";
+    return desc;
+}
+
 // Variant `v` of the program, from the engine's (or the application's, Renderer.shaders)
 // description of that program: its sources with the hooks' bodies swapped.
 fn SgShader NodeProgram.make_shader(&self, NodeVariant v, SgShaderDesc desc) {
     @pool() {
-        String vs = splice_body(((ZString)desc.vertex_func.source).str_view(), "node_vertex", self.vertex_body);
-        desc.vertex_func.source = vs.zstr_tcopy();
-        if (v == SHADOW && self.cuts) {
-            // (shadow_nodes: node_color only)
-            String fs = splice_body(((ZString)desc.fragment_func.source).str_view(), "node_color", self.color_body);
-            desc.fragment_func.source = fs.zstr_tcopy();
-        } else if (v != DEPTH && v != SHADOW) {
-            String fs = ((ZString)desc.fragment_func.source).str_view();
-            fs = splice_body(fs, "node_color", self.color_body);
-            fs = splice_body(fs, "node_normal", self.normal_body);
-            fs = splice_body(fs, "node_surface", self.surface_body);
-            fs = splice_body(fs, "node_output", self.output_body);
-            // (a build of the shader from before node_env or node_specular has none: fine
-            // without the slots they are for)
-            if (self.env_body.len || fs.contains("\nvoid node_env(")) fs = splice_body(fs, "node_env", self.env_body);
-            if (self.specular_body.len || fs.contains("\nvoid node_specular(")) {
-                fs = splice_body(fs, "node_specular", self.specular_body);
-            }
-            desc.fragment_func.source = fs.zstr_tcopy();
-        }
-        desc.label = "drie-node-material";
+        desc = self.spliced(v, desc);
         SgShader shader = sg::make_shader(&desc);
         if (sg::query_shader_state(shader) != VALID) {
             io::eprintfn("drie: a node material's shader failed to build. Its hooks:");
