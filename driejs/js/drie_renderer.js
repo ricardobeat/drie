@@ -773,6 +773,8 @@ export class DrieRenderer {
 			N.lightUpdate(light.__drie, light.color.getHex(), light.intensity, ground ? ground.getHex() : 0,
 				light.width ?? 0, light.height ?? 0);
 		}
+		const channels = light.__drieChannels ?? 0;
+		if (light.__drieSentChannels !== channels) N.lightChannels(light.__drie, (light.__drieSentChannels = channels));
 		if (!light.isDirectionalLight && !light.isSpotLight && !light.isSunLight && !light.isPointLight) return;
 		const shadow = light.shadow;
 		const cam = shadow.camera;
@@ -1059,6 +1061,30 @@ export class DrieRenderer {
 		N.materialLayers(material.__drie, ...layers);
 	}
 
+	// A node material's lightsNode (three's lights([...])): the lights it lists, and only them,
+	// light it. Each list is a lighting channel of drie's (Light.channels,
+	// Material.light_channels), up to 24.
+	_lightsNode(material) {
+		const lights = material.lightsNode?.getLights?.();
+		let channels = 0;
+		if (lights) {
+			const groups = (this._lightGroups ??= new Map());
+			const key = lights.map((l) => l.id).join();
+			let bit = groups.get(key);
+			if (bit === undefined) {
+				bit = groups.size;
+				if (bit >= 24) throw new Error("driejs: more than 24 different lists of lights (lightsNode)");
+				groups.set(key, bit);
+			}
+			channels = 2 ** bit;
+			for (const l of lights) l.__drieChannels = (l.__drieChannels ?? 0) | channels;
+		}
+		if (material.__drieLightChannels !== channels) {
+			material.__drieLightChannels = channels;
+			N.materialLightChannels(material.__drie, channels);
+		}
+	}
+
 	_material(material, frame) {
 		if (Array.isArray(material)) material = material[0];
 		if (material.__drieFrame === frame) return material.__drie;
@@ -1069,6 +1095,7 @@ export class DrieRenderer {
 			this._maps(material);
 			this._layers(material);
 			this._lightMap(material);
+			this._lightsNode(material);
 			this._env(material);
 			this._surface(material);
 			this._blend(material);
@@ -1097,6 +1124,7 @@ export class DrieRenderer {
 		material.__drieMaps = undefined;
 		material.__drieLayers = undefined;
 		material.__drieLightMap = undefined;
+		material.__drieLightChannels = undefined;
 		material.__drieDepth = undefined;
 		material.__drieEnv = undefined;
 		material.__drieSurface = undefined;
@@ -1105,6 +1133,7 @@ export class DrieRenderer {
 		this._maps(material);
 		this._layers(material);
 		this._lightMap(material);
+		this._lightsNode(material);
 		this._env(material);
 		this._surface(material);
 		this._blend(material);

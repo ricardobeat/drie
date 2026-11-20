@@ -2337,7 +2337,7 @@ fn FsParams build_light_params(Scene* scene, Camera* camera, SpotLight* caster) 
                     p.dir_cascade_fwd.w = clamp(d.shadow.intensity, 0, 1);
                     p.shadow_ext.x = d.shadow.bias;
                 }
-                GpuDirLight gd = { .dir = { ...dir, 0 }, .color = { ...c, 0 }, .shadow = { -1, 1, 0, 0 } };
+                GpuDirLight gd = { .dir = { ...dir, 0 }, .color = { ...c, 0 }, .shadow = { -1, 1, (float)l.channels, 0 } };
                 // the other shadowed ones: a box in a tile of the atlas (dir_tile_shadow)
                 int tile = atlas_tile_of(d);
                 if (d != state.sun_caster && tile >= 0 && d.cast_shadow) {
@@ -2358,7 +2358,7 @@ fn FsParams build_light_params(Scene* scene, Camera* camera, SpotLight* caster) 
                         1.0f / cols,
                         1.0f / rows
                     };
-                    gd.shadow = { (float)g.shadows.len(), clamp(d.shadow.intensity, 0, 1), 0, 0 };
+                    gd.shadow = { (float)g.shadows.len(), clamp(d.shadow.intensity, 0, 1), (float)l.channels, 0 };
                     g.shadows.push(sh);
                 }
                 g.dirs.push(gd);
@@ -2377,12 +2377,12 @@ fn FsParams build_light_params(Scene* scene, Camera* camera, SpotLight* caster) 
                     .pos = { ...l.matrix_world.get_position(), pl.distance },
                     .color = { ...c, pl.decay },
                     .params = { pl.radius, half.x, half.y, half.z },
-                    .shadow = { -1, 1, 0, 0 },
+                    .shadow = { -1, 1, (float)l.channels, 0 },
                 };
                 // its six faces, from the tile of the first (see update_shadow_atlas)
                 int tile = pl.cast_shadow ? atlas_tile_of(pl) : -1;
                 if (tile >= 0 && (sz)tile + 6 <= state.atlas_lights.len()) {
-                    gp.shadow = { (float)g.shadows.len(), clamp(pl.shadow.intensity, 0, 1), 0, 0 };
+                    gp.shadow = { (float)g.shadows.len(), clamp(pl.shadow.intensity, 0, 1), (float)l.channels, 0 };
                     float width = 2 * math::tan(POINT_SHADOW_FOV * DEG2RAD * 0.5f);
                     bool zo     = depth_zero_to_one();
                     float cols  = (float)state.atlas_columns;
@@ -2420,6 +2420,7 @@ fn FsParams build_light_params(Scene* scene, Camera* camera, SpotLight* caster) 
                         .pos = { ...m.get_position(), hw.x },
                         .color = { ...c, hw.y },
                         .params = { hw.z, hh.x, hh.y, hh.z },
+                        .shadow = { -1, 1, (float)l.channels, 0 },
                     }
                 );
             case SPOT:
@@ -2437,7 +2438,7 @@ fn FsParams build_light_params(Scene* scene, Camera* camera, SpotLight* caster) 
                         sl.specular_radius > 0 ? sl.specular_radius : sl.radius,
                         sl.fog_glow
                     },
-                    .shadow = { -1, 1, 0, 0 },
+                    .shadow = { -1, 1, (float)l.channels, 0 },
                 };
                 // clip space -> shadow map uv (v points down outside of GL) and 0..1 depth
                 int tile = atlas_tile_of(sl);
@@ -2473,7 +2474,7 @@ fn FsParams build_light_params(Scene* scene, Camera* camera, SpotLight* caster) 
                             1.0f / rows
                         };
                     }
-                    gs.shadow = { (float)g.shadows.len(), clamp(sl.shadow.intensity, 0, 1), 0, 0 };
+                    gs.shadow = { (float)g.shadows.len(), clamp(sl.shadow.intensity, 0, 1), (float)l.channels, 0 };
                     g.shadows.push(sh);
                 }
                 g.spots.push(gs);
@@ -3117,7 +3118,8 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     fs.ext_params = { (float)ext_bits, mat.ao_intensity, scale, (float)state.transmission_width };
     fs.map_slots = map_slots;
     fs.light_map_params = { mat.light_map_intensity, 0, 0, 0 };
-    fs.surface_params = { mat.bump_scale, mat.gradient_map && mat.gradient_map.nearest ? 1 : 0, mat.depth_packing.ordinal, 0 };
+    fs.surface_params = { mat.bump_scale, mat.gradient_map && mat.gradient_map.nearest ? 1 : 0, mat.depth_packing.ordinal,
+                          (float)mat.light_channels };
     // three's envMap on a basic, lambert or phong material (not the background's own)
     if (classic && mat.env_map && !backdrop) {
         fs.env_combine = { mat.reflectivity, (float)mat.combine.ordinal, mat.env_refraction ? mat.refraction_ratio : 0, 1 };

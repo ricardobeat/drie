@@ -724,6 +724,10 @@ struct Light {
     LightType light_type;
     Color color;
     float intensity;
+    // The lighting channels it is in (bits, up to 24): it lights the materials that take every
+    // light (Material.light_channels 0) and those that take one of its channels. The ambient
+    // and hemisphere lights light every material.
+    uint channels;
 }
 
 struct AmbientLight {
