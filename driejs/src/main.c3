@@ -1250,6 +1250,23 @@ fn void h_instances(JsCtx ctx, void* udata)
     for (int i = 0; i < count; i++) m.set_matrix_at(i, src[i]);
 }
 
+// instanceColors(mesh, colors, count): three's instanceColor.array, 3 floats in linear light
+// per instance (white past `count`)
+fn void h_instance_colors(JsCtx ctx, void* udata)
+{
+    Object3D* o = get_object(num_arg(ctx, 0, -1));
+    float[] colors = floats_arg(ctx, 1);
+    int count = (int)num_arg(ctx, 2, 0);
+    if (o == null || !instanced.contains((InstancedMesh*)o)) { ctx.throw_error(TYPE, "instanceColors: not an instanced mesh"); return; }
+    if ((usz)count * 3 > colors.len) { ctx.throw_error(RANGE, "instanceColors: count exceeds the colors"); return; }
+    InstancedMesh* m = (InstancedMesh*)o;
+    m.instance_colors.clear();
+    m.instance_colors.allocator = mem;
+    m.instance_colors.push_all(colors[:(usz)count * 3]);
+    for (int i = count; i < m.instance_count; i++) m.instance_colors.push_all({ 1, 1, 1 });
+    m.instance_colors_uploaded = false;
+}
+
 // An environment that PMREMGenerator.fromScene asked for, captured at the next render (drie
 // needs the GPU running for it).
 struct Capture
@@ -1821,6 +1838,7 @@ fn int main(String[] args)
     reg(natives, "light", &h_light, 8);
     reg(natives, "lightTarget", &h_light_target, 1);
     reg(natives, "geometry", &h_geometry, 9);
+    reg(natives, "instanceColors", &h_instance_colors, 3);
     reg(natives, "texture", &h_texture, 19);
     reg(natives, "textureMipmap", &h_texture_mipmap, 4);
     reg(natives, "textureClone", &h_texture_clone, 9);

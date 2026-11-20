@@ -510,10 +510,19 @@ export class DrieRenderer {
 
 	_instances(mesh) {
 		const version = mesh.instanceMatrix.version;
-		if (mesh.__drieInstances === version && mesh.__drieCount === mesh.count) return;
+		const colors = mesh.instanceColor;
+		const colorVersion = colors ? colors.version : -1;
+		if (mesh.__drieInstances === version && mesh.__drieCount === mesh.count && mesh.__drieColors === colorVersion) return;
+		if (mesh.__drieInstances !== version || mesh.__drieCount !== mesh.count) {
+			N.instances(mesh.__drie, mesh.instanceMatrix.array, mesh.count);
+		}
+		// (instanceColor: the material's color times it, as three's)
+		if (colors && (mesh.__drieColors !== colorVersion || mesh.__drieCount !== mesh.count)) {
+			N.instanceColors(mesh.__drie, colors.array, Math.min(mesh.count, colors.count));
+		}
 		mesh.__drieInstances = version;
 		mesh.__drieCount = mesh.count;
-		N.instances(mesh.__drie, mesh.instanceMatrix.array, mesh.count);
+		mesh.__drieColors = colorVersion;
 	}
 
 	// Poses a skinned mesh: three's bone matrices (its skeleton is updated once a frame,

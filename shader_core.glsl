@@ -120,6 +120,9 @@ layout(binding=0) uniform vs_params {
 };
 
 @include_block vertex_common
+// the instance's color (InstancedMesh.set_color_at, three's instanceColor), linear; white
+// for meshes without (before the tangent: the same location in every program)
+in vec3 instance_color;
 #ifdef TANGENT
 in vec4 tangent;  // the tangents (BufferGeometry.tangents: glTF's TANGENT)
 #endif
@@ -138,9 +141,11 @@ out vec4 v_prev_clip;
 // lines: the distance along the line, for dashes (a line's vertex normal x holds it; lines
 // have no normals)
 out float v_line_distance;
+out vec3 v_instance_color;
 
 void main() {
     v_line_distance = normal.x;
+    v_instance_color = instance_color;
     if (!fetch_instance(inst_cull)) {
         // outside the clip volume: nothing drawn
         v_world_pos = vec3(0.0);
@@ -510,6 +515,7 @@ in float v_alpha;
 in vec4 v_clip;
 in vec4 v_prev_clip;
 in float v_line_distance;
+in vec3 v_instance_color;
 
 layout(location=0) out vec4 frag_color;
 #ifdef MRT
@@ -2005,6 +2011,7 @@ void main() {
     g_base = vec4(color.rgb, color.a);
     bool baked = (fl & 16) != 0;
     if ((fl & 1) != 0 && !baked) g_base.rgb *= v_color;
+    g_base.rgb *= v_instance_color;
     vec3 map_rgb = vec3(1.0);
     // parallax_map: where the view ray meets the height map, for all of the material's maps
     g_uv = v_uv;
@@ -2672,6 +2679,7 @@ in float v_alpha;
 in vec4 v_clip;
 in vec4 v_prev_clip;
 in float v_line_distance;
+in vec3 v_instance_color;
 
 out vec4 frag_color;
 
@@ -2704,7 +2712,7 @@ void main() {
     unread = v_tangent.x * 0.0;
 #endif
     frag_color = vec4(v_clip.w + unread + (v_normal + v_color + v_world_pos + v_clip.xyz + v_prev_clip.xyz).x * 0.0
-        + v_line_distance * 0.0, 0.0, 0.0, alpha);
+        + v_line_distance * 0.0 + v_instance_color.x * 0.0, 0.0, 0.0, alpha);
 }
 @end
 

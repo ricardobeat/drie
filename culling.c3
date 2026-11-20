@@ -212,8 +212,9 @@ fn int cull_view(Frustum* f) @private {
 
 // Culls the instances of `m` for view `view`; returns its job, or -1 if `m` is drawn whole.
 fn int cull_job(Mesh* m, int view) @private {
+    // (instance colors are not compacted with the matrices: drawn whole)
     if (!cull.active || view < 0 || !m.in_arena || !m.frustum_culled
-        || m.instance_count < CULL_MIN_INSTANCES) return -1;
+        || m.instance_count < CULL_MIN_INSTANCES || m.instance_colors.len()) return -1;
     int j             = (int)cull.jobs.len();
     Mat4 w            = m.matrix_world;
     BufferGeometry* g = m.geometry;
