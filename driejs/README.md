@@ -9,7 +9,16 @@ just build                                  # build out/driejs
 just run demos/webgl_geometries.js          # build and run it in a window
 just run --frames 3 --png shot.png demos/webgl_geometries.js   # offscreen
 just bench node                             # the benchmark on one runtime (`just` lists them)
+just thumbs                                 # render the demos' thumbnails into demos/thumbs/
+just run demos/index.js                     # pick a demo from a page of them
 ```
+
+`demos/index.js` shows every script in `demos/` as a thumbnail with its name. A click runs that
+demo in the same window's place (driejs starts itself again with the script), and Escape there
+comes back to the page, unless the demo holds the pointer, when Escape lets go of it first. The
+wheel and the arrow keys scroll. Thumbnails are not in git: `just thumbs` renders them (30
+frames in; `just thumbs 120 webgl_geometries` for another moment of one demo), and a demo
+without one shows as a grey tile.
 
 With `--png` (and not `--profile`), `performance.now()` runs on the frames' clock, 1/60 s a frame
 from 0, as three's screenshots are taken: a script that moves things by the time passed (a
