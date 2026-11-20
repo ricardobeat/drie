@@ -784,7 +784,7 @@ class Translator {
 	// picked from all of them)
 	element(n) {
 		const array = n.node;
-		if (nodeName(array) !== "UniformArrayNode") unsupported(`an element of a ${nodeName(array)}`);
+		if (nodeName(array) !== "UniformArrayNode") return this.component(n);
 		const elements = (this.arrays ??= new Map());
 		let ids = elements.get(array);
 		if (ids === undefined) {
@@ -807,6 +807,21 @@ class Translator {
 		const at = this.convert(this.node(index), T.int);
 		let picked = ids[ids.length - 1];
 		for (let i = ids.length - 2; i >= 0; i--) picked = N.nodeSelect(this.bin("==", at, this.num(i, T.int)), ids[i], picked);
+		return picked;
+	}
+
+	// vector.element(i): its i-th component (a matrix's column)
+	component(n) {
+		const v = this.node(n.node);
+		const type = this.type(v);
+		const count = COMPONENTS[type];
+		if (count === 16) unsupported("an element of a matrix");
+		if (count < 2) unsupported(`an element of a ${nodeName(n.node)}`);
+		const index = n.indexNode;
+		if (index.isConstNode && typeof index.value === "number") return this.swizzle(v, "xyzw"[index.value]);
+		const at = this.convert(this.node(index), T.int);
+		let picked = this.swizzle(v, "xyzw"[count - 1]);
+		for (let i = count - 2; i >= 0; i--) picked = N.nodeSelect(this.bin("==", at, this.num(i, T.int)), this.swizzle(v, "xyzw"[i]), picked);
 		return picked;
 	}
 

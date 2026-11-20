@@ -81,7 +81,7 @@ The translator covers:
 - `bumpMap`, as three's `dHdxy_fwd` and `perturbNormalArb`
 - `normalMap` in tangent space, on three's frame from the derivatives of the position and uv
   (not the geometry's tangents)
-- `uniformArray` elements, at a constant index or one worked out in the shader
+- `element()` of a `uniformArray` or a vector, at a constant index or one worked out in the shader
 - `cubeTexture` and `pmremTexture`, read from drie's equirectangular map of the cube map
 - `scene.backgroundNode`, and `scene.environmentNode` drawn into an environment map on the GPU
   (drie's `render_environment`)
