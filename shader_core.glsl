@@ -1787,11 +1787,17 @@ vec3 transmission_sample(vec3 exit, float rough, float ior) {
 
 // The ray bent by `ior` as it enters, through `thickness` meters of the volume (times the
 // object's scale): three's getVolumeTransmissionRay.
+// With RefractionModel.PLANE (ext_params.x bit 64) the volume is a wall `thickness` across:
+// a slanted ray crosses thickness / cos of it (up to 12 times as much, at the silhouette of
+// a curved wall), so it is shifted and tinted more toward the edges.
 vec3 transmission_ray(vec3 n, vec3 v, float thickness, float ior) {
     vec3 ray = refract(-v, n, 1.0 / ior);
     // total internal reflection: no way through
     if (dot(ray, ray) < 1e-8) return vec3(0.0);
-    return normalize(ray) * thickness * ext_params.z;
+    ray = normalize(ray);
+    float across = thickness * ext_params.z;
+    if ((int(ext_params.x + 0.5) & 64) != 0) across /= max(dot(ray, -n), 1.0 / 12.0);
+    return ray * across;
 }
 
 // Beer's law over `distance` meters (transmission_params.w: attenuation distance; 0: none).

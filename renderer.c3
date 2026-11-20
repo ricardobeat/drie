@@ -2431,6 +2431,8 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     for (int k = 0; k < slots.len; k++) bind.views[shaders::VIEW_TEX_EXT0 + k] = ready(slots[k]).view;
     bool backdrop = m == state.background;
     int ext_bits = backdrop ? 32 : 0;
+    // a transmission material whose volume is a wall (RefractionModel.PLANE)
+    if (mat.refraction_model == PLANE) ext_bits |= 64;
     // (the parallax map: white, none, where the material has none)
     bind.views[shaders::VIEW_TEX_PARALLAX] = ready(mat.parallax_map).view;
     bool vsm = vsm_on();
