@@ -864,7 +864,8 @@ fn void h_light_update(JsCtx ctx, void* udata)
 // shadow. A directional light's is one box `extent` meters from its target to each side (the
 // first such light has drie's sun map, the others a tile of the shadow atlas each), or with
 // `cascades` above 1 drie's cascaded shadow maps up to `far` from the camera (SunLight's); a
-// spot light's covers its cone (its angle, `focus` of it).
+// spot light's covers its cone (its angle, `focus` of it), a point light's all round it (six
+// maps).
 fn void h_light_shadow(JsCtx ctx, void* udata)
 {
     Object3D* o = get_object(num_arg(ctx, 0, -1));
@@ -887,6 +888,8 @@ fn void h_light_shadow(JsCtx ctx, void* udata)
         case SPOT:
             shadow = &((SpotLight*)l).shadow;
             shadow.focus = (float)num_arg(ctx, 11, 1);
+        case POINT:
+            shadow = &((PointLight*)l).shadow;
         default:
             return;
     }
@@ -897,9 +900,11 @@ fn void h_light_shadow(JsCtx ctx, void* udata)
     shadow.far = (float)num_arg(ctx, 5, 500);
     // three's normalBias is 0 unless set (three draws the back faces into the map instead);
     // drie's default keeps flat surfaces from shadowing themselves in a scene in meters, and is
-    // at least a texel of a directional light's box in a larger one
+    // at least a texel of a directional light's box in a larger one. A negative one (three's
+    // examples set it against shadows coming loose from what casts them) would push drie's
+    // lookups into the surface (drie's is per meter from the light): drie's default then.
     float normal_bias = (float)num_arg(ctx, 7, 0);
-    if (normal_bias != 0) {
+    if (normal_bias > 0) {
         shadow.normal_bias = normal_bias;
     } else if (l.light_type == DIRECTIONAL) {
         float texel = 2 * ((DirectionalLight*)l).shadow_extent / math::max(shadow.map_size, 1);

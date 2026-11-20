@@ -80,7 +80,7 @@ three.js API coverage:
 | Raycasting | ✅ | `Raycaster` against `Mesh`, `InstancedMesh`, `Lod` (per-triangle) |
 | Post-processing | ✅ | `EffectComposer`, `RenderPass`, `ShaderPass`, `output_pass`, `gtao_pass`, `taa_pass` |
 | Renderer | ✅ | `render_target`, tone mapping, frustum culling, `renderer.info`, MRT, compute passes |
-| Shadows | ⚠️ | `DirectionalLight` (the first: CSM; every other one: a tile of the shadow atlas) and `SpotLight` (1 live + cached atlas); PCF and VSM (`VSMShadowMap`); `PointLight` ❌ |
+| Shadows | ✅ | `DirectionalLight` (the first: CSM; every other one: a tile of the shadow atlas), `SpotLight` (1 live + cached atlas) and `PointLight` (six tiles of the atlas); PCF and VSM (`VSMShadowMap`); `alphaMap` and `alphaTest` cut holes in them |
 | Skeletons | ⚠️ | `Bone`, `Skeleton`, `SkinnedMesh` (CPU skinning); animation clips ❌ |
 | glTF (`drie::loaders`) | ⚠️ | `.glb` and `.gltf` on [cgltf](https://github.com/jkuhlmann/cgltf): meshes (sparse and quantized accessors, tangents, two uv sets), materials (with `KHR_materials_*` transmission, volume, ior, dispersion, specular, emissive_strength, clearcoat, sheen, iridescence, anisotropy, unlit), textures (embedded, files or `data:` URIs, their samplers, either uv set, `KHR_texture_transform`); skins, animations, morph targets, cameras, lights, Draco ❌ |
 | Quaternions / Animation | ❌ | XYZ Euler rotations only; no animation clips |
@@ -91,9 +91,10 @@ three.js API coverage:
 - Named arguments must be in declaration order (a C3 rule). For example, `color:` comes before `roughness:`.
 - Colors are plain sRGB hex `uint`s, not `Color` objects.
 - Rotations are XYZ Euler only (no quaternions or `rotation.order`).
-- No animation clips. Point lights cast no shadows (with PCF or VSM).
+- No animation clips.
 - Shadow lookups are pushed off the surface along its normal (`shadow.normal_bias`, scaled by
-  the slope and, for spot lights, the distance), with VSM too; `shadow.bias` is used by VSM only.
+  the slope and, for spot and point lights, the distance), with VSM too; `shadow.bias` is used by
+  VSM only. A negative `normalBias` from three keeps drie's default.
 - Only the first directional light gets cascades; every other shadowed one gets one box
   (`shadow_extent`) in a tile of the shadow atlas, redrawn every frame unless
   `shadow.auto_update` is off.
@@ -189,14 +190,15 @@ A material's maps besides `map`, `normal_map` and `arm_map` share six texture sl
 ### Lighting, Shadows & Global Illumination
 
 - **Light source radius:** `light.radius` softens close-range falloff on point and spot lights, and their highlights are the bulb's own shape (Karis' representative point with its energy normalization): a smooth surface mirrors a sharp disc as big as the bulb, a rough one gets the same light as from a point; `spot_light.specular_radius` sets the size seen in reflections. `just test lightsize`
-- **Tube lights:** `point_light.length` stretches a point light into a tube along its own x axis (`radius` thick): light from the whole segment (Karis' line irradiance) and long highlights of the tube's shape. No shadows (as point lights).
+- **Tube lights:** `point_light.length` stretches a point light into a tube along its own x axis (`radius` thick): light from the whole segment (Karis' line irradiance) and long highlights of the tube's shape. Its shadow is cast from its centre.
+- **Point light shadows:** `point_light.cast_shadow` (three's `PointLightShadow`) draws six maps around the light, one atlas tile each (`shadow.map_size`, `shadow.near`, `shadow.far`: `0` for the light's `distance`, or 50), every frame or, with `shadow.auto_update` off, once. `just test pointshadows`
 - **Cached static shadows:** `light.shadow.auto_update = false` (three.js `shadow.autoUpdate`) caches static shadow maps in the shared atlas (`renderer.shadow_atlas_capacity`).
 - **Variance shadow maps:** `renderer.shadow_type = VSM` (three.js `VSMShadowMap`; default `PCF`, three's `PCFSoftShadowMap`) blurs each spot and directional map into its moments (`shadow.radius`, `shadow.blur_samples`, `shadow.bias`), in RG32F where the GPU can draw and filter it, else RG16F.
 - **Several shadowed directional lights:** as in three.js, every directional light can cast a shadow: the first is the cascaded sun, each other one a box (`light.shadow_extent`) in a tile of the shadow atlas.
 - **Light maps:** `material.light_map` and `light_map_intensity` (three.js `lightMap`, `lightMapIntensity`) add baked light to the indirect irradiance, read from the uv set of the texture's `channel` (`1`: the geometry's `uv1`).
 - **Progressive light maps** (`lightmap.c3`): `drie::progressive_lightmap(renderer, res)` (three.js `ProgressiveLightMap`) bakes light into the objects' `uv1` a little at a time, from lights that may move (jittered, they give soft shadows); `renderer.render_bake` draws the samples.
 - **Cascaded shadow maps:** `DirectionalLight` supports 1–4 texel-snapped cascades with blending and debug visualization.
-- **Irradiance volume** (`irradiance.c3`): `scene.irradiance` (`IrradianceVolume`), a probe grid of indirect bounce light, filled by the application or by `renderer.bake_irradiance(scene, volume)` (three's `LightProbeGrid.bake`: six small faces drawn around each probe, optionally with bounces); `irradiance_grid(min, max, nx, ny, nz)` makes one by probe counts. `scene.irradiance_volumes` adds more (up to `MAX_IRRADIANCE_VOLUMES` in all), each lighting its own box in front of the ones before it.
+- **Irradiance volume** (`irradiance.c3`): `scene.irradiance` (`IrradianceVolume`), a probe grid of indirect bounce light, filled by the application or by `renderer.bake_irradiance(scene, volume)` (three's `LightProbeGrid.bake`: six small faces drawn around each probe, optionally with bounces); `irradiance_grid(min, max, nx, ny, nz)` makes one by probe counts. `scene.irradiance_volumes` adds more (up to `MAX_IRRADIANCE_VOLUMES` in all), each lighting its own box in front of the ones before it and fading out over half a cell outside it, so a volume the size of a room lights its walls, floor and ceiling fully.
 - **Radiance Cascades GI** (`radiance.c3`): `scene.radiance` (`RadianceCascades`) computes real-time GPU GI and emissive bounce, replacing ambient/hemisphere lights and `scene.irradiance` inside its box.
 
 <details>
@@ -207,7 +209,7 @@ A material's maps besides `map`, `normal_map` and `arm_map` share six texture sl
 | Light radius | `light.radius`, `spot_light.specular_radius` | `specular_radius` defaults to `radius` when `0` |
 | Tube lights | `point_light.length` (m, along the light's x axis) | Intensity spread along the tube; falls off as the square of the distance whatever `decay`; `distance` cuts off from its nearest point |
 | Static shadow atlas | `light.shadow.auto_update = false`, `light.shadow.needs_update = true` | Set `needs_update = true` to redraw |
-| Shadow filtering | `renderer.shadow_type` (`PCF`, `VSM`), `light.shadow.radius` (`2`), `shadow.blur_samples` (`8`, VSM's blur taps), `shadow.bias` (`0`, VSM only; PCF uses `shadow.normal_bias`) | Point lights cast no shadows with either |
+| Shadow filtering | `renderer.shadow_type` (`PCF`, `VSM`), `light.shadow.radius` (`2`), `shadow.blur_samples` (`8`, VSM's blur taps), `shadow.bias` (`0`, VSM only; PCF uses `shadow.normal_bias`) | |
 | Shadow atlas capacity | `renderer.shadow_atlas_capacity` (`8`) | Tiles the atlas has room for at first: one per spot light with `shadow.auto_update = false` and per shadowed directional light besides the first; grows to what they need, up to 64 |
 | Light maps | `material.light_map` (`texture.channel = 1` for `uv1`), `material.light_map_intensity` | For `BASIC`, the map replaces the indirect light of 1 (as map / PI) |
 | Progressive light map | `drie::progressive_lightmap(renderer, res)` (`1024`), `plm.scene.add(light)`, `plm.add_objects(objects, pack:)`, `plm.update(camera, blend_window:, blur_edges:)` (`100`, `true`), `plm.texture(i)`, `plm.show_debug(visible)`, `plm.dispose()` | `add_objects` sets `light_map = texture(1)`, shadows on, and packs their `uv` into `uv1` (potpack; `pack: false` keeps your `uv1`); lights passed to it go to `plm.scene`; call `update` before `render()` |

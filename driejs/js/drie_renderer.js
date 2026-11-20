@@ -703,11 +703,11 @@ export class DrieRenderer {
 			N.lightUpdate(light.__drie, light.color.getHex(), light.intensity, ground ? ground.getHex() : 0,
 				light.width ?? 0, light.height ?? 0);
 		}
-		if (!light.isDirectionalLight && !light.isSpotLight && !light.isSunLight) return;
+		if (!light.isDirectionalLight && !light.isSpotLight && !light.isSunLight && !light.isPointLight) return;
 		const shadow = light.shadow;
 		const cam = shadow.camera;
 		const cast = this.shadowMap.enabled && light.castShadow;
-		// (a spot light's shadow covers its cone: no box)
+		// (a spot light's shadow covers its cone, a point light's all round it: no box)
 		const extent = light.isDirectionalLight ? Math.max(Math.abs(cam.right - cam.left), Math.abs(cam.top - cam.bottom)) / 2 : 0;
 		const focus = shadow.focus ?? 1;
 		// SunLight's cascades (SunLightShadow's practical splits and fade: drie's split_lambda
