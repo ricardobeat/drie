@@ -8,8 +8,9 @@ alias EventListener = fn void(SappEvent* event);
 alias Event = SappEvent;
 alias KeyCode = SappKeycode;
 
-// Defaults of Renderer.max_lights and Renderer.shadow_atlas_capacity.
+// Defaults of Renderer.max_lights, max_rect_area_lights and shadow_atlas_capacity.
 const int DEFAULT_MAX_LIGHTS            = 1024;
+const int DEFAULT_MAX_RECT_AREA_LIGHTS  = 16;
 const int DEFAULT_SHADOW_ATLAS_CAPACITY = 8;
 // The most tiles the shadow atlas has.
 const int MAX_ATLAS_TILES @local        = 64;
@@ -335,6 +336,10 @@ struct Renderer {
     // Extension: how many lights of each kind (directional, point, spot) a render takes at
     // most; the buffers that hold them grow up to it. 0 = no limit.
     int max_lights;
+    // Extension: how many RectAreaLights a render takes at most (16). Every one of them lights
+    // every pixel of a standard material in view (three's have no reach to cut them off, so
+    // they are not sorted into the clusters).
+    int max_rect_area_lights;
     // Extension: how many tiles the shadow atlas has room for at first: one per spot light with
     // shadow.auto_update off, and per shadowed directional light besides the first; it grows to
     // what they need, up to 64 (the atlas has max(4, sqrt(n)) columns of tiles).
@@ -749,6 +754,7 @@ fn Renderer* renderer(bool antialias = true, int width = 800, int height = 600, 
         .shadow_map_auto_update = true,
         .depth_prepass_pixels = 1.5f,
         .max_lights = DEFAULT_MAX_LIGHTS,
+        .max_rect_area_lights = DEFAULT_MAX_RECT_AREA_LIGHTS,
         .shadow_atlas_capacity = DEFAULT_SHADOW_ATLAS_CAPACITY,
         .shadow_map_scale = 1,
         .shadow_sample_scale = 1,
@@ -2020,6 +2026,26 @@ fn FsParams build_light_params(Scene* scene, Camera* camera, SpotLight* caster) 
                 LightBounds b = point_light_bounds(pl);
                 if (l.intensity <= 0) b = { { }, 0 };
                 g.point_bounds.push(b);
+            case RECT_AREA:
+                // three's: the color times the intensity (nits), and half of each side along
+                // the light's x and y, turned as it is (without its scale)
+                RectAreaLight* ra = (RectAreaLight*)l;
+                if (l.intensity <= 0 || !g.room(g.rects.len(), r.max_rect_area_lights)) break;
+                Mat4 m = l.matrix_world;
+                Vector3 x = { m[0][0], m[0][1], m[0][2] };
+                Vector3 y = { m[1][0], m[1][1], m[1][2] };
+                float xl = x.length();
+                float yl = y.length();
+                Vector3 hw = xl > 0 ? x * (ra.width * 0.5f / xl) : (Vector3) { };
+                Vector3 hh = yl > 0 ? y * (ra.height * 0.5f / yl) : (Vector3) { };
+                // (as a point light's three vectors: see ltc_vec4 in shader_core.glsl)
+                g.rects.push(
+                    {
+                        .pos = { ...m.get_position(), hw.x },
+                        .color = { ...c, hw.y },
+                        .params = { hw.z, hh.x, hh.y, hh.z },
+                    }
+                );
             case SPOT:
                 SpotLight* sl = (SpotLight*)l;
                 if (!g.room(g.spots.len(), r.max_lights)) break;
@@ -2083,12 +2109,13 @@ fn FsParams build_light_params(Scene* scene, Camera* camera, SpotLight* caster) 
     int ndir         = (int)g.dirs.len();
     int npoint       = (int)g.points.len();
     int nspot        = (int)g.spots.len();
+    int nrect        = (int)g.rects.len();
     ClusterGrid grid = cluster_grid(camera);
     p.cluster_view_proj = camera.projection_matrix.mul(camera.matrix_world_inverse);
     p.cluster_grid = { CLUSTER_X, CLUSTER_Y, CLUSTER_Z, 0 };
     p.cluster_depth = { grid.near, grid.log_scale, grid.far, 0 };
     g.upload(&grid, r.assign_clusters, r.check_compute);
-    p.counts = { ndir, npoint, nspot, 0 };
+    p.counts = { ndir, npoint, nspot, nrect };
     if (scene.irradiance) {
         IrradianceVolume* v = scene.irradiance;
         Vector3 size        = v.max - v.min;

@@ -72,7 +72,7 @@ three.js API coverage:
 | Geometry | ✅ | `box`, `plane`, `sphere`, `cylinder`, `cone`, `torus`, `lathe`, `buffer_geometry`, `merge` |
 | Materials | ✅ | `MeshBasic`, `MeshLambert`, `MeshPhong`, `MeshStandard`, `MeshNormal`, `MeshPhysical` (transmission, volume, IOR, dispersion, specular, clearcoat, sheen, iridescence, anisotropy), tangents (a geometry's own, or from the screen derivatives), parallax mapping (`parallaxUV`), `depthTest` / `depthWrite`, shader hooks (`onBeforeCompile`) |
 | Textures | ✅ | `load_texture` (PNG/JPEG), `data_texture`, `canvas_texture`, mipmaps, anisotropy, `repeat` / `offset` / `rotation` / `center` per map, `channel` (a geometry's second uv set, `uv1`), `nearest` (three's `NearestFilter` magnification) |
-| Lights | ✅ | `AmbientLight`, `HemisphereLight`, `DirectionalLight`, `PointLight`, `SpotLight`; light maps (`lightMap`, `lightMapIntensity`), `ProgressiveLightMap` |
+| Lights | ✅ | `AmbientLight`, `HemisphereLight`, `DirectionalLight`, `PointLight`, `SpotLight`, `RectAreaLight` (standard and physical materials, no shadows, as three; up to `renderer.max_rect_area_lights`); light maps (`lightMap`, `lightMapIntensity`), `ProgressiveLightMap` |
 | Lighting addons | ✅ | Clustered forward lighting (`ClusteredLighting`), irradiance volume (`LightProbeGrid`) |
 | Reflections | ✅ | Box-projected env maps, `CubeCamera` capture, SSR (`SSRNode`), planar `Reflector` |
 | Fog | ✅ | `Fog`, `FogExp2` |
@@ -286,6 +286,14 @@ TBD. Currently the demo, with all advanced features on, runs at 40-60FPS on a Ma
 `kernels.c3` (the compute shaders, from `kernels.glsl`), `output.c3`, `gtao.c3` and `taa.c3` (the
 post-processing passes), `radiance_cs.c3`, `vsm.c3` (the variance shadow maps' blur) and `lightmap.c3` (the progressive light map's seams pass); the recipe then fixes sokol-shdc's storage image slot constants with macOS `sed -i ''`. An application with its own copy of the material
 shader generates it into its own sources, and regenerates it whenever `shader_core.glsl` changes.
+
+## RectAreaLight's tables
+
+`generated/ltc.c3` holds the linearly transformed cosines `RectAreaLight` is shaded with (Heitz,
+Dupuy, Hill and Neubelt 2016, [ltc_code](https://github.com/selfshadow/ltc_code)), taken from
+three.js's `RectAreaLightTexturesLib.js` (MIT) by `just ltc` (`third_party/ltc/ltc.py`). The shader
+has no view slot left for textures of their own: a frame with rect area lights appends the tables
+(128 KB) to the point lights' buffer, and the shader filters them itself.
 
 ## cgltf
 

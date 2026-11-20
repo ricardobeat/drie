@@ -668,6 +668,7 @@ enum LightType {
     DIRECTIONAL,
     POINT,
     SPOT,
+    RECT_AREA,
 }
 
 struct Light {
@@ -795,6 +796,18 @@ struct SpotLight {
     LightShadow shadow;
 }
 
+// Like three's RectAreaLight: a lit rectangle (a window, a light panel), `width` by `height`
+// meters, shining from its front, its -z (point it with look_at, as three). Its intensity is
+// in nits, its power in lumens intensity * width * height * PI (three r155+). Lights
+// MeshStandardMaterial (and its physical layers: the clear coat too) only, as three, with
+// linearly transformed cosines (Heitz et al. 2016, three's tables); no shadows. The light's
+// world rotation turns it; its scale is left out. Renderer.max_rect_area_lights of them at most.
+struct RectAreaLight {
+    inline Light light;
+    float width;
+    float height;
+}
+
 fn void Light.init_light(&self, LightType t, Color color, float intensity) {
     self.init(LIGHT);
     self.light_type = t;
@@ -833,6 +846,21 @@ fn PointLight* point_light(Color color = 0xffffff, float intensity = 1, float di
     l.distance = distance;
     l.decay = decay;
     return l;
+}
+
+fn RectAreaLight* rect_area_light(Color color = 0xffffff, float intensity = 1, float width = 10, float height = 10) {
+    RectAreaLight* l = mem::new(RectAreaLight);
+    l.init_light(RECT_AREA, color, intensity);
+    l.width = width;
+    l.height = height;
+    return l;
+}
+
+// three's RectAreaLight.power: the light it gives off in lumens.
+fn float RectAreaLight.power(&self) => self.intensity * self.width * self.height * (float)PI;
+
+fn void RectAreaLight.set_power(&self, float power) {
+    self.intensity = power / (self.width * self.height * (float)PI);
 }
 
 fn SpotLight* spot_light(

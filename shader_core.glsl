@@ -331,7 +331,7 @@ layout(binding=1) uniform fs_params {
                        //   tiles in fog_volume (0: no volumetric fog, the fog is worked out here)
     vec4 fog_slices;   // x = where its slices start (m of view depth), y = slices per unit of
                        //   log(depth / x)
-    vec4 counts;       // x = directional lights, y = point lights, z = spot lights (all of them, in
+    vec4 counts;       // x = directional lights, y = point lights, z = spot lights, w = rect area lights (all of them, in
                        //   dir_lights, point_lights and spot_lights)
     mat4 cluster_view_proj; // world -> the camera's clip space, for the fragment's cluster
     vec4 cluster_grid;      // xyz = clusters across, up and in depth
@@ -809,6 +809,59 @@ vec3 direct(int mode, vec3 n, vec3 v, vec3 l, float dist, vec3 radiance, vec3 di
         spec += irradiance * fresnel * vis * d * norm;
     }
     return result;
+}
+
+// RectAreaLight, as three's (lights_physical_pars_fragment: LTC_Uv, LTC_Evaluate and
+// RE_Direct_RectArea_Physical), with linearly transformed cosines (Heitz, Dupuy, Hill and
+// Neubelt 2016). The lights are in point_lights after the point lights, three vec4s each:
+// pos = centre + half width's x, color = color * intensity + half width's y, params = half
+// width's z + half height; and after them the two LTC tables (clusters.c3's ltc_entries),
+// read here with the bilinear filter three's textures have.
+vec4 ltc_vec4(int base, int q) {
+    gpu_point_light e = points[base + q / 3];
+    int m = q - (q / 3) * 3;
+    return m == 0 ? e.pos : (m == 1 ? e.color : e.params);
+}
+
+void ltc_tables(int base, vec3 n, vec3 v, float rough, out vec4 t1, out vec4 t2) {
+    // three's LTC_Uv: roughness across, sqrt(1 - n.v) down, at the texels' centres
+    vec2 uv = vec2(rough, sqrt(1.0 - clamp(dot(n, v), 0.0, 1.0))) * (63.0 / 64.0) + 0.5 / 64.0;
+    vec2 p = uv * 64.0 - 0.5;
+    vec2 f = fract(p);
+    ivec2 i0 = clamp(ivec2(floor(p)), ivec2(0), ivec2(63));
+    ivec2 i1 = min(i0 + 1, ivec2(63));
+    int a = i0.y * 64 + i0.x;
+    int b = i0.y * 64 + i1.x;
+    int c = i1.y * 64 + i0.x;
+    int d = i1.y * 64 + i1.x;
+    t1 = mix(mix(ltc_vec4(base, 2 * a), ltc_vec4(base, 2 * b), f.x), mix(ltc_vec4(base, 2 * c), ltc_vec4(base, 2 * d), f.x), f.y);
+    t2 = mix(mix(ltc_vec4(base, 2 * a + 1), ltc_vec4(base, 2 * b + 1), f.x), mix(ltc_vec4(base, 2 * c + 1), ltc_vec4(base, 2 * d + 1), f.x), f.y);
+}
+
+vec3 ltc_edge(vec3 v1, vec3 v2) {
+    float x = dot(v1, v2);
+    float y = abs(x);
+    float a = 0.8543985 + (0.4965155 + 0.0145206 * y) * y;
+    float b = 3.4175940 + (4.1616724 + y) * y;
+    float k = a / b;
+    float theta_sintheta = x > 0.0 ? k : 0.5 * inversesqrt(max(1.0 - x * x, 1e-7)) - k;
+    return cross(v1, v2) * theta_sintheta;
+}
+
+// How much of the cosine lobe, transformed by m_inv, the rectangle (corners q, from the
+// surface) covers: three's LTC_Evaluate.
+float ltc_evaluate(vec3 n, vec3 v, mat3 m_inv, vec3 q[4]) {
+    vec3 t1 = normalize(v - n * dot(v, n));
+    vec3 t2 = -cross(n, t1);
+    mat3 m = m_inv * transpose(mat3(t1, t2, n));
+    vec3 c0 = normalize(m * q[0]);
+    vec3 c1 = normalize(m * q[1]);
+    vec3 c2 = normalize(m * q[2]);
+    vec3 c3 = normalize(m * q[3]);
+    vec3 f = ltc_edge(c0, c1) + ltc_edge(c1, c2) + ltc_edge(c2, c3) + ltc_edge(c3, c0);
+    // three's LTC_ClippedSphereFormFactor
+    float l = length(f);
+    return max((l * l + f.z) / (l + 1.0), 0.0);
 }
 
 // Length of the part of the segment a-b that lies in the fog (outside the fog-free box).
@@ -2279,6 +2332,43 @@ void main() {
             radiance *= fog_transmittance(fog_distance(spots[i].pos.xyz, v_world_pos));
             radiance *= shadow(i, geo_n);
             outc += direct(mode, n, v, l, d, radiance, diffuse_color, spec);
+        }
+        int nrect = int(counts.w);
+        // three's RectAreaLight lights standard and physical materials only
+        if (mode == 3 && nrect > 0) {
+            int ltc_base = int(counts.y) + nrect;
+            float rough = max(g_rough, 0.0525);
+            vec4 t1;
+            vec4 t2;
+            ltc_tables(ltc_base, n, v, rough, t1, t2);
+            mat3 m_inv = mat3(vec3(t1.x, 0.0, t1.y), vec3(0.0, 1.0, 0.0), vec3(t1.z, 0.0, t1.w));
+            vec3 fresnel = g_f0 * t2.x + (vec3(g_f90) - g_f0) * t2.y;
+            mat3 cc_inv = mat3(1.0);
+            float cc_fresnel = 0.0;
+            if (g_clearcoat > 0.0) {
+                vec4 c1;
+                vec4 c2;
+                ltc_tables(ltc_base, g_clearcoat_n, v, max(g_clearcoat_rough, 0.0525), c1, c2);
+                cc_inv = mat3(vec3(c1.x, 0.0, c1.y), vec3(0.0, 1.0, 0.0), vec3(c1.z, 0.0, c1.w));
+                cc_fresnel = 0.04 * c2.x + 0.96 * c2.y;
+            }
+            for (int k = 0; k < nrect; k++) {
+                gpu_point_light ra = points[int(counts.y) + k];
+                vec3 hw = vec3(ra.pos.w, ra.color.w, ra.params.x);
+                vec3 hh = ra.params.yzw;
+                vec3 to = ra.pos.xyz - v_world_pos;
+                // behind the light (it shines from its front only)
+                if (dot(cross(hw, hh), to) < 0.0) continue;
+                vec3 q[4];
+                q[0] = to + hw - hh;
+                q[1] = to - hw - hh;
+                q[2] = to - hw + hh;
+                q[3] = to + hw + hh;
+                vec3 c = ra.color.rgb * fog_transmittance(fog_distance(ra.pos.xyz, v_world_pos));
+                spec += c * fresnel * ltc_evaluate(n, v, m_inv, q);
+                outc += c * diffuse_color * ltc_evaluate(n, v, mat3(1.0), q);
+                if (g_clearcoat > 0.0) g_clearcoat_direct += c * cc_fresnel * ltc_evaluate(g_clearcoat_n, v, cc_inv, q);
+            }
         }
         spec *= ao;
         // Material.map_emissive: the color map glows too
