@@ -605,7 +605,9 @@ enum NodeStage : char @local {
     FRAGMENT,
 }
 
-// The engine's programs that a node material has its own builds of (see shader_core.glsl).
+// The material shader's programs (see shader_core.glsl): a node material has its own builds
+// of all but the unlit ones (UNLIT set in the main ones), which only the engine's basic
+// materials draw with.
 enum NodeVariant : char {
     MAIN,
     OPAQUE,
@@ -615,6 +617,10 @@ enum NodeVariant : char {
     MRT_VSM,
     DEPTH,
     SHADOW,
+    UNLIT,
+    UNLIT_MRT,
+    UNLIT_VSM,
+    UNLIT_MRT_VSM,
 }
 
 const int NODE_PARAMS = 32;
@@ -637,7 +643,7 @@ struct NodeProgram {
     String specular_body;
     bool cuts;               // color_node or opacity_node can cut holes: a discard, or alpha
                              // (with the material's alpha_test), which the shadow maps cut too
-    SgShader[8] shaders;     // by NodeVariant
+    SgShader[NodeVariant::len] shaders;  // by NodeVariant
     HashMap{ulong, SgPipeline} pipelines;
     SgPipeline shadow_pipeline;
     // its pipelines being compiled in the background (sg_warm_begin), by their pipelines' keys:
@@ -676,6 +682,8 @@ extern fn int sg_warm_begin(SgShaderDesc* shader, SgPipelineDesc* pipeline) @cna
 extern fn int sg_warm_state(int job) @cname("sg_warm_state");
 extern fn void sg_warm_end(int job) @cname("sg_warm_end");
 extern fn int sg_warm_shader_begin(SgShaderDesc* shader) @cname("sg_warm_shader_begin");
+extern fn int sg_warm_pipeline_begin(SgShader shader, SgShaderDesc* shader_desc, SgPipelineDesc* pipeline)
+    @cname("sg_warm_pipeline_begin");
 
 // A new one each render (Renderer.render): what NodeProgram.busy says holds for all of a
 // render's passes, so that a program the depth prepass left out is left out of the main pass

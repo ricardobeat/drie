@@ -34,7 +34,7 @@
 module drie;
 import std::io, std::collections::list, sokol::sg;
 
-const String PIPELINE_CACHE_HEADER @local = "drie-pipelines 2\n";
+const String PIPELINE_CACHE_HEADER @local = "drie-pipelines 3\n";
 // pipelines compiled at once while a cache loads
 const int PIPELINE_CACHE_JOBS @local = 6;
 
@@ -54,6 +54,8 @@ struct PipelineRecord @private {
     bool depth_test;
     bool depth_write;
     bool tangents;
+    // a basic material's unlit program (unlit_of)
+    bool unlit;
     bool vsm;
     // the render target: 0 samples for the window's
     int target_samples;
@@ -65,7 +67,8 @@ fn bool PipelineRecord.same(&self, PipelineRecord* o) {
     return self.program == o.program && self.shadow == o.shadow && self.side == o.side
         && self.transparent == o.transparent && self.wireframe == o.wireframe && self.alpha_test == o.alpha_test
         && self.blend == o.blend && self.kind == o.kind && self.depth_test == o.depth_test
-        && self.depth_write == o.depth_write && self.tangents == o.tangents && self.vsm == o.vsm
+        && self.depth_write == o.depth_write && self.tangents == o.tangents && self.unlit == o.unlit
+        && self.vsm == o.vsm
         && self.target_samples == o.target_samples && self.target_format == o.target_format
         && self.target_mrt == o.target_mrt;
 }
@@ -126,12 +129,13 @@ fn void PipelineWarmup.start(&self, NodeVariant v, bool tangents, SgPipelineDesc
 
 // The pipelines (those made so far), as the text load_pipeline_cache takes, in `a`'s memory:
 //
-//   drie-pipelines 2
+//   drie-pipelines 3
 //   N <cuts> <7 lengths>                  a node program, numbered from 0 in the order listed,
 //   <its 7 hooks' bodies, one after the other (NODE_HOOKS)>
 //   S <program>                           a shadow map's pipeline (-1: the engine's program)
 //   P <program> <side> <transparent> <wireframe> <alpha_test> <blend> <kind> <depth_test>
 //     <depth_write> <tangents> <vsm> <target samples, 0: the window> <target format> <mrt>
+//     <unlit>
 fn String Renderer.pipeline_cache(&self, Allocator a) {
     DString out = dstring::new(a);
     out.append(PIPELINE_CACHE_HEADER);
@@ -164,10 +168,10 @@ fn String Renderer.pipeline_cache(&self, Allocator a) {
                 out.appendf("S %d\n", program);
                 continue;
             }
-            out.appendf("P %d %d %d %d %d %d %d %d %d %d %d %d %d %d\n", program, r.side.ordinal, r.transparent ? 1 : 0,
-                r.wireframe ? 1 : 0, r.alpha_test ? 1 : 0, r.blend, r.kind.ordinal, r.depth_test ? 1 : 0,
-                r.depth_write ? 1 : 0, r.tangents ? 1 : 0, r.vsm ? 1 : 0, r.target_samples, (uint)r.target_format,
-                r.target_mrt ? 1 : 0);
+            out.appendf("P %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d\n", program, r.side.ordinal,
+                r.transparent ? 1 : 0, r.wireframe ? 1 : 0, r.alpha_test ? 1 : 0, r.blend, r.kind.ordinal,
+                r.depth_test ? 1 : 0, r.depth_write ? 1 : 0, r.tangents ? 1 : 0, r.vsm ? 1 : 0, r.target_samples,
+                (uint)r.target_format, r.target_mrt ? 1 : 0, r.unlit ? 1 : 0);
         }
     };
     return out.str_view();
@@ -204,7 +208,7 @@ fn int Renderer.load_pipeline_cache(&self, String text) {
             if (catch end) break;
             String[] f = text[at:(usz)end].tsplit(" ");
             at += (usz)end + 1;
-            int[14] n;
+            int[15] n;
             foreach (i, x : f[1..]) {
                 if (i < n.len) n[i] = x.to_int() ?? -1;
             }
@@ -223,7 +227,7 @@ fn int Renderer.load_pipeline_cache(&self, String text) {
                     if (f.len != 2 || n[0] >= (int)programs.len()) return added;
                     if (w.add({ .program = n[0] < 0 ? null : programs[n[0]], .shadow = true })) added++;
                 case "P":
-                    if (f.len != 15 || n[0] >= (int)programs.len()) return added;
+                    if (f.len != 16 || n[0] >= (int)programs.len()) return added;
                     if (n[1] < 0 || n[1] > Side.DOUBLE_SIDE.ordinal || n[5] < 0
                         || n[6] < 0 || n[6] > DrawKind.DEPTH.ordinal || n[11] < 0) {
                         continue;
@@ -243,6 +247,7 @@ fn int Renderer.load_pipeline_cache(&self, String text) {
                         .target_samples = n[11],
                         .target_format = (SgPixelFormat)(uint)n[12],
                         .target_mrt = n[13] == 1,
+                        .unlit = n[14] == 1,
                     };
                     // (a program for tangents only where the renderer has them)
                     if (r.tangents && !r.program && !has_tangent_programs()) continue;
@@ -335,6 +340,6 @@ fn void Renderer.pump_pipeline_cache(&self) {
         self.shadow_type = r.vsm ? ShadowType.VSM : shadow_type == VSM ? ShadowType.PCF : shadow_type;
         RenderTarget target = { .samples = r.target_samples, .format = r.target_format, .mrt = r.target_mrt };
         (void)get_pipeline(r.side, r.transparent, r.wireframe, r.target_samples ? &target : null, r.alpha_test,
-            r.blend, r.kind, r.depth_test, r.depth_write, r.tangents, r.program);
+            r.blend, r.kind, r.depth_test, r.depth_write, r.tangents, r.program, r.unlit);
     }
 }
