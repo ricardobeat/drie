@@ -13,9 +13,12 @@ just thumbs                                 # render the demos' thumbnails into 
 just run demos/index.js                     # pick a demo from a page of them
 ```
 
-`demos/index.js` shows every script in `demos/` as a thumbnail with its name. A click runs that
-demo in the same window's place (driejs starts itself again with the script), and Escape there
-comes back to the page, unless the demo holds the pointer, when Escape lets go of it first. The
+`demos/index.js` shows every script in `demos/` as a thumbnail with its name. A click loads that
+demo's script in the same process and window, in the page's place, and Escape there loads the
+page again, unless the demo holds the pointer, when Escape lets go of it first. The script
+that leaves loses its animation loop, timers and event listeners, and the next one draws with
+the same renderer; what the old one made in drie (meshes, textures) stays in memory until
+driejs quits. The
 wheel and the arrow keys scroll. Thumbnails are not in git: `just thumbs` renders them (30
 frames in; `just thumbs 120 webgl_geometries` for another moment of one demo), and a demo
 without one shows as a grey tile.

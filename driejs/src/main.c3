@@ -173,12 +173,37 @@ fn float[] floats_arg(JsCtx ctx, uint i)
 // Scene graph
 // ----------------------------------------------------------------------------
 
+Renderer* first_renderer;
+double first_renderer_id;
+bool reuse_renderer;
+
 fn void h_renderer(JsCtx ctx, void* udata)
 {
     String title = ctx.arg(3).as_string() ?? "three.js";
+    // a script that took another's place (switch_script) draws with the renderer the window
+    // was opened with, set back to how a new one is
+    if (reuse_renderer && first_renderer)
+    {
+        reuse_renderer = false;
+        Renderer* r = first_renderer;
+        r.set_clear_color(0x000000);
+        r.clear_alpha = 1;
+        r.tone_mapping = NO_TONE_MAPPING;
+        r.tone_mapping_exposure = 1;
+        r.transmission_resolution_scale = 1;
+        r.shadow_type = PCF;
+        ctx.ret_number(first_renderer_id);
+        return;
+    }
     Renderer* r = drie::renderer(antialias: bool_arg(ctx, 0, true), width: (int)num_arg(ctx, 1, 1280),
                                         height: (int)num_arg(ctx, 2, 720), title: title);
-    ctx.ret_number(@reg(renderers, r, RENDERER_BASE));
+    double id = @reg(renderers, r, RENDERER_BASE);
+    if (!first_renderer)
+    {
+        first_renderer = r;
+        first_renderer_id = id;
+    }
+    ctx.ret_number(id);
 }
 
 fn void h_scene(JsCtx ctx, void* udata)
@@ -1350,10 +1375,13 @@ fn void h_now(JsCtx ctx, void* udata)
 // the first second has passed). The first call puts the panel over the picture.
 double[6] stats_values;
 bool stats_shown;
+// (false once another script takes this one's place: switch_script)
+bool stats_live;
 
 fn void h_stats(JsCtx ctx, void* udata)
 {
     for (uint i = 0; i < stats_values.len; i++) stats_values[i] = num_arg(ctx, i, -1);
+    stats_live = true;
     if (stats_shown) return;
     stats_shown = true;
     drie::add_overlay(&draw_stats);
@@ -1363,6 +1391,7 @@ fn void h_stats(JsCtx ctx, void* udata)
 // corner, each with the lowest and highest so far.
 fn void draw_stats()
 {
+    if (!stats_live) return;
     ui::setup();
     float h = sapp::heightf();
     // about 720 canvas units high: half the size of the menu text
@@ -1484,36 +1513,74 @@ fn void h_files(JsCtx ctx, void* udata)
     ctx.ret_string(names.str_view());
 }
 
-extern fn int execv(ZString path, ZString* argv);
-
-String exe_path;
-// --back: the script Escape goes back to
+// The script to load in this one's place at the next frame (run(), or Escape going back), and
+// the one Escape goes back to ("": none).
+String pending_script;
 String back_path;
 
-// Runs `script` in this program's place (the same executable, started again), with `back` the
-// script Escape returns to ("": none).
-fn void relaunch(String script, String back)
-{
-    ZString[8] argv;
-    int n;
-    argv[n++] = exe_path.zstr_tcopy();
-    if (!jit) argv[n++] = "--no-jit";
-    if (back.len)
-    {
-        argv[n++] = "--back";
-        argv[n++] = back.zstr_tcopy();
-    }
-    argv[n++] = script.zstr_tcopy();
-    execv(argv[0], &argv);
-    io::eprintfn("could not run %s", script);
-}
-
-// run(script): the script in this one's place; Escape there comes back to this one
+// run(script): the script in this one's place, in the same window, from the next frame on;
+// Escape there comes back to this one
 fn void h_run(JsCtx ctx, void* udata)
 {
     String? script = ctx.arg(0).as_string();
     if (catch script) { ctx.throw_error(TYPE, "run: expected a script"); return; }
-    relaunch(script, script_path);
+    pending_script = script.copy(mem);
+    back_path = script_path;
+}
+
+// Evaluates the module at `path` and lets what it started while setting up settle (promises,
+// timers before there is an animation loop).
+fn bool load_script(String path)
+{
+    char[]? source = file::load_temp(path);
+    if (catch source)
+    {
+        io::eprintfn("cannot read %s", path);
+        return false;
+    }
+    JsValue? loaded = js.eval_module((String)source, path);
+    if (catch loaded)
+    {
+        io::eprintfn("%s:%d: %s", path, js.last_error_line(), js.last_error());
+        return false;
+    }
+    js.release(loaded);
+    if (catch js.get_runtime().drain_microtasks())
+    {
+        io::eprintfn("uncaught error in a promise job: %s", js.last_error());
+        return false;
+    }
+    wait_for_timers();
+    return true;
+}
+
+// Puts the script at `path` in the running one's place: the running one's animation loop,
+// timers, event listeners and page (js/dom.js, __drieReset) go, its stats panel and the
+// pointer lock too; what it made in drie stays in memory. False if the new one fails or
+// starts no animation loop.
+fn bool switch_script(String path)
+{
+    if (!js_loop.is_empty()) js.release(js_loop);
+    js_loop = {};
+    loop_renderer = null;
+    clear_timers();
+    stats_live = false;
+    if (sapp::isvalid()) sapp::lock_mouse(false);
+    JsValue? global = js.global();
+    if (try global)
+    {
+        JsValue? reset = js.get(global, "__drieReset");
+        if (try reset)
+        {
+            JsValue? outcome = js.call(reset, {});
+            if (try outcome) js.release(outcome);
+            js.release(reset);
+        }
+        js.release(global);
+    }
+    reuse_renderer = true;
+    script_path = path;
+    return load_script(path) && !js_loop.is_empty() && loop_renderer != null;
 }
 
 // The loop starts once the script has finished, so promises made while it set up (texture
@@ -1539,6 +1606,18 @@ fn void h_set_animation_loop(JsCtx ctx, void* udata)
 fn bool js_frame(double time_ms)
 {
     if (fixed_clock >= 0) fixed_clock = time_ms;
+    if (pending_script.len)
+    {
+        String next = pending_script;
+        pending_script = "";
+        if (!switch_script(next))
+        {
+            // (back to the script that asked for it, if there is one)
+            String back = back_path;
+            back_path = "";
+            if (!back.len || !switch_script(back)) return false;
+        }
+    }
     fire_timers();
     JsValue? t = js.number(time_ms);
     if (catch t) return false;
@@ -1588,7 +1667,11 @@ fn bool input_event(Event* e)
     // sokol gives framebuffer pixels, the DOM points
     // (--back: Escape goes back, unless it is letting go of the pointer)
     bool back = e.type == KEY_DOWN && e.key_code == ESCAPE && back_path.len && !sapp::mouse_locked();
-    defer if (back) relaunch(back_path, "");
+    defer if (back)
+    {
+        pending_script = back_path;
+        back_path = "";
+    }
     double scale = sapp::dpi_scale();
     double[6] args = { kind, e.mouse_x / scale, e.mouse_y / scale, a, dx, dy };
     JsValue[6] values;
@@ -1861,13 +1944,12 @@ fn void reg(JsValue obj, String name, JsHostFn handler, int arity)
 
 fn int usage()
 {
-    io::printn("usage: driejs [--no-jit] [--frames N] [--profile] [--png out.png] [--back other.js] script.js");
+    io::printn("usage: driejs [--no-jit] [--frames N] [--profile] [--png out.png] script.js");
     return 2;
 }
 
 fn int main(String[] args)
 {
-    exe_path = args[0];
     for (sz i = 1; i < args.len; i++)
     {
         switch (args[i])
@@ -1881,9 +1963,6 @@ fn int main(String[] args)
                 profile = true;
             case "--no-jit":
                 jit = false;
-            case "--back":
-                if (++i >= args.len) return usage();
-                back_path = args[i];
             case "--png":
                 if (++i >= args.len) return usage();
                 png_path = args[i];
@@ -2071,25 +2150,7 @@ fn int main(String[] args)
     js.set(global, "__drie", natives)!!;
     register_timers(global);
 
-    char[]? source = file::load_temp(script_path);
-    if (catch source)
-    {
-        io::eprintfn("cannot read %s", script_path);
-        return 1;
-    }
-    JsValue? loaded = js.eval_module((String)source, script_path);
-    if (catch loaded)
-    {
-        io::eprintfn("%s:%d: %s", script_path, js.last_error_line(), js.last_error());
-        return 1;
-    }
-    js.release(loaded);
-    if (catch js.get_runtime().drain_microtasks())
-    {
-        io::eprintfn("uncaught error in a promise job: %s", js.last_error());
-        return 1;
-    }
-    wait_for_timers();
+    if (!load_script(script_path)) return 1;
     if (js_loop.is_empty() || loop_renderer == null) return 0;
     if (frames > 0)
     {
