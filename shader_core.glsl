@@ -2090,6 +2090,8 @@ void main() {
 
     vec3 outc;
     vec3 spec = vec3(0.0);
+    // the light the surface gives off itself (emissive, baked), which transmission leaves alone
+    vec3 own_light = vec3(0.0);
     // the indirect light in outc, diffuse and specular (for frag_indirect)
     vec3 ind_d = vec3(0.0);
     vec3 ind_s = vec3(0.0);
@@ -2203,6 +2205,7 @@ void main() {
         // three's emissiveMap
         if (has_map(MAP_EMISSIVE)) glow *= material_map(MAP_EMISSIVE).rgb;
         outc += glow;
+        own_light = glow;
         // light baked into the vertex colors, as if from fixed lamps
         if (baked) {
             vec3 b = diffuse_color * v_color * emissive.w * ao;
@@ -2288,7 +2291,8 @@ void main() {
             float thickness = max(transmission_params.y, 0.0);
             if (has_map(MAP_THICKNESS)) thickness *= material_map(MAP_THICKNESS).g;
             vec3 refracted = refracted_light(n, v, v_world_pos, g_rough, g_base.rgb * (1.0 - g_metal), thickness);
-            vec3 highlights = spec + env_term + mirror_term;
+            // (the light it gives off stays too: three's totalEmissiveRadiance)
+            vec3 highlights = spec + env_term + mirror_term + own_light;
             outc = mix(max(outc - highlights, vec3(0.0)), refracted, amount) + highlights;
         }
         // the physical material's layers over it all: the sheen, then the clear coat, which
