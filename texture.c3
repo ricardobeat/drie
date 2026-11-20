@@ -12,6 +12,21 @@ enum Wrapping {
     MIRRORED_REPEAT_WRAPPING,
 }
 
+// How a texture is read where its texels are smaller than the pixels (three's minFilter): the
+// texels blended or the nearest one, from the two nearest mip levels blended, the nearest
+// level, or the largest only (LINEAR and NEAREST, no mip levels).
+enum MinFilter {
+    LINEAR_MIPMAP_LINEAR,
+    LINEAR_MIPMAP_NEAREST,
+    LINEAR,
+    NEAREST_MIPMAP_LINEAR,
+    NEAREST_MIPMAP_NEAREST,
+    NEAREST,
+}
+
+// Whether the filter reads mip levels.
+fn bool MinFilter.mipmapped(self) => self != LINEAR && self != NEAREST;
+
 enum ColorSpace {
     SRGB_COLOR_SPACE,
     // For data textures (normal maps, roughness, ...): values are used as stored.
@@ -52,6 +67,11 @@ struct Texture {
     // texture.channel). Only the maps besides the color map can take the second.
     char channel;
     bool generate_mipmaps;
+    // The mip levels below the largest (`pixels`), as the application drew them, each half the
+    // size of the one before, RGBA8 like `pixels` (three's texture.mipmaps). Used in place of
+    // the ones generate_mipmaps would make; prepare() takes and frees them.
+    char[][] mipmaps;
+    MinFilter min_filter;
     // prepare() leaves `pixels` as they go to the GPU (bottom row first when flip_y), for the
     // CPU to read (Material.displacement_map)
     bool keep_pixels;
@@ -103,6 +123,7 @@ fn Texture* Texture.clone(&self) {
         .center = self.center,
         .channel = self.channel,
         .generate_mipmaps = self.generate_mipmaps,
+        .min_filter = self.min_filter,
         .anisotropy = self.anisotropy,
         .nearest = self.nearest,
         .source = self.source ?: self,
@@ -479,14 +500,19 @@ fn void Texture.upload(&self) {
     };
     self.image = sg::make_image(&desc);
     self.view = sg::make_view(&&{ .texture = { .image = self.image } });
+    MinFilter f = self.min_filter;
+    bool nearest_min = f == NEAREST || f == NEAREST_MIPMAP_NEAREST || f == NEAREST_MIPMAP_LINEAR;
+    bool nearest_level = f == NEAREST_MIPMAP_NEAREST || f == LINEAR_MIPMAP_NEAREST || self.prepared_levels == 1;
+    // (anisotropic filtering blends texels: only with every filter linear)
+    bool anisotropic = self.prepared_levels > 1 && !nearest_min && !nearest_level && !self.nearest;
     self.sampler = sg::make_sampler(
         &&{
-            .min_filter = LINEAR,
+            .min_filter = nearest_min ? SgFilter.NEAREST : SgFilter.LINEAR,
             .mag_filter = self.nearest ? SgFilter.NEAREST : SgFilter.LINEAR,
-            .mipmap_filter = self.prepared_levels > 1 ? SgFilter.LINEAR : SgFilter.NEAREST,
+            .mipmap_filter = nearest_level ? SgFilter.NEAREST : SgFilter.LINEAR,
             .wrap_u = sg_wrap(self.wrap_s),
             .wrap_v = sg_wrap(self.wrap_t),
-            .max_anisotropy = self.prepared_levels > 1 ? (uint)math::clamp(self.anisotropy, 1, 16) : 1,
+            .max_anisotropy = anisotropic ? (uint)math::clamp(self.anisotropy, 1, 16) : 1,
         }
     );
     mem::free(self.prepared.ptr);
@@ -512,7 +538,18 @@ fn void Texture.prepare(&self) {
     char[][16] levels;
     int count = 1;
     levels[0] = self.pixels;
-    if (self.generate_mipmaps) {
+    if (self.mipmaps.len && self.min_filter.mipmapped()) {
+        int w = self.width;
+        int h = self.height;
+        foreach (level : self.mipmaps) {
+            if (count == 16 || (w == 1 && h == 1)) break;
+            w = math::max(w / 2, 1);
+            h = math::max(h / 2, 1);
+            if (level.len < (sz)w * h * 4) break;
+            if (self.flip_y) flip_rows(level, w, h);
+            levels[count++] = level;
+        }
+    } else if (self.generate_mipmaps && self.min_filter.mipmapped()) {
         int w = self.width;
         int h = self.height;
         while ((w > 1 || h > 1) && count < 12) {
@@ -523,6 +560,12 @@ fn void Texture.prepare(&self) {
             h = nh;
             count++;
         }
+    }
+    // (the levels used are freed with the generated ones, below)
+    if (self.mipmaps.len) {
+        foreach (i, level : self.mipmaps) if (i + 1 >= count) mem::free(level.ptr);
+        mem::free(self.mipmaps.ptr);
+        self.mipmaps = { };
     }
     // sokol takes all mip levels in one block, largest first
     sz total;

@@ -340,9 +340,10 @@ fn void h_geometry(JsCtx ctx, void* udata)
 }
 
 // texture(source, srgb, wrapS, wrapT, anisotropy, repeatX, repeatY, offsetX, offsetY, flipY,
-// rotation, centerX, centerY, width, height, nearest, channel):
+// rotation, centerX, centerY, width, height, nearest, channel, minFilter, generateMipmaps):
 // `source` is a file's path or an encoded image (PNG, JPEG) in a Uint8Array, or with `width`
-// and `height` its pixels (RGBA, a Uint8Array or Uint8ClampedArray: a canvas's)
+// and `height` its pixels (RGBA, a Uint8Array or Uint8ClampedArray: a canvas's). minFilter is
+// three's (NearestFilter 1003 to LinearMipmapLinearFilter 1008).
 fn void h_texture(JsCtx ctx, void* udata)
 {
     ColorSpace space = bool_arg(ctx, 1, true) ? SRGB_COLOR_SPACE : NO_COLOR_SPACE;
@@ -389,7 +390,41 @@ fn void h_texture(JsCtx ctx, void* udata)
     t.center = { (float)num_arg(ctx, 11, 0), (float)num_arg(ctx, 12, 0) };
     t.nearest = bool_arg(ctx, 15, false);
     t.channel = (char)num_arg(ctx, 16, 0);
+    switch ((int)num_arg(ctx, 17, 1008))
+    {
+        case 1003: t.min_filter = NEAREST;
+        case 1004: t.min_filter = NEAREST_MIPMAP_NEAREST;
+        case 1005: t.min_filter = NEAREST_MIPMAP_LINEAR;
+        case 1006: t.min_filter = LINEAR;
+        case 1007: t.min_filter = LINEAR_MIPMAP_NEAREST;
+        default: t.min_filter = LINEAR_MIPMAP_LINEAR;
+    }
+    t.generate_mipmaps = bool_arg(ctx, 18, true);
     ctx.ret_number(@reg(textures, t, TEXTURE_BASE));
+}
+
+// textureMipmap(texture, pixels, width, height): the next mip level of a texture made from
+// pixels (three's texture.mipmaps[1], [2]...), RGBA bytes half the size of the one before.
+// Before the texture is first drawn.
+fn void h_texture_mipmap(JsCtx ctx, void* udata)
+{
+    Texture* t = get_texture(num_arg(ctx, 0, -1));
+    View bytes;
+    if (t == null || !view_arg(ctx, 1, &bytes)
+        || (bytes.cls != ObjClass.UINT8ARRAY && bytes.cls != ObjClass.UINT8CLAMPEDARRAY))
+    {
+        ctx.throw_error(TYPE, "textureMipmap: expected a texture and a Uint8Array");
+        return;
+    }
+    usz size = (usz)num_arg(ctx, 2, 0) * (usz)num_arg(ctx, 3, 0) * 4;
+    if (bytes.len < size) { ctx.throw_error(TYPE, "textureMipmap: expected width * height * 4 bytes"); return; }
+    char[] level = mem::new_array(char, (sz)size);
+    level[..] = ((char*)bytes.data)[:size];
+    char[][] levels = mem::new_array(char[], t.mipmaps.len + 1);
+    levels[:t.mipmaps.len] = t.mipmaps[..];
+    levels[t.mipmaps.len] = level;
+    if (t.mipmaps.len) mem::free(t.mipmaps.ptr);
+    t.mipmaps = levels;
 }
 
 // textureClone(texture, repeatX, repeatY, offsetX, offsetY, rotation, centerX, centerY,
@@ -1786,7 +1821,8 @@ fn int main(String[] args)
     reg(natives, "light", &h_light, 8);
     reg(natives, "lightTarget", &h_light_target, 1);
     reg(natives, "geometry", &h_geometry, 9);
-    reg(natives, "texture", &h_texture, 17);
+    reg(natives, "texture", &h_texture, 19);
+    reg(natives, "textureMipmap", &h_texture_mipmap, 4);
     reg(natives, "textureClone", &h_texture_clone, 9);
     reg(natives, "cubeTexture", &h_cube_texture, 7);
     reg(natives, "cubeImages", &h_cube_images, 7);

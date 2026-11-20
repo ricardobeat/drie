@@ -737,13 +737,27 @@ export class DrieRenderer {
 				texture.__drie = N.texture(source, texture.colorSpace === "srgb", texture.wrapS, texture.wrapT,
 					texture.anisotropy, texture.repeat.x, texture.repeat.y, texture.offset.x, texture.offset.y, flipY,
 					texture.rotation, texture.center.x, texture.center.y, canvas ? canvas.width : 0,
-					canvas ? canvas.height : 0, texture.magFilter === NearestFilter, texture.channel ?? 0);
+					canvas ? canvas.height : 0, texture.magFilter === NearestFilter, texture.channel ?? 0,
+					texture.minFilter, texture.generateMipmaps);
+				if (canvas) this._mipmaps(texture);
 				images?.set(key, texture.__drie);
 			}
 		}
 		texture.__drieVersion = texture.version;
 		texture.__drieUv = uvKey(texture);
 		return texture.__drie;
+	}
+
+	// The mip levels the application drew (texture.mipmaps after the first), canvases or
+	// bytes, for a texture of pixels.
+	_mipmaps(texture) {
+		const levels = texture.mipmaps ?? [];
+		for (let i = 1; i < levels.length; i++) {
+			const level = levels[i];
+			const pixels = level?.tagName === "CANVAS" ? level.getContext("2d")._buffer() : level;
+			if (!(pixels?.data instanceof Uint8Array || pixels?.data instanceof Uint8ClampedArray)) break;
+			N.textureMipmap(texture.__drie, pixels.data, pixels.width, pixels.height);
+		}
 	}
 
 	// A map on the first or the second uv set (three's texture.channel; drie's geometries have
