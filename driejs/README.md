@@ -94,6 +94,8 @@ The translator covers:
 - `flipX()`, `flipY()`... (those components 1 minus themselves)
 - `mat3` of three vec3s, in a product with a vec3 (TSL's `TBNViewMatrix`, which `parallaxUV`
   reads; `tangentView` and `bitangentView` are the frame from the derivatives)
+- `range()`, each instance's value hashed from its index as three's is (without three's seed
+  for the object: other values, as random)
 - `reference()` and `materialReference()`, read from the material every frame (each
   `NodeMaterialInstance` of one node material has its own values)
 - `bumpMap`, as three's `dHdxy_fwd` and `perturbNormalArb`
@@ -105,7 +107,8 @@ The translator covers:
   (drie's `render_environment`)
 - the builtins: `positionLocal`/`World`/`View`, `normalLocal`/`World`/`View` and their
   geometry's, `cameraPosition`, `time`, `modelWorldMatrix`, `cameraViewMatrix`,
-  `cameraProjectionMatrix`, `screenCoordinate`, `frontFacing`, `faceDirection`, `output`
+  `cameraProjectionMatrix`, `screenCoordinate`, `frontFacing`, `faceDirection`, `output`,
+  `instanceIndex`
 
 Any other node class throws an error that names it. Slots drie lacks (`vertexNode`, `aoNode`, `maskShadowNode`...) are left out with a warning. Compute, post-processing nodes and
 `wgslFn` are not supported. A graph that drie rejects while printing it (types that don't
@@ -123,6 +126,14 @@ material: a drie mesh of its own that shares the geometry and draws the group's 
 (drie's `Mesh.draw_start` and `draw_count`). A `BatchedMesh` is an instanced drie mesh for each
 of its geometries, with that geometry's visible instances. `ProgressiveLightMapGPU` is the same
 drie bake as `ProgressiveLightMap`.
+
+A `Sprite`, and a mesh with a `SpriteNodeMaterial` (an `InstancedMesh` of particles), is a drie
+mesh turned toward the camera as it is drawn (drie's `Mesh.billboard`), with the sprite's
+center, the material's rotation and `sizeAttenuation`. A `SpriteNodeMaterial`'s `positionNode`
+and `scaleNode` move and size each quad in the view, as three's; its `rotationNode` is left out
+(the material's rotation is used). A `vertexNode` that is TSL's `billboarding()` turns the mesh
+the same way (about its own y, or with `horizontalRotation` about the world's up toward the
+camera); its `position` is left out.
 
 The demos `webgpu_tsl_earth.js`, `webgpu_tsl_raging_sea.js`, `webgpu_tsl_procedural_terrain.js`
 and `webgpu_tsl_angular_slicing.js` are r187's examples, unchanged. Their `Inspector` is a lil-gui panel that is not drawn.

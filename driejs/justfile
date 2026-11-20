@@ -256,7 +256,9 @@ assets: \
     (asset "textures/ambientcg/Ice002_1K-JPG_Roughness.jpg" "52a806348c7ddb23f201e4c1fc677e33914f0921ba7253163533daee3c4de121") \
     (asset "textures/ambientcg/Ice002_1K-JPG_NormalGL.jpg" "f2c190e341fede5bec99c86757529e4df387dba8a1ab8127bcc85b7ed528a018") \
     (asset "textures/ambientcg/Ice002_1K-JPG_Displacement.jpg" "68be58c53d6e4238dccb0efd3a8c89a947477ff9c51b736e905cb9075e7a3a03") \
-    (asset "textures/ambientcg/Ice003_1K-JPG_Color.jpg" "faee9ddb462d05bc96ebd3a4d412d229381e1d188abf777102e08aa4e696740a")
+    (asset "textures/ambientcg/Ice003_1K-JPG_Color.jpg" "faee9ddb462d05bc96ebd3a4d412d229381e1d188abf777102e08aa4e696740a") \
+    (asset "textures/noises/voronoi/grayscale-256x256.png" "0bd7c9a6e440cb7ddd97a231fc5c3f93582a91609ead627075f6f2aa284aaccc") \
+    (asset "textures/noises/perlin/rgb-256x256.png" "a6e852dd6115654f6c436454faba04fc7dc5c355a1a3769a7c9c905dbcb8f41a")
 
 [private]
 asset path sha256: (fetch examples + "/" + path sha256 "demos/" + path)
