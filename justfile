@@ -10,7 +10,7 @@ libdir := "lib"
 libs := "--libdir " + libdir + " --lib sokol"
 # where bindgen.c3l is (the folder holding bindgen.c3l/), for `just bindings`
 bindgen := "../bindgen.c3l"
-macos := if os() == "macos" { "--macos-min-version 15.0" } else { "" }
+macos := if os() == "macos" { "--macos-min-version 26.0" } else { "" }
 
 # the sources c3fmt formats: the hand written ones at the top. The sokol-shdc generated
 # files are in generated/ (manifest.json's "sources" adds it to the library).
