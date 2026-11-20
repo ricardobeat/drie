@@ -845,10 +845,11 @@ fn void h_light_update(JsCtx ctx, void* udata)
 }
 
 // lightShadow(light, cast, mapSize, radius, near, far, extent, normalBias, intensity, bias,
-// blurSamples, focus): a directional or spot light's shadow. A directional light's is one box
-// `extent` meters from its target to each side (the first such light has drie's sun map, the
-// others a tile of the shadow atlas each); a spot light's covers its cone (its angle, `focus`
-// of it).
+// blurSamples, focus, cascades, splitLambda, cascadeBlend): a directional or spot light's
+// shadow. A directional light's is one box `extent` meters from its target to each side (the
+// first such light has drie's sun map, the others a tile of the shadow atlas each), or with
+// `cascades` above 1 drie's cascaded shadow maps up to `far` from the camera (SunLight's); a
+// spot light's covers its cone (its angle, `focus` of it).
 fn void h_light_shadow(JsCtx ctx, void* udata)
 {
     Object3D* o = get_object(num_arg(ctx, 0, -1));
@@ -860,8 +861,14 @@ fn void h_light_shadow(JsCtx ctx, void* udata)
         case DIRECTIONAL:
             DirectionalLight* d = (DirectionalLight*)l;
             shadow = &d.shadow;
-            shadow.cascades = 1;
+            shadow.cascades = math::clamp((int)num_arg(ctx, 12, 1), 1, 4);
             d.shadow_extent = (float)num_arg(ctx, 6, 5);
+            if (shadow.cascades > 1)
+            {
+                shadow.max_distance = (float)num_arg(ctx, 5, 500);
+                shadow.split_lambda = (float)num_arg(ctx, 13, 0.5);
+                shadow.cascade_blend = (float)num_arg(ctx, 14, 0.1);
+            }
         case SPOT:
             shadow = &((SpotLight*)l).shadow;
             shadow.focus = (float)num_arg(ctx, 11, 1);
@@ -1874,7 +1881,7 @@ fn int main(String[] args)
     reg(natives, "stats", &h_stats, 6);
     reg(natives, "shadow", &h_shadow, 3);
     reg(natives, "lightUpdate", &h_light_update, 4);
-    reg(natives, "lightShadow", &h_light_shadow, 12);
+    reg(natives, "lightShadow", &h_light_shadow, 15);
     reg(natives, "shadowType", &h_shadow_type, 2);
     reg(natives, "materialLightMap", &h_material_light_map, 3);
     reg(natives, "materialEnv", &h_material_env, 6);

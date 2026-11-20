@@ -13,20 +13,22 @@
 // (each a single box, its shadow.camera's half width: the first is drie's sun shadow, the
 // others tiles of its shadow atlas) and spot lights, with their map size, near and far, radius,
 // intensity, normalBias, bias, blurSamples and a spot's focus.
-// InstancedMesh's matrices, SkinnedMesh (three poses the skeleton, drie moves the vertices),
-// Line, LineSegments and LineLoop (a pixel wide, as in WebGL) with LineBasicMaterial and
-// LineDashedMaterial, scene.environment from js/pmrem.js's PMREMGenerator or an
-// equirectangular texture or a cube map (of images or of HDR DataTextures), scene.background
-// as either (with backgroundBlurriness and backgroundIntensity), the envMap of the basic,
-// lambert and phong materials (reflectivity, combine, refractionRatio and the refraction
-// mappings, specularMap), MeshMatcapMaterial, MeshToonMaterial (gradientMap), bumpMap, the
-// outlines of js/outline_effect.js's OutlineEffect, DataTextures of bytes (RGBA, RG or red),
-// blending (every mode, premultipliedAlpha, and custom blending's equations and factors),
-// toneMapped, a texture's repeat and offset as they change, scene.background as a flat
-// texture, displacementMap (with its scale and bias), OrthographicCamera, MeshDepthMaterial
-// (depthPacking), setViewport, setScissor and setScissorTest, autoClear and clear(), and the
-// maps of MeshStandardMaterial and MeshPhysicalMaterial: normal, roughness, metalness and ao
-// maps, and the physical material's transmission (with its maps), volume, ior, dispersion and
+// InstancedMesh's matrices and instanceColor, SkinnedMesh (three poses the skeleton, drie
+// moves the vertices), Line, LineSegments and LineLoop (a pixel wide, as in WebGL) with
+// LineBasicMaterial and LineDashedMaterial, scene.environment from js/pmrem.js's
+// PMREMGenerator or an equirectangular texture or a cube map (of images or of HDR
+// DataTextures), scene.background as either (with backgroundBlurriness and
+// backgroundIntensity), the envMap of the basic, lambert and phong materials (reflectivity,
+// combine, refractionRatio and the refraction mappings, specularMap), MeshMatcapMaterial,
+// MeshToonMaterial (gradientMap), bumpMap, the outlines of js/outline_effect.js's
+// OutlineEffect, DataTextures of bytes (RGBA, RG or red), blending (every mode,
+// premultipliedAlpha, and custom blending's equations and factors), toneMapped, a texture's
+// repeat and offset as they change, scene.background as a flat texture, displacementMap (with
+// its scale and bias), OrthographicCamera, MeshDepthMaterial (depthPacking), setViewport,
+// setScissor and setScissorTest, autoClear and clear(), SunLight (drie's directional light
+// with cascaded shadows), an equirectangular texture as a map (GroundedSkybox's), and the maps
+// of MeshStandardMaterial and MeshPhysicalMaterial: normal, roughness, metalness and ao maps,
+// and the physical material's transmission (with its maps), volume, ior, dispersion and
 // specular color and intensity (with theirs), clearcoat, sheen, iridescence and anisotropy
 // (with the geometry's tangents). Any material's lightMap (on the first or the second uv set:
 // texture.channel) and lightMapIntensity, depthTest and depthWrite. Light maps baked by
@@ -106,7 +108,9 @@ function materialKind(m) {
 
 function lightKind(l) {
 	if (l.isHemisphereLight) return 1;
-	if (l.isDirectionalLight) return 2;
+	// (SunLight: a directional light from its position towards the origin, drie's without a
+	// target, with cascaded shadows)
+	if (l.isDirectionalLight || l.isSunLight) return 2;
 	if (l.isPointLight) return 3;
 	if (l.isSpotLight) return 4;
 	return 0;
@@ -401,7 +405,7 @@ export class DrieRenderer {
 			for (let i = 0; i < mirrored.length; i++) {
 				const o = mirrored[i];
 				if (o.__drieFrame !== frame) {
-					this._record(o.__drie, false, o.matrixWorld.elements);
+					this._record(o.isSky ? o.__drieSkies.get(sceneId) : o.__drie, false, o.matrixWorld.elements);
 					if (o.__drieOutline !== undefined) this._record(o.__drieOutline, false, o.matrixWorld.elements);
 				}
 			}
@@ -419,12 +423,12 @@ export class DrieRenderer {
 			const o = children[i];
 			const shown = visible && o.visible;
 			const drawn = shown && (o.layers.mask & this._layerMask) !== 0;
-			let id = o.__drie;
+			let id = o.isSky ? o.__drieSkies?.get(sceneId) : o.__drie;
 			if (id === undefined) id = this._create(o, sceneId);
 			o.__drieFrame = frame;
 			this._scene.visited++;
 			this._record(id, drawn, o.matrixWorld.elements);
-			if (o.isSky) this._sky(o);
+			if (o.isSky) this._sky(o, id);
 			else if (o.isMesh || o.isLine) this._refresh(o, frame, drawn);
 			if (o.isInstancedMesh) this._instances(o);
 			if (o.isSkinnedMesh && drawn) this._skin(o, frame);
@@ -450,8 +454,11 @@ export class DrieRenderer {
 	_create(o, sceneId) {
 		let id;
 		if (o.isSky) {
-			// three's Sky shader, as drie's own Sky (its ShaderMaterial can't be drawn as it is)
+			// three's Sky shader, as drie's own Sky (its ShaderMaterial can't be drawn as it is).
+			// One in each scene it is rendered in: PMREMGenerator.fromScene captures a scene
+			// with the Sky (at the next render) that the application then moves into another.
 			id = N.sky();
+			(o.__drieSkies ??= new Map()).set(sceneId, id);
 		} else if (o.isMesh || o.isLine) {
 			id = this._newMesh(o, this._geometry(o.geometry, this._frame), this._material(o.material, this._frame));
 			o.__drieGeometry = o.geometry.__drie;
@@ -499,13 +506,14 @@ export class DrieRenderer {
 			v("cloudDensity", 0.4), v("cloudElevation", 0.5), v("showSunDisc", 1), v("time", 0)];
 	}
 
-	// Sky's uniforms, sent when one changed.
-	_sky(sky) {
+	// Sky's uniforms, sent to its drie sky `id` when one changed.
+	_sky(sky, id) {
 		const args = this._skyArgs(sky);
 		const key = args.join(",");
-		if (sky.__drieSky === key) return;
-		sky.__drieSky = key;
-		N.skyParams(sky.__drie, ...args);
+		const sent = (sky.__drieSkyKeys ??= new Map());
+		if (sent.get(id) === key) return;
+		sent.set(id, key);
+		N.skyParams(id, ...args);
 	}
 
 	_instances(mesh) {
@@ -643,18 +651,21 @@ export class DrieRenderer {
 			}
 			N.lightUpdate(light.__drie, light.color.getHex(), light.intensity, ground ? ground.getHex() : 0);
 		}
-		if (!light.isDirectionalLight && !light.isSpotLight) return;
+		if (!light.isDirectionalLight && !light.isSpotLight && !light.isSunLight) return;
 		const shadow = light.shadow;
 		const cam = shadow.camera;
 		const cast = this.shadowMap.enabled && light.castShadow;
 		// (a spot light's shadow covers its cone: no box)
 		const extent = light.isDirectionalLight ? Math.max(Math.abs(cam.right - cam.left), Math.abs(cam.top - cam.bottom)) / 2 : 0;
 		const focus = shadow.focus ?? 1;
-		const key = cast ? `${shadow.mapSize.x} ${shadow.radius} ${cam.near} ${cam.far} ${extent} ${shadow.normalBias} ${shadow.intensity} ${shadow.bias} ${shadow.blurSamples} ${focus}` : "";
+		// SunLight's cascades (SunLightShadow's practical splits and fade: drie's split_lambda
+		// 0.5 and cascade_blend 0.1), up to its camera's far
+		const cascades = light.isSunLight ? shadow._cascadeSplits.length - 1 : 1;
+		const key = cast ? `${shadow.mapSize.x} ${shadow.radius} ${cam.near} ${cam.far} ${extent} ${shadow.normalBias} ${shadow.intensity} ${shadow.bias} ${shadow.blurSamples} ${focus} ${cascades}` : "";
 		if (light.__drieShadowKey === key) return;
 		light.__drieShadowKey = key;
 		N.lightShadow(light.__drie, cast, shadow.mapSize.x, shadow.radius, cam.near, cam.far, extent, shadow.normalBias,
-			shadow.intensity ?? 1, shadow.bias, shadow.blurSamples ?? 8, focus);
+			shadow.intensity ?? 1, shadow.bias, shadow.blurSamples ?? 8, focus, cascades, 0.5, 0.1);
 	}
 
 	_sceneOf(o) {
@@ -772,7 +783,24 @@ export class DrieRenderer {
 	// A map on the first or the second uv set (three's texture.channel; drie's geometries have
 	// only those two).
 	_map(texture) {
-		return texture && texture.channel > 1 ? -1 : this._texture(texture);
+		return texture && texture.channel > 1 ? -1 : this._uvTexture(texture);
+	}
+
+	// A texture read by the geometry's uv. One whose mapping is equirectangular is drie's
+	// environment map, upside down as a picture (see _texture): read by uv (GroundedSkybox's
+	// map) it is a clone of it turned back by its uv transform.
+	_uvTexture(texture) {
+		const id = this._texture(texture);
+		if (id < 0 || (texture.mapping !== EquirectangularReflectionMapping && texture.mapping !== EquirectangularRefractionMapping)) {
+			return id;
+		}
+		const key = `${id} ${uvKey(texture)}`;
+		if (texture.__drieUvKey === key) return texture.__drieUvTexture;
+		const { repeat, offset, center } = texture;
+		texture.__drieUvTexture = N.textureClone(id, repeat.x, -repeat.y, offset.x, 1 - 2 * center.y - offset.y,
+			texture.rotation, center.x, center.y, texture.channel ?? 0);
+		texture.__drieUvKey = key;
+		return texture.__drieUvTexture;
 	}
 
 	// A CubeTexture, as drie's equirectangular map of it: six images (CubeTextureLoader's) or
@@ -902,7 +930,7 @@ export class DrieRenderer {
 		if (Array.isArray(material)) material = material[0];
 		if (material.__drieFrame === frame) return material.__drie;
 		material.__drieFrame = frame;
-		const map = this._texture(material.map);
+		const map = this._uvTexture(material.map);
 		if (material.__drie !== undefined && material.__drieVersion === material.version && material.__drieMap === map) {
 			this._materialValues(material);
 			this._maps(material);
