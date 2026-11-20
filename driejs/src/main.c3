@@ -8,7 +8,7 @@
 //
 //   out/driejs demos/webgl_geometries.js                 in a window
 //   out/driejs --frames 600 demos/webgl_geometries.js    offscreen, timed
-//   out/driejs --frames 3 --png /tmp/shot.png demos/webgl_geometries.js
+//   out/driejs --frames 3 --png /tmp/shot.png demos/webgl_geometries.js   (time: the frames' own clock)
 //   out/driejs --frames 600 --profile ...   the same, with the time per part of a frame
 //   out/driejs --no-jit ...     interpreted only (boomkat's JIT, both tiers, is on by default)
 //
@@ -61,6 +61,10 @@ bool profile;
 // time spent in sg::commit after each frame
 long commit_ns;
 time::Clock start_clock;
+// --png without --profile: performance.now() is the frames' own clock (0 while the script
+// starts, then 1/60 s a frame), as three's screenshots are taken, so a script that moves
+// things by the time passed (THREE.Timer) shows the same picture however slow the machine
+double fixed_clock = -1;
 // time spent in drie's render, to tell it apart from the JS side of a frame
 long render_ns;
 
@@ -237,7 +241,8 @@ fn void h_camera_update(JsCtx ctx, void* udata)
 }
 
 // light(kind, color, intensity, distance, decay, angle, penumbra, groundColor)
-// kind: 0 ambient, 1 hemisphere, 2 directional, 3 point, 4 spot
+// kind: 0 ambient, 1 hemisphere, 2 directional, 3 point, 4 spot, 5 rect area (distance and
+// decay are its width and height)
 fn void h_light(JsCtx ctx, void* udata)
 {
     Color color = color_of(num_arg(ctx, 1, 0xffffff));
@@ -252,6 +257,7 @@ fn void h_light(JsCtx ctx, void* udata)
         case 3: l = (Light*)drie::point_light(color, intensity, distance, decay);
         case 4: l = (Light*)drie::spot_light(color, intensity, distance, (float)num_arg(ctx, 5, drie::PI / 3),
                                               (float)num_arg(ctx, 6, 0), decay);
+        case 5: l = (Light*)drie::rect_area_light(color, intensity, (float)num_arg(ctx, 3, 10), (float)num_arg(ctx, 4, 10));
         default: l = (Light*)drie::ambient_light(color, intensity);
     }
     ctx.ret_number(reg_object((Object3D*)l));
@@ -836,7 +842,7 @@ fn void h_shadow(JsCtx ctx, void* udata)
     o.receive_shadow = bool_arg(ctx, 2, false);
 }
 
-// lightUpdate(light, color, intensity, groundColor)
+// lightUpdate(light, color, intensity, groundColor, width, height) (the last two: a rect area light's)
 fn void h_light_update(JsCtx ctx, void* udata)
 {
     Object3D* o = get_object(num_arg(ctx, 0, -1));
@@ -845,6 +851,12 @@ fn void h_light_update(JsCtx ctx, void* udata)
     l.color = color_of(num_arg(ctx, 1, 0xffffff));
     l.intensity = (float)num_arg(ctx, 2, 1);
     if (l.light_type == HEMISPHERE) ((HemisphereLight*)l).ground_color = color_of(num_arg(ctx, 3, 0));
+    if (l.light_type == RECT_AREA)
+    {
+        RectAreaLight* ra = (RectAreaLight*)l;
+        ra.width = (float)num_arg(ctx, 4, ra.width);
+        ra.height = (float)num_arg(ctx, 5, ra.height);
+    }
 }
 
 // lightShadow(light, cast, mapSize, radius, near, far, extent, normalBias, intensity, bias,
@@ -1599,7 +1611,11 @@ fn void h_info(JsCtx ctx, void* udata)
 }
 
 // Milliseconds from an arbitrary start (boomkat has no `performance`).
-fn void h_now(JsCtx ctx, void* udata) => ctx.ret_number((double)(long)start_clock.to_now() / 1e6);
+fn void h_now(JsCtx ctx, void* udata)
+{
+    if (fixed_clock >= 0) { ctx.ret_number(fixed_clock); return; }
+    ctx.ret_number((double)(long)start_clock.to_now() / 1e6);
+}
 
 // stats(fps, fpsMin, fpsMax, ms, msMin, msMax), from js/stats.js each frame (fps -1 until
 // the first second has passed). The first call puts the panel over the picture.
@@ -1660,6 +1676,117 @@ fn void draw_stats()
     sdtx::draw();
 }
 
+// ----------------------------------------------------------------------------
+// For a script that picks others (demos/index.js): text over the picture, a folder's files,
+// and another script run in this one's place
+// ----------------------------------------------------------------------------
+
+struct Label
+{
+    String text;
+    float x;
+    float y;
+    char[3] color;
+}
+
+List{Label} labels;
+bool labels_shown;
+
+// label(text, x, y, r, g, b): a line of text over this frame's picture, its top left corner at
+// x, y in window points, in the stats panel's font (a glyph 8 by 8 canvas units, the canvas
+// about 720 units high); r, g, b from 0 to 255
+fn void h_label(JsCtx ctx, void* udata)
+{
+    String? text = ctx.arg(0).as_string();
+    // (offscreen there is no window to write over)
+    if (catch text) return;
+    if (!sapp::isvalid()) return;
+    if (!labels.is_initialized()) labels.init(mem);
+    labels.push({
+        text.copy(mem), (float)num_arg(ctx, 1, 0), (float)num_arg(ctx, 2, 0),
+        { (char)num_arg(ctx, 3, 255), (char)num_arg(ctx, 4, 255), (char)num_arg(ctx, 5, 255) }
+    });
+    if (labels_shown) return;
+    labels_shown = true;
+    drie::add_overlay(&draw_labels);
+}
+
+// labelScale(): how many window points a canvas unit of the labels is (a glyph is 8 units)
+fn void h_label_scale(JsCtx ctx, void* udata)
+{
+    if (!sapp::isvalid()) { ctx.ret_number(1); return; }
+    ctx.ret_number((double)(math::max(1.0f, math::round(sapp::heightf() / 720)) / sapp::dpi_scale()));
+}
+
+fn void draw_labels()
+{
+    ui::setup();
+    float scale = math::max(1.0f, math::round(sapp::heightf() / 720));
+    // (window points to canvas units)
+    float k = sapp::dpi_scale() / scale;
+    sdtx::set_context(sdtx::default_context());
+    sdtx::canvas(sapp::widthf() / scale, sapp::heightf() / scale);
+    sdtx::font(ui::FONT_ORIC);
+    sdtx::origin(0, 0);
+    foreach (l : labels)
+    {
+        sdtx::pos(l.x * k / 8, l.y * k / 8);
+        sdtx::color3b(l.color[0], l.color[1], l.color[2]);
+        sdtx::puts(l.text.zstr_tcopy());
+        l.text.free(mem);
+    }
+    labels.clear();
+    sdtx::draw();
+}
+
+// files(folder): the names of its files, one a line
+fn void h_files(JsCtx ctx, void* udata)
+{
+    String? folder = ctx.arg(0).as_string();
+    if (catch folder) { ctx.throw_error(TYPE, "files: expected a folder"); return; }
+    PathList? found = path::ls(tmem, path::tnew(folder) ?? path::tnew(".")!!);
+    if (catch found) { ctx.ret_string(""); return; }
+    DString names = dstring::temp();
+    foreach (f : found)
+    {
+        names.append((String)f);
+        names.append("\n");
+    }
+    ctx.ret_string(names.str_view());
+}
+
+extern fn int execv(ZString path, ZString* argv);
+
+String exe_path;
+// --back: the script Escape goes back to
+String back_path;
+
+// Runs `script` in this program's place (the same executable, started again), with `back` the
+// script Escape returns to ("": none).
+fn void relaunch(String script, String back)
+{
+    ZString[8] argv;
+    int n;
+    argv[n++] = exe_path.zstr_tcopy();
+    if (!jit) argv[n++] = "--no-jit";
+    if (back.len)
+    {
+        argv[n++] = "--back";
+        argv[n++] = back.zstr_tcopy();
+    }
+    argv[n++] = script.zstr_tcopy();
+    execv(argv[0], &argv);
+    io::eprintfn("could not run %s", script);
+}
+
+// run(script): the script in this one's place; Escape there comes back to this one
+fn void h_run(JsCtx ctx, void* udata)
+{
+    String? script = ctx.arg(0).as_string();
+    if (catch script) { ctx.throw_error(TYPE, "run: expected a script"); return; }
+    relaunch(script, script_path);
+}
+
 // The loop starts once the script has finished, so promises made while it set up (texture
 // loads) settle first.
 fn void h_set_animation_loop(JsCtx ctx, void* udata)
@@ -1682,6 +1809,7 @@ fn void h_set_animation_loop(JsCtx ctx, void* udata)
 
 fn bool js_frame(double time_ms)
 {
+    if (fixed_clock >= 0) fixed_clock = time_ms;
     fire_timers();
     JsValue? t = js.number(time_ms);
     if (catch t) return false;
@@ -1724,6 +1852,9 @@ fn bool input_event(Event* e)
         default: return false;
     }
     // sokol gives framebuffer pixels, the DOM points
+    // (--back: Escape goes back, unless it is letting go of the pointer)
+    bool back = e.type == KEY_DOWN && e.key_code == ESCAPE && back_path.len && !sapp::mouse_locked();
+    defer if (back) relaunch(back_path, "");
     double scale = sapp::dpi_scale();
     double[6] args = { kind, e.mouse_x / scale, e.mouse_y / scale, a, dx, dy };
     JsValue[6] values;
@@ -1794,6 +1925,186 @@ fn void run_offscreen(Renderer* r)
 }
 
 // ----------------------------------------------------------------------------
+// Node materials: js/drie_nodes.js rebuilds three's TSL graphs as drie's (nodes.c3), a node
+// at a time; a node is its number (Node.id)
+// ----------------------------------------------------------------------------
+
+fn Node node_arg(JsCtx ctx, uint i) => { (uint)num_arg(ctx, i, 0) };
+
+fn NodeType type_arg(JsCtx ctx, uint i) @local
+{
+    int t = (int)num_arg(ctx, i, 0);
+    if (t < 0 || t > NodeType.VOID.ordinal) t = 0;
+    return (NodeType)t;
+}
+
+// nodeConst(type, x, y, z, w) (an int's or a uint's: whole numbers)
+fn void h_node_const(JsCtx ctx, void* udata)
+{
+    NodeType t = type_arg(ctx, 0);
+    NodeScalar s = drie::scalar_of(t);
+    if (s == INT || s == UINT)
+    {
+        uint[4] bits;
+        for (uint i = 0; i < 4; i++) bits[i] = (uint)(long)num_arg(ctx, i + 1, 0);
+        ctx.ret_number(drie::node_const_bits(t, bits).id);
+        return;
+    }
+    float[16] v;
+    for (uint i = 0; i < 4; i++) v[i] = (float)num_arg(ctx, i + 1, 0);
+    ctx.ret_number(drie::node_const(t, v).id);
+}
+
+// nodeUniform(type): its value from nodeSet
+fn void h_node_uniform(JsCtx ctx, void* udata)
+{
+    ctx.ret_number(drie::add_node({ .op = UNIFORM, .type = type_arg(ctx, 0) }).id);
+}
+
+// nodeSet(node, x, y, z, w), or nodeSet(node, Float32Array of 16) for a matrix
+fn void h_node_set(JsCtx ctx, void* udata)
+{
+    Node n = node_arg(ctx, 0);
+    float[] m = floats_arg(ctx, 1);
+    if (m.len >= 16)
+    {
+        drie::Mat4 mat;
+        for (int c = 0; c < 4; c++)
+        {
+            for (int r = 0; r < 4; r++) mat[c][r] = m[c * 4 + r];
+        }
+        n.set_matrix(mat);
+        return;
+    }
+    n.set((float)num_arg(ctx, 1, 0), (float)num_arg(ctx, 2, 0), (float)num_arg(ctx, 3, 0), (float)num_arg(ctx, 4, 0));
+}
+
+// nodeBuiltin(kind, type): a NodeBuiltin
+fn void h_node_builtin(JsCtx ctx, void* udata)
+{
+    int kind = (int)num_arg(ctx, 0, 0);
+    if (kind < 0 || kind > NodeBuiltin.OUTPUT.ordinal) { ctx.throw_error(TYPE, "nodeBuiltin: no such builtin"); return; }
+    ctx.ret_number(drie::add_node({ .op = BUILTIN, .type = type_arg(ctx, 1), .kind = (char)kind }).id);
+}
+
+Texture* white_texture;
+
+// nodeTexture(texture, uv, level): uv 0 for the mesh's, level 0 for the pixel's footprint; a
+// texture not loaded yet (-1) reads white
+fn void h_node_texture(JsCtx ctx, void* udata)
+{
+    Texture* t = get_texture(num_arg(ctx, 0, -1));
+    if (t == null)
+    {
+        if (!white_texture) white_texture = drie::data_texture({ 255, 255, 255, 255 }, 1, 1);
+        t = white_texture;
+    }
+    ctx.ret_number(nodes::texture(t, node_arg(ctx, 1), node_arg(ctx, 2)).id);
+}
+
+// nodeVarying(x)
+fn void h_node_varying(JsCtx ctx, void* udata) => ctx.ret_number(nodes::varying(node_arg(ctx, 0)).id);
+
+// nodeBinary(op, a, b): a NodeBinary
+fn void h_node_binary(JsCtx ctx, void* udata)
+{
+    int op = (int)num_arg(ctx, 0, 0);
+    if (op < 0 || op > NodeBinary.XOR.ordinal) { ctx.throw_error(TYPE, "nodeBinary: no such operator"); return; }
+    ctx.ret_number(drie::node_binary((NodeBinary)op, node_arg(ctx, 1), node_arg(ctx, 2)).id);
+}
+
+// nodeCall(fn, a, b, c): a NodeFn
+fn void h_node_call(JsCtx ctx, void* udata)
+{
+    int f = (int)num_arg(ctx, 0, 0);
+    if (f < 0 || f > NodeFn.FACEFORWARD.ordinal) { ctx.throw_error(TYPE, "nodeCall: no such function"); return; }
+    ctx.ret_number(drie::node_call((NodeFn)f, node_arg(ctx, 1), node_arg(ctx, 2), node_arg(ctx, 3)).id);
+}
+
+// nodeSelect(cond, a, b)
+fn void h_node_select(JsCtx ctx, void* udata)
+{
+    ctx.ret_number(nodes::select(node_arg(ctx, 0), node_arg(ctx, 1), node_arg(ctx, 2)).id);
+}
+
+// nodeSwizzle(a, "xyz")
+fn void h_node_swizzle(JsCtx ctx, void* udata)
+{
+    String? s = ctx.arg(1).as_string();
+    if (catch s) { ctx.throw_error(TYPE, "nodeSwizzle: no components"); return; }
+    ctx.ret_number(node_arg(ctx, 0).swizzle(s).id);
+}
+
+// nodeJoin(type, a, b, c, d): a vector of the parts given (0: none)
+fn void h_node_join(JsCtx ctx, void* udata)
+{
+    Node[4] parts;
+    int n;
+    for (uint i = 1; i <= 4; i++)
+    {
+        Node p = node_arg(ctx, i);
+        if (p.id) parts[n++] = p;
+    }
+    ctx.ret_number(drie::node_join(parts[:n], type_arg(ctx, 0)).id);
+}
+
+// nodeConvert(a, type)
+fn void h_node_convert(JsCtx ctx, void* udata) => ctx.ret_number(drie::node_convert(node_arg(ctx, 0), type_arg(ctx, 1)).id);
+
+// nodeNot(a, bitwise)
+fn void h_node_not(JsCtx ctx, void* udata)
+{
+    Node a = node_arg(ctx, 0);
+    ctx.ret_number((bool_arg(ctx, 1, false) ? nodes::bit_not(a) : nodes::logical_not(a)).id);
+}
+
+// nodeVar(type, init): init 0 for zeros
+fn void h_node_var(JsCtx ctx, void* udata) => ctx.ret_number(drie::node_var(type_arg(ctx, 0), node_arg(ctx, 1)).id);
+
+// nodeAssign(target, value)
+fn void h_node_assign(JsCtx ctx, void* udata) => ctx.ret_number(drie::node_assign(node_arg(ctx, 0), node_arg(ctx, 1)).id);
+
+// nodeIf(cond, then, else): blocks (their first statements; 0: empty)
+fn void h_node_if(JsCtx ctx, void* udata) => ctx.ret_number(drie::node_if(node_arg(ctx, 0), node_arg(ctx, 1), node_arg(ctx, 2)).id);
+
+// nodeLoop(how, index, from, to, body): how a NodeLoop
+fn void h_node_loop(JsCtx ctx, void* udata)
+{
+    int how = (int)num_arg(ctx, 0, 0);
+    if (how < 0 || how > NodeLoop.WHILE.ordinal) { ctx.throw_error(TYPE, "nodeLoop: no such loop"); return; }
+    ctx.ret_number(drie::node_loop((NodeLoop)how, node_arg(ctx, 1), node_arg(ctx, 2), node_arg(ctx, 3), node_arg(ctx, 4)).id);
+}
+
+// nodeJump(kind): 0 break, 1 continue, 2 discard
+fn void h_node_jump(JsCtx ctx, void* udata) => ctx.ret_number(drie::node_jump((int)num_arg(ctx, 0, 0)).id);
+
+// nodeAppend(last, statement): the statement after `last` (0: the first of a block); returns it
+fn void h_node_append(JsCtx ctx, void* udata) => ctx.ret_number(drie::node_append(node_arg(ctx, 0), node_arg(ctx, 1)).id);
+
+// nodeSeq(block, value): value 0 for none
+fn void h_node_seq(JsCtx ctx, void* udata) => ctx.ret_number(drie::node_seq(node_arg(ctx, 0), node_arg(ctx, 1)).id);
+
+// nodeType(a): its NodeType
+fn void h_node_type(JsCtx ctx, void* udata) => ctx.ret_number(node_arg(ctx, 0).type().ordinal);
+
+// materialNodes(material, color, opacity, normal, roughness, metalness, emissive, position,
+// output, mask): 0 for none
+fn void h_material_nodes(JsCtx ctx, void* udata)
+{
+    Material* m = get_material(num_arg(ctx, 0, -1));
+    if (m == null) { ctx.throw_error(TYPE, "materialNodes: invalid material"); return; }
+    m.color_node = node_arg(ctx, 1);
+    m.opacity_node = node_arg(ctx, 2);
+    m.normal_node = node_arg(ctx, 3);
+    m.roughness_node = node_arg(ctx, 4);
+    m.metalness_node = node_arg(ctx, 5);
+    m.emissive_node = node_arg(ctx, 6);
+    m.position_node = node_arg(ctx, 7);
+    m.output_node = node_arg(ctx, 8);
+    m.mask_node = node_arg(ctx, 9);
+}
+
+// ----------------------------------------------------------------------------
 // Wiring
 // ----------------------------------------------------------------------------
 
@@ -1816,12 +2127,13 @@ fn void reg(JsValue obj, String name, JsHostFn handler, int arity)
 
 fn int usage()
 {
-    io::printn("usage: driejs [--no-jit] [--frames N] [--profile] [--png out.png] script.js");
+    io::printn("usage: driejs [--no-jit] [--frames N] [--profile] [--png out.png] [--back other.js] script.js");
     return 2;
 }
 
 fn int main(String[] args)
 {
+    exe_path = args[0];
     for (sz i = 1; i < args.len; i++)
     {
         switch (args[i])
@@ -1835,6 +2147,9 @@ fn int main(String[] args)
                 profile = true;
             case "--no-jit":
                 jit = false;
+            case "--back":
+                if (++i >= args.len) return usage();
+                back_path = args[i];
             case "--png":
                 if (++i >= args.len) return usage();
                 png_path = args[i];
@@ -1855,6 +2170,7 @@ fn int main(String[] args)
     dracos.init(mem);
 
     start_clock = time::clock::now();
+    if (png_path.len && !profile) fixed_clock = 0;
     js.create()!!;
     defer js.destroy();
     track_rejections();
@@ -1882,6 +2198,19 @@ fn int main(String[] args)
         "export { PMREMGenerator } from \"%s/js/pmrem.js\";\n"
         "export { ShaderChunk, ShaderLib, UniformsLib, UniformsUtils, WebGLRenderTarget, WebGLCubeRenderTarget, WebGLUtils }"
         " from \"%s/vendor/three.module.js\";\n", root, root, root, root, root, root))!!;
+    // three's WebGPU build (`three/webgpu`, `three/tsl`) for TSL: its node materials drawn by
+    // drie (js/drie_nodes.js prints their graphs into drie's node shaders), with drie's
+    // renderer as WebGPURenderer
+    js.define_module("three/webgpu", string::tformat(
+        "import \"%s/js/dom.js\";\n"
+        "import \"%s/js/wasm.js\";\n"
+        "import \"%s/js/drie_nodes.js\";\n"
+        "export * from \"%s/vendor/three.webgpu.js\";\n"
+        "export { DrieRenderer as WebGPURenderer } from \"%s/js/drie_renderer.js\";\n"
+        "export { PMREMGenerator } from \"%s/js/pmrem.js\";\n", root, root, root, root, root, root))!!;
+    js.define_module("three/tsl", string::tformat(
+        "import \"%s/js/dom.js\";\n"
+        "export * from \"%s/vendor/three.tsl.js\";\n", root, root))!!;
     // three's Stats draws into the DOM: this one is drawn by the host
     js.define_module("three/addons/libs/stats.module.js",
                      string::tformat("export { default } from \"%s/js/stats.js\";\n", root))!!;
@@ -1898,6 +2227,16 @@ fn int main(String[] args)
                      string::tformat("export { LightProbeGridWebGL } from \"%s/js/light_probe_grid.js\";\n", root))!!;
     js.define_module("three/addons/helpers/LightProbeGridHelperWebGL.js",
                      string::tformat("export { LightProbeGridHelperWebGL } from \"%s/js/light_probe_grid.js\";\n", root))!!;
+    // three/webgpu examples' Inspector: its parameters panel as lil-gui's (not drawn)
+    js.define_module("three/addons/inspector/Inspector.js", string::tformat(
+        "import { GUI } from \"%s/js/gui.js\";\n"
+        "export class Inspector {\n"
+        "  constructor() { this.domElement = document.createElement(\"div\"); }\n"
+        "  createParameters(title) { return new GUI({ title }); }\n"
+        "}\n", root))!!;
+    // RectAreaLightUniformsLib fills WebGLRenderer's UniformsLib: drie has the tables itself
+    js.define_module("three/addons/lights/RectAreaLightUniformsLib.js",
+                     string::tformat("export * from \"%s/js/rect_area_light.js\";\n", root))!!;
     // three's ProgressiveLightMap draws with shaders of its own: this one has drie bake
     js.define_module("three/addons/misc/ProgressiveLightMap.js",
                      string::tformat("export * from \"%s/js/progressive_lightmap.js\";\n", root))!!;
@@ -1926,6 +2265,28 @@ fn int main(String[] args)
     reg(natives, "materialUpdate", &h_material_update, 19);
     reg(natives, "materialMaps", &h_material_maps, 26);
     reg(natives, "materialLayers", &h_material_layers, 14);
+    reg(natives, "nodeConst", &h_node_const, 5);
+    reg(natives, "nodeUniform", &h_node_uniform, 1);
+    reg(natives, "nodeSet", &h_node_set, 5);
+    reg(natives, "nodeBuiltin", &h_node_builtin, 2);
+    reg(natives, "nodeTexture", &h_node_texture, 3);
+    reg(natives, "nodeVarying", &h_node_varying, 1);
+    reg(natives, "nodeBinary", &h_node_binary, 3);
+    reg(natives, "nodeCall", &h_node_call, 4);
+    reg(natives, "nodeSelect", &h_node_select, 3);
+    reg(natives, "nodeSwizzle", &h_node_swizzle, 2);
+    reg(natives, "nodeJoin", &h_node_join, 5);
+    reg(natives, "nodeConvert", &h_node_convert, 2);
+    reg(natives, "nodeNot", &h_node_not, 2);
+    reg(natives, "nodeVar", &h_node_var, 2);
+    reg(natives, "nodeAssign", &h_node_assign, 2);
+    reg(natives, "nodeIf", &h_node_if, 3);
+    reg(natives, "nodeLoop", &h_node_loop, 5);
+    reg(natives, "nodeJump", &h_node_jump, 1);
+    reg(natives, "nodeAppend", &h_node_append, 2);
+    reg(natives, "nodeSeq", &h_node_seq, 2);
+    reg(natives, "nodeType", &h_node_type, 1);
+    reg(natives, "materialNodes", &h_material_nodes, 10);
     reg(natives, "floatTexture", &h_float_texture, 4);
     reg(natives, "imageDecode", &h_image_decode, 1);
     reg(natives, "imageSize", &h_image_size, 2);
@@ -1951,7 +2312,7 @@ fn int main(String[] args)
     reg(natives, "setAnimationLoop", &h_set_animation_loop, 2);
     reg(natives, "stats", &h_stats, 6);
     reg(natives, "shadow", &h_shadow, 3);
-    reg(natives, "lightUpdate", &h_light_update, 4);
+    reg(natives, "lightUpdate", &h_light_update, 6);
     reg(natives, "lightShadow", &h_light_shadow, 15);
     reg(natives, "shadowType", &h_shadow_type, 2);
     reg(natives, "materialLightMap", &h_material_light_map, 3);
@@ -1986,6 +2347,10 @@ fn int main(String[] args)
     reg(natives, "skyParams", &h_sky_params, 15);
     reg(natives, "sceneEnvironment", &h_scene_environment, 3);
     reg(natives, "xmlParse", &h_xml_parse, 1);
+    reg(natives, "label", &h_label, 6);
+    reg(natives, "labelScale", &h_label_scale, 0);
+    reg(natives, "files", &h_files, 1);
+    reg(natives, "run", &h_run, 1);
 
     JsValue flag = js.boolean(profile)!!;
     js.set(natives, "profile", flag)!!;

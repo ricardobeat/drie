@@ -113,6 +113,7 @@ function lightKind(l) {
 	if (l.isDirectionalLight || l.isSunLight) return 2;
 	if (l.isPointLight) return 3;
 	if (l.isSpotLight) return 4;
+	if (l.isRectAreaLight) return 5;
 	return 0;
 }
 
@@ -287,7 +288,12 @@ export class DrieRenderer {
 
 	setAnimationLoop(callback) {
 		this._loop = callback;
-		N.setAnimationLoop(this._id, callback ?? (this._last ? () => this._redraw() : null));
+		// (an async callback's errors are its promise's: reported as a plain one's are)
+		const loop = callback ? (t) => {
+			const r = callback(t);
+			if (r && typeof r.then === "function") r.then(undefined, (e) => console.error("uncaught error in the animation loop:", e));
+		} : null;
+		N.setAnimationLoop(this._id, loop ?? (this._last ? () => this._redraw() : null));
 	}
 
 	// A page that renders only when something changes (OrbitControls' "change" event, no
@@ -312,6 +318,25 @@ export class DrieRenderer {
 
 	compile() {}
 	dispose() {}
+
+	// three/webgpu's WebGPURenderer is this one too (js/drie_nodes.js draws its node
+	// materials): nothing to wait for
+	init() {
+		return Promise.resolve(this);
+	}
+
+	hasInitialized() {
+		return true;
+	}
+
+	compileAsync() {
+		return Promise.resolve();
+	}
+
+	renderAsync(scene, camera) {
+		this.render(scene, camera);
+		return Promise.resolve();
+	}
 
 	render(scene, camera) {
 		if (!this._last && !this._loop) N.setAnimationLoop(this._id, () => this._redraw());
@@ -347,6 +372,17 @@ export class DrieRenderer {
 		if (profile) t = lap(0, t);
 
 		const frame = ++this._frame;
+		if (globalThis.__drieNodes) {
+			// (for node materials' uniforms: three's NodeFrame)
+			const now = performance.now() / 1000;
+			const f = (this._nodeFrame ??= { id: 0, time: 0, deltaTime: 0, start: now, last: now });
+			f.id = frame;
+			f.time = now - f.start;
+			f.deltaTime = now - f.last;
+			f.last = now;
+			f.camera = camera;
+			f.scene = scene;
+		}
 		let sceneId = scene.__drie;
 		if (sceneId === undefined) sceneId = scene.__drie = N.scene();
 		const state = (this._scene = this._state(scene));
@@ -475,7 +511,9 @@ export class DrieRenderer {
 			id = N.group();
 		} else if (o.isLight) {
 			_color.copy(o.color);
-			id = N.light(lightKind(o), _color.getHex(), o.intensity, o.distance ?? 0, o.decay ?? 2, o.angle ?? Math.PI / 3,
+			// (a RectAreaLight's width and height in place of distance and decay)
+			id = N.light(lightKind(o), _color.getHex(), o.intensity, o.isRectAreaLight ? o.width : o.distance ?? 0,
+				o.isRectAreaLight ? o.height : o.decay ?? 2, o.angle ?? Math.PI / 3,
 				o.penumbra ?? 0, o.groundColor ? o.groundColor.getHex() : 0xffffff);
 			if (o.target) {
 				const target = N.lightTarget(id);
@@ -649,7 +687,8 @@ export class DrieRenderer {
 		const v = (light.__drieValues ??= []);
 		const ground = light.groundColor;
 		if (v[0] !== light.color.r || v[1] !== light.color.g || v[2] !== light.color.b || v[3] !== light.intensity
-			|| (ground && (v[4] !== ground.r || v[5] !== ground.g || v[6] !== ground.b))) {
+			|| (ground && (v[4] !== ground.r || v[5] !== ground.g || v[6] !== ground.b))
+			|| (light.isRectAreaLight && (v[7] !== light.width || v[8] !== light.height))) {
 			v[0] = light.color.r;
 			v[1] = light.color.g;
 			v[2] = light.color.b;
@@ -659,7 +698,10 @@ export class DrieRenderer {
 				v[5] = ground.g;
 				v[6] = ground.b;
 			}
-			N.lightUpdate(light.__drie, light.color.getHex(), light.intensity, ground ? ground.getHex() : 0);
+			v[7] = light.width;
+			v[8] = light.height;
+			N.lightUpdate(light.__drie, light.color.getHex(), light.intensity, ground ? ground.getHex() : 0,
+				light.width ?? 0, light.height ?? 0);
 		}
 		if (!light.isDirectionalLight && !light.isSpotLight && !light.isSunLight) return;
 		const shadow = light.shadow;
@@ -950,6 +992,7 @@ export class DrieRenderer {
 			this._surface(material);
 			this._blend(material);
 			this._depth(material);
+			if (material.isNodeMaterial && globalThis.__drieNodes) globalThis.__drieNodes.sync(this, material, this._nodeFrame);
 			return material.__drie;
 		}
 		const sc = material.specularColor;
@@ -985,6 +1028,8 @@ export class DrieRenderer {
 		this._surface(material);
 		this._blend(material);
 		this._depth(material);
+		// (three/webgpu's: their TSL graphs, js/drie_nodes.js)
+		if (material.isNodeMaterial && globalThis.__drieNodes) globalThis.__drieNodes.sync(this, material, this._nodeFrame);
 		return material.__drie;
 	}
 

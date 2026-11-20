@@ -72,7 +72,7 @@ three.js API coverage:
 | Geometry | ✅ | `box`, `plane`, `sphere`, `cylinder`, `cone`, `torus`, `lathe`, `buffer_geometry`, `merge` |
 | Materials | ✅ | `MeshBasic`, `MeshLambert`, `MeshPhong`, `MeshStandard`, `MeshNormal`, `MeshPhysical` (transmission, volume, IOR, dispersion, specular, clearcoat, sheen, iridescence, anisotropy), tangents (a geometry's own, or from the screen derivatives), parallax mapping (`parallaxUV`), `depthTest` / `depthWrite`, shader hooks (`onBeforeCompile`) |
 | Textures | ✅ | `load_texture` (PNG/JPEG), `data_texture`, `canvas_texture`, mipmaps, anisotropy, `repeat` / `offset` / `rotation` / `center` per map, `channel` (a geometry's second uv set, `uv1`), `nearest` (three's `NearestFilter` magnification), `min_filter` (three's `minFilter`, from `NEAREST` to `LINEAR_MIPMAP_LINEAR`), `mipmaps` (levels drawn by the application, three's `texture.mipmaps`) |
-| Lights | ✅ | `AmbientLight`, `HemisphereLight`, `DirectionalLight`, `PointLight`, `SpotLight`; light maps (`lightMap`, `lightMapIntensity`), `ProgressiveLightMap` |
+| Lights | ✅ | `AmbientLight`, `HemisphereLight`, `DirectionalLight`, `PointLight`, `SpotLight`, `RectAreaLight` (standard and physical materials, no shadows, as three; up to `renderer.max_rect_area_lights`); light maps (`lightMap`, `lightMapIntensity`), `ProgressiveLightMap` |
 | Lighting addons | ✅ | Clustered forward lighting (`ClusteredLighting`), irradiance volume (`LightProbeGrid`) |
 | Reflections | ✅ | Box-projected env maps, `CubeCamera` capture, SSR (`SSRNode`), planar `Reflector` |
 | Fog | ✅ | `Fog`, `FogExp2` |
@@ -135,7 +135,7 @@ Features not in three.js:
 | **Volumetric Fog** | Compute-marched froxel fog with light scatter, sun shafts, 3D noise, and clear boxes |
 | **Room Reflection Probes** | Box-projected, cross-faded room probes |
 | **GPU Culling** | Depth pre-pass and GPU instanced culling |
-| **Light Radius** | Softer close-range falloff on point and spot lights |
+| **Light Radius & Tubes** | Point and spot lights with a size: softer close-range falloff, highlights the shape and size of the bulb; tube lights (`point_light.length`) |
 | **Material Extensions** | Foliage wind sway, glass viewer silhouette, refraction with dispersion, clearcoat, sheen, iridescence |
 | **UI, Input & Tooling** | Menus, macOS GameController support, deterministic timeline rewind, profiling |
 
@@ -159,6 +159,13 @@ Features not in three.js:
 - **Tone mapping per material:** `material.tone_mapped = false` leaves its colors out of the renderer's tone mapping (three's `toneMapped`).
 - **Flat backgrounds:** `scene.background_flat` shows `background_texture` as a picture over the whole view, placed by its `repeat` and `offset` (three's `scene.background` as a plain texture).
 - **World-space box UVs:** `geometry.box_project_uv(tiles_per_unit)` generates box-projected UVs.
+- **Node materials** (`nodes.c3`, `nodes_tsl.c3`): a material's color, opacity, normal, roughness, metalness, glow, vertex positions and final color can come from graphs of nodes built at runtime, as three's TSL and `NodeMaterial` do (`colorNode`, `positionNode`...). drie prints each graph in the backend's own language (Metal, HLSL or GLSL) and swaps it into its material shader's hook functions, so there is no shader compiler in drie: the driver compiles the result, as the browser does with three's WGSL. Uniforms change with `Node.set` without a rebuild. driejs runs three's real TSL on top of it (`three/webgpu`, `three/tsl`). `just example nodes` (`examples/nodes.c3`) burns a torus away with noise and a discard, its shadow with it, twists a column with `position_node`, and swaps a ball's `color_node` while it runs (keys 1 to 4).
+
+```c3
+Node wave = nodes::sin(nodes::position_local().y() * 8 + nodes::time() * 2);
+mat.color_node = nodes::mix(nodes::color(0x2266ff), nodes::color(0xffffff), wave * 0.5f + 0.5f);
+mat.position_node = nodes::position_local() + nodes::normal_local() * (wave * 0.05f);
+```
 
 <details>
 <summary>Material and geometry extension fields</summary>
@@ -173,13 +180,16 @@ Features not in three.js:
 | Iridescence | `material.iridescence` (+ `iridescence_map`), `iridescence_ior`, `iridescence_thickness_min` / `_max` (nm, + `iridescence_thickness_map`) | Loaded from `KHR_materials_iridescence` |
 | Anisotropy | `material.anisotropy`, `anisotropy_rotation` (radians), `anisotropy_map` (rg = direction, b = strength) | Along the tangent: the geometry's `tangents` (glTF's `TANGENT`), else the uv's u from screen derivatives; loaded from `KHR_materials_anisotropy`; `just test anisotropy` |
 
-A material's maps besides `map`, `normal_map` and `arm_map` share six texture slots: up to six distinct textures among them.
+| Node materials | `material.color_node`, `opacity_node`, `normal_node` (world space), `roughness_node`, `metalness_node`, `emissive_node`, `position_node` (in the model; also in the depth pre-pass and the shadow maps), `output_node` (rgba after lighting, before fog; `nodes::output()`), `mask_node` (a bool: false discards, in every pass) | Constructors in `drie::nodes`, named as TSL's: values, `uniform*` (`Node.set`), builtins (`uv()`, `position_world()`, `time()`...), `texture(t, uv, level)`, `varying(x)`, math, swizzles, `select`; ints and uints with bitwise operators; statements: `variable`, `Node.assign`, `if_then`, `loop`, `break_`, `discard`, `block`, `seq`. A discard in `color_node` (or `mask_node`, or alpha under `alpha_test`) cuts the shadow too. Programs are built on first draw and shared by materials whose graphs print the same; up to 32 vec4s of uniforms, four vec4 varyings, and textures in the fragment stage only; `just test nodes`, `just example nodes` |
+
+A material's maps besides `map`, `normal_map` and `arm_map` share six texture slots: up to six distinct textures among them. A node material's textures take slots from the same six.
 
 </details>
 
 ### Lighting, Shadows & Global Illumination
 
-- **Light source radius:** `light.radius` softens close-range falloff on point and spot lights; `spot_light.specular_radius` controls reflection highlight size.
+- **Light source radius:** `light.radius` softens close-range falloff on point and spot lights, and their highlights are the bulb's own shape (Karis' representative point with its energy normalization): a smooth surface mirrors a sharp disc as big as the bulb, a rough one gets the same light as from a point; `spot_light.specular_radius` sets the size seen in reflections. `just test lightsize`
+- **Tube lights:** `point_light.length` stretches a point light into a tube along its own x axis (`radius` thick): light from the whole segment (Karis' line irradiance) and long highlights of the tube's shape. No shadows (as point lights).
 - **Cached static shadows:** `light.shadow.auto_update = false` (three.js `shadow.autoUpdate`) caches static shadow maps in the shared atlas (`renderer.shadow_atlas_capacity`).
 - **Variance shadow maps:** `renderer.shadow_type = VSM` (three.js `VSMShadowMap`; default `PCF`, three's `PCFSoftShadowMap`) blurs each spot and directional map into its moments (`shadow.radius`, `shadow.blur_samples`, `shadow.bias`), in RG32F where the GPU can draw and filter it, else RG16F.
 - **Several shadowed directional lights:** as in three.js, every directional light can cast a shadow: the first is the cascaded sun, each other one a box (`light.shadow_extent`) in a tile of the shadow atlas.
@@ -195,6 +205,7 @@ A material's maps besides `map`, `normal_map` and `arm_map` share six texture sl
 | Feature | Key API / Fields | Notes |
 | --- | --- | --- |
 | Light radius | `light.radius`, `spot_light.specular_radius` | `specular_radius` defaults to `radius` when `0` |
+| Tube lights | `point_light.length` (m, along the light's x axis) | Intensity spread along the tube; falls off as the square of the distance whatever `decay`; `distance` cuts off from its nearest point |
 | Static shadow atlas | `light.shadow.auto_update = false`, `light.shadow.needs_update = true` | Set `needs_update = true` to redraw |
 | Shadow filtering | `renderer.shadow_type` (`PCF`, `VSM`), `light.shadow.radius` (`2`), `shadow.blur_samples` (`8`, VSM's blur taps), `shadow.bias` (`0`, VSM only; PCF uses `shadow.normal_bias`) | Point lights cast no shadows with either |
 | Shadow atlas capacity | `renderer.shadow_atlas_capacity` (`8`) | Tiles the atlas has room for at first: one per spot light with `shadow.auto_update = false` and per shadowed directional light besides the first; grows to what they need, up to 64 |
@@ -300,6 +311,14 @@ TBD. Currently the demo, with all advanced features on, runs at 40-60FPS on a Ma
 post-processing passes), `radiance_cs.c3`, `vsm.c3` (the variance shadow maps' blur) and `lightmap.c3` (the progressive light map's seams pass); the recipe then fixes sokol-shdc's storage image slot constants with macOS `sed -i ''`. An application with its own copy of the material
 shader generates it into its own sources, and regenerates it whenever `shader_core.glsl` changes.
 
+## RectAreaLight's tables
+
+`generated/ltc.c3` holds the linearly transformed cosines `RectAreaLight` is shaded with (Heitz,
+Dupuy, Hill and Neubelt 2016, [ltc_code](https://github.com/selfshadow/ltc_code)), taken from
+three.js's `RectAreaLightTexturesLib.js` (MIT) by `just ltc` (`third_party/ltc/ltc.py`). The shader
+has no view slot left for textures of their own: a frame with rect area lights appends the tables
+(192 KB) to the point lights' buffer, and the shader filters them itself.
+
 ## cgltf
 
 The glTF loader (`gltf.c3`) reads files with [cgltf](https://github.com/jkuhlmann/cgltf) 1.15
@@ -322,6 +341,8 @@ and by them with only the glowing cubes
 - `just test physical`: `tests/physical.c3` renders iridescence, a clear coat, sheen and double-sided glass side by side
 - `just test anisotropy`: `tests/anisotropy.c3` loads Khronos's AnisotropyRotationTest (CC-BY 4.0): every band's highlight
 should be a horizontal stripe, whether its direction comes from the tangents, `anisotropy_rotation` or the map
+- `just test lightsize`: `tests/lightsize.c3` lights a glossy floor and two balls with bulbs of radius 0, 0.05 and 0.3 m and tubes 0, 0.5 and 1.5 m long: each highlight on the floor should be the bulb's or the tube's shape at its size, and the rough ball should look about the same under all of them
+- `just test nodes`: `tests/nodes.c3` draws five balls with node materials (a texture times a uniform, stripes, rings pushed out by `position_node` through the depth pre-pass and the shadow maps, a `normal_node` with a fresnel glow, a varying), changes a uniform between two renders, renders with and without the pre-pass, with VSM and into MRT, checks a loop, a break and integer arithmetic against a constant, and discards a ball by a uniform, its shadow with it
 - `just test normals`: `tests/normals.c3` loads Khronos's NormalTangentTest (CC0, no tangents) and
 NormalTangentMirrorTest (CC-BY 4.0, tangents): each normal-mapped cell should reflect the horizon as the real geometry beside it does
 
