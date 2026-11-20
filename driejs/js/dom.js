@@ -6,6 +6,12 @@
 // Imported by the "three" module before three.js itself.
 const N = globalThis.__drie;
 
+// An error nothing caught (in a listener, or a rejected promise with no handler: the host
+// calls this after each microtask checkpoint), printed with its stack.
+globalThis.reportError = (error) => {
+	console.error(`Uncaught ${error?.stack ?? error}`);
+};
+
 // ----------------------------------------------------------------------------
 // Events and elements
 // ----------------------------------------------------------------------------
@@ -27,9 +33,14 @@ class Target {
 		const list = this._listeners?.[event.type];
 		if (!list) return true;
 		event.currentTarget = this;
+		// (as in a browser, a listener that throws is reported and the others still run)
 		for (const fn of list.slice()) {
-			if (typeof fn === "function") fn.call(this, event);
-			else fn.handleEvent(event);
+			try {
+				if (typeof fn === "function") fn.call(this, event);
+				else fn.handleEvent(event);
+			} catch (error) {
+				reportError(error);
+			}
 		}
 		return !event.defaultPrevented;
 	}
