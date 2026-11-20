@@ -54,9 +54,9 @@ const LOOP = { "<": 0, "<=": 1, ">": 2, ">=": 3, while: 4 };
 
 // The slots of three's NodeMaterial that drie has (in materialNodes' order)
 const SLOTS = ["colorNode", "opacityNode", "normalNode", "roughnessNode", "metalnessNode", "emissiveNode", "positionNode", "outputNode",
-	"maskNode", "envNode"];
+	"maskNode", "envNode", "specularNode", "shininessNode"];
 // and those it hasn't
-const UNSUPPORTED = ["vertexNode", "lightsNode", "aoNode", "alphaTestNode", "maskShadowNode", "mrtNode",
+const UNSUPPORTED = ["vertexNode", "aoNode", "alphaTestNode", "maskShadowNode", "mrtNode",
 	"castShadowNode", "castShadowPositionNode", "receivedShadowNode", "receivedShadowPositionNode", "shadowPositionNode",
 	"depthNode", "backdropNode", "backdropAlphaNode", "clearcoatNode", "clearcoatRoughnessNode", "clearcoatNormalNode",
 	"sheenNode", "sheenRoughnessNode", "iridescenceNode", "iridescenceIORNode", "iridescenceThicknessNode", "specularIntensityNode",

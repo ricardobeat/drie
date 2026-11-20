@@ -679,7 +679,8 @@ layout(binding=1) uniform fs_params {
     vec4 camera_up;            //   space (MeshNormalMaterial's and the matcap's normals)
     vec4 surface_params;       // x = Material.bump_scale (three's bumpScale), y = 1: the toon
                                //   material's gradient map is read texel by texel (NearestFilter),
-                               //   z = MeshDepthMaterial's packing (Material.depth_packing)
+                               //   z = MeshDepthMaterial's packing (Material.depth_packing),
+                               //   w = Material.light_channels
     vec4 env_combine;          // a basic, lambert or phong material's env_map (three's): x =
                                //   reflectivity, y = combine (0 multiply, 1 mix, 2 add), z = the
                                //   refraction ratio (0: it mirrors), w = 1: on
@@ -693,6 +694,13 @@ layout(binding=1) uniform fs_params {
                                //   the first's w = 1: from the second uv set instead (v_uv1)
     vec4 node_flags;           // x = 1: a node material's own build (nodes.c3), node_fs_params set
 };
+
+// Whether a light of these channels (its shadow.z) lights the material: one that takes every
+// light (light_channels 0), or one that shares a channel with it
+bool lights_material(float channels) {
+    uint taken = uint(surface_params.w);
+    return taken == 0u || (taken & uint(channels)) != 0u;
+}
 
 // The maps in map_slots, and the channels each is read from (as three's)
 #define MAP_AO 0                    // r
@@ -725,13 +733,13 @@ struct gpu_dir_light {
     vec4 dir;    // world-space direction towards the light
     vec4 color;
     vec4 shadow; // x = its shadow in spot_shadows (-1: none; the sun's is dir_shadow_mat's),
-                 //   y = shadow intensity (0..1)
+                 //   y = shadow intensity (0..1), z = Light.channels
 };
 struct gpu_point_light {
     vec4 pos;    // w = distance cutoff
     vec4 color;  // w = decay
     vec4 shadow; // x = the first of its six maps in spot_shadows (+x -x +y -y +z -z; -1: none),
-                 //   y = shadow intensity (0..1)
+                 //   y = shadow intensity (0..1), z = Light.channels
     vec4 params; // x = source radius
 };
 struct gpu_spot_light {
@@ -740,7 +748,8 @@ struct gpu_spot_light {
     vec4 color;  // w = decay
     vec4 params; // x = cos(inner angle) (from penumbra), y = source radius, z = specular radius,
                  //   w = how much the light glows in the fog
-    vec4 shadow; // x = its shadow in spot_shadows (-1: none), y = shadow intensity (0..1)
+    vec4 shadow; // x = its shadow in spot_shadows (-1: none), y = shadow intensity (0..1),
+                 //   z = Light.channels
 };
 struct gpu_spot_shadow {
     mat4 mat;    // world - the light's position -> shadow map uv + depth (directional: world ->)
@@ -823,6 +832,16 @@ void node_surface(NodeIn ni, inout float rough, inout float metal, inout vec4 em
     rough *= t.g;
     metal *= t.b;
     emissive = t;
+}
+
+// A phong material's specular color and shininess (specularNode, shininessNode)
+void node_specular(NodeIn ni, inout vec3 specular, inout float shininess) {
+    vec2 uv = ni.uv;
+    vec4 t = texture(sampler2D(tex_ext0, tex_smp), uv) * texture(sampler2D(tex_ext1, tex_smp), uv)
+        * texture(sampler2D(tex_ext2, tex_smp), uv) * texture(sampler2D(tex_ext3, tex_smp), uv)
+        * texture(sampler2D(tex_ext4, tex_smp), uv) * texture(sampler2D(tex_ext5, tex_smp), uv) * ni.params[0];
+    specular *= t.xyz;
+    shininess *= t.w;
 }
 
 // What the environment reflects in direction `dir` (in the world) on a surface of roughness
@@ -1047,6 +1066,8 @@ vec3 schlick_to_f0(vec3 f, float f90, float c) {
 vec4 g_base;      // rgb = albedo, a = alpha
 float g_rough;
 float g_metal;
+vec3 g_phong_specular; // a phong material's specular color and shininess
+float g_shininess;
 vec3 g_f0;        // a standard material's reflectance head on, and at a grazing angle
 float g_f90;      //   (from ior, specular_color and specular_intensity; set after the maps)
 // A light with a size (light_toward), set by the light loops before direct(): g_sized, the
@@ -1201,9 +1222,9 @@ vec3 direct(int mode, vec3 n, vec3 v, vec3 l, float dist, vec3 radiance, vec3 di
     if (mode == 2) {
         float noh = clamp(dot(n, h), 0.0, 1.0);
         float voh = clamp(dot(v, h), 0.0, 1.0);
-        float shininess = mat_params.w;
+        float shininess = g_shininess;
         float d = RECIPROCAL_PI * (shininess * 0.5 + 1.0) * pow(noh, shininess);
-        spec += irradiance * f_schlick(specular.rgb, voh) * 0.25 * d;
+        spec += irradiance * f_schlick(g_phong_specular, voh) * 0.25 * d;
     } else {
         float rough = max(g_rough, 0.0525);
         float a = rough * rough;
@@ -2625,6 +2646,8 @@ void main() {
 #endif
 
     g_rough = mat_params.y;
+    g_phong_specular = specular.rgb;
+    g_shininess = mat_params.w;
     g_metal = mat_params.z;
     float ao = 1.0;
     int arm_bits = int(tex_params.z + 0.5);
@@ -2683,6 +2706,7 @@ void main() {
         node_surface(ni, g_rough, g_metal, node_glow);
         g_rough = clamp(g_rough, 0.0, 1.0);
         g_metal = clamp(g_metal, 0.0, 1.0);
+        if (mode == 2) node_specular(ni, g_phong_specular, g_shininess);
     }
     if (mode != 0) {
         // (the hook's opacity counts too, as its contract says: a water's edge fading out by
@@ -2844,6 +2868,7 @@ void main() {
         vec3 mirror_r = reflect(-v, n);
         bool sized_ok = mode == 3;
         for (int i = 0; i < ndir; i++) {
+            if (!lights_material(dirs[i].shadow.z)) continue;
             vec3 l = normalize(dirs[i].dir.xyz);
             float lit = int(dir_shadow_params.x) == i + 1 ? dir_shadow(n, l) : 1.0;
             // the other shadowed ones: a tile of shadow_atlas each
@@ -2871,6 +2896,7 @@ void main() {
         }
         for (int k = 0; k < npoint; k++) {
             gpu_point_light pl = points[baking ? uint(k) : cluster_lights[first + k].index];
+            if (!lights_material(pl.shadow.z)) continue;
             vec3 lv = pl.pos.xyz - v_world_pos;
             float d = length(lv);
             // a light source with a size: falloff softens up close instead of blowing out
@@ -2909,6 +2935,7 @@ void main() {
         g_nol = -1.0;
         for (int k = 0; k < nspot; k++) {
             int i = baking ? k : int(cluster_lights[first + npoint + k].index);
+            if (!lights_material(spots[i].shadow.z)) continue;
             vec3 lv = spots[i].pos.xyz - v_world_pos;
             float d = length(lv);
             // out of the light's reach
@@ -2947,6 +2974,7 @@ void main() {
             }
             for (int k = 0; k < nrect; k++) {
                 gpu_point_light ra = points[int(counts.y) + k];
+                if (!lights_material(ra.shadow.z)) continue;
                 vec3 hw = vec3(ra.pos.w, ra.color.w, ra.params.x);
                 vec3 hh = ra.params.yzw;
                 vec3 to = ra.pos.xyz - v_world_pos;

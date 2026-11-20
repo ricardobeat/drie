@@ -629,6 +629,7 @@ struct NodeProgram {
     String surface_body;
     String output_body;
     String env_body;
+    String specular_body;
     bool cuts;               // color_node or opacity_node can cut holes: a discard, or alpha
                              // (with the material's alpha_test), which the shadow maps cut too
     SgShader[8] shaders;     // by NodeVariant
@@ -638,7 +639,7 @@ struct NodeProgram {
 
 // A material's build: its graphs' program, and where its uniforms and textures go.
 struct NodeBuild {
-    Node[10] slots;          // the material's *_node fields it was built from
+    Node[12] slots;          // the material's *_node fields it was built from
     NodeProgram* program;
     List{Node} uniforms;     // in their order in node_params (a matrix takes four)
     Texture*[NODE_TEXTURES] textures; // node texture k is tex_ext(5 - k)
@@ -670,15 +671,16 @@ struct NodeGen @local {
     bool discards; // a discard printed
 }
 
-fn Node[10] node_slots(Material* mat) @local {
-    Node[10] s = {
+fn Node[12] node_slots(Material* mat) @local {
+    Node[12] s = {
         mat.color_node, mat.opacity_node, mat.normal_node, mat.roughness_node, mat.metalness_node,
-        mat.emissive_node, mat.position_node, mat.output_node, mat.mask_node, mat.env_node
+        mat.emissive_node, mat.position_node, mat.output_node, mat.mask_node, mat.env_node,
+        mat.specular_node, mat.shininess_node
     };
     return s;
 }
 
-fn bool same_nodes(Node[10] a, Node[10] b) @local {
+fn bool same_nodes(Node[12] a, Node[12] b) @local {
     foreach (i, n : a) {
         if (n.id != b[i].id) return false;
     }
@@ -695,7 +697,7 @@ fn bool has_nodes(Material* mat) {
 // The material's build, made or remade if its nodes changed; null without nodes.
 fn NodeBuild* node_build_of(Material* mat) {
     if (!has_nodes(mat)) return null;
-    Node[10] slots = node_slots(mat);
+    Node[12] slots = node_slots(mat);
     NodeBuild* b = mat.node_build;
     if (b && same_nodes(b.slots, slots)) return b;
     // (its program stays: other materials may share it, and the same graphs may come back)
@@ -775,6 +777,10 @@ fn NodeBuild* node_build_of(Material* mat) {
             if (mat.env_node.id) g.line("env = %s;", g.value_as(mat.env_node, VEC3));
         }, mat);
         g.env = false;
+        String specular = g.body(fn void(NodeGen* g, Material* mat) {
+            if (mat.specular_node.id) g.line("specular = %s;", g.value_as(mat.specular_node, VEC3));
+            if (mat.shininess_node.id) g.line("shininess = %s;", g.value_as(mat.shininess_node, FLOAT));
+        }, mat);
         String vertex = g.body(fn void(NodeGen* g, Material* mat) {
             g.stage = VERTEX;
             // the variables that varyings carry (TSL's varying(...).assign() in position_node):
@@ -802,8 +808,8 @@ fn NodeBuild* node_build_of(Material* mat) {
             }
             for (sz i = g.varyings.len(); i < NODE_VARYINGS; i++) g.line("vary%d = %s;", i, g.zero(VEC4));
         }, mat);
-        String key = string::tformat("%s\n--\n%s\n--\n%s\n--\n%s\n--\n%s\n--\n%s\n--\n%s", vertex, color, normal, surface, output,
-                                     env, cuts);
+        String key = string::tformat("%s\n--\n%s\n--\n%s\n--\n%s\n--\n%s\n--\n%s\n--\n%s\n--\n%s", vertex, color, normal, surface,
+                                     output, env, specular, cuts);
         if (!node_programs.is_initialized()) node_programs.init(mem);
         NodeProgram*? found = node_programs[key];
         if (try found) {
@@ -816,6 +822,7 @@ fn NodeBuild* node_build_of(Material* mat) {
             p.surface_body = surface.copy(mem);
             p.output_body = output.copy(mem);
             p.env_body = env.copy(mem);
+            p.specular_body = specular.copy(mem);
             p.cuts = cuts;
             p.pipelines.init(mem);
             node_programs[key.copy(mem)] = p;
@@ -1475,16 +1482,21 @@ fn SgShader NodeProgram.make_shader(&self, NodeVariant v, SgShaderDesc desc) {
             fs = splice_body(fs, "node_normal", self.normal_body);
             fs = splice_body(fs, "node_surface", self.surface_body);
             fs = splice_body(fs, "node_output", self.output_body);
-            // (a build of the shader from before node_env has none: fine without an env_node)
+            // (a build of the shader from before node_env or node_specular has none: fine
+            // without the slots they are for)
             if (self.env_body.len || fs.contains("\nvoid node_env(")) fs = splice_body(fs, "node_env", self.env_body);
+            if (self.specular_body.len || fs.contains("\nvoid node_specular(")) {
+                fs = splice_body(fs, "node_specular", self.specular_body);
+            }
             desc.fragment_func.source = fs.zstr_tcopy();
         }
         desc.label = "drie-node-material";
         SgShader shader = sg::make_shader(&desc);
         if (sg::query_shader_state(shader) != VALID) {
             io::eprintfn("drie: a node material's shader failed to build. Its hooks:");
-            io::eprintfn("node_vertex:\n%snode_color:\n%snode_normal:\n%snode_surface:\n%snode_output:\n%snode_env:\n%s",
-                self.vertex_body, self.color_body, self.normal_body, self.surface_body, self.output_body, self.env_body);
+            io::eprintfn("node_vertex:\n%snode_color:\n%snode_normal:\n%snode_surface:\n%snode_output:\n%snode_env:\n%snode_specular:\n%s",
+                self.vertex_body, self.color_body, self.normal_body, self.surface_body, self.output_body, self.env_body,
+                self.specular_body);
             abort("drie: a node material's shader failed to build");
         }
         return shader;

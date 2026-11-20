@@ -859,6 +859,21 @@ fn void h_light_update(JsCtx ctx, void* udata)
     }
 }
 
+// lightChannels(light, channels): drie's Light.channels
+fn void h_light_channels(JsCtx ctx, void* udata)
+{
+    Object3D* o = get_object(num_arg(ctx, 0, -1));
+    if (o == null || o.kind != LIGHT) return;
+    ((Light*)o).channels = (uint)num_arg(ctx, 1, 0);
+}
+
+// materialLightChannels(material, channels): drie's Material.light_channels (0: every light)
+fn void h_material_light_channels(JsCtx ctx, void* udata)
+{
+    Material* m = get_material(num_arg(ctx, 0, -1));
+    if (m != null) m.light_channels = (uint)num_arg(ctx, 1, 0);
+}
+
 // lightShadow(light, cast, mapSize, radius, near, far, extent, normalBias, intensity, bias,
 // blurSamples, focus, cascades, splitLambda, cascadeBlend): a directional or spot light's
 // shadow. A directional light's is one box `extent` meters from its target to each side (the
@@ -2183,7 +2198,7 @@ fn void h_node_seq(JsCtx ctx, void* udata) => ctx.ret_number(drie::node_seq(node
 fn void h_node_type(JsCtx ctx, void* udata) => ctx.ret_number(node_arg(ctx, 0).type().ordinal);
 
 // materialNodes(material, color, opacity, normal, roughness, metalness, emissive, position,
-// output, mask, env): 0 for none
+// output, mask, env, specular, shininess): 0 for none
 fn void h_material_nodes(JsCtx ctx, void* udata)
 {
     Material* m = get_material(num_arg(ctx, 0, -1));
@@ -2198,6 +2213,8 @@ fn void h_material_nodes(JsCtx ctx, void* udata)
     m.output_node = node_arg(ctx, 8);
     m.mask_node = node_arg(ctx, 9);
     m.env_node = node_arg(ctx, 10);
+    m.specular_node = node_arg(ctx, 11);
+    m.shininess_node = node_arg(ctx, 12);
 }
 
 // ----------------------------------------------------------------------------
@@ -2395,7 +2412,7 @@ fn int main(String[] args)
     reg(natives, "nodeAppend", &h_node_append, 2);
     reg(natives, "nodeSeq", &h_node_seq, 2);
     reg(natives, "nodeType", &h_node_type, 1);
-    reg(natives, "materialNodes", &h_material_nodes, 11);
+    reg(natives, "materialNodes", &h_material_nodes, 13);
     reg(natives, "floatTexture", &h_float_texture, 4);
     reg(natives, "imageDecode", &h_image_decode, 1);
     reg(natives, "imageSize", &h_image_size, 2);
@@ -2407,6 +2424,8 @@ fn int main(String[] args)
     reg(natives, "backgroundMaterial", &h_background_material, 2);
     reg(natives, "renderEnvironment", &h_render_environment, 5);
     reg(natives, "renderProbe", &h_render_probe, 10);
+    reg(natives, "lightChannels", &h_light_channels, 2);
+    reg(natives, "materialLightChannels", &h_material_light_channels, 2);
     reg(natives, "textureLightProbe", &h_texture_light_probe, 2);
     reg(natives, "textureUv", &h_texture_uv, 8);
     reg(natives, "mesh", &h_mesh, 2);

@@ -119,6 +119,9 @@ struct Material {
     // Multiplies `color`, for colors brighter than white (a three Color can hold any number;
     // drie's has 8 bits a channel). 0 counts as 1.
     float color_scale;
+    // The lighting channels whose lights light it (bits; 0: every light): see Light.channels.
+    // Three's lightsNode (lights([...])) as a channel of its own.
+    uint light_channels;
     // Phong
     Color specular;
     float shininess;
@@ -366,6 +369,8 @@ struct Material {
     //   env_node       what the environment reflects, rgb, in nodes::env_direction() at
     //                  nodes::env_roughness() (three's envNode; in place of the environment
     //                  map's reflection, whose light on surfaces stays)
+    //   specular_node  a phong material's specular color, rgb (instead of specular)
+    //   shininess_node and its shininess
     Node color_node;
     Node opacity_node;
     Node normal_node;
@@ -376,6 +381,8 @@ struct Material {
     Node output_node;
     Node mask_node;
     Node env_node;
+    Node specular_node;
+    Node shininess_node;
     // The shaders built for them (at the first draw, and again when one changes).
     NodeBuild* node_build;
 }
