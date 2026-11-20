@@ -44,3 +44,14 @@ done:
 void imageio_free(unsigned char* pixels) {
     free(pixels);
 }
+
+// (text is not set on Windows yet: no width, and nothing drawn)
+void imageio_text_metrics(const char* text, const char* family, float size, int bold, int italic, float* metrics) {
+    metrics[0] = 0;
+    metrics[1] = size * 0.8f;
+    metrics[2] = size * 0.2f;
+}
+
+void imageio_text(const char* text, const char* family, float size, int bold, int italic, unsigned char* mask, int w,
+                  int h, float x, float y) {
+}

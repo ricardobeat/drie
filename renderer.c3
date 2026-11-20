@@ -1,6 +1,6 @@
 // Renderer: owns the window and the GPU, draws a Scene from a Camera.
 module drie;
-import std::collections::list, std::sort, std::io, std::math;
+import std::collections::list, std::collections::map, std::sort, std::io, std::math;
 import sokol, drie::readback, drie::postprocessing;
 
 alias AnimationLoop = fn void(double time_ms);
@@ -288,6 +288,10 @@ struct Renderer {
     RenderTarget* render_target;
     ToneMapping tone_mapping;
     float tone_mapping_exposure;
+    // Fog and the background color as three has them: the fog mixed in after tone mapping, in
+    // the colors that are shown, and the background color cleared to as it is, not tone mapped.
+    // Otherwise both are light like any other, tone mapped with the rest of the picture.
+    bool display_fog;
     // What the window takes, like three's outputColorSpace: SRGB_COLOR_SPACE, or
     // DISPLAY_P3_COLOR_SPACE on a wide-gamut screen, whose extra colors tone mapping then keeps
     // instead of clipping them to sRGB's. Can change at any time (macOS).
@@ -618,11 +622,9 @@ struct RendererState @local {
     int motion_frame;
     float motion_time;
     float motion_prev_time;
-    // indexed [depth: tested and written, not written, not tested, neither (Material.depth_test,
-    // depth_write)][VSM][DrawKind][side][opaque, transparent, additive][wireframe][target:
-    // swapchain, RGBA8 1x, RGBA8 4x, RGBA16F 1x, RGBA16F 4x, MRT 1x, MRT 4x][alpha to coverage]
-    // (C3 declares array dimensions innermost first)
-    SgPipeline[2][7][2][3][3][4][2][4][2] pipelines;
+    // by get_pipeline's key: the blend state, tangents, depth test and write, VSM, DrawKind,
+    // side, wireframe, target and alpha to coverage
+    HashMap{ulong, SgPipeline} pipelines;
     SgPipeline shadow_pipeline;
     // writes the far depth wherever it draws: clears one tile of the shadow atlas
     SgPipeline tile_clear_pipeline;
@@ -720,6 +722,8 @@ struct RendererState @local {
     SgSampler mip_sampler;
     // the scene's background_texture, drawn as a sphere around the camera
     Mesh* background;
+    // the scene's background_texture when it is flat: a quad that fills the view
+    Mesh* background_quad;
     // baking a light map (render_bake): what it draws with, the objects that cast the shadows
     // (not in the bake's scene of lights), and its pipelines: [VSM][RGBA32F]
     BakeState bake;
@@ -760,6 +764,7 @@ fn Renderer* renderer(bool antialias = true, int width = 800, int height = 600, 
     state.renderer = r;
     state.opaque.allocator = mem;
     state.transparent.allocator = mem;
+    if (!state.pipelines.is_initialized()) state.pipelines.init(mem);
     state.casters.allocator = mem;
     state.spot_casters.allocator = mem;
     foreach (&l : state.sun_casters) l.allocator = mem;
@@ -1030,13 +1035,91 @@ enum DrawKind : char @local {
     DEPTH,
 }
 
+// The blend state a material draws with, packed (0: none), as three's setBlending: a normal
+// material blends only when transparent. 1 + 2 * mode + premultiplied for the modes, or the
+// custom one's equations and factors above bit 4.
+fn ulong blend_key(Material* mat) @local {
+    if (mat.blending == NO_BLENDING || (mat.blending == NORMAL_BLENDING && !mat.transparent)) return 0;
+    if (mat.blending != CUSTOM_BLENDING) return 1 + 2 * (ulong)mat.blending.ordinal + (mat.premultiplied_alpha ? 1UL : 0UL);
+    return 16 | (ulong)mat.blend_equation.ordinal << 5 | (ulong)mat.blend_equation_alpha.ordinal << 8
+        | (ulong)mat.blend_src.ordinal << 11 | (ulong)mat.blend_dst.ordinal << 15
+        | (ulong)mat.blend_src_alpha.ordinal << 19 | (ulong)mat.blend_dst_alpha.ordinal << 23;
+}
+
+fn SgBlendFactor sg_factor(ulong f) @local {
+    switch ((BlendFactor)f) {
+        case ZERO_FACTOR: return ZERO;
+        case ONE_FACTOR: return ONE;
+        case SRC_COLOR_FACTOR: return SRC_COLOR;
+        case ONE_MINUS_SRC_COLOR_FACTOR: return ONE_MINUS_SRC_COLOR;
+        case SRC_ALPHA_FACTOR: return SRC_ALPHA;
+        case ONE_MINUS_SRC_ALPHA_FACTOR: return ONE_MINUS_SRC_ALPHA;
+        case DST_ALPHA_FACTOR: return DST_ALPHA;
+        case ONE_MINUS_DST_ALPHA_FACTOR: return ONE_MINUS_DST_ALPHA;
+        case DST_COLOR_FACTOR: return DST_COLOR;
+        case ONE_MINUS_DST_COLOR_FACTOR: return ONE_MINUS_DST_COLOR;
+        case SRC_ALPHA_SATURATE_FACTOR: return SRC_ALPHA_SATURATED;
+    }
+}
+
+fn SgBlendOp sg_op(ulong e) @local {
+    switch ((BlendEquation)e) {
+        case ADD_EQUATION: return ADD;
+        case SUBTRACT_EQUATION: return SUBTRACT;
+        case REVERSE_SUBTRACT_EQUATION: return REVERSE_SUBTRACT;
+        case MIN_EQUATION: return MIN;
+        case MAX_EQUATION: return MAX;
+    }
+}
+
+// The blend state of blend_key's key (three's setBlending).
+fn SgBlendState blend_state(ulong key) @local {
+    if (key == 0) return { };
+    if (key >= 16) {
+        return {
+            .enabled = true,
+            .op_rgb = sg_op(key >> 5 & 7),
+            .op_alpha = sg_op(key >> 8 & 7),
+            .src_factor_rgb = sg_factor(key >> 11 & 15),
+            .dst_factor_rgb = sg_factor(key >> 15 & 15),
+            .src_factor_alpha = sg_factor(key >> 19 & 15),
+            .dst_factor_alpha = sg_factor(key >> 23 & 15),
+        };
+    }
+    bool premultiplied = (key - 1) % 2 == 1;
+    switch ((Blending)((key - 1) / 2)) {
+        case ADDITIVE_BLENDING:
+            return {
+                .enabled = true,
+                .src_factor_rgb = premultiplied ? SgBlendFactor.ONE : SgBlendFactor.SRC_ALPHA,
+                .dst_factor_rgb = ONE,
+                .src_factor_alpha = ZERO,
+                .dst_factor_alpha = ONE,
+            };
+        case SUBTRACTIVE_BLENDING:
+            return { .enabled = true, .src_factor_rgb = ZERO, .dst_factor_rgb = ONE_MINUS_SRC_COLOR,
+                     .src_factor_alpha = ZERO, .dst_factor_alpha = ONE };
+        case MULTIPLY_BLENDING:
+            return { .enabled = true, .src_factor_rgb = DST_COLOR, .dst_factor_rgb = ONE_MINUS_SRC_ALPHA,
+                     .src_factor_alpha = ZERO, .dst_factor_alpha = ONE };
+        default:
+            return {
+                .enabled = true,
+                .src_factor_rgb = premultiplied ? SgBlendFactor.ONE : SgBlendFactor.SRC_ALPHA,
+                .dst_factor_rgb = ONE_MINUS_SRC_ALPHA,
+                .src_factor_alpha = ONE,
+                .dst_factor_alpha = ONE_MINUS_SRC_ALPHA,
+            };
+    }
+}
+
 fn SgPipeline get_pipeline(
     Side side,
     bool transparent,
     bool wireframe,
     RenderTarget* rt,
     bool alpha_test,
-    Blending blending = NORMAL_BLENDING,
+    ulong blend = 0,
     DrawKind kind = CUT,
     bool depth_test = true,
     bool depth_write = true,
@@ -1048,7 +1131,7 @@ fn SgPipeline get_pipeline(
     int samples   = rt ? rt.samples : sapp::sample_count();
     // after the prepass, the coverage of the cut-out's edge is in the depth buffer's samples
     bool a2c      = alpha_test && !transparent && samples > 1 && kind != PRETESTED;
-    bool additive = transparent && blending == ADDITIVE_BLENDING;
+    if (kind == DEPTH) blend = 0;
     // VSM: the programs that read the maps' moments (the one that cuts holes for all: the
     // depth prepass has cut them for PRETESTED, and SOLID has none)
     bool vsm      = kind != DEPTH && state.renderer && state.renderer.shadow_type == VSM;
@@ -1060,9 +1143,10 @@ fn SgPipeline get_pipeline(
     int depth = (depth_write ? 0 : 1) + (depth_test ? 0 : 2);
     // the geometry's tangents: a program that reads them (the depth prepass too: the main pass
     // tests against its depth with EQUAL, which wants the same vertex shader)
-    SgPipeline* pip = &state.pipelines[tangents ? 1 : 0][depth][vsm ? 1
-        : 0][kind.ordinal][side.ordinal][transparent ? (additive ? 2 : 1) : 0][wireframe ? 1 : 0][target][a2c ? 1 : 0];
-    if (pip.id) return *pip;
+    ulong key = blend | (ulong)(tangents ? 1 : 0) << 27 | (ulong)depth << 28 | (ulong)(vsm ? 1 : 0) << 30
+        | (ulong)kind.ordinal << 31 | (ulong)side.ordinal << 33 | (ulong)(wireframe ? 1 : 0) << 35
+        | (ulong)target << 36 | (ulong)(a2c ? 1 : 0) << 39 | (ulong)(transparent ? 1 : 0) << 40;
+    if (try known = state.pipelines.get(key)) return known;
     SgCullMode cull;
     switch (side) {
         case FRONT_SIDE: cull = BACK;
@@ -1126,18 +1210,11 @@ fn SgPipeline get_pipeline(
             if (kind == DEPTH || transparent) desc.colors[i + 1].write_mask = NONE;
         }
     }
-    if (transparent) {
-        desc.colors[0].blend = {
-            .enabled = true,
-            .src_factor_rgb = SRC_ALPHA,
-            .dst_factor_rgb = additive ? SgBlendFactor.ONE : SgBlendFactor.ONE_MINUS_SRC_ALPHA,
-            .src_factor_alpha = additive ? SgBlendFactor.ZERO : SgBlendFactor.ONE,
-            .dst_factor_alpha = additive ? SgBlendFactor.ONE : SgBlendFactor.ONE_MINUS_SRC_ALPHA,
-        };
-    }
-    *pip = sg::make_pipeline(&desc);
+    desc.colors[0].blend = blend_state(blend);
+    SgPipeline pip = sg::make_pipeline(&desc);
     if (!pip.id) abort("drie: sokol's pipeline pool is full (pipeline_pool_size in setup_gfx)");
-    return *pip;
+    state.pipelines.set(key, pip);
+    return pip;
 }
 
 fn SgPipeline get_shadow_pipeline() @local {
@@ -2122,7 +2199,7 @@ fn FsParams build_light_params(Scene* scene, Camera* camera, SpotLight* caster) 
         p.fog_params = { f.near, f.far, f.density, mode };
         p.fog_box_min = { ...f.clear_box_min, f.has_clear_box ? 1 : 0 };
         p.fog_box_max = { ...f.clear_box_max, clamp(f.clear_box_density, 0, 1) };
-        p.fog_height = { f.height_base, f.height_falloff, 0, f.shade_density };
+        p.fog_height = { f.height_base, f.height_falloff, state.renderer.display_fog ? 1 : 0, f.shade_density };
         Vector3 sun_dir = f.sun_direction;
         Color sun_color = f.sun_color;
         if (sun_dir == (Vector3) { 0, 0, 0 } || !sun_color) {
@@ -2332,7 +2409,7 @@ fn void draw_depth_item(DrawItem* item, Mat4 view_proj) @local {
     float alpha_test  = alpha_test_of(mat);
     bool tangents     = uses_tangents(item);
     sg::apply_pipeline(
-        get_pipeline(mat.side, false, false, r.render_target, alpha_test > 0, mat.blending, DEPTH, tangents: tangents)
+        get_pipeline(mat.side, false, false, r.render_target, alpha_test > 0, 0, DEPTH, tangents: tangents)
     );
     SgBindings bind = { .vertex_buffers[0] = g.vbuf, .index_buffer = g.ibuf };
     bind_instances(&bind, item, tangents);
@@ -2377,7 +2454,7 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
                 lines,
                 r.render_target,
                 alpha_test > 0,
-                mat.blending,
+                blend_key(mat),
                 kind,
                 mat.depth_test,
                 mat.depth_write,
@@ -2546,7 +2623,8 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
             : 0) | (m.receive_shadow ? 4
                 : 0) | (mat.glass ? 8
                     : 0) | (mat.vertex_light > 0 ? 16 : 0) | (mat.screen_target ? 32 : 0) | (mat.map_emissive ? 64 : 0)
-        | (mat.vertex_occlusion && mat.vertex_colors ? 128 : 0);
+        | (mat.vertex_occlusion && mat.vertex_colors ? 128 : 0) | (mat.premultiplied_alpha ? 256 : 0)
+        | (mat.tone_mapped ? 0 : 512);
     fs.color = { ...color_to_linear(mat.color) * (mat.color_scale > 0 ? mat.color_scale : 1), mat.opacity };
     fs.emissive = { ...color_to_linear(mat.emissive) * mat.emissive_intensity, mat.vertex_light };
     if (state.bake.on) {
@@ -2845,6 +2923,10 @@ fn void draw_backdrop(Scene* scene, Camera* camera, Mat4 view_proj, FsParams* fs
 // a sphere around the camera, just inside its far plane, that shows the map in each direction
 // (see the shader's background mode). Drawn before the opaque scene, without writing depth.
 fn void draw_background(Scene* scene, Camera* camera, Mat4 view_proj, FsParams* fs) @local {
+    if (scene.background_texture && scene.background_flat) {
+        draw_flat_background(scene, camera, view_proj, fs);
+        return;
+    }
     if (!scene.background_texture || camera.camera_type != PERSPECTIVE) return;
     if (!state.background) {
         MeshBasicMaterial* mat = mesh_basic_material(transparent: true, side: BACK_SIDE, fog: false);
@@ -2858,6 +2940,42 @@ fn void draw_background(Scene* scene, Camera* camera, Mat4 view_proj, FsParams* 
     m.material.roughness = math::clamp(scene.background_blurriness, 0, 1);
     float r = ((PerspectiveCamera*)camera).far * 0.9f;
     m.matrix_world = mat4_compose(camera.matrix_world.get_position(), { 0, 0, 0 }, { r, r, r });
+    m.geometry.upload();
+    DrawItem item = { m, 0, 0, 0, 0, 1 };
+    draw_item(&item, view_proj, fs);
+}
+
+// A flat background_texture: a quad between the camera's near and far planes that covers its
+// view, drawn without depth.
+fn void draw_flat_background(Scene* scene, Camera* camera, Mat4 view_proj, FsParams* fs) @local {
+    if (!state.background_quad) {
+        MeshBasicMaterial* mat = mesh_basic_material(fog: false);
+        mat.depth_test = false;
+        mat.depth_write = false;
+        state.background_quad = mesh(plane_geometry(2, 2), mat);
+        state.background_quad.receive_shadow = false;
+    }
+    Mesh* m = state.background_quad;
+    Texture* t = scene.background_texture;
+    m.material.map = t;
+    m.material.tone_mapped = t.color_space != SRGB_COLOR_SPACE;
+    float d = (camera.near + camera.far) * 0.5f;
+    float cx;
+    float cy;
+    float hw;
+    float hh;
+    if (camera.camera_type == PERSPECTIVE) {
+        PerspectiveCamera* pc = (PerspectiveCamera*)camera;
+        hh = d * math::tan(pc.fov * (float)math::PI / 360.0f) / camera.zoom;
+        hw = hh * pc.aspect;
+    } else {
+        OrthographicCamera* oc = (OrthographicCamera*)camera;
+        cx = (oc.left + oc.right) * 0.5f;
+        cy = (oc.top + oc.bottom) * 0.5f;
+        hw = (oc.right - oc.left) * 0.5f / camera.zoom;
+        hh = (oc.top - oc.bottom) * 0.5f / camera.zoom;
+    }
+    m.matrix_world = camera.matrix_world.mul(mat4_compose({ cx, cy, -d }, { 0, 0, 0 }, { hw * 1.01f, hh * 1.01f, 1 }));
     m.geometry.upload();
     DrawItem item = { m, 0, 0, 0, 0, 1 };
     draw_item(&item, view_proj, fs);
@@ -3249,7 +3367,8 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera) {
 
     Color background = scene.background ? scene.background : self.clear_color;
     Vector3 clear    = self.render_target && self.render_target.is_linear() ? color_to_linear(background)
-        : tone_mapped(self, background);
+        : self.display_fog
+        ? (Vector3) { ((background >> 16) & 0xff) / 255.0f, ((background >> 8) & 0xff) / 255.0f, (background & 0xff) / 255.0f } : tone_mapped(self, background);
     SgPass pass = {
         .action = {
             .colors[0] = {

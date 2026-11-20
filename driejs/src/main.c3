@@ -174,6 +174,7 @@ fn void h_renderer(JsCtx ctx, void* udata)
     String title = ctx.arg(3).as_string() ?? "three.js";
     Renderer* r = drie::renderer(antialias: bool_arg(ctx, 0, true), width: (int)num_arg(ctx, 1, 1280),
                                         height: (int)num_arg(ctx, 2, 720), title: title);
+    r.display_fog = true;
     ctx.ret_number(@reg(renderers, r, RENDERER_BASE));
 }
 
@@ -672,6 +673,51 @@ fn void h_image_size(JsCtx ctx, void* udata)
 
 // imagePixels(handle, out, width, height): its RGBA, stretched to width x height (bilinear,
 // as a canvas draws an image at another size), into the Uint8Array or Uint8ClampedArray
+// textMetrics(text, family, size, bold, italic, out): out (a Float32Array of 3) = the text's
+// width and how far it reaches above and below the baseline, in pixels
+fn void h_text_metrics(JsCtx ctx, void* udata)
+{
+    View v;
+    if (!view_arg(ctx, 5, &v) || v.cls != ObjClass.FLOAT32ARRAY || v.len < 3)
+    {
+        ctx.throw_error(TYPE, "textMetrics: expected a Float32Array of 3 for the metrics");
+        return;
+    }
+    @pool()
+    {
+        ZString text = (ctx.arg(0).as_string() ?? "").zstr_tcopy();
+        ZString family = (ctx.arg(1).as_string() ?? "sans-serif").zstr_tcopy();
+        imageio::text_metrics(text, family, (float)num_arg(ctx, 2, 10), bool_arg(ctx, 3, false) ? 1 : 0,
+                              bool_arg(ctx, 4, false) ? 1 : 0, (float*)v.data);
+    };
+}
+
+// textMask(text, family, size, bold, italic, mask, width, height, x, y): the text drawn into
+// mask (a Uint8Array of width * height: how much of each pixel it covers), its baseline
+// starting at (x, y)
+fn void h_text_mask(JsCtx ctx, void* udata)
+{
+    View v;
+    int w = (int)num_arg(ctx, 6, 0);
+    int h = (int)num_arg(ctx, 7, 0);
+    if (!view_arg(ctx, 5, &v) || v.cls != ObjClass.UINT8ARRAY || w <= 0 || h <= 0 || v.len < (usz)w * (usz)h)
+    {
+        ctx.throw_error(TYPE, "textMask: expected a Uint8Array of width * height");
+        return;
+    }
+    @pool()
+    {
+        ZString text = (ctx.arg(0).as_string() ?? "").zstr_tcopy();
+        ZString family = (ctx.arg(1).as_string() ?? "sans-serif").zstr_tcopy();
+        imageio::text(text, family, (float)num_arg(ctx, 2, 10), bool_arg(ctx, 3, false) ? 1 : 0,
+                      bool_arg(ctx, 4, false) ? 1 : 0, (char*)v.data, w, h, (float)num_arg(ctx, 8, 0),
+                      (float)num_arg(ctx, 9, 0));
+    };
+}
+
+
+// imagePixels(handle, out, width, height): its RGBA, stretched to width x height (bilinear,
+// as a canvas draws an image at another size), into the Uint8Array or Uint8ClampedArray
 fn void h_image_pixels(JsCtx ctx, void* udata)
 {
     Decoded* d = decoded_arg(ctx);
@@ -840,6 +886,35 @@ fn void h_material_outline(JsCtx ctx, void* udata)
     m.outline = (float)num_arg(ctx, 1, 0);
 }
 
+// materialBlend(material, blending, premultipliedAlpha, blendEquation, blendSrc, blendDst,
+// blendEquationAlpha, blendSrcAlpha, blendDstAlpha): three's numbers (NoBlending 0 ..
+// CustomBlending 5, AddEquation 100.., ZeroFactor 200..)
+fn void h_material_blend(JsCtx ctx, void* udata)
+{
+    Material* m = get_material(num_arg(ctx, 0, -1));
+    if (m == null) { ctx.throw_error(TYPE, "materialBlend: invalid material"); return; }
+    switch ((int)num_arg(ctx, 1, 1))
+    {
+        case 0: m.blending = NO_BLENDING;
+        case 2: m.blending = ADDITIVE_BLENDING;
+        case 3: m.blending = SUBTRACTIVE_BLENDING;
+        case 4: m.blending = MULTIPLY_BLENDING;
+        case 5: m.blending = CUSTOM_BLENDING;
+        default: m.blending = NORMAL_BLENDING;
+    }
+    m.premultiplied_alpha = bool_arg(ctx, 2, false);
+    m.blend_equation = equation_of(num_arg(ctx, 3, 100));
+    m.blend_src = factor_of(num_arg(ctx, 4, 204));
+    m.blend_dst = factor_of(num_arg(ctx, 5, 205));
+    m.blend_equation_alpha = equation_of(num_arg(ctx, 6, 100));
+    m.blend_src_alpha = factor_of(num_arg(ctx, 7, 204));
+    m.blend_dst_alpha = factor_of(num_arg(ctx, 8, 205));
+}
+
+fn BlendEquation equation_of(double e) => (BlendEquation)math::clamp((int)e - 100, 0, 4);
+// (three's constant color factors, 211 and up, have no counterpart: one)
+fn BlendFactor factor_of(double f) => (int)f >= 200 && (int)f <= 210 ? (BlendFactor)((int)f - 200) : ONE_FACTOR;
+
 // materialDepth(material, depthTest, depthWrite)
 fn void h_material_depth(JsCtx ctx, void* udata)
 {
@@ -847,6 +922,7 @@ fn void h_material_depth(JsCtx ctx, void* udata)
     if (m == null) { ctx.throw_error(TYPE, "materialDepth: invalid material"); return; }
     m.depth_test = bool_arg(ctx, 1, true);
     m.depth_write = bool_arg(ctx, 2, true);
+    m.tone_mapped = bool_arg(ctx, 3, true);
 }
 
 // fog(scene, kind, color, near, far, density): kind 0 none, 1 linear, 2 exponential
@@ -1293,6 +1369,19 @@ fn void h_background_texture(JsCtx ctx, void* udata)
     s.background_texture = get_texture(num_arg(ctx, 1, -1));
     s.background_blurriness = (float)num_arg(ctx, 2, 0);
     s.background_intensity = (float)num_arg(ctx, 3, 1);
+    s.background_flat = bool_arg(ctx, 4, false);
+}
+
+// textureUv(texture, repeatX, repeatY, offsetX, offsetY, rotation, centerX, centerY): its uv
+// placement, changed (three's repeat, offset, rotation and center need no needsUpdate)
+fn void h_texture_uv(JsCtx ctx, void* udata)
+{
+    Texture* t = get_texture(num_arg(ctx, 0, -1));
+    if (t == null) { ctx.throw_error(TYPE, "textureUv: not a texture"); return; }
+    t.repeat = { (float)num_arg(ctx, 1, 1), (float)num_arg(ctx, 2, 1) };
+    t.offset = { (float)num_arg(ctx, 3, 0), (float)num_arg(ctx, 4, 0) };
+    t.rotation = (float)num_arg(ctx, 5, 0);
+    t.center = { (float)num_arg(ctx, 6, 0), (float)num_arg(ctx, 7, 0) };
 }
 
 fn void h_render(JsCtx ctx, void* udata)
@@ -1657,8 +1746,11 @@ fn int main(String[] args)
     reg(natives, "imageDecode", &h_image_decode, 1);
     reg(natives, "imageSize", &h_image_size, 2);
     reg(natives, "imagePixels", &h_image_pixels, 4);
+    reg(natives, "textMetrics", &h_text_metrics, 6);
+    reg(natives, "textMask", &h_text_mask, 10);
     reg(natives, "imageFree", &h_image_free, 1);
-    reg(natives, "backgroundTexture", &h_background_texture, 4);
+    reg(natives, "backgroundTexture", &h_background_texture, 5);
+    reg(natives, "textureUv", &h_texture_uv, 8);
     reg(natives, "mesh", &h_mesh, 2);
     reg(natives, "line", &h_line, 3);
     reg(natives, "lineDash", &h_line_dash, 4);
@@ -1680,6 +1772,7 @@ fn int main(String[] args)
     reg(natives, "materialEnv", &h_material_env, 6);
     reg(natives, "materialSurface", &h_material_surface, 5);
     reg(natives, "materialOutline", &h_material_outline, 2);
+    reg(natives, "materialBlend", &h_material_blend, 9);
     reg(natives, "materialDepth", &h_material_depth, 3);
     reg(natives, "lightmap", &h_lightmap, 3);
     reg(natives, "lightmapObjects", &h_lightmap_objects, 3);

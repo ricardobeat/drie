@@ -166,9 +166,11 @@ function cssColor(text) {
 }
 
 // A canvas's 2D context as three's examples use it: drawImage of an ImageBitmap (stretched to
-// any size, bilinear; UltraHDRLoader), getImageData, and filling rectangles and circles
-// (fillStyle, fillRect, beginPath, arc of a whole circle, fill: generated textures). Its pixels
-// are made when the canvas's size is first drawn at; shapes are not antialiased.
+// any size, bilinear; UltraHDRLoader), getImageData, filling rectangles and circles
+// (fillStyle, fillRect, beginPath, arc of a whole circle, fill: generated textures), and text
+// (font, textAlign, textBaseline, fillText, measureText: set by the platform, CoreText on
+// macOS). Its pixels are made when the canvas's size is first drawn at; shapes are not
+// antialiased.
 class Context2D {
 	constructor(canvas) {
 		this.canvas = canvas;
@@ -176,6 +178,9 @@ class Context2D {
 		this._fill = [0, 0, 0, 255];
 		this._fillStyle = "#000000";
 		this._circles = [];
+		this.font = "10px sans-serif";
+		this.textAlign = "start";
+		this.textBaseline = "alphabetic";
 	}
 	get fillStyle() {
 		return this._fillStyle;
@@ -209,6 +214,38 @@ class Context2D {
 		for (let py = y0; py < y1; py++) {
 			for (let px = x0; px < x1; px++) this._plot(target.data, (py * target.width + px) * 4, 1);
 		}
+	}
+	// The font shorthand's style, weight, size (px, pt or em) and first family.
+	_font() {
+		const font = String(this.font);
+		const m = /(\d+(?:\.\d+)?)(px|pt|em|rem)(?:\/\S+)?\s+(.*)$/.exec(font);
+		const size = m ? Number(m[1]) * (m[2] === "pt" ? 4 / 3 : m[2] === "px" ? 1 : 16) : 10;
+		const family = m ? m[3].split(",")[0].trim().replace(/^["']|["']$/g, "") : "sans-serif";
+		const head = m ? font.slice(0, m.index) : "";
+		return { size, family, bold: /bold|[6-9]00/.test(head), italic: /italic|oblique/.test(head) };
+	}
+	measureText(text) {
+		const f = this._font();
+		const metrics = new Float32Array(3);
+		N.textMetrics(String(text), f.family, f.size, f.bold, f.italic, metrics);
+		return { width: metrics[0], actualBoundingBoxAscent: metrics[1], actualBoundingBoxDescent: metrics[2],
+			fontBoundingBoxAscent: metrics[1], fontBoundingBoxDescent: metrics[2] };
+	}
+	// (textAlign and textBaseline place it; the canvas has no transform)
+	fillText(text, x, y) {
+		const target = this._buffer();
+		const f = this._font();
+		const m = this.measureText(text);
+		const align = this.textAlign;
+		if (align === "center") x -= m.width / 2;
+		else if (align === "right" || align === "end") x -= m.width;
+		const base = this.textBaseline;
+		if (base === "top" || base === "hanging") y += m.actualBoundingBoxAscent;
+		else if (base === "middle") y += (m.actualBoundingBoxAscent - m.actualBoundingBoxDescent) / 2;
+		else if (base === "bottom" || base === "ideographic") y -= m.actualBoundingBoxDescent;
+		const mask = new Uint8Array(target.width * target.height);
+		N.textMask(String(text), f.family, f.size, f.bold, f.italic, mask, target.width, target.height, x, y);
+		for (let i = 0; i < mask.length; i++) if (mask[i]) this._plot(target.data, i * 4, mask[i] / 255);
 	}
 	beginPath() {
 		this._circles = [];
@@ -348,6 +385,9 @@ const windowTarget = new Target();
 globalThis.addEventListener = (type, fn) => windowTarget.addEventListener(type, fn);
 globalThis.removeEventListener = (type, fn) => windowTarget.removeEventListener(type, fn);
 globalThis.navigator = { userAgent: "boomkat" };
+// (the page's address: the script's file, without a query or a hash)
+globalThis.location = { href: "file:///", protocol: "file:", host: "", hostname: "", pathname: "/", search: "", hash: "",
+	origin: "null", reload() {}, toString() { return this.href; } };
 globalThis.performance = { now: () => N.now() };
 globalThis.requestAnimationFrame = () => 0;
 globalThis.cancelAnimationFrame = () => {};

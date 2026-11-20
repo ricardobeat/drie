@@ -303,7 +303,9 @@ layout(binding=1) uniform fs_params {
     vec4 color;        // linear rgb, a = opacity
     vec4 emissive;     // linear rgb * intensity
     vec4 specular;     // phong specular color, w = flags (1: vertex colors, 2: foliage, 4: receive shadow, 8: glass,
-                       //   16: vertex colors are baked light (emissive.w = strength), 32: screen-space map)
+                       //   16: vertex colors are baked light (emissive.w = strength), 32: screen-space map,
+                       //   64: the map glows, 128: vertex occlusion, 256: premultiplied alpha,
+                       //   512: not tone mapped)
     vec4 mat_params;   // x = mode, y = roughness, z = metalness, w = shininess
     vec4 tex_params;   // x = has map, y = has a normal map (tangent_params: its scale), z = what tex_arm holds (1: ambient
                        //   occlusion in r, 2: roughness in g, 4: metalness in b), w = alpha test
@@ -333,7 +335,8 @@ layout(binding=1) uniform fs_params {
     vec4 fog_params;   // x = near, y = far, z = density, w = mode (0 none, 1 linear, 2 exp2, 3 exp)
     vec4 fog_box_min;  // fog-free box, w = 1 when enabled
     vec4 fog_box_max;  // w = the part of the density left in the box
-    vec4 fog_height;   // x = base height, y = falloff per meter (0 = none), w = density away from the sun's side
+    vec4 fog_height;   // x = base height, y = falloff per meter (0 = none), z = 1: mixed in after tone mapping
+                       //   (Renderer.display_fog), w = density away from the sun's side
     vec4 fog_sun_dir;  // towards the sun, w = sharpness (0 = no sun)
     vec4 fog_sun_color; // w = light shafts (0..1)
     vec4 fog_grid;     // volumetric fog: x, y = cells across and up, z = slices, w = slices per row of
@@ -2449,6 +2452,7 @@ void main() {
     }
 
     int fog_mode = int(fog_params.w);
+    float display_fog_t = 1.0;
     if (fog_mode != 0 && fog_grid.w > 0.0) {
         vec4 fv = fog_volume_at(v_world_pos);
         outc = outc * fv.a + fv.rgb;
@@ -2479,7 +2483,9 @@ void main() {
             fog_own = mix(fog_own, fog_sun_color.rgb, sunlit);
         }
         float t = fog_transmittance(fd);
-        vec3 fog_lit = fog_own * (1.0 - t);
+        // (Renderer.display_fog: mixed in after tone mapping, below)
+        if (fog_height.z > 0.5) display_fog_t = t;
+        vec3 fog_lit = fog_height.z > 0.5 ? vec3(0.0) : fog_own * (1.0 - t);
         if (fog_color.w > 0.0 && fd > 0.0) {
             vec3 ray = -v;
             float in_fog = fd / max(depth, 1e-4);
@@ -2497,7 +2503,7 @@ void main() {
             }
             fog_lit += glow * fog_color.w * in_fog;
         }
-        outc = outc * t + fog_lit;
+        if (fog_height.z <= 0.5) outc = outc * t + fog_lit;
         ind_d *= t;
         ind_s *= t;
     }
@@ -2516,17 +2522,24 @@ void main() {
         frag_indirect.rg = clamp(vec2(dot(max(ind_d, 0.0), lw), dot(max(ind_s, 0.0), lw)) / total, 0.0, 1.0);
     }
 #endif
+    float shown_alpha = alpha;
     // a light source (emissive far over white) leaves the target's alpha at 0, for
     // post-processing that has to tell a burnt-out lamp from a brightly lit wall
     alpha *= 1.0 - smoothstep(4.0, 16.0, max(emissive.r, max(emissive.g, emissive.b)));
     // into a half-float target as it is (OutputPass tone maps it later), otherwise ready to show
-    if (output_params.x > 0.5) frag_color = vec4(min(outc, vec3(60000.0)), alpha);
+    if (output_params.x > 0.5) frag_color = vec4(mix(fog_color.rgb, min(outc, vec3(60000.0)), display_fog_t), alpha);
     else {
         // the window's colors: sRGB, Display P3, or extended linear Display P3 (HDR: in SDR's range here)
         int display = int(output_params.w);
-        vec3 toned = tone_map_gamut(outc, int(output_params.z), camera_pos.w, display != DISPLAY_SRGB);
-        frag_color = vec4(display == DISPLAY_HDR ? toned : linear_to_srgb(toned), alpha);
+        // (Material.tone_mapped off: none)
+        int tone = (fl & 512) != 0 ? 0 : int(output_params.z);
+        vec3 toned = tone_map_gamut(outc, tone, camera_pos.w, display != DISPLAY_SRGB);
+        // (three mixes the fog in the colors as they are shown)
+        frag_color = display == DISPLAY_HDR ? vec4(mix(fog_color.rgb, toned, display_fog_t), alpha)
+            : vec4(mix(linear_to_srgb(fog_color.rgb), linear_to_srgb(toned), display_fog_t), alpha);
     }
+    // Material.premultiplied_alpha: the color as it is shown, times its opacity (three's)
+    if ((fl & 256) != 0) frag_color.rgb *= shown_alpha;
 }
 @end
 

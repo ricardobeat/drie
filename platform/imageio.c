@@ -1,6 +1,8 @@
 // Decodes images with ImageIO into straight (non-premultiplied) RGBA8.
 #include <ImageIO/ImageIO.h>
 #include <CoreGraphics/CoreGraphics.h>
+#include <CoreText/CoreText.h>
+#include <strings.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -77,3 +79,62 @@ unsigned char* imageio_decode(const void* data, size_t len, int* width, int* hei
 }
 
 void imageio_free(unsigned char* pixels) { free(pixels); }
+
+// A line of text (UTF-8) in `family` (a font's family or full name, or a CSS generic family),
+// `size` pixels tall, set with CoreText. width, ascent and descent: its advance and how far it
+// reaches above and below the baseline, in pixels.
+static CTLineRef text_line(const char* text, const char* family, float size, int bold, int italic) {
+    const char* name = family;
+    if (!strcasecmp(family, "sans-serif") || !strcasecmp(family, "system-ui")) name = "Helvetica";
+    else if (!strcasecmp(family, "serif")) name = "Times";
+    else if (!strcasecmp(family, "monospace")) name = "Menlo";
+    CFStringRef fname = CFStringCreateWithCString(NULL, name, kCFStringEncodingUTF8);
+    CTFontRef font = CTFontCreateWithName(fname, size, NULL);
+    CFRelease(fname);
+    CTFontSymbolicTraits traits = (bold ? kCTFontBoldTrait : 0) | (italic ? kCTFontItalicTrait : 0);
+    if (traits) {
+        CTFontRef styled = CTFontCreateCopyWithSymbolicTraits(font, size, NULL, traits, traits);
+        if (styled) {
+            CFRelease(font);
+            font = styled;
+        }
+    }
+    CFStringRef str = CFStringCreateWithCString(NULL, text, kCFStringEncodingUTF8);
+    if (!str) str = CFStringCreateWithCString(NULL, "", kCFStringEncodingUTF8);
+    CFStringRef keys[] = { kCTFontAttributeName, kCTForegroundColorFromContextAttributeName };
+    CFTypeRef values[] = { font, kCFBooleanTrue };
+    CFDictionaryRef attrs = CFDictionaryCreate(NULL, (const void**)keys, (const void**)values, 2,
+                                               &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+    CFAttributedStringRef astr = CFAttributedStringCreate(NULL, str, attrs);
+    CTLineRef line = CTLineCreateWithAttributedString(astr);
+    CFRelease(astr);
+    CFRelease(attrs);
+    CFRelease(str);
+    CFRelease(font);
+    return line;
+}
+
+void imageio_text_metrics(const char* text, const char* family, float size, int bold, int italic, float* metrics) {
+    CTLineRef line = text_line(text, family, size, bold, italic);
+    CGFloat ascent, descent, leading;
+    metrics[0] = (float)CTLineGetTypographicBounds(line, &ascent, &descent, &leading);
+    metrics[1] = (float)ascent;
+    metrics[2] = (float)descent;
+    CFRelease(line);
+}
+
+// Draws the line into `mask` (w x h, 8 bits a pixel, top row first: how much of each pixel the
+// glyphs cover, antialiased), its baseline starting at (x, y) from the top left.
+void imageio_text(const char* text, const char* family, float size, int bold, int italic, unsigned char* mask, int w,
+                  int h, float x, float y) {
+    CTLineRef line = text_line(text, family, size, bold, italic);
+    CGContextRef ctx = CGBitmapContextCreate(mask, (size_t)w, (size_t)h, 8, (size_t)w, NULL, (CGBitmapInfo)kCGImageAlphaOnly);
+    if (ctx) {
+        CGContextSetShouldAntialias(ctx, true);
+        CGContextSetGrayFillColor(ctx, 1.0, 1.0);
+        CGContextSetTextPosition(ctx, x, (CGFloat)h - y);
+        CTLineDraw(line, ctx);
+        CGContextRelease(ctx);
+    }
+    CFRelease(line);
+}

@@ -379,6 +379,10 @@ struct Scene {
     // (0..1, as three's backgroundBlurriness) and times background_intensity. It shows
     // through transmission materials too.
     Texture* background_texture;
+    // background_texture is a flat picture over the whole view, placed with its repeat and
+    // offset, and not tone mapped if it is sRGB (three's scene.background as a texture that is
+    // not an environment map)
+    bool background_flat;
     float background_blurriness;
     float background_intensity;
     // Like three's matrixWorldAutoUpdate: render() refreshes every object's world matrix first.
