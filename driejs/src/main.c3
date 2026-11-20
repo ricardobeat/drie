@@ -453,7 +453,7 @@ fn void h_cube_images(JsCtx ctx, void* udata)
 //          mapEmissive, emissiveIntensity, transmission, thickness, ior, dispersion,
 //          attenuationColor, attenuationDistance, specularR, specularG, specularB,
 //          specularIntensity)
-// kind: 0 basic, 1 lambert, 2 phong, 3 standard, 4 normal
+// kind: 0 basic, 1 lambert, 2 phong, 3 standard, 4 normal, 5 matcap, 6 toon
 fn void h_material(JsCtx ctx, void* udata)
 {
     Color color = color_of(num_arg(ctx, 1, 0xffffff));
@@ -481,6 +481,12 @@ fn void h_material(JsCtx ctx, void* udata)
         case 4:
             m = (Material*)drie::mesh_normal_material(opacity: opacity, transparent: transparent, side: side,
                                                        wireframe: wireframe);
+        case 5:
+            m = (Material*)drie::mesh_matcap_material(color: color, opacity: opacity, transparent: transparent,
+                                                       side: side);
+        case 6:
+            m = (Material*)drie::mesh_toon_material(color: color, emissive: emissive, opacity: opacity,
+                                                     transparent: transparent, side: side);
         default:
             m = (Material*)drie::mesh_basic_material(color: color, opacity: opacity, transparent: transparent,
                                                       side: side, wireframe: wireframe);
@@ -812,6 +818,26 @@ fn void h_material_env(JsCtx ctx, void* udata)
     m.env_refraction = bool_arg(ctx, 3, false);
     m.refraction_ratio = (float)num_arg(ctx, 4, 0.98);
     m.specular_map = get_texture(num_arg(ctx, 5, -1));
+}
+
+// materialSurface(material, bumpMap, bumpScale, matcap, gradientMap): three's bumpMap and
+// bumpScale, MeshMatcapMaterial's matcap and MeshToonMaterial's gradientMap
+fn void h_material_surface(JsCtx ctx, void* udata)
+{
+    Material* m = get_material(num_arg(ctx, 0, -1));
+    if (m == null) { ctx.throw_error(TYPE, "materialSurface: invalid material"); return; }
+    m.bump_map = get_texture(num_arg(ctx, 1, -1));
+    m.bump_scale = (float)num_arg(ctx, 2, 1);
+    m.matcap = get_texture(num_arg(ctx, 3, -1));
+    m.gradient_map = get_texture(num_arg(ctx, 4, -1));
+}
+
+// materialOutline(material, thickness): drie's Material.outline
+fn void h_material_outline(JsCtx ctx, void* udata)
+{
+    Material* m = get_material(num_arg(ctx, 0, -1));
+    if (m == null) { ctx.throw_error(TYPE, "materialOutline: invalid material"); return; }
+    m.outline = (float)num_arg(ctx, 1, 0);
 }
 
 // materialDepth(material, depthTest, depthWrite)
@@ -1601,6 +1627,10 @@ fn int main(String[] args)
     // and lil-gui's panel is not drawn at all
     js.define_module("three/addons/libs/lil-gui.module.min.js",
                      string::tformat("export * from \"%s/js/gui.js\";\nexport { default } from \"%s/js/gui.js\";\n", root, root))!!;
+    // three's OutlineEffect draws the scene again with shaders of its own: this one draws
+    // outlines with drie's Material.outline
+    js.define_module("three/addons/effects/OutlineEffect.js",
+                     string::tformat("export * from \"%s/js/outline_effect.js\";\n", root))!!;
     // three's ProgressiveLightMap draws with shaders of its own: this one has drie bake
     js.define_module("three/addons/misc/ProgressiveLightMap.js",
                      string::tformat("export * from \"%s/js/progressive_lightmap.js\";\n", root))!!;
@@ -1648,6 +1678,8 @@ fn int main(String[] args)
     reg(natives, "shadowType", &h_shadow_type, 2);
     reg(natives, "materialLightMap", &h_material_light_map, 3);
     reg(natives, "materialEnv", &h_material_env, 6);
+    reg(natives, "materialSurface", &h_material_surface, 5);
+    reg(natives, "materialOutline", &h_material_outline, 2);
     reg(natives, "materialDepth", &h_material_depth, 3);
     reg(natives, "lightmap", &h_lightmap, 3);
     reg(natives, "lightmapObjects", &h_lightmap_objects, 3);

@@ -19,7 +19,9 @@
 // equirectangular texture or a cube map (of images or of HDR DataTextures), scene.background
 // as either (with backgroundBlurriness and backgroundIntensity), the envMap of the basic,
 // lambert and phong materials (reflectivity, combine, refractionRatio and the refraction
-// mappings, specularMap), and the maps of MeshStandardMaterial and
+// mappings, specularMap), MeshMatcapMaterial, MeshToonMaterial (gradientMap), bumpMap, the
+// outlines of js/outline_effect.js's OutlineEffect, DataTextures of bytes (RGBA, RG or red),
+// and the maps of MeshStandardMaterial and
 // MeshPhysicalMaterial: normal, roughness, metalness and ao maps, and the physical material's
 // transmission (with its maps), volume, ior, dispersion and specular color and intensity (with
 // theirs), clearcoat, sheen, iridescence and anisotropy (with the geometry's tangents). Any material's lightMap (on the first or the
@@ -30,11 +32,28 @@
 // draw ranges, renderOrder, toneMapped, points, sprites, morph targets, point light shadows,
 // an emissiveMap that isn't the map, render targets (getRenderTarget() is null,
 // setRenderTarget() does nothing) and post-processing.
-import { Color, CubeRefractionMapping, EquirectangularReflectionMapping, EquirectangularRefractionMapping, Matrix4,
-	NearestFilter } from "../vendor/three.core.js";
+import { BackSide, Color, CubeRefractionMapping, EquirectangularReflectionMapping, EquirectangularRefractionMapping, Matrix4,
+	MeshBasicMaterial, NearestFilter, RedFormat, RGBAFormat, RGFormat } from "../vendor/three.core.js";
 import { setCanvas } from "./dom.js";
 
 const N = globalThis.__drie;
+
+// A DataTexture's bytes as RGBA (three's RedFormat, RGFormat and RGBAFormat; a red texture
+// read as three reads it: its red in r, 0 in g and b), or null for another format.
+function rgbaBytes(image, format) {
+	const data = image.data;
+	const count = image.width * image.height;
+	const channels = format === RGBAFormat ? 4 : format === RGFormat ? 2 : format === RedFormat ? 1 : 0;
+	if (channels === 0 || data.length < count * channels) return null;
+	if (channels === 4) return data;
+	const out = new Uint8Array(count * 4);
+	for (let i = 0; i < count; i++) {
+		out[i * 4] = data[i * channels];
+		if (channels === 2) out[i * 4 + 1] = data[i * channels + 1];
+		out[i * 4 + 3] = 255;
+	}
+	return out;
+}
 
 // handle, visible, 16 numbers of the world matrix: see `sync` in src/main.c3
 const STRIDE = 18;
@@ -69,6 +88,8 @@ if (profile) {
 }
 
 function materialKind(m) {
+	if (m.isMeshToonMaterial) return 6;
+	if (m.isMeshMatcapMaterial) return 5;
 	if (m.isMeshNormalMaterial) return 4;
 	if (m.isMeshStandardMaterial) return 3;
 	if (m.isMeshPhongMaterial) return 2;
@@ -163,6 +184,8 @@ export class DrieRenderer {
 		this._scene = null;
 		this._toneMapping = null;
 		this._shadowType = null;
+		// the OutlineEffect drawing through this renderer, during its render()
+		this._outline = null;
 	}
 
 	getPixelRatio() {
@@ -305,7 +328,10 @@ export class DrieRenderer {
 		if (state.visited !== mirrored.length) {
 			for (let i = 0; i < mirrored.length; i++) {
 				const o = mirrored[i];
-				if (o.__drieFrame !== frame) this._record(o.__drie, false, o.matrixWorld.elements);
+				if (o.__drieFrame !== frame) {
+					this._record(o.__drie, false, o.matrixWorld.elements);
+					if (o.__drieOutline !== undefined) this._record(o.__drieOutline, false, o.matrixWorld.elements);
+				}
 			}
 		}
 
@@ -330,6 +356,7 @@ export class DrieRenderer {
 			else if (o.isMesh || o.isLine) this._refresh(o, frame, drawn);
 			if (o.isInstancedMesh) this._instances(o);
 			if (o.isSkinnedMesh && drawn) this._skin(o, frame);
+			if (o.isMesh && (this._outline || o.__drieOutline !== undefined)) this._outlineOf(o, drawn, sceneId, frame);
 			if (o.children.length !== 0) this._walk(o, shown, sceneId, frame);
 		}
 	}
@@ -455,6 +482,49 @@ export class DrieRenderer {
 		this._shadowFlags(mesh);
 	}
 
+	// The outline OutlineEffect draws round a mesh (js/outline_effect.js): a drie mesh of its
+	// geometry, drawn with the back faces of a material of the outline's color pushed out by
+	// drie's Material.outline, and only in the effect's renders. One outline material per
+	// material, as three's.
+	_outlineOf(mesh, drawn, sceneId, frame) {
+		const effect = this._outline;
+		const material = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material;
+		const p = material.userData.outlineParameters ?? {};
+		const shown = drawn && effect !== null && p.visible !== false && material.visible !== false
+			&& mesh.geometry.attributes.normal !== undefined;
+		let outline = material.__drieOutlineMaterial;
+		if (shown) {
+			const alpha = p.alpha ?? effect.defaultAlpha;
+			if (!outline) outline = material.__drieOutlineMaterial = new MeshBasicMaterial({ side: BackSide });
+			if (p.color) outline.color.fromArray(p.color);
+			else outline.color.copy(effect.defaultColor);
+			outline.opacity = alpha;
+			if (outline.transparent !== alpha < 1 || outline.fog !== material.fog) {
+				outline.transparent = alpha < 1;
+				outline.fog = material.fog;
+				outline.needsUpdate = true;
+			}
+			const g = this._geometry(mesh.geometry, frame);
+			const m = this._material(outline, frame);
+			const thickness = p.thickness ?? effect.defaultThickness;
+			if (outline.__drieThickness !== thickness || outline.__drieOutlined !== m) {
+				outline.__drieThickness = thickness;
+				outline.__drieOutlined = m;
+				N.materialOutline(m, thickness);
+			}
+			if (mesh.__drieOutline === undefined || mesh.__drieOutlineGeometry !== g || mesh.__drieOutlineMaterial !== m) {
+				if (mesh.__drieOutline !== undefined) this._record(mesh.__drieOutline, false, mesh.matrixWorld.elements);
+				mesh.__drieOutline = mesh.isSkinnedMesh ? N.skinnedMesh(g, m) : N.mesh(g, m);
+				mesh.__drieOutlineGeometry = g;
+				mesh.__drieOutlineMaterial = m;
+				N.add(sceneId, mesh.__drieOutline);
+				N.shadow(mesh.__drieOutline, false, false);
+			}
+			if (mesh.isSkinnedMesh && mesh.__drieSkin) N.skin(mesh.__drieOutline, mesh.__drieSkin, mesh.skeleton.bones.length);
+		}
+		if (mesh.__drieOutline !== undefined) this._record(mesh.__drieOutline, shown, mesh.matrixWorld.elements);
+	}
+
 	_shadowFlags(mesh) {
 		const flags = (this.shadowMap.enabled && mesh.castShadow ? 2 : 0) | (mesh.receiveShadow ? 1 : 0);
 		if (mesh.__drieShadow === flags) return;
@@ -552,8 +622,12 @@ export class DrieRenderer {
 		if (texture?.__drieNative !== undefined) return texture.__drieNative;
 		if (texture?.isCubeTexture) return this._cubeTexture(texture);
 		const image = texture?.image;
-		// (a canvas: the pixels its 2D context drew)
-		const canvas = image?.tagName === "CANVAS" ? image.getContext("2d")._buffer() : null;
+		// (a canvas: the pixels its 2D context drew; a DataTexture of bytes: them, as RGBA)
+		let canvas = image?.tagName === "CANVAS" ? image.getContext("2d")._buffer() : null;
+		if (!canvas && texture?.isDataTexture && (image?.data instanceof Uint8Array || image?.data instanceof Uint8ClampedArray)) {
+			const data = rgbaBytes(image, texture.format);
+			if (data) canvas = { data, width: image.width, height: image.height };
+		}
 		const source = canvas ? canvas.data : image ? (image.data ?? image.path) : undefined;
 		if (source === undefined) return -1;
 		if (texture.__drie !== undefined && texture.__drieVersion === texture.version) return texture.__drie;
@@ -665,6 +739,17 @@ export class DrieRenderer {
 			material.refractionRatio ?? 0.98, specular);
 	}
 
+	// bumpMap and bumpScale, matcap and gradientMap, sent when they change.
+	_surface(material) {
+		const bump = this._map(material.bumpMap);
+		const matcap = this._texture(material.matcap);
+		const gradient = this._texture(material.gradientMap);
+		const key = `${bump} ${material.bumpScale} ${matcap} ${gradient}`;
+		if (material.__drieSurface === key) return;
+		material.__drieSurface = key;
+		N.materialSurface(material.__drie, bump, material.bumpScale ?? 1, matcap, gradient);
+	}
+
 	// depthTest and depthWrite (three sets them for each draw: no needsUpdate either).
 	_depth(material) {
 		const key = (material.depthTest === false ? 1 : 0) + (material.depthWrite === false ? 2 : 0);
@@ -698,6 +783,7 @@ export class DrieRenderer {
 			this._layers(material);
 			this._lightMap(material);
 			this._env(material);
+			this._surface(material);
 			this._depth(material);
 			return material.__drie;
 		}
@@ -724,11 +810,13 @@ export class DrieRenderer {
 		material.__drieLightMap = undefined;
 		material.__drieDepth = undefined;
 		material.__drieEnv = undefined;
+		material.__drieSurface = undefined;
 		this._materialValues(material);
 		this._maps(material);
 		this._layers(material);
 		this._lightMap(material);
 		this._env(material);
+		this._surface(material);
 		this._depth(material);
 		return material.__drie;
 	}

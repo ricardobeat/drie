@@ -104,6 +104,8 @@ layout(binding=0) uniform vs_params {
                         //   jitter (in clip space, per unit of w), left out of the motion
     vec4 bake;          // x = 1: baking a light map (lightmap.c3): drawn where v_uv1 is in it,
                         //   y = 1: the target's row 0 is its top (texel row r at v = (r + 0.5) / size)
+    vec4 outline;       // x = Material.outline: how far the vertices are pushed out along their
+                        //   normals, in clip space per unit of w (0: not)
 };
 
 @include_block vertex_common
@@ -164,6 +166,13 @@ void main() {
     v_color = color0.rgb;
     v_alpha = color0.a;
     gl_Position = view_proj * vec4(wp.xyz - view_origin.xyz, 1.0);
+    if (outline.x > 0.0) {
+        // Material.outline: out along the normal as the screen sees it, the same width at any
+        // distance (three's OutlineEffect)
+        vec3 inward = wp.xyz - (model * vec4(instance_dir(normal), 0.0)).xyz;
+        vec4 p2 = view_proj * vec4(inward - view_origin.xyz, 1.0);
+        gl_Position += normalize(gl_Position - p2) * outline.x * gl_Position.w;
+    }
     v_clip = gl_Position;
     v_clip.xy -= motion.zw * v_clip.w;
     v_prev_clip = v_clip;
@@ -372,7 +381,7 @@ layout(binding=1) uniform fs_params {
     vec4 ext_params;           // x = 32: it is the scene's background, y = ao_intensity, z = the
                                //   object's scale (for the thickness), w = the width of
                                //   tex_transmission (pixels)
-    vec4 map_slots[5];         // which of tex_ext0..5 holds each of the maps (-1: none), by MAP_*
+    vec4 map_slots[6];         // which of tex_ext0..5 holds each of the maps (-1: none), by MAP_*
     vec4 clearcoat_params;     // Material.clearcoat: x = strength (0: none), y = roughness,
                                //   zw = clearcoat_normal_scale
     vec4 sheen_params;         // Material.sheen_color * sheen (linear rgb; 0: none), a = sheen_roughness
@@ -382,6 +391,10 @@ layout(binding=1) uniform fs_params {
                                //   Material.anisotropy's direction in the frame (the cos and sin
                                //   of anisotropy_rotation) times its strength (0: none)
     vec4 light_map_params;     // x = Material.light_map_intensity
+    vec4 camera_right;         // the camera's x and y axes in the world: with camera_pos, its view
+    vec4 camera_up;            //   space (MeshNormalMaterial's and the matcap's normals)
+    vec4 surface_params;       // x = Material.bump_scale (three's bumpScale), y = 1: the toon
+                               //   material's gradient map is read texel by texel (NearestFilter)
     vec4 env_combine;          // a basic, lambert or phong material's env_map (three's): x =
                                //   reflectivity, y = combine (0 multiply, 1 mix, 2 add), z = the
                                //   refraction ratio (0: it mirrors), w = 1: on
@@ -415,6 +428,9 @@ layout(binding=1) uniform fs_params {
 #define MAP_CUSTOM 16               // Material.custom_map, for the application's hooks
 #define MAP_FOCUS 17                // Renderer.focus_map (Material.defocus): r = the distance in focus
 #define MAP_SPECULAR 18             // r: three's specularMap (basic, lambert and phong)
+#define MAP_MATCAP 19               // rgb: MeshMatcapMaterial's matcap, read by the view-space normal
+#define MAP_GRADIENT 20             // r: MeshToonMaterial's gradientMap, read by the light's angle
+#define MAP_BUMP 21                 // r: three's bumpMap, a height
 
 // Lights live in storage buffers, as many as there are. Point and spot lights are sorted into
 // a grid of clusters (froxels: tiles of the screen, cut into slices of depth that grow
@@ -696,6 +712,8 @@ bool g_hex = false;
 vec2 g_hex_off[3];
 vec3 g_hex_w;
 
+float toon_gradient(float ndl);
+
 // Direct light contribution, following three.js's (r155+) physically based light units.
 // Returns diffuse in rgb; adds specular to `spec`.
 vec3 direct(int mode, vec3 n, vec3 v, vec3 l, float dist, vec3 radiance, vec3 diffuse_color, inout vec3 spec) {
@@ -708,6 +726,8 @@ vec3 direct(int mode, vec3 n, vec3 v, vec3 l, float dist, vec3 radiance, vec3 di
     float through = dot(n, v) * ndl < 0.0 ? 0.5 : 1.0;
     float nol = foliage ? through * (0.1 + 0.9 * abs(ndl)) : clamp(ndl, 0.0, 1.0);
     vec3 irradiance = nol * radiance;
+    // the toon material: the gradient's step in place of n.l, and no highlights
+    if (mode == 6) return toon_gradient(ndl) * radiance * diffuse_color * RECIPROCAL_PI;
     vec3 h = normalize(l + v);
     if (mode == 3) {
         if (g_clearcoat > 0.0) {
@@ -1521,6 +1541,47 @@ vec4 ext_slot_texel(int slot, vec2 uv) {
     return vec4(1.0);
 }
 
+// One of the six slots at uv, at the mip level that dx and dy (uv per pixel) pick.
+vec4 ext_slot_grad(int slot, vec2 uv, vec2 dx, vec2 dy) {
+    if (slot == 0) return textureGrad(sampler2D(tex_ext0, tex_smp), uv, dx, dy);
+    if (slot == 1) return textureGrad(sampler2D(tex_ext1, tex_smp), uv, dx, dy);
+    if (slot == 2) return textureGrad(sampler2D(tex_ext2, tex_smp), uv, dx, dy);
+    if (slot == 3) return textureGrad(sampler2D(tex_ext3, tex_smp), uv, dx, dy);
+    if (slot == 4) return textureGrad(sampler2D(tex_ext4, tex_smp), uv, dx, dy);
+    if (slot == 5) return textureGrad(sampler2D(tex_ext5, tex_smp), uv, dx, dy);
+    return vec4(1.0);
+}
+
+// One of the six slots' texel nearest uv (three's NearestFilter), at the top level.
+vec4 ext_slot_nearest(int slot, vec2 uv) {
+    if (slot == 0) return texelFetch(sampler2D(tex_ext0, tex_smp), ivec2(fract(uv) * vec2(textureSize(sampler2D(tex_ext0, tex_smp), 0))), 0);
+    if (slot == 1) return texelFetch(sampler2D(tex_ext1, tex_smp), ivec2(fract(uv) * vec2(textureSize(sampler2D(tex_ext1, tex_smp), 0))), 0);
+    if (slot == 2) return texelFetch(sampler2D(tex_ext2, tex_smp), ivec2(fract(uv) * vec2(textureSize(sampler2D(tex_ext2, tex_smp), 0))), 0);
+    if (slot == 3) return texelFetch(sampler2D(tex_ext3, tex_smp), ivec2(fract(uv) * vec2(textureSize(sampler2D(tex_ext3, tex_smp), 0))), 0);
+    if (slot == 4) return texelFetch(sampler2D(tex_ext4, tex_smp), ivec2(fract(uv) * vec2(textureSize(sampler2D(tex_ext4, tex_smp), 0))), 0);
+    if (slot == 5) return texelFetch(sampler2D(tex_ext5, tex_smp), ivec2(fract(uv) * vec2(textureSize(sampler2D(tex_ext5, tex_smp), 0))), 0);
+    return vec4(1.0);
+}
+
+// A world direction in the camera's view space (x right, y up, z toward the viewer).
+vec3 to_view(vec3 d) {
+    vec3 back = cross(camera_right.xyz, camera_up.xyz);
+    return vec3(dot(d, camera_right.xyz), dot(d, camera_up.xyz), dot(d, back));
+}
+
+// MeshToonMaterial's light: the gradient map (or two steps without one) by where the light
+// falls, in place of n.l (three's getGradientIrradiance)
+float toon_gradient(float ndl) {
+    float x = ndl * 0.5 + 0.5;
+    int role_slot = int(map_slots[MAP_GRADIENT / 4][MAP_GRADIENT % 4]);
+    if (role_slot >= 0) {
+        vec2 uv = vec2(clamp(x, 0.0, 0.999), 0.0);
+        return surface_params.y > 0.5 ? ext_slot_nearest(role_slot, uv).r : ext_slot_texel(role_slot, uv).r;
+    }
+    float fw = fwidth(x) * 0.5;
+    return mix(0.7, 1.0, smoothstep(0.7 - fw, 0.7 + fw, x));
+}
+
 vec4 custom_map_texel(vec2 uv, vec2 dx, vec2 dy) {
     int slot = int(map_slots[MAP_CUSTOM / 4][MAP_CUSTOM % 4]);
     if (slot == 0) return textureGrad(sampler2D(tex_ext0, tex_smp), uv, dx, dy);
@@ -1975,6 +2036,24 @@ void main() {
     g_dpdx = dFdx(v_world_pos);
     g_dpdy = dFdy(v_world_pos);
     if (tex_params.y != 0.0 && mode != 0) n = perturb_normal(n);
+    if (has_map(MAP_BUMP) && mode != 0) {
+        // three's bumpMap: the normal tilted by how the height changes from pixel to pixel
+        // (its perturbNormalArb, Mikkelsen's)
+        int bs = int(map_slots[MAP_BUMP / 4][MAP_BUMP % 4]);
+        int bu = bs + 2;
+        vec2 buv = slot_uv(bu, vec2(0.0));
+        vec2 dx = slot_dx(bu);
+        vec2 dy = slot_dy(bu);
+        float hll = ext_slot_grad(bs, buv, dx, dy).r;
+        vec2 dh = surface_params.x * vec2(ext_slot_grad(bs, buv + dx, dx, dy).r - hll, ext_slot_grad(bs, buv + dy, dx, dy).r - hll);
+        vec3 sx = normalize(g_dpdx);
+        vec3 sy = normalize(g_dpdy);
+        vec3 r1 = cross(sy, n);
+        vec3 r2 = cross(n, sx);
+        float det = dot(sx, r1) * (gl_FrontFacing ? 1.0 : -1.0);
+        vec3 grad = sign(det) * (dh.x * r1 + dh.y * r2);
+        n = normalize(abs(det) * n - grad);
+    }
     if (mode != 0) normal_hook(geo_n, n);
 #ifdef MRT
     frag_normal.xy = pack_normal_octahedral(n);
@@ -2130,9 +2209,21 @@ void main() {
             outc = env_texel(env_uv(d), lod).rgb * env_params.y;
         }
     } else if (mode == 4) {
-        // MeshNormalMaterial: output normal as color (bypasses color management, like three)
-        frag_color = vec4(n * 0.5 + 0.5, color.a);
+        // MeshNormalMaterial: the normal in view space as the color (bypasses color
+        // management, like three)
+        frag_color = vec4(normalize(to_view(n)) * 0.5 + 0.5, color.a);
         return;
+    } else if (mode == 5) {
+        // MeshMatcapMaterial: the matcap image at the view-space normal, from a frame turned
+        // toward the viewer (three's), times the color
+        vec3 vd = normalize(to_view(v));
+        vec3 vn = normalize(to_view(n));
+        vec3 x = normalize(vec3(vd.z, 0.0, -vd.x));
+        vec3 y = cross(vd, x);
+        vec2 muv = vec2(dot(x, vn), dot(y, vn)) * 0.495 + 0.5;
+        int ms = int(map_slots[MAP_MATCAP / 4][MAP_MATCAP % 4]);
+        vec3 matcap = ms >= 0 ? ext_slot_grad(ms, muv, dFdx(muv), dFdy(muv)).rgb : vec3(mix(0.2, 0.8, muv.y));
+        outc = g_base.rgb * matcap;
     } else {
         vec3 diffuse_color = g_base.rgb;
         if (mode == 3) diffuse_color *= (1.0 - g_metal);

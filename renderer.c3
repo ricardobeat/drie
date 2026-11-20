@@ -1937,6 +1937,8 @@ fn FsParams build_light_params(Scene* scene, Camera* camera, SpotLight* caster) 
     p.cull_max = { ...r.cull_box_max, 0 };
     Mat4 cw = camera.matrix_world;
     p.dir_cascade_fwd = { ...((Vector3) { -cw[2][0], -cw[2][1], -cw[2][2] }).normalize(), 1 };
+    p.camera_right = { ...((Vector3) { cw[0][0], cw[0][1], cw[0][2] }).normalize(), 0 };
+    p.camera_up = { ...((Vector3) { cw[1][0], cw[1][1], cw[1][2] }).normalize(), 0 };
     foreach (l : state.lights) {
         Vector3 c = color_to_linear(l.color) * l.intensity;
         switch (l.light_type) {
@@ -2317,6 +2319,7 @@ fn VsParams vs_params_of(DrawItem* item, Mat4 view_proj, bool normals = true) @l
         vs.motion = { moved ? 2 : 1, state.motion_prev_time, state.motion_jitter.x, state.motion_jitter.y };
     }
     if (state.bake.on) vs.bake = { 1, depth_zero_to_one() ? 1 : 0, 0, 0 };
+    vs.outline = { mat.outline, 0, 0, 0 };
     return vs;
 }
 
@@ -2407,7 +2410,7 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     Renderer* lens = state.renderer;
     bool defocus = mat.defocus && lens.focus_map && lens.focus_aperture > 0;
     bool classic = mat.type == BASIC || mat.type == LAMBERT || mat.type == PHONG;
-    Texture*[19] roles = {
+    Texture*[22] roles = {
         standard && mat.ao_intensity != 0 ? mat.ao_map : null,
         standard ? mat.specular_color_map : null,
         standard ? mat.specular_intensity_map : null,
@@ -2427,10 +2430,13 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
         mat.custom_map,
         defocus ? lens.focus_map : null,
         classic ? mat.specular_map : null,
+        mat.type == MATCAP ? mat.matcap : null,
+        mat.type == TOON ? mat.gradient_map : null,
+        mat.type != BASIC && mat.type != MATCAP ? mat.bump_map : null,
     };
     Texture*[6] slots;
     int used;
-    Vec4[5] map_slots;
+    Vec4[6] map_slots;
     foreach (i, t : roles) {
         int slot = -1;
         if (t) {
@@ -2589,6 +2595,7 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     fs.ext_params = { (float)ext_bits, mat.ao_intensity, scale, (float)state.transmission_width };
     fs.map_slots = map_slots;
     fs.light_map_params = { mat.light_map_intensity, 0, 0, 0 };
+    fs.surface_params = { mat.bump_scale, mat.gradient_map && mat.gradient_map.nearest ? 1 : 0, 0, 0 };
     // three's envMap on a basic, lambert or phong material (not the background's own)
     if (classic && mat.env_map && !backdrop) {
         fs.env_combine = { mat.reflectivity, (float)mat.combine.ordinal, mat.env_refraction ? mat.refraction_ratio : 0, 1 };

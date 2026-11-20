@@ -176,7 +176,19 @@ assets: \
     (asset "textures/cube/pisa/pz.png" "bd528b739e9e0ea6c1e8627e949caa950991719069c983e8abdc3a8640039667") \
     (asset "textures/cube/pisa/nz.png" "e5c1774f9a41d8124f8f223c9810e95d277f256104f8aee57ad2e5ef73a64424") \
     (asset "textures/piz_compressed.exr" "7ff75b7f52379d579aa462c8a34b8321109023b9deb1d67a8b41d35f475c17b3") \
-    (asset "textures/equirectangular.png" "d99861d29c0ca31379911ae0f76d57dce68c8b23f617a70cd1d85fa38d61e06d")
+    (asset "textures/equirectangular.png" "d99861d29c0ca31379911ae0f76d57dce68c8b23f617a70cd1d85fa38d61e06d") \
+    (asset "textures/matcaps/040full.exr" "14deb8c88d02cd44d3694c9b63a5a56fb481364298900441a2be42f9eb70a9d3") \
+    (asset "models/gltf/LeePerrySmith/Infinite-Level_02_Tangent_SmoothUV.jpg" "36925e51ad9b324b94e8faf4692da1b4132809f2762bb8d5bd549ffd215d4ca6") \
+    (asset "models/gltf/LeePerrySmith/LeePerrySmith.glb" "402b8a8ac9f03232e6d64b5962929703a069daf99d3c49ac8eb0e48bedc9c576") \
+    (asset "models/gltf/LeePerrySmith/Infinite-Level_02_Disp_NoSmoothUV-4096.jpg" "937dea3ab1adea4624c9743ea0653fcb022235e6dcdebfb6e739b93f9d2a5cef") \
+    (asset "fonts/gentilis_regular.typeface.json" "7ed95f2faa30f59dbe7cfb145b97c42a6ba1188cd2eec01ca61485e8c83ee9de") \
+    (asset "textures/hardwood2_diffuse.jpg" "3986fe3bd7d3c24b18e7da17ae72bbef9385dbc355c931c52a04dbfe1412c802") \
+    (asset "textures/hardwood2_bump.jpg" "0f07254a3eb31274b7f7cc71968b74a5a39a799d33e8b290c4b8dca6ce43654d") \
+    (asset "textures/hardwood2_roughness.jpg" "bdce31ae1138fd110703f5fb37a4979b4b03cd6a057f58897c16d27839d7d17b") \
+    (asset "textures/brick_diffuse.jpg" "b49b0ab13aa4455cc7348cb4bfbbffcb344f2f81b17121eb1e57bcd3b387febe") \
+    (asset "textures/brick_bump.jpg" "fad2311729a8f98c2fdcb6d9442e8c2b70c97c169eb653005e5554680fa18a53") \
+    (asset "textures/planets/earth_atmos_2048.jpg" "2faa400d1eade3bc44caf6750d1b772bd9bbb6d87362c02bc7c3304e78fa0a9d") \
+    (asset "textures/planets/earth_specular_2048.jpg" "2df48906732d7a458b2d0a7cdec51a829262307c6bdee4cfdf079a4dd7c71c69")
 
 [private]
 asset path sha256: (fetch examples + "/" + path sha256 "demos/" + path)
