@@ -2,7 +2,7 @@
 // compiled in the background till Renderer.compiling says none are left. `just test pipeline_cache`
 module pipeline_cache_test;
 import drie, drie::nodes, sokol;
-import std::io, std::math, std::thread;
+import std::io, std::time, std::math, std::thread;
 
 int failures;
 
@@ -21,7 +21,9 @@ fn int count_lines(String text, String start) {
 
 // `text` with a comment at the start of its node program's vertex hook: another program.
 fn String with_comment(String text) {
-    String comment = "// another\n";
+    // (new text each run: a program the driver's cache has from an earlier run compiles
+    // before compiling() is asked)
+    String comment = string::tformat("// another %d\n", (long)time::now());
     usz at = (usz)text.index_of("\nN ")!! + 1;
     usz end = at + (usz)text[at..].index_of_char('\n')!!;
     String[] f = text[at:end - at].tsplit(" ");
