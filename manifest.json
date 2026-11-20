@@ -14,7 +14,7 @@
     ],
     "targets": {
         "macos-aarch64": {
-            "cflags-override": "-O2 -DNDEBUG -x objective-c -fobjc-arc -mmacos-version-min=26.0",
+            "cflags-override": "-O2 -DNDEBUG -x objective-c -fobjc-arc",
             "c-sources": [
                 "platform/readback.c",
                 "platform/imageio.c",
@@ -32,7 +32,7 @@
             ]
         },
         "macos-x64": {
-            "cflags-override": "-O2 -DNDEBUG -x objective-c -fobjc-arc -mmacos-version-min=26.0",
+            "cflags-override": "-O2 -DNDEBUG -x objective-c -fobjc-arc",
             "c-sources": [
                 "platform/readback.c",
                 "platform/imageio.c",

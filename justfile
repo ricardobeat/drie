@@ -10,7 +10,9 @@ libdir := "lib"
 libs := "--libdir " + libdir + " --lib sokol"
 # where bindgen.c3l is (the folder holding bindgen.c3l/), for `just bindings`
 bindgen := "../bindgen.c3l"
-macos := if os() == "macos" { "--macos-min-version 26.0" } else { "" }
+# the macOS c3c builds for: the one it runs on, as clang does for C without a target (and as
+# Homebrew's libdraco and boomkat's C are built), so that the linker finds nothing newer
+macos := if os() == "macos" { "--macos-min-version " + `sw_vers -productVersion 2>/dev/null || true` } else { "" }
 
 # the sources c3fmt formats: the hand written ones at the top. The sokol-shdc generated
 # files are in generated/ (manifest.json's "sources" adds it to the library).
