@@ -21,7 +21,9 @@
 // lambert and phong materials (reflectivity, combine, refractionRatio and the refraction
 // mappings, specularMap), MeshMatcapMaterial, MeshToonMaterial (gradientMap), bumpMap, the
 // outlines of js/outline_effect.js's OutlineEffect, DataTextures of bytes (RGBA, RG or red),
-// and the maps of MeshStandardMaterial and
+// blending (every mode, premultipliedAlpha, and custom blending's equations and factors),
+// toneMapped, a texture's repeat and offset as they change, scene.background as a flat
+// texture, and the maps of MeshStandardMaterial and
 // MeshPhysicalMaterial: normal, roughness, metalness and ao maps, and the physical material's
 // transmission (with its maps), volume, ior, dispersion and specular color and intensity (with
 // theirs), clearcoat, sheen, iridescence and anisotropy (with the geometry's tangents). Any material's lightMap (on the first or the
@@ -29,7 +31,7 @@
 // baked by js/progressive_lightmap.js's ProgressiveLightMap.
 //
 // Not mirrored yet: changes to a material's flags without `needsUpdate`, geometry groups and
-// draw ranges, renderOrder, toneMapped, points, sprites, morph targets, point light shadows,
+// draw ranges, renderOrder, points, sprites, morph targets, point light shadows,
 // an emissiveMap that isn't the map, render targets (getRenderTarget() is null,
 // setRenderTarget() does nothing) and post-processing.
 import { BackSide, Color, CubeRefractionMapping, EquirectangularReflectionMapping, EquirectangularRefractionMapping, Matrix4,
@@ -37,6 +39,8 @@ import { BackSide, Color, CubeRefractionMapping, EquirectangularReflectionMappin
 import { setCanvas } from "./dom.js";
 
 const N = globalThis.__drie;
+
+const uvKey = (t) => `${t.repeat.x} ${t.repeat.y} ${t.offset.x} ${t.offset.y} ${t.rotation} ${t.center.x} ${t.center.y}`;
 
 // A DataTexture's bytes as RGBA (three's RedFormat, RGFormat and RGBAFormat; a red texture
 // read as three reads it: its red in r, 0 in g and b), or null for another format.
@@ -602,15 +606,18 @@ export class DrieRenderer {
 		return geometry.__drie;
 	}
 
-	// scene.background as an equirectangular texture (a color: see render()).
+	// scene.background as an equirectangular texture or a cube map, or a flat picture over the
+	// view (a texture of another mapping) (a color: see render()).
 	_background(scene, sceneId) {
 		const background = scene.background;
 		// (a PMREMGenerator's texture is drie's capture of a scene)
 		const texture = background && background.isTexture ? (background.__drieEnvironment ?? this._texture(background)) : -1;
-		const key = texture < 0 ? -1 : `${texture} ${scene.backgroundBlurriness} ${scene.backgroundIntensity}`;
+		const flat = texture >= 0 && background.__drieEnvironment === undefined && !background.isCubeTexture
+			&& background.mapping !== EquirectangularReflectionMapping && background.mapping !== EquirectangularRefractionMapping;
+		const key = texture < 0 ? -1 : `${texture} ${scene.backgroundBlurriness} ${scene.backgroundIntensity} ${flat}`;
 		if (scene.__drieBackgroundTexture === key) return;
 		scene.__drieBackgroundTexture = key;
-		N.backgroundTexture(sceneId, texture, scene.backgroundBlurriness ?? 0, scene.backgroundIntensity ?? 1);
+		N.backgroundTexture(sceneId, texture, scene.backgroundBlurriness ?? 0, scene.backgroundIntensity ?? 1, flat);
 	}
 
 	// An image drie loads from its file (`path`) or decodes from memory (`data`, from a Blob,
@@ -630,7 +637,16 @@ export class DrieRenderer {
 		}
 		const source = canvas ? canvas.data : image ? (image.data ?? image.path) : undefined;
 		if (source === undefined) return -1;
-		if (texture.__drie !== undefined && texture.__drieVersion === texture.version) return texture.__drie;
+		if (texture.__drie !== undefined && texture.__drieVersion === texture.version) {
+			// (repeat, offset, rotation and center change without a new version)
+			const uv = uvKey(texture);
+			if (texture.__drieUv !== uv) {
+				const { repeat, offset, center } = texture;
+				N.textureUv(texture.__drie, repeat.x, repeat.y, offset.x, offset.y, texture.rotation, center.x, center.y);
+				texture.__drieUv = uv;
+			}
+			return texture.__drie;
+		}
 		// (three's equirectangular maps have the sky at v = 1, drie's at v = 0: flipped the other way)
 		const equirect = equirectangular || texture.mapping === EquirectangularReflectionMapping
 			|| texture.mapping === EquirectangularRefractionMapping;
@@ -656,6 +672,7 @@ export class DrieRenderer {
 			}
 		}
 		texture.__drieVersion = texture.version;
+		texture.__drieUv = uvKey(texture);
 		return texture.__drie;
 	}
 
@@ -750,12 +767,26 @@ export class DrieRenderer {
 		N.materialSurface(material.__drie, bump, material.bumpScale ?? 1, matcap, gradient);
 	}
 
-	// depthTest and depthWrite (three sets them for each draw: no needsUpdate either).
+	// blending, premultipliedAlpha and the custom blending's equations and factors (three sets
+	// them for each draw), sent when they change.
+	_blend(material) {
+		const m = material;
+		const key = `${m.blending} ${m.premultipliedAlpha} ${m.blendEquation} ${m.blendSrc} ${m.blendDst} ${m.blendEquationAlpha} ${m.blendSrcAlpha} ${m.blendDstAlpha}`;
+		if (m.__drieBlend === key) return;
+		m.__drieBlend = key;
+		N.materialBlend(m.__drie, m.blending ?? 1, m.premultipliedAlpha === true, m.blendEquation ?? 100, m.blendSrc ?? 204,
+			m.blendDst ?? 205, m.blendEquationAlpha ?? m.blendEquation ?? 100, m.blendSrcAlpha ?? m.blendSrc ?? 204,
+			m.blendDstAlpha ?? m.blendDst ?? 205);
+	}
+
+	// depthTest, depthWrite and toneMapped (three sets them for each draw: no needsUpdate either).
 	_depth(material) {
-		const key = (material.depthTest === false ? 1 : 0) + (material.depthWrite === false ? 2 : 0);
+		const key = (material.depthTest === false ? 1 : 0) + (material.depthWrite === false ? 2 : 0)
+			+ (material.toneMapped === false ? 4 : 0);
 		if (material.__drieDepth === key) return;
 		material.__drieDepth = key;
-		N.materialDepth(material.__drie, material.depthTest !== false, material.depthWrite !== false);
+		N.materialDepth(material.__drie, material.depthTest !== false, material.depthWrite !== false,
+			material.toneMapped !== false);
 	}
 
 	// MeshPhysicalMaterial's clear coat, sheen, iridescence and anisotropy, sent when they change.
@@ -784,6 +815,7 @@ export class DrieRenderer {
 			this._lightMap(material);
 			this._env(material);
 			this._surface(material);
+			this._blend(material);
 			this._depth(material);
 			return material.__drie;
 		}
@@ -811,12 +843,14 @@ export class DrieRenderer {
 		material.__drieDepth = undefined;
 		material.__drieEnv = undefined;
 		material.__drieSurface = undefined;
+		material.__drieBlend = undefined;
 		this._materialValues(material);
 		this._maps(material);
 		this._layers(material);
 		this._lightMap(material);
 		this._env(material);
 		this._surface(material);
+		this._blend(material);
 		this._depth(material);
 		return material.__drie;
 	}

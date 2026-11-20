@@ -188,7 +188,13 @@ assets: \
     (asset "textures/brick_diffuse.jpg" "b49b0ab13aa4455cc7348cb4bfbbffcb344f2f81b17121eb1e57bcd3b387febe") \
     (asset "textures/brick_bump.jpg" "fad2311729a8f98c2fdcb6d9442e8c2b70c97c169eb653005e5554680fa18a53") \
     (asset "textures/planets/earth_atmos_2048.jpg" "2faa400d1eade3bc44caf6750d1b772bd9bbb6d87362c02bc7c3304e78fa0a9d") \
-    (asset "textures/planets/earth_specular_2048.jpg" "2df48906732d7a458b2d0a7cdec51a829262307c6bdee4cfdf079a4dd7c71c69")
+    (asset "textures/planets/earth_specular_2048.jpg" "2df48906732d7a458b2d0a7cdec51a829262307c6bdee4cfdf079a4dd7c71c69") \
+    (asset "textures/sprite0.jpg" "1dad128859c53e70eb0fe6e0291192787a5f1c08613b5e44b52e89fcf29750cb") \
+    (asset "textures/sprite0.png" "79592d002649e69628ed7ea9dc79ab911c43dded78c716362742e225acec32fb") \
+    (asset "textures/lensflare/lensflare0.png" "5266c28e6597607f5646801469a7a08f98b4eddd358cef1824745698671802b8") \
+    (asset "textures/lensflare/lensflare0_alpha.png" "5f632ba4d17b6645b665c06eba4e57eaee39099009e9322ed58269ad88fc0365") \
+    (asset "models/gltf/ferrari_ao.png" "d2b0e56a6191cce2992db488fe59fc788a02aed58717554eefc0e6bf16786430") \
+    (asset "models/gltf/ferrari.glb" "cafe3f48da6797aa9bde75ca768bc5b57db366575fd233e90df186ae988a876e")
 
 [private]
 asset path sha256: (fetch examples + "/" + path sha256 "demos/" + path)

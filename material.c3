@@ -8,11 +8,43 @@ enum Side {
     DOUBLE_SIDE,
 }
 
-// How a see-through material's pixels are put over what is behind them (like three's
-// `blending`): mixed in by their opacity, or added to it, as light is.
+// How a material's pixels are put over what is behind them (three's `blending`): mixed in by
+// their opacity (for a `transparent` material; an opaque one covers what is behind), added
+// to it as light is, taken from it, multiplying it, as the material's blend_* say
+// (CUSTOM_BLENDING), or not at all, covering it. With premultiplied_alpha the material's
+// colors come out multiplied by their opacity, and the blending takes them so (three's).
 enum Blending {
     NORMAL_BLENDING,
     ADDITIVE_BLENDING,
+    SUBTRACTIVE_BLENDING,
+    MULTIPLY_BLENDING,
+    CUSTOM_BLENDING,
+    NO_BLENDING,
+}
+
+// CUSTOM_BLENDING's: how the material's color (the source) and what is behind it (the
+// destination) are weighed (three's blendSrc, blendDst and their factors) and combined
+// (blendEquation).
+enum BlendEquation {
+    ADD_EQUATION,
+    SUBTRACT_EQUATION,
+    REVERSE_SUBTRACT_EQUATION,
+    MIN_EQUATION,
+    MAX_EQUATION,
+}
+
+enum BlendFactor {
+    ZERO_FACTOR,
+    ONE_FACTOR,
+    SRC_COLOR_FACTOR,
+    ONE_MINUS_SRC_COLOR_FACTOR,
+    SRC_ALPHA_FACTOR,
+    ONE_MINUS_SRC_ALPHA_FACTOR,
+    DST_ALPHA_FACTOR,
+    ONE_MINUS_DST_ALPHA_FACTOR,
+    DST_COLOR_FACTOR,
+    ONE_MINUS_DST_COLOR_FACTOR,
+    SRC_ALPHA_SATURATE_FACTOR,
 }
 
 // How a transmission material's volume bends the rays through it (Material.refraction_model;
@@ -51,12 +83,24 @@ struct Material {
     float opacity;
     bool transparent;
     Blending blending;
+    bool premultiplied_alpha;
+    // CUSTOM_BLENDING: color = src * blend_src (equation) dst * blend_dst, and alpha the same
+    // with the _alpha ones (three's blendEquation, blendSrc, blendDst, blendEquationAlpha,
+    // blendSrcAlpha and blendDstAlpha)
+    BlendEquation blend_equation;
+    BlendFactor blend_src;
+    BlendFactor blend_dst;
+    BlendEquation blend_equation_alpha;
+    BlendFactor blend_src_alpha;
+    BlendFactor blend_dst_alpha;
     Side side;
     bool wireframe;
     bool visible;
     bool fog;
     bool depth_test;
     bool depth_write;
+    // Its colors go through the renderer's tone mapping (three's toneMapped).
+    bool tone_mapped;
     Color emissive;
     float emissive_intensity;
     // The color map glows too: emissive * emissive_intensity is multiplied by it (three's
@@ -341,6 +385,7 @@ fn void Material.init_base(
     self.fog = fog;
     self.visible = true;
     self.depth_test = true;
+    self.tone_mapped = true;
     self.depth_write = true;
     self.emissive_intensity = 1;
     self.specular = 0x111111;
@@ -355,6 +400,10 @@ fn void Material.init_base(
     self.ao_intensity = 1;
     self.light_map_intensity = 1;
     self.reflectivity = 1;
+    self.blend_src = SRC_ALPHA_FACTOR;
+    self.blend_dst = ONE_MINUS_SRC_ALPHA_FACTOR;
+    self.blend_src_alpha = SRC_ALPHA_FACTOR;
+    self.blend_dst_alpha = ONE_MINUS_SRC_ALPHA_FACTOR;
     self.bump_scale = 1;
     self.refraction_ratio = 0.98f;
     self.clearcoat_normal_scale = { 1, 1 };

@@ -66,7 +66,7 @@ three.js API coverage:
 
 | Area | Status | What's implemented |
 | --- | --- | --- |
-| Scene & Cameras | ✅ | `Object3D`, `Group`, `Scene` (background color or equirectangular texture with `backgroundBlurriness`, `environment`), `PerspectiveCamera`, `OrthographicCamera` |
+| Scene & Cameras | ✅ | `Object3D`, `Group`, `Scene` (background color, equirectangular texture with `backgroundBlurriness`, or a flat picture, `environment`), `PerspectiveCamera`, `OrthographicCamera` |
 | Meshes & LOD | ✅ | `Mesh`, `InstancedMesh`, `Lod` |
 | Lines | ✅ | `Line`, `LineSegments`, `LineLoop`, `LineBasic` and `LineDashed` materials |
 | Geometry | ✅ | `box`, `plane`, `sphere`, `cylinder`, `cone`, `torus`, `lathe`, `buffer_geometry`, `merge` |
@@ -150,7 +150,9 @@ Features not in three.js:
 - **Outlines:** `material.outline` pushes the vertices out along their normals by that much of the view, so a back-side material with it, drawn over a mesh, outlines it (three's `OutlineEffect`).
 - **Alpha and emissive maps:** `material.alpha_map` (green: how opaque) and `emissive_map` (tints `emissive`).
 - **Depth test & write:** `material.depth_test` / `depth_write` (three.js `depthTest` / `depthWrite`); a material that isn't tested or doesn't write depth stays out of the depth pre-pass.
-- **Additive blending & draw order:** `material.blending = ADDITIVE_BLENDING` for transparent materials and `object.render_order` for explicit draw order, as in three.js.
+- **Blending & draw order:** `material.blending` is three's: `NORMAL_BLENDING` (for transparent materials), `ADDITIVE_BLENDING`, `SUBTRACTIVE_BLENDING`, `MULTIPLY_BLENDING`, `NO_BLENDING`, or `CUSTOM_BLENDING` with `blend_equation`, `blend_src`, `blend_dst` and their `_alpha` ones; `premultiplied_alpha` multiplies the colors by their opacity. `object.render_order` sets an explicit draw order, as in three.js. Each blend state is a pipeline of its own.
+- **Tone mapping per material:** `material.tone_mapped = false` leaves its colors out of the renderer's tone mapping (three's `toneMapped`).
+- **Flat backgrounds:** `scene.background_flat` shows `background_texture` as a picture over the whole view, placed by its `repeat` and `offset` (three's `scene.background` as a plain texture).
 - **World-space box UVs:** `geometry.box_project_uv(tiles_per_unit)` generates box-projected UVs.
 
 <details>
@@ -225,6 +227,7 @@ A material's maps besides `map`, `normal_map` and `arm_map` share six texture sl
 ### Fog
 
 - **Exponential fog:** `drie::fog_exp(color, density)` (three.js `FogExp2`).
+- **three's fog and background:** `renderer.display_fog` mixes the fog in after tone mapping, in the colors that are shown, and clears to the background color without tone mapping it, as three does. Off, both are tone mapped with the rest of the light.
 - **Volumetric fog** (`fog.c3`): Compute-marched froxel grid supporting light scatter (`spot_light.fog_glow`), height falloff, sun shafts, 3D animated noise, and clear boxes.
 
 <details>
