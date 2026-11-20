@@ -189,9 +189,45 @@ function cssColor(text) {
 	throw new Error(`driejs: the color ${text} is not supported`);
 }
 
+// A linear gradient (createLinearGradient): the color at a point is the stops' color where the
+// point falls along the line from (x0, y0) to (x1, y1), clamped at its ends, interpolated
+// between the stops with premultiplied alpha, as browsers do.
+class LinearGradient {
+	constructor(x0, y0, x1, y1) {
+		this._from = [x0, y0];
+		this._along = [x1 - x0, y1 - y0];
+		this._stops = [];
+	}
+	addColorStop(offset, color) {
+		if (!(offset >= 0 && offset <= 1)) throw new RangeError("addColorStop: the offset is outside 0..1");
+		this._stops.push([offset, cssColor(color)]);
+		// (stable: of two stops at one offset, the later one is past it)
+		this._stops.sort((a, b) => a[0] - b[0]);
+	}
+	_at(x, y) {
+		const stops = this._stops;
+		if (stops.length === 0) return [0, 0, 0, 0];
+		const [dx, dy] = this._along;
+		const length2 = dx * dx + dy * dy;
+		const t = length2 > 0 ? ((x - this._from[0]) * dx + (y - this._from[1]) * dy) / length2 : 0;
+		if (t <= stops[0][0]) return stops[0][1];
+		for (let i = 1; i < stops.length; i++) {
+			const [o1, c1] = stops[i];
+			if (t > o1) continue;
+			const [o0, c0] = stops[i - 1];
+			const k = o1 > o0 ? (t - o0) / (o1 - o0) : 1;
+			const a = c0[3] + (c1[3] - c0[3]) * k;
+			const rgb = [0, 1, 2].map((j) => a > 0 ? (c0[j] * c0[3] + (c1[j] * c1[3] - c0[j] * c0[3]) * k) / a : 0);
+			return [...rgb, a];
+		}
+		return stops[stops.length - 1][1];
+	}
+}
+
 // A canvas's 2D context as three's examples use it: drawImage of an ImageBitmap (stretched to
 // any size, bilinear; UltraHDRLoader), getImageData, filling rectangles and circles
-// (fillStyle, fillRect, beginPath, arc of a whole circle, fill: generated textures), and text
+// (fillStyle, a color or a linear gradient; fillRect, beginPath, arc of a whole circle, fill:
+// generated textures), and text
 // (font, textAlign, textBaseline, fillText, measureText: set by the platform, CoreText on
 // macOS). Its pixels are made when the canvas's size is first drawn at; shapes are not
 // antialiased.
@@ -211,11 +247,22 @@ class Context2D {
 	}
 	set fillStyle(value) {
 		this._fillStyle = value;
-		this._fill = cssColor(value);
+		this._gradient = value instanceof LinearGradient ? value : null;
+		if (!this._gradient) this._fill = cssColor(value);
 	}
-	// (source-over: alpha 255 replaces, anything less blends)
+	createLinearGradient(x0, y0, x1, y1) {
+		return new LinearGradient(x0, y0, x1, y1);
+	}
+	// (source-over: alpha 255 replaces, anything less blends; a gradient's color at the pixel's
+	// middle)
 	_plot(data, i, alpha) {
-		const [r, g, b, a] = this._fill;
+		let fill = this._fill;
+		if (this._gradient) {
+			const at = i / 4;
+			const width = this._pixels.width;
+			fill = this._gradient._at(at % width + 0.5, Math.floor(at / width) + 0.5);
+		}
+		const [r, g, b, a] = fill;
 		const k = (a / 255) * alpha;
 		if (k >= 1) {
 			data[i] = r;

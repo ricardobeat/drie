@@ -80,6 +80,11 @@ The translator covers:
 - int and uint arithmetic with bitwise operators (MaterialX noise runs as it is)
 - `Fn` calls with layouts and overloads
 - `rotate`, of a vec2 by an angle or a vec3 about each axis
+- `flipX()`, `flipY()`... (those components 1 minus themselves)
+- `mat3` of three vec3s, in a product with a vec3 (TSL's `TBNViewMatrix`, which `parallaxUV`
+  reads; `tangentView` and `bitangentView` are the frame from the derivatives)
+- `reference()` and `materialReference()`, read from the material every frame (each
+  `NodeMaterialInstance` of one node material has its own values)
 - `bumpMap`, as three's `dHdxy_fwd` and `perturbNormalArb`
 - `normalMap` in tangent space, on three's frame from the derivatives of the position and uv
   (not the geometry's tangents)
@@ -101,6 +106,12 @@ program with drie's message.
 background. `LightProbeGenerator.fromCubeRenderTarget` reads that map's light on surfaces, and
 `CubeRenderTarget.fromEquirectangularTexture` uses the equirectangular map as it is. Before the
 first frame there is nothing to draw with, so an update waits for the next render.
+
+A mesh with an array of materials draws each of its geometry's groups with that group's
+material: a drie mesh of its own that shares the geometry and draws the group's indices
+(drie's `Mesh.draw_start` and `draw_count`). A `BatchedMesh` is an instanced drie mesh for each
+of its geometries, with that geometry's visible instances. `ProgressiveLightMapGPU` is the same
+drie bake as `ProgressiveLightMap`.
 
 The demos `webgpu_tsl_earth.js`, `webgpu_tsl_raging_sea.js`, `webgpu_tsl_procedural_terrain.js`
 and `webgpu_tsl_angular_slicing.js` are r187's examples, unchanged. Their `Inspector` is a lil-gui panel that is not drawn.

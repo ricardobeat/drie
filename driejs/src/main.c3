@@ -660,8 +660,9 @@ fn void h_material_layers(JsCtx ctx, void* udata)
     m.anisotropy_rotation = (float)num_arg(ctx, 13, 0);
 }
 
-// floatTexture(data, width, height, flipY): a texture of RGBA in linear light, from a
-// DataTexture of half floats (Uint16Array, HalfFloatType) or floats (Float32Array)
+// floatTexture(data, width, height, flipY, wrapS, wrapT): a texture of RGBA in linear light,
+// from a DataTexture of half floats (Uint16Array, HalfFloatType) or floats (Float32Array);
+// three's wrapping constants (repeat by default)
 fn void h_float_texture(JsCtx ctx, void* udata)
 {
     View v;
@@ -686,6 +687,8 @@ fn void h_float_texture(JsCtx ctx, void* udata)
     }
     Texture* t = drie::float_texture(px, width, height);
     t.flip_y = bool_arg(ctx, 3, false);
+    t.wrap_s = wrap_of(num_arg(ctx, 4, 1000));
+    t.wrap_t = wrap_of(num_arg(ctx, 5, 1000));
     ctx.ret_number(@reg(textures, t, TEXTURE_BASE));
 }
 
@@ -1219,6 +1222,16 @@ fn void h_mesh(JsCtx ctx, void* udata)
     ctx.ret_number(reg_object((Object3D*)drie::mesh(g, get_material(num_arg(ctx, 1, -1)))));
 }
 
+// meshDrawRange(mesh, start, count): drie's Mesh.draw_start and draw_count (0: all)
+fn void h_mesh_draw_range(JsCtx ctx, void* udata)
+{
+    Object3D* o = get_object(num_arg(ctx, 0, -1));
+    if (o == null || o.kind != MESH) return;
+    Mesh* m = (Mesh*)o;
+    m.draw_start = (int)num_arg(ctx, 1, 0);
+    m.draw_count = (int)num_arg(ctx, 2, 0);
+}
+
 // lineDash(material, dashSize, gapSize, scale): LineDashedMaterial's dashes (0, 0: solid)
 fn void h_line_dash(JsCtx ctx, void* udata)
 {
@@ -1288,6 +1301,7 @@ fn void h_instances(JsCtx ctx, void* udata)
     InstancedMesh* m = (InstancedMesh*)o;
     m.instance_data.clear();
     for (int i = 0; i < count * 12; i++) m.instance_data.push(0);
+    m.instance_count = count;
     drie::Mat4* src = (drie::Mat4*)mats.ptr;
     for (int i = 0; i < count; i++) m.set_matrix_at(i, src[i]);
 }
@@ -2230,6 +2244,13 @@ fn char[]? read_module(String name, void* udata)
     {
         return boomkat::read_module_file(string::tformat("%s/vendor/jsm/%s", root, name[ADDONS.len..]));
     }
+    // (three's examples sit beside its jsm folder, and a few import "./jsm/..." from there:
+    // vendor/jsm's file, where there is no such file beside the script)
+    sz? at = name.rindex_of("/jsm/");
+    if (try at && !file::is_file(name))
+    {
+        return boomkat::read_module_file(string::tformat("%s/vendor/jsm/%s", root, name[at + 5..]));
+    }
     return boomkat::read_module_file(name);
 }
 
@@ -2362,8 +2383,11 @@ fn int main(String[] args)
     // RectAreaLightUniformsLib fills WebGLRenderer's UniformsLib: drie has the tables itself
     js.define_module("three/addons/lights/RectAreaLightUniformsLib.js",
                      string::tformat("export * from \"%s/js/rect_area_light.js\";\n", root))!!;
-    // three's ProgressiveLightMap draws with shaders of its own: this one has drie bake
+    // three's ProgressiveLightMap (and its WebGPU one, with the same methods) draws with shaders
+    // of its own: this one has drie bake
     js.define_module("three/addons/misc/ProgressiveLightMap.js",
+                     string::tformat("export * from \"%s/js/progressive_lightmap.js\";\n", root))!!;
+    js.define_module("three/addons/misc/ProgressiveLightMapGPU.js",
                      string::tformat("export * from \"%s/js/progressive_lightmap.js\";\n", root))!!;
 
     JsValue natives = js.object()!!;
@@ -2413,7 +2437,7 @@ fn int main(String[] args)
     reg(natives, "nodeSeq", &h_node_seq, 2);
     reg(natives, "nodeType", &h_node_type, 1);
     reg(natives, "materialNodes", &h_material_nodes, 13);
-    reg(natives, "floatTexture", &h_float_texture, 4);
+    reg(natives, "floatTexture", &h_float_texture, 6);
     reg(natives, "imageDecode", &h_image_decode, 1);
     reg(natives, "imageSize", &h_image_size, 2);
     reg(natives, "imagePixels", &h_image_pixels, 4);
@@ -2425,6 +2449,7 @@ fn int main(String[] args)
     reg(natives, "renderEnvironment", &h_render_environment, 5);
     reg(natives, "renderProbe", &h_render_probe, 10);
     reg(natives, "lightChannels", &h_light_channels, 2);
+    reg(natives, "meshDrawRange", &h_mesh_draw_range, 3);
     reg(natives, "materialLightChannels", &h_material_light_channels, 2);
     reg(natives, "textureLightProbe", &h_texture_light_probe, 2);
     reg(natives, "textureUv", &h_texture_uv, 8);

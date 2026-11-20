@@ -116,6 +116,20 @@ const fn = (name, make) => {
 fn("transformNormalToView", (t, [n]) => t.toView(t.call("normalize", t.swizzle(t.bin("*", t.builtin(B.MODEL_MATRIX), t.join(T.vec4, t.node(n), t.num(0))), "xyz"))));
 
 // What a three type string is in drie's.
+const isMat3 = (v) => typeof v === "object" && v !== null && v.mat3 !== undefined;
+
+// The node type of a uniform's value (a number, a boolean, a Color, a vector or a Matrix4).
+const valueType = (v) => {
+	if (typeof v === "number") return T.float;
+	if (typeof v === "boolean") return T.bool;
+	if (v && v.isColor) return T.vec3;
+	if (v && v.isVector2) return T.vec2;
+	if (v && v.isVector3) return T.vec3;
+	if (v && v.isVector4) return T.vec4;
+	if (v && v.isMatrix4) return T.mat4;
+	unsupported(`a uniform of ${v && v.constructor ? v.constructor.name : typeof v}`);
+};
+
 const typeId = (name) => {
 	if (name === null || name === undefined) return undefined;
 	const options = String(name).split("|");
@@ -149,6 +163,12 @@ class Translator {
 			shaderStage: "fragment",
 			get context() { return translator.context; },
 			isAvailable: () => true,
+			// (a material is drawn on any geometry: no tangents, so tangentView and
+			// bitangentView are TSL's frame from the derivatives of the position and uv, as
+			// normalMap's here)
+			geometry: { hasAttribute: () => false },
+			subBuildFn: null,
+			isFlatShading: () => material.flatShading === true,
 		}, {
 			get: (target, property) => {
 				if (property in target) return target[property];
@@ -161,6 +181,7 @@ class Translator {
 	}
 
 	type(id) {
+		if (isMat3(id)) unsupported("a mat3 other than in a product with a vec3");
 		let t = this.types.get(id);
 		if (t === undefined) {
 			t = N.nodeType(id);
@@ -270,7 +291,8 @@ class Translator {
 	// A statement of a TSL stack.
 	statement(n) {
 		if (n.isVarNode) {
-			this.emit(this.node(n));
+			const v = this.node(n);
+			if (!isMat3(v)) this.emit(v);
 		} else if (n.isAssignNode) {
 			this.emit(N.nodeAssign(this.node(n.targetNode), this.node(n.sourceNode)));
 		} else if (isConditional(n)) {
@@ -419,6 +441,7 @@ class Translator {
 		if (n.isSplitNode) return this.swizzle(this.node(n.node), n.components);
 		if (n.isVarNode) {
 			const init = n.node ? this.node(n.node) : 0;
+			if (isMat3(init)) return init;
 			const type = init ? this.type(init) : typeId(n.nodeType ?? "float");
 			const v = N.nodeVar(type, init);
 			this.types.set(v, type);
@@ -452,6 +475,7 @@ class Translator {
 			}
 			case "JoinNode": {
 				const parts = n.nodes.map((p) => this.node(p));
+				if (n.nodeType === "mat3") return this.mat3(parts);
 				let type = n.nodeType ? typeId(n.nodeType) : undefined;
 				if (type === undefined) {
 					const count = parts.reduce((s, p) => s + COMPONENTS[this.type(p)], 0);
@@ -492,6 +516,7 @@ class Translator {
 			case "TextureSizeNode":
 				return this.textureSize(n);
 			case "ReferenceNode":
+			case "MaterialReferenceNode":
 				return this.reference(n);
 			case "SubBuild":
 			case "SubBuildNode":
@@ -509,6 +534,16 @@ class Translator {
 				return this.normalMap(n);
 			case "RotateNode":
 				return this.rotate(n);
+			case "FlipNode": {
+				// (flipX(), flipY()...: those components 1 - themselves)
+				const v = this.node(n.sourceNode);
+				const count = COMPONENTS[this.type(v)];
+				const parts = [..."xyzw".slice(0, count)].map((c) => {
+					const x = this.swizzle(v, c);
+					return n.components.includes(c) ? this.sub(this.num(1), x) : x;
+				});
+				return count === 1 ? parts[0] : this.join(this.type(v), ...parts);
+			}
 			case "FrontFacingNode":
 				return this.builtin(B.FRONT_FACING);
 			case "PropertyNode":
@@ -595,6 +630,11 @@ class Translator {
 
 	operator(n) {
 		const op = n.op;
+		if (op === "*" && n.aNode?.isNode && n.bNode?.isNode) {
+			const a = this.node(n.aNode);
+			const b = this.node(n.bNode);
+			if (isMat3(a) || isMat3(b)) return this.mat3Mul(a, b);
+		}
 		if (op === "!" || op === "~") return N.nodeNot(this.node(n.aNode), op === "~");
 		if (OPS[op] === undefined) unsupported(`the operator ${op}`);
 		let [a, b] = this.weak([n.aNode, n.bNode]);
@@ -602,6 +642,29 @@ class Translator {
 		const comparison = OPS[op] >= OPS["<"] && OPS[op] <= OPS["!="];
 		if (comparison && Math.max(COMPONENTS[this.type(a)], COMPONENTS[this.type(b)]) > 1) return this.mask(op, a, b);
 		return this.bin(op, a, b);
+	}
+
+	// A mat3 (drie's nodes have none): its three columns, which only a product with a vec3
+	// reads (TSL's TBNViewMatrix, in parallaxDirection). From three vec3s or nine numbers.
+	mat3(parts) {
+		let columns = parts;
+		if (parts.length === 9) {
+			columns = [0, 3, 6].map((i) => this.join(T.vec3, parts[i], parts[i + 1], parts[i + 2]));
+		}
+		if (columns.length !== 3 || columns.some((c) => this.type(c) !== T.vec3)) unsupported("a mat3 of other than three vec3s");
+		return { mat3: columns };
+	}
+
+	// v * m (each component v's dot with a column) or m * v (the columns weighted by v)
+	mat3Mul(a, b) {
+		if (isMat3(a) && isMat3(b)) unsupported("a product of two mat3s");
+		if (isMat3(b)) {
+			const v = this.convert(a, T.vec3);
+			return this.join(T.vec3, ...b.mat3.map((c) => this.call("dot", v, c)));
+		}
+		const v = this.convert(b, T.vec3);
+		const [c0, c1, c2] = a.mat3;
+		return this.add(this.add(this.mul(c0, this.swizzle(v, "x")), this.mul(c1, this.swizzle(v, "y"))), this.mul(c2, this.swizzle(v, "z")));
 	}
 
 	// A comparison of vectors, component by component (TSL's bvec), as a vector of 1 where it
@@ -654,18 +717,7 @@ class Translator {
 	uniform(n) {
 		const made = this.uniformIds.get(n);
 		if (made !== undefined) return made;
-		let type = n.nodeType ? typeId(n.nodeType) : undefined;
-		const v = n.value;
-		if (type === undefined) {
-			if (typeof v === "number") type = T.float;
-			else if (typeof v === "boolean") type = T.bool;
-			else if (v && v.isColor) type = T.vec3;
-			else if (v && v.isVector2) type = T.vec2;
-			else if (v && v.isVector3) type = T.vec3;
-			else if (v && v.isVector4) type = T.vec4;
-			else if (v && v.isMatrix4) type = T.mat4;
-			else unsupported(`a uniform of ${v && v.constructor ? v.constructor.name : typeof v}`);
-		}
+		const type = n.nodeType ? typeId(n.nodeType) : valueType(n.value);
 		const id = N.nodeUniform(type);
 		this.types.set(id, type);
 		const u = { node: n, id, type, key: undefined };
@@ -832,16 +884,17 @@ class Translator {
 	reference(n) {
 		const made = this.uniformIds.get(n);
 		if (made !== undefined) return made;
-		const type = typeId(n.uniformType);
 		if (n.count !== null && n.count !== undefined) unsupported("a reference to an array");
-		const id = N.nodeUniform(type);
-		this.types.set(id, type);
 		const material = this.material;
 		const get = () => {
 			let o = n.object ?? material;
 			for (const p of n.properties ?? String(n.property).split(".")) o = o?.[p];
 			return o;
 		};
+		// (materialReference() leaves its type to the value it finds)
+		const type = n.uniformType ? typeId(n.uniformType) : valueType(get());
+		const id = N.nodeUniform(type);
+		this.types.set(id, type);
 		const u = { node: n, id, type, key: undefined, get };
 		this.uniformIds.set(n, id);
 		this.uniforms.push(u);
