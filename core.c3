@@ -435,6 +435,17 @@ struct Mesh {
     // that shares the geometry); draw_count 0: all of them. A wireframe draws all.
     int draw_start;
     int draw_count;
+    // Turned toward the camera as it is drawn (see Billboard): a sprite, three's Sprite. Its
+    // axes are scaled by the lengths of matrix_world's, and the point billboard_center of its
+    // quad (in the quad's 0..1 across: three's Sprite.center; 0.5, 0.5 is the middle) lands on
+    // matrix_world's position. A FACING one is turned by billboard_rotation (radians,
+    // counterclockwise: three's SpriteMaterial.rotation) about that point, and with
+    // billboard_fixed_size it keeps its size on screen, a unit of scale being the view's
+    // height at a distance of 1 (three's sizeAttenuation false). Billboards cast no shadows.
+    Billboard billboard;
+    bool billboard_fixed_size;
+    float billboard_rotation;
+    Vector2 billboard_center;
     // Instancing (see InstancedMesh): 12 floats per instance, the rows of a 3x4 matrix.
     List{float} instance_data;
     int instance_count;
@@ -546,6 +557,18 @@ fn Lod* Lod.add_level(&self, Object3D* object, float distance = 0) {
     self.add(object);
     self.distances.push(distance);
     return self;
+}
+
+// How a mesh turns toward the camera (Mesh.billboard): its local x and y (a quad in its xy,
+// as three's sprites and PlaneGeometry) become
+enum Billboard : char {
+    NO_BILLBOARD,
+    FACING,     // the view's right and up: in the view's plane (three's Sprite)
+    KEEP_Y,     // the view's right, and its own y: it turns about its y axis only (TSL's
+                // billboarding(), and billboarding({ horizontal: true }))
+    KEEP_X,     // its own x, and the view's up (billboarding({ horizontal: false, vertical: true }))
+    UPRIGHT,    // the world's up for y, turned about it to face the camera's position
+                // (billboarding({ horizontalRotation: true }))
 }
 
 fn Mesh* mesh(BufferGeometry* geometry, Material* material = null) {

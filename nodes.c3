@@ -110,12 +110,13 @@ enum NodeBuiltin : char {
     VERTEX_COLOR,     // rgba
     FRAG_COORD,       // the pixel's position in the target (fragment)
     FRONT_FACING,     // bool (fragment)
-    MODEL_MATRIX,
+    MODEL_MATRIX,     // the mesh's matrix_world (a billboard's as it is, before it is turned)
     VIEW_MATRIX,
     PROJECTION_MATRIX,
     OUTPUT,           // the lit color, rgba (in output_node)
     ENV_DIRECTION,    // the direction the surface reflects, in the world (in env_node)
     ENV_ROUGHNESS,    // the roughness it reflects with (in env_node)
+    INSTANCE_INDEX,   // the instance's index in its mesh (0 without instances), a float
 }
 
 enum NodeBinary : char {
@@ -1152,6 +1153,9 @@ fn String NodeGen.builtin(&self, Node n, NodeBuiltin b) {
         case ENV_ROUGHNESS:
             if (!self.env) abort("drie: nodes: env_roughness() is for env_node");
             return "rough";
+        case INSTANCE_INDEX:
+            if (fragment) return self.read_varying(n);
+            return "ni.frag.w";
     }
 }
 

@@ -654,6 +654,8 @@ struct RendererState @private {
     // relative_view_proj)
     Mat4 last_view_proj_rel;
     Vector3 view_origin;
+    // the camera's matrix_world, for billboards (Mesh.billboard)
+    Mat4 view_world;
     SgPipeline back_pipeline;
     // the camera's jitter in clip space (per unit of w), left out of the motion vectors
     Vector2 motion_jitter;
@@ -1990,7 +1992,7 @@ fn void collect(
             if (!m.geometry || !m.material || !m.material.visible) break;
             // a Reflector's own surfaces are not in its picture
             if (state.renderer.reflecting && m.material.reflector == state.renderer.reflecting) break;
-            if (shadow_pass && (!m.cast_shadow || m.material.transparent || m.is_line())) break;
+            if (shadow_pass && (!m.cast_shadow || m.material.transparent || m.is_line() || m.billboard != NO_BILLBOARD)) break;
             if (shadow_pass && state.skip_instanced && m.instance_data.len() > 0) break;
             BufferGeometry* g = m.geometry;
             if (!g.uploaded && g.indices.len() == 0) break;
@@ -2876,15 +2878,67 @@ fn Mat4 relative_view_proj(Camera* camera, Vector3 origin) @local {
 }
 
 // `view_proj`: world - state.view_origin -> clip space (see relative_view_proj).
+// What `m` is drawn with as its model matrix: its matrix_world, or a billboard's turned toward
+// the camera (see Billboard): its x and y as long as matrix_world's, moved so that its center
+// lands on matrix_world's position, its z (the quad's normal) toward the camera.
+fn Mat4 model_of(Mesh* m) @local {
+    if (m.billboard == NO_BILLBOARD) return m.matrix_world;
+    Mat4 w = m.matrix_world;
+    Vector3 at = w.get_position();
+    float sx = ((Vector3){ w[0][0], w[0][1], w[0][2] }).length();
+    float sy = ((Vector3){ w[1][0], w[1][1], w[1][2] }).length();
+    Mat4 c = state.view_world;
+    Vector3 right = ((Vector3){ c[0][0], c[0][1], c[0][2] }).normalize();
+    Vector3 up = ((Vector3){ c[1][0], c[1][1], c[1][2] }).normalize();
+    Vector3 toward = ((Vector3){ c[2][0], c[2][1], c[2][2] }).normalize();
+    if (m.billboard == FACING && m.billboard_fixed_size) {
+        // (a perspective view: as far as the sprite is in front of the camera)
+        float depth = math::max((at - state.view_origin).dot(-toward), 0f);
+        sx *= depth;
+        sy *= depth;
+    }
+    // the quad's x and y axes in the world, and where its local origin goes
+    Vector3 ax;
+    Vector3 ay;
+    Vector3 az = toward;
+    switch (m.billboard) {
+        case UPRIGHT:
+            Vector3 look = { state.view_origin.x - at.x, 0, state.view_origin.z - at.z };
+            az = look.length() > 1e-6 ? look.normalize() : (Vector3){ 0, 0, 1 };
+            ax = (Vector3){ az.z, 0, -az.x } * sx;
+            ay = (Vector3){ 0, sy, 0 };
+        case KEEP_Y:
+            ax = right * sx;
+            ay = { w[1][0], w[1][1], w[1][2] };
+        case KEEP_X:
+            ax = { w[0][0], w[0][1], w[0][2] };
+            ay = up * sy;
+        default:
+            float s = math::sin(m.billboard_rotation);
+            float k = math::cos(m.billboard_rotation);
+            ax = (right * k + up * s) * sx;
+            ay = (up * k - right * s) * sy;
+    }
+    Vector2 shift = { m.billboard_center.x - 0.5f, m.billboard_center.y - 0.5f };
+    Vector3 origin = at - ax * shift.x - ay * shift.y;
+    Mat4 b = mat4_identity();
+    b[0] = { ax.x, ax.y, ax.z, 0 };
+    b[1] = { ay.x, ay.y, ay.z, 0 };
+    b[2] = { az.x, az.y, az.z, 0 };
+    b[3] = { origin.x, origin.y, origin.z, 1 };
+    return b;
+}
+
 fn VsParams vs_params_of(DrawItem* item, Mat4 view_proj, bool normals = true) @local {
     Mesh* m       = item.mesh;
     Material* mat = m.material;
+    Mat4 model    = model_of(m);
     VsParams vs = {
         .view_proj = view_proj,
         .view_origin = { ...state.view_origin, 0 },
-        .model = m.matrix_world,
-        .normal_mat = normals ? m.matrix_world.invert()
-        .transpose() : m.matrix_world, .uv_transform = uv_transform(
+        .model = model,
+        .normal_mat = normals ? model.invert()
+        .transpose() : model, .uv_transform = uv_transform(
             mat
         ), .sway = sway_params(mat), .vs_material_custom = mat.custom, .vs_frame_custom = state.renderer.custom, };
     if (state.motion) {
@@ -4062,6 +4116,7 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera) {
     pt = profile::start();
     state.last_view_proj_rel = view_proj_rel;
     state.view_origin = camera_pos;
+    state.view_world = camera.matrix_world;
     state.opaque.clear();
     state.transparent.clear();
     state.casters.clear();
