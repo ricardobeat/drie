@@ -32,6 +32,12 @@ test name *args:
     c3c compile {{macos}} {{libs}} --lib drie tests/{{name}}.c3 -o tests/build/{{name}}
     tests/build/{{name}} {{args}}
 
+# build and run an example program (examples/): `just example nodes`
+example name *args:
+    mkdir -p examples/build
+    c3c compile {{macos}} {{libs}} --lib drie examples/{{name}}.c3 -o examples/build/{{name}}
+    examples/build/{{name}} {{args}}
+
 # regenerate generated/cgltf.c3, the binding of cgltf (third_party/cgltf/cgltf.h), with
 # bindgen.c3l: `just bindgen=path bindings` for another checkout of it
 bindings:
@@ -55,6 +61,11 @@ shaders:
     # sokol-shdc's C3 output writes storage image view slots as `const int VIEW_X (0)`;
     # rewrite them to `const int VIEW_X = 0;` (BSD sed -i '' syntax, macOS)
     sed -i '' -E 's/^const int (VIEW_[A-Z0-9_]+) \(([0-9]+)\)$/const int \1 = \2;/' generated/*.c3
+
+# regenerate generated/ltc.c3, RectAreaLight's LTC tables, from three.js's
+# RectAreaLightTexturesLib.js (driejs fetches three.js into driejs/vendor: `just driejs::build`)
+ltc:
+    python3 third_party/ltc/ltc.py driejs/vendor/jsm/lights/RectAreaLightTexturesLib.js generated/ltc.c3
 
 # docs.html: the API of drie's modules, with their comments (docgen.py)
 docs:

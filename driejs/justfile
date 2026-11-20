@@ -23,6 +23,23 @@ build: deps
 run +args: build
     out/driejs {{args}}
 
+# the demos' thumbnails, for demos/index.js (`just run demos/index.js`): each demo's picture
+# after `frames` frames, into demos/thumbs/ (not in git), a quarter of the size where sips is
+# there to shrink it. `just thumbs 30 webgl_geometries` renders that one only
+thumbs frames="30" *names: build
+    #!/bin/sh
+    mkdir -p demos/thumbs
+    names="{{names}}"
+    [ -n "$names" ] || names=$(ls demos/*.js | sed 's|demos/||; s|\.js$||' | grep -v '^index$')
+    for n in $names; do
+        if out/driejs --frames {{frames}} --png demos/thumbs/$n.png demos/$n.js > /dev/null 2>&1; then
+            command -v sips > /dev/null && sips -Z 640 demos/thumbs/$n.png > /dev/null 2>&1
+            echo "$n"
+        else
+            echo "$n: failed"
+        fi
+    done
+
 # BOOMKAT=path overrides ../../boomkat/out/boomkat (the -jit and -opt runs pass --jit and --opt:
 # point it at a build of the jit branch).
 [doc("the benchmark on one runtime (drie, drie-js, node, bun, node-jitless, boomkat, boomkat-jit, boomkat-opt) or all")]
@@ -107,19 +124,21 @@ draco:
         ln -sfn "$(dirname "$lib")" third_party/draco/lib ;;
     esac
 
-# three.js into vendor/: three.core.js, three.module.js, and examples/jsm as jsm/ (three/addons/...)
+# three.js into vendor/: three.core.js, three.module.js, three.webgpu.js and three.tsl.js
+# (three/webgpu, three/tsl), and examples/jsm as jsm/ (three/addons/...)
 [private]
 three:
     #!/bin/sh
     set -e
-    [ -f vendor/three.core.js ] && [ -d vendor/jsm ] && exit 0
+    [ -f vendor/three.core.js ] && [ -f vendor/three.tsl.js ] && [ -d vendor/jsm ] && exit 0
     tgz=third_party/three-{{three_version}}.tgz
     {{just_executable()}} fetch https://registry.npmjs.org/three/-/three-{{three_version}}.tgz {{three_sha256}} $tgz
     mkdir -p third_party/three-{{three_version}} vendor
     tar -xzf $tgz -C third_party/three-{{three_version}} \
-        package/LICENSE package/build/three.core.js package/build/three.module.js package/examples/jsm
+        package/LICENSE package/build/three.core.js package/build/three.module.js \
+        package/build/three.webgpu.js package/build/three.tsl.js package/examples/jsm
     src=third_party/three-{{three_version}}/package
-    cp $src/LICENSE $src/build/three.core.js $src/build/three.module.js vendor/
+    cp $src/LICENSE $src/build/three.core.js $src/build/three.module.js $src/build/three.webgpu.js $src/build/three.tsl.js vendor/
     [ -d vendor/jsm ] || cp -R $src/examples/jsm vendor/jsm
 
 # the demos' models and textures, from three.js's examples
@@ -201,7 +220,12 @@ assets: \
     (asset "models/obj/ninja/ninjaHead_Low.obj" "07819eacecae77a8539fbaf673d9a0908ec2e6383d1b6cedd94544b2a2f2c53b") \
     (asset "textures/758px-Canestra_di_frutta_(Caravaggio).jpg" "3f9a556c4e12583981427e2d6b7fa268c1a46c9036a23514acd9e179c22ae37f") \
     (asset "textures/crate.gif" "a890f0a89eadc083cb39bfbe597c1395d7acf47a19f673b5643d4a9c174ea52f") \
-    (asset "textures/equirectangular/blouberg_sunrise_2_1k.hdr" "1cb809a131ff3cb7df94b639d5967fc6fc08ecd25b6c43930af3b5d99f1d8855")
+    (asset "textures/equirectangular/blouberg_sunrise_2_1k.hdr" "1cb809a131ff3cb7df94b639d5967fc6fc08ecd25b6c43930af3b5d99f1d8855") \
+    (asset "textures/equirectangular/pedestrian_overpass_1k.hdr" "3d2c4068676cfead5dce9a12896cf1ebcac4e97914938e3c2987b70cad4e4c4a") \
+    (asset "textures/planets/earth_day_4096.jpg" "cd7712d3e891425d9948ea5ac18d3bb1e7e834ea038188587897e689a7b35d0f") \
+    (asset "textures/planets/earth_night_4096.jpg" "17a868f79c7be40fa1f557e6114d7889d907f18f7a3fce51f33b0b830ef50242") \
+    (asset "textures/planets/earth_bump_roughness_clouds_4096.jpg" "0796f4211c209d1afe9e26a06a283cdc21434430a780a25457b2417568a8591e") \
+    (asset "models/gltf/gears.glb" "059c442459e127e0f79b8337a5b0ea26a6cab3e609723c93ce60cac52d8430af")
 
 [private]
 asset path sha256: (fetch examples + "/" + path sha256 "demos/" + path)

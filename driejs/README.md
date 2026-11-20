@@ -9,7 +9,20 @@ just build                                  # build out/driejs
 just run demos/webgl_geometries.js          # build and run it in a window
 just run --frames 3 --png shot.png demos/webgl_geometries.js   # offscreen
 just bench node                             # the benchmark on one runtime (`just` lists them)
+just thumbs                                 # render the demos' thumbnails into demos/thumbs/
+just run demos/index.js                     # pick a demo from a page of them
 ```
+
+`demos/index.js` shows every script in `demos/` as a thumbnail with its name. A click runs that
+demo in the same window's place (driejs starts itself again with the script), and Escape there
+comes back to the page, unless the demo holds the pointer, when Escape lets go of it first. The
+wheel and the arrow keys scroll. Thumbnails are not in git: `just thumbs` renders them (30
+frames in; `just thumbs 120 webgl_geometries` for another moment of one demo), and a demo
+without one shows as a grey tile.
+
+With `--png` (and not `--profile`), `performance.now()` runs on the frames' clock, 1/60 s a frame
+from 0, as three's screenshots are taken: a script that moves things by the time passed (a
+`THREE.Timer`) gives the same picture on any machine.
 
 From drie's folder, the same recipes are `just driejs::build` and so on. boomkat's `jit` branch
 is a dependency in `project.json`, fetched from `https://c3.ricar.do/github.com:ricardobeat/boomkat@jit`
@@ -27,7 +40,8 @@ It also measures the per-frame CPU work three.js does in JS before a renderer dr
 
 | Path | What |
 |---|---|
-| `vendor/` | three.js r187 from npm (`three@0.187.0`, checked against a sha256 in the `justfile`), fetched by `just build` when missing: `three.core.js` (core without WebGLRenderer), `three.module.js`, and `examples/jsm` as `jsm/` for `three/addons/...`. Unmodified, not in git |
+| `vendor/` | three.js r187 from npm (`three@0.187.0`, checked against a sha256 in the `justfile`), fetched by `just build` when missing: `three.core.js` (core without WebGLRenderer), `three.module.js`, `three.webgpu.js` and `three.tsl.js` (`three/webgpu`, `three/tsl`), and `examples/jsm` as `jsm/` for `three/addons/...`. Unmodified, not in git |
+| `js/drie_nodes.js` | three's node materials and TSL on drie (see TSL) |
 | `demos/` | three.js examples as scripts (`demos/src/` has their pages); their models and textures are fetched by `just build` from three.js r187, each checked against a sha256, and are not in git |
 | `bench/three_bench.js` | the benchmark, for boomkat, node and bun |
 | `bench/drie_bench.c3` | its transform cases in drie, natively |
@@ -36,6 +50,46 @@ It also measures the per-frame CPU work three.js does in JS before a renderer dr
 | `lib/` | `draco.c3l` and `wamr.c3l`; drie and sokol come from drie's `lib/` (`../lib`, the second search path in `project.json`) |
 | `lib/wamr.c3l`, `js/wasm.js` | `WebAssembly`, on [WAMR](https://github.com/bytecodealliance/wasm-micro-runtime) 2.4.5's fast interpreter, which `just build` fetches into `third_party/` and builds |
 | `lib/draco.c3l` | DRACOLoader's decoder: libdraco, linked statically from Homebrew (`brew install draco` to build) |
+
+## TSL
+
+A script can import `three/webgpu` and `three/tsl` as three's WebGPU examples do. `WebGPURenderer`
+is drie's renderer (`init()` resolves at once), and the node materials
+(`MeshStandardNodeMaterial`, `MeshBasicNodeMaterial`...) are drawn with drie's node materials
+(see drie's README). three's NodeBuilder does not run. `js/drie_nodes.js` walks each material's
+`colorNode`, `opacityNode`, `normalNode` (view space, as in three), `roughnessNode`,
+`metalnessNode`, `emissiveNode`, `positionNode`, `outputNode` and `maskNode` (which cuts the
+shadow too, as three's does without a `maskShadowNode`), and rebuilds the graph as drie nodes.
+In `outputNode`, `output` is a variable that a `Fn` can assign. It runs TSL's `Fn` bodies itself, one call at a time, to collect their statements:
+`toVar`, `assign`, `If`/`ElseIf`/`Else`, `Loop`, `Break`, `Continue` and `Discard`. drie then
+prints the graph in Metal, HLSL or GLSL. A graph is rebuilt when a slot changes or a texture it
+reads finishes loading. Uniforms' `.value` is read every frame, and their `onFrameUpdate` and
+`onRenderUpdate` callbacks run.
+
+The translator covers:
+
+- constants, uniforms, textures, the geometry's attributes and varyings (including ones assigned
+  in `positionNode`)
+- TSL's operators and math, swizzles, conversions and `select`
+- int and uint arithmetic with bitwise operators (MaterialX noise runs as it is)
+- `Fn` calls with layouts and overloads
+- `bumpMap`, as three's `dHdxy_fwd` and `perturbNormalArb`
+- the builtins: `positionLocal`/`World`/`View`, `normalLocal`/`World`/`View` and their
+  geometry's, `cameraPosition`, `time`, `modelWorldMatrix`, `cameraViewMatrix`,
+  `cameraProjectionMatrix`, `screenCoordinate`, `frontFacing`, `faceDirection`, `output`
+
+Any other node class throws an error that names it. Slots drie lacks (`fragmentNode`,
+`vertexNode`, `aoNode`, `maskShadowNode`...) are left out with a warning. Compute, post-processing nodes and
+`wgslFn` are not supported. A graph that drie rejects while printing it (types that don't
+combine, a texture in `positionNode`, more than 32 vec4s of uniforms or four varyings) stops the
+program with drie's message.
+
+The demos `webgpu_tsl_earth.js`, `webgpu_tsl_raging_sea.js`, `webgpu_tsl_procedural_terrain.js`
+and `webgpu_tsl_angular_slicing.js` are r187's examples, unchanged. Their `Inspector` is a lil-gui panel that is not drawn.
+
+boomkat's `Object.defineProperties` defines only the first 256 keys it is given, and TSL defines
+its 1052 swizzle properties with a single call. `js/dom.js` defines them one at a time when there
+are more than 256.
 
 boomkat needs commit `92c6f2ea` or later: before it, a derived class's constructor with a
 non-literal default parameter threw, and three.js failed while loading. driejs builds on the

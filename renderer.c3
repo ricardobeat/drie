@@ -8,8 +8,9 @@ alias EventListener = fn void(SappEvent* event);
 alias Event = SappEvent;
 alias KeyCode = SappKeycode;
 
-// Defaults of Renderer.max_lights and Renderer.shadow_atlas_capacity.
+// Defaults of Renderer.max_lights, max_rect_area_lights and shadow_atlas_capacity.
 const int DEFAULT_MAX_LIGHTS            = 1024;
+const int DEFAULT_MAX_RECT_AREA_LIGHTS  = 16;
 const int DEFAULT_SHADOW_ATLAS_CAPACITY = 8;
 // The most tiles the shadow atlas has.
 const int MAX_ATLAS_TILES @local        = 64;
@@ -355,6 +356,10 @@ struct Renderer {
     // Extension: how many lights of each kind (directional, point, spot) a render takes at
     // most; the buffers that hold them grow up to it. 0 = no limit.
     int max_lights;
+    // Extension: how many RectAreaLights a render takes at most (16). Every one of them lights
+    // every pixel of a standard material in view (three's have no reach to cut them off, so
+    // they are not sorted into the clusters).
+    int max_rect_area_lights;
     // Extension: how many tiles the shadow atlas has room for at first: one per spot light with
     // shadow.auto_update off, and per shadowed directional light besides the first; it grows to
     // what they need, up to 64 (the atlas has max(4, sqrt(n)) columns of tiles).
@@ -591,6 +596,10 @@ struct Frustum @private {
 
 struct RendererState @local {
     Renderer* renderer;
+    // the render's camera, for node materials (nodes.c3)
+    Mat4 node_view;
+    Mat4 node_proj;
+    Vector3 node_camera;
     List{FrameHook} frame_hooks;
     List{EventFilter} event_filters;
     List{FrameHook} overlays;
@@ -796,6 +805,7 @@ fn Renderer* renderer(bool antialias = true, int width = 800, int height = 600, 
         .shadow_map_auto_update = true,
         .depth_prepass_pixels = 1.5f,
         .max_lights = DEFAULT_MAX_LIGHTS,
+        .max_rect_area_lights = DEFAULT_MAX_RECT_AREA_LIGHTS,
         .shadow_atlas_capacity = DEFAULT_SHADOW_ATLAS_CAPACITY,
         .shadow_map_scale = 1,
         .shadow_sample_scale = 1,
@@ -883,7 +893,8 @@ alias ShaderDescFn = fn SgShaderDesc(SgBackend backend);
 // and `three_mrt_vsm_shader_desc`; for geometries with tangents `three_tangent_shader_desc`,
 // `three_mrt_tangent_shader_desc`, `three_vsm_tangent_shader_desc`,
 // `three_mrt_vsm_tangent_shader_desc` and `depth_tangent_shader_desc` (null: the engine's; with a `main` of its own and no
-// tangents' programs, those geometries' normal maps take their frame from the uv instead).
+// tangents' programs, those geometries' normal maps take their frame from the uv instead); for the
+// shadows of node materials that cut holes `shadow_nodes_shader_desc`.
 struct MaterialShaders {
     ShaderDescFn main;
     ShaderDescFn opaque;
@@ -898,6 +909,7 @@ struct MaterialShaders {
     ShaderDescFn main_vsm_tangent;
     ShaderDescFn main_mrt_vsm_tangent;
     ShaderDescFn depth_tangent;
+    ShaderDescFn shadow_nodes;
 }
 
 fn void setup_gfx(SgEnvironment environment) @local {
@@ -1176,7 +1188,8 @@ fn SgPipeline get_pipeline(
     DrawKind kind = CUT,
     bool depth_test = true,
     bool depth_write = true,
-    bool tangents = false
+    bool tangents = false,
+    NodeProgram* nodes = null
 ) @local {
     int target = rt ? (rt.samples > 1 ? 2 : 1) + (rt.mrt ? 4 : (rt.is_linear() ? 2 : 0)) : 0;
     if (rt && rt.samples != 1 && rt.samples != 4) abort("drie: render targets support 1 or 4 samples");
@@ -1196,10 +1209,16 @@ fn SgPipeline get_pipeline(
     int depth = (depth_write ? 0 : 1) + (depth_test ? 0 : 2);
     // the geometry's tangents: a program that reads them (the depth prepass too: the main pass
     // tests against its depth with EQUAL, which wants the same vertex shader)
+    // (a node material's: its program's own)
     ulong key = blend | (ulong)(tangents ? 1 : 0) << 27 | (ulong)depth << 28 | (ulong)(vsm ? 1 : 0) << 30
         | (ulong)kind.ordinal << 31 | (ulong)side.ordinal << 33 | (ulong)(wireframe ? 1 : 0) << 35
         | (ulong)target << 36 | (ulong)(a2c ? 1 : 0) << 39 | (ulong)(transparent ? 1 : 0) << 40;
-    if (try known = state.pipelines.get(key)) return known;
+    if (nodes) {
+        SgPipeline? found = nodes.pipelines[key];
+        if (try found) return found;
+    } else {
+        if (try known = state.pipelines.get(key)) return known;
+    }
     SgCullMode cull;
     switch (side) {
         case FRONT_SIDE: cull = BACK;
@@ -1207,20 +1226,31 @@ fn SgPipeline get_pipeline(
         case DOUBLE_SIDE: cull = NONE;
     }
     SgShader shader;
+    NodeVariant variant;
     bool mrt = rt && rt.mrt;
     switch (kind) {
-        case CUT: shader = mrt ? state.mrt_shader : state.shader;
+        case CUT:
+            shader = mrt ? state.mrt_shader : state.shader;
+            variant = mrt ? MRT : MAIN;
         case SOLID:
-        case PRETESTED: shader = mrt ? state.opaque_mrt_shader : state.opaque_shader;
-        case DEPTH: shader = state.depth_shader;
+        case PRETESTED:
+            shader = mrt ? state.opaque_mrt_shader : state.opaque_shader;
+            variant = mrt ? OPAQUE_MRT : OPAQUE;
+        case DEPTH:
+            shader = state.depth_shader;
+            variant = DEPTH;
     }
-    if (vsm) shader = mrt ? state.mrt_vsm_shader : state.vsm_shader;
+    if (vsm) {
+        shader = mrt ? state.mrt_vsm_shader : state.vsm_shader;
+        variant = mrt ? MRT_VSM : VSM;
+    }
     // (the tangents' programs can all cut holes: the opaque draws take them too)
     if (tangents) {
         shader = kind == DEPTH ? state.depth_tangent_shader
             : vsm ? (mrt ? state.mrt_vsm_tangent_shader : state.vsm_tangent_shader)
             : (mrt ? state.mrt_tangent_shader : state.tangent_shader);
     }
+    if (nodes) shader = node_shader(nodes, variant);
     SgPipelineDesc desc = {
         .shader = shader,
         .index_type = UINT32,
@@ -1268,15 +1298,66 @@ fn SgPipeline get_pipeline(
     desc.colors[0].blend = blend_state(blend);
     SgPipeline pip = sg::make_pipeline(&desc);
     if (!pip.id) abort("drie: sokol's pipeline pool is full (pipeline_pool_size in setup_gfx)");
-    state.pipelines.set(key, pip);
+    if (nodes) {
+        nodes.pipelines[key] = pip;
+    } else {
+        state.pipelines.set(key, pip);
+    }
     return pip;
 }
 
-fn SgPipeline get_shadow_pipeline() @local {
-    if (state.shadow_pipeline.id) return state.shadow_pipeline;
-    state.shadow_pipeline = sg::make_pipeline(
+// Variant `v` of a node material's program (nodes.c3), built at its first use from the
+// engine's description of that program, or the application's (Renderer.shaders).
+fn SgShader node_shader(NodeProgram* p, NodeVariant v) @local {
+    SgShader* s = &p.shaders[v.ordinal];
+    if (s.id) return *s;
+    MaterialShaders a = state.renderer ? state.renderer.shaders : { };
+    SgBackend backend = sg::query_backend();
+    SgShaderDesc desc;
+    switch (v) {
+        case MAIN: desc = a.main ? a.main(backend) : shaders::three_shader_desc(backend);
+        case OPAQUE: desc = a.opaque ? a.opaque(backend) : shaders::three_opaque_shader_desc(backend);
+        case MRT: desc = a.main_mrt ? a.main_mrt(backend) : shaders::three_mrt_shader_desc(backend);
+        case OPAQUE_MRT: desc = a.opaque_mrt ? a.opaque_mrt(backend) : shaders::three_opaque_mrt_shader_desc(backend);
+        case VSM: desc = a.main_vsm ? a.main_vsm(backend) : shaders::three_vsm_shader_desc(backend);
+        case MRT_VSM: desc = a.main_mrt_vsm ? a.main_mrt_vsm(backend) : shaders::three_mrt_vsm_shader_desc(backend);
+        case DEPTH: desc = a.depth ? a.depth(backend) : shaders::depth_shader_desc(backend);
+        case SHADOW:
+            if (p.cuts) {
+                desc = a.shadow_nodes ? a.shadow_nodes(backend) : shaders::shadow_nodes_shader_desc(backend);
+            } else {
+                desc = a.shadow ? a.shadow(backend) : shaders::shadow_shader_desc(backend);
+            }
+    }
+    *s = p.make_shader(v, desc);
+    return *s;
+}
+
+// A node material's uniforms (node_vs_params, and node_fs_params for `fragment`): the
+// render's camera, the mesh's matrix, the time and its graphs' uniforms.
+fn void apply_node_params(NodeBuild* b, Mesh* m, bool fragment) @local {
+    shaders::NodeVsParams p = {
+        .node_view = state.node_view,
+        .node_proj = state.node_proj,
+        .node_model = m.matrix_world,
+        .node_info = { ...state.node_camera, state.renderer ? state.renderer.time : 0 },
+    };
+    int at;
+    foreach (u : b.uniforms) {
+        float[16] v = node_data(u).value;
+        int rows = u.type() == MAT4 ? 4 : 1;
+        for (int r = 0; r < rows; r++) p.node_params[at++] = { v[r * 4], v[r * 4 + 1], v[r * 4 + 2], v[r * 4 + 3] };
+    }
+    sg::apply_uniforms(shaders::UB_NODE_VS_PARAMS, &&{ .ptr = &p, .size = shaders::NodeVsParams::size });
+    if (fragment) sg::apply_uniforms(shaders::UB_NODE_FS_PARAMS, &&{ .ptr = &p, .size = shaders::NodeFsParams::size });
+}
+
+fn SgPipeline get_shadow_pipeline(NodeProgram* nodes = null) @local {
+    SgPipeline* pip = nodes ? &nodes.shadow_pipeline : &state.shadow_pipeline;
+    if (pip.id) return *pip;
+    *pip = sg::make_pipeline(
         &&{
-            .shader = state.shadow_shader,
+            .shader = nodes ? node_shader(nodes, SHADOW) : state.shadow_shader,
             .index_type = UINT32,
             .cull_mode = NONE,
             .layout = vertex_layout(
@@ -1305,7 +1386,7 @@ fn SgPipeline get_shadow_pipeline() @local {
             .label = "drie-shadow-pipeline",
         }
     );
-    return state.shadow_pipeline;
+    return *pip;
 }
 
 // Clears the atlas's tile at the current viewport to the far depth (a pass clears all of it).
@@ -2211,17 +2292,45 @@ fn FsParams build_light_params(Scene* scene, Camera* camera, SpotLight* caster) 
             case POINT:
                 if (!g.room(g.points.len(), r.max_lights)) break;
                 PointLight* pl = (PointLight*)l;
+                // a tube: from its centre to one end, along the light's x axis
+                Vector3 half;
+                if (pl.length > 0) {
+                    Mat4 m = l.matrix_world;
+                    Vector3 x = { m[0][0], m[0][1], m[0][2] };
+                    float xl = x.length();
+                    if (xl > 0) half = x * (pl.length * 0.5f / xl);
+                }
                 g.points.push(
                     {
                         .pos = { ...l.matrix_world.get_position(), pl.distance },
                         .color = { ...c, pl.decay },
-                        .params = { pl.radius, 0, 0, 0 },
+                        .params = { pl.radius, half.x, half.y, half.z },
                     }
                 );
                 // a light that adds nothing needs no place in the clusters
                 LightBounds b = point_light_bounds(pl);
                 if (l.intensity <= 0) b = { { }, 0 };
                 g.point_bounds.push(b);
+            case RECT_AREA:
+                // three's: the color times the intensity (nits), and half of each side along
+                // the light's x and y, turned as it is (without its scale)
+                RectAreaLight* ra = (RectAreaLight*)l;
+                if (l.intensity <= 0 || !g.room(g.rects.len(), r.max_rect_area_lights)) break;
+                Mat4 m = l.matrix_world;
+                Vector3 x = { m[0][0], m[0][1], m[0][2] };
+                Vector3 y = { m[1][0], m[1][1], m[1][2] };
+                float xl = x.length();
+                float yl = y.length();
+                Vector3 hw = xl > 0 ? x * (ra.width * 0.5f / xl) : (Vector3) { };
+                Vector3 hh = yl > 0 ? y * (ra.height * 0.5f / yl) : (Vector3) { };
+                // (as a point light's three vectors: see ltc_tables in shader_core.glsl)
+                g.rects.push(
+                    {
+                        .pos = { ...m.get_position(), hw.x },
+                        .color = { ...c, hw.y },
+                        .params = { hw.z, hh.x, hh.y, hh.z },
+                    }
+                );
             case SPOT:
                 SpotLight* sl = (SpotLight*)l;
                 if (!g.room(g.spots.len(), r.max_lights)) break;
@@ -2285,12 +2394,13 @@ fn FsParams build_light_params(Scene* scene, Camera* camera, SpotLight* caster) 
     int ndir         = (int)g.dirs.len();
     int npoint       = (int)g.points.len();
     int nspot        = (int)g.spots.len();
+    int nrect        = (int)g.rects.len();
     ClusterGrid grid = cluster_grid(camera);
     p.cluster_view_proj = camera.projection_matrix.mul(camera.matrix_world_inverse);
     p.cluster_grid = { CLUSTER_X, CLUSTER_Y, CLUSTER_Z, 0 };
     p.cluster_depth = { grid.near, grid.log_scale, grid.far, 0 };
     g.upload(&grid, r.assign_clusters, r.check_compute);
-    p.counts = { ndir, npoint, nspot, 0 };
+    p.counts = { ndir, npoint, nspot, nrect };
     Vector3 atlas = gi_atlas_size();
     float x0 = 0;
     for (int i = 0; i < state.gi_count; i++) {
@@ -2556,6 +2666,10 @@ fn bool prepassed(DrawItem* item) @local {
     // (the prepass would write the depth of what writes none, or test what isn't tested)
     Material* mat = item.mesh.material;
     if (!mat.depth_test || !mat.depth_write) return false;
+    // (nor the holes a node material's color_node or opacity_node cuts: the prepass's shader
+    // has no node_color)
+    NodeBuild* nodes = node_build_of(mat);
+    if (nodes && nodes.program.cuts) return false;
     if (state.prepass_focal <= 0) return true;
     Mesh* m       = item.mesh;
     int instances = m.instance_data.len() > 0 ? m.instance_count : 1;
@@ -2620,9 +2734,14 @@ fn void draw_depth_item(DrawItem* item, Mat4 view_proj) @local {
     BufferGeometry* g = m.geometry;
     Renderer* r       = state.renderer;
     float alpha_test  = alpha_test_of(mat);
-    bool tangents     = uses_tangents(item);
+    NodeBuild* nodes  = node_build_of(mat);
+    // (a node material's programs read no tangents: its normal map's frame from the uv)
+    bool tangents     = !nodes && uses_tangents(item);
     sg::apply_pipeline(
-        get_pipeline(mat.side, false, false, r.render_target, alpha_test > 0, 0, DEPTH, tangents: tangents)
+        get_pipeline(
+            mat.side, false, false, r.render_target, alpha_test > 0, 0, DEPTH, tangents: tangents,
+            nodes: nodes ? nodes.program : null
+        )
     );
     SgBindings bind = { .vertex_buffers[0] = g.vbuf, .index_buffer = g.ibuf };
     bind_instances(&bind, item, tangents);
@@ -2633,7 +2752,9 @@ fn void draw_depth_item(DrawItem* item, Mat4 view_proj) @local {
     sg::apply_bindings(&bind);
     VsParams vs = vs_params_of(item, view_proj, false);
     vs.inst_cull = inst_cull;
+    vs.bake[2] = nodes ? 1 : 0;
     sg::apply_uniforms(shaders::UB_VS_PARAMS, &&{ .ptr = &vs, .size = VsParams::size });
+    if (nodes) apply_node_params(nodes, m, false);
     DepthFsParams fs = {
         .d_color = { 0, 0, 0, mat.opacity },
         .d_params = { mat.map ? 1 : 0, alpha_test, mat.vertex_colors ? 1 : 0, 0 },
@@ -2658,7 +2779,9 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     Texture* map = ready(mat.map);
     if (mat.screen_target) map = state.white;
     float alpha_test = alpha_test_of(mat);
-    bool tangents = !state.bake.on && uses_tangents(item);
+    // (a light map's bake draws with the engine's own program)
+    NodeBuild* nodes = state.bake.on ? null : node_build_of(mat);
+    bool tangents = !state.bake.on && !nodes && uses_tangents(item);
     sg::apply_pipeline(
         state.bake.on ? state.bake.pipeline
             : get_pipeline(
@@ -2671,7 +2794,8 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
                 kind,
                 mat.depth_test,
                 mat.depth_write,
-                tangents
+                tangents,
+                nodes ? nodes.program : null
             )
     );
     // the prepass has cut it out already (the shader takes a negative threshold as "covered")
@@ -2727,6 +2851,8 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     Texture*[6] slots;
     int used;
     Vec4[6] map_slots;
+    // (a node material's textures take the last slots: see NodeBuild.textures)
+    int room = slots.len - (nodes ? nodes.texture_count : 0);
     foreach (i, t : roles) {
         int slot = -1;
         if (t) {
@@ -2734,12 +2860,15 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
                 if (slots[k] == t) slot = k;
             }
             // (more than six images: the rest are left out)
-            if (slot < 0 && used < slots.len) {
+            if (slot < 0 && used < room) {
                 slots[used] = t;
                 slot = used++;
             }
         }
         map_slots[i / 4][i % 4] = (float)slot;
+    }
+    if (nodes) {
+        for (int k = 0; k < nodes.texture_count; k++) slots[slots.len - 1 - k] = nodes.textures[k];
     }
     for (int k = 0; k < slots.len; k++) bind.views[shaders::VIEW_TEX_EXT0 + k] = ready(slots[k]).view;
     bool backdrop = m == state.background;
@@ -2806,7 +2935,8 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     }
     bind.views[shaders::VIEW_TEX_ENV] = env.view;
     bind.samplers[shaders::SMP_ENV_SMP] = env.sampler;
-    bind.samplers[shaders::SMP_TEX_SMP] = (mat.map ?: (mat.normal_map ?: (arm ?: (slots[0] ?: state.white)))).sampler;
+    Texture* first = slots[0] ?: (nodes && nodes.texture_count ? nodes.textures[0] : null);
+    bind.samplers[shaders::SMP_TEX_SMP] = (mat.map ?: (mat.normal_map ?: (arm ?: (first ?: state.white)))).sampler;
     if (mat.screen_target) {
         bind.views[shaders::VIEW_TEX_MAP] = mat.screen_target.texture;
         bind.samplers[shaders::SMP_TEX_SMP] = state.white.sampler;
@@ -2829,7 +2959,10 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
 
     VsParams vs = vs_params_of(item, view_proj);
     vs.inst_cull = inst_cull;
+    vs.bake[2] = nodes ? 1 : 0;
     sg::apply_uniforms(shaders::UB_VS_PARAMS, &&{ .ptr = &vs, .size = VsParams::size });
+    if (nodes) apply_node_params(nodes, m, true);
+    fs.node_flags = { nodes ? 1 : 0, 0, 0, 0 };
 
     int flags = (mat.vertex_colors ? 1
         : 0) | (mat.foliage ? 2
@@ -2949,6 +3082,11 @@ fn void draw_shadow_item(DrawItem* item, Mat4 light_vp, Vector3 origin = { 0, 0,
     Mesh* m       = item.mesh;
     Material* mat = m.material;
     Texture* map  = ready(mat.map);
+    // a node material's own program (position_node, and shadow_nodes when it cuts holes), then
+    // the shared one again
+    NodeBuild* nodes = node_build_of(mat);
+    if (nodes) sg::apply_pipeline(get_shadow_pipeline(nodes.program));
+    defer if (nodes) sg::apply_pipeline(get_shadow_pipeline());
     SgBindings bind = {
         .vertex_buffers[0] = m.geometry.vbuf,
         .index_buffer = m.geometry.ibuf,
@@ -2957,6 +3095,14 @@ fn void draw_shadow_item(DrawItem* item, Mat4 light_vp, Vector3 origin = { 0, 0,
     Vec4 inst_cull = cull_bind(&bind, item.job - 1);
     bind.views[shaders::VIEW_S_MAP] = map.view;
     bind.samplers[shaders::SMP_S_SMP] = map.sampler;
+    // (shadow_nodes: tex_map and tex_smp in s_map's and s_smp's slots, and node texture k in
+    // tex_ext(5 - k), as draw_item binds them)
+    if (nodes && nodes.program.cuts) {
+        for (int k = 0; k < NODE_TEXTURES; k++) {
+            Texture* t = k < nodes.texture_count ? nodes.textures[k] : null;
+            bind.views[shaders::VIEW_TEX_EXT5 - k] = ready(t).view;
+        }
+    }
     sg::apply_bindings(&bind);
     ShadowVsParams vs = {
         .s_view_proj = light_vp,
@@ -2968,10 +3114,13 @@ fn void draw_shadow_item(DrawItem* item, Mat4 light_vp, Vector3 origin = { 0, 0,
         .s_material_custom = mat.custom,
         .s_frame_custom = state.renderer.custom,
         .s_displacement = displacement_params(mat),
+        .s_node_flags = { nodes ? 1 : 0, 0, 0, 0 },
     };
     sg::apply_uniforms(shaders::UB_SHADOW_VS_PARAMS, &&{ .ptr = &vs, .size = ShadowVsParams::size });
+    bool cuts = nodes && nodes.program.cuts;
+    if (nodes) apply_node_params(nodes, m, cuts);
     ShadowFsParams fs = {
-        .s_params = { mat.map && !state.renderer.prof_no_alpha_test ? mat.alpha_test : 0, mat.opacity, 0, 0 }
+        .s_params = { (mat.map || cuts) && !state.renderer.prof_no_alpha_test ? mat.alpha_test : 0, mat.opacity, mat.map ? 1 : 0, 0 }
     };
     sg::apply_uniforms(shaders::UB_SHADOW_FS_PARAMS, &&{ .ptr = &fs, .size = ShadowFsParams::size });
     state.renderer.info.shadow_calls++;
@@ -3614,6 +3763,18 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera) {
     Mat4 view_proj        = camera.projection_matrix.mul(camera.matrix_world_inverse);
     Mat4 steady_view_proj = view_proj;
     Vector3 camera_pos    = camera.matrix_world.get_position();
+    // (a render inside this one, a Reflector's, leaves this one's camera for its node materials)
+    Mat4 outer_view = state.node_view;
+    Mat4 outer_proj = state.node_proj;
+    Vector3 outer_camera = state.node_camera;
+    defer {
+        state.node_view = outer_view;
+        state.node_proj = outer_proj;
+        state.node_camera = outer_camera;
+    }
+    state.node_view = camera.matrix_world_inverse;
+    state.node_proj = camera.projection_matrix;
+    state.node_camera = camera_pos;
     Mat4 view_proj_rel    = relative_view_proj(camera, camera_pos);
     state.motion_jitter = { };
     if (camera.jitter != { }) {

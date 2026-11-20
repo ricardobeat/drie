@@ -1,5 +1,49 @@
+// Node materials (nodes.c3): the engine's shaders with the bodies of node_vertex, node_color,
+// node_normal, node_surface and node_output swapped, at runtime, for code printed from the
+// material's node graph in the backend's own language (Metal, HLSL, GLSL), as three prints
+// TSL into WGSL or GLSL. So that each one's signature in sokol-shdc's output stays put whatever the graph
+// does, they read nothing but their parameters (a NodeIn, and in the fragment stage the six
+// tex_ext textures with tex_smp), and write all their outputs. The stubs here do just that;
+// they run only when node_flags.x (the vertex shader's bake.z) is 1, which only a node
+// material's own build sets.
+@block node_common
+#define NODE_PARAMS 32
+// The graph's uniforms into a NodeIn, one by one: from a copy made in a loop, Apple's Metal
+// compiler reads zeros where a value decides a discard_fragment (macOS 27, Apple GPUs)
+#define NODE_COPY_PARAMS(dst, src) \
+    dst[0] = src[0]; dst[1] = src[1]; dst[2] = src[2]; dst[3] = src[3]; \
+    dst[4] = src[4]; dst[5] = src[5]; dst[6] = src[6]; dst[7] = src[7]; \
+    dst[8] = src[8]; dst[9] = src[9]; dst[10] = src[10]; dst[11] = src[11]; \
+    dst[12] = src[12]; dst[13] = src[13]; dst[14] = src[14]; dst[15] = src[15]; \
+    dst[16] = src[16]; dst[17] = src[17]; dst[18] = src[18]; dst[19] = src[19]; \
+    dst[20] = src[20]; dst[21] = src[21]; dst[22] = src[22]; dst[23] = src[23]; \
+    dst[24] = src[24]; dst[25] = src[25]; dst[26] = src[26]; dst[27] = src[27]; \
+    dst[28] = src[28]; dst[29] = src[29]; dst[30] = src[30]; dst[31] = src[31];
+struct NodeIn {
+    vec3 local;          // the position in the model (with an instance's matrix)
+    vec3 local_normal;   //   and its normal (vertex stage)
+    vec3 world;          // the position in the world (fragment: before the cull box...)
+    vec3 normal;         // the normal in the world: in the fragment stage the shaded one
+    vec3 geo_normal;     //   and the surface's own, facing the camera (fragment stage)
+    vec2 uv;
+    vec2 uv1;
+    vec4 color;          // the vertex color, a = its alpha
+    vec4 frag;           // fragment stage: xy = gl_FragCoord.xy, z = 1 on a front face, 0 on a back one
+    vec4 vary0;          // what node_vertex passed on (fragment stage)
+    vec4 vary1;
+    vec4 vary2;
+    vec4 vary3;
+    mat4 model;          // model -> world
+    mat4 view;           // world -> view
+    mat4 proj;           // view -> clip
+    vec4 info;           // xyz = the camera's position, w = time (s)
+    vec4 params[NODE_PARAMS]; // the graph's uniforms
+};
+@end
+
 // Shared by the main and the shadow vertex shaders, so both move vertices identically.
 @block vertex_common
+@include_block node_common
 in vec3 position;
 in vec3 normal;
 in vec2 uv;
@@ -84,6 +128,56 @@ vec4 frame_custom[2];
 vec3 displaced(vec3 p, vec4 d) {
     return d.z > 0.5 ? p + normalize(normal) * (height * d.x + d.y) : p;
 }
+
+// A node material's: see node_common
+layout(binding=2) uniform node_vs_params {
+    mat4 node_view;
+    mat4 node_proj;
+    mat4 node_model;
+    vec4 node_info;
+    vec4 node_params[NODE_PARAMS];
+};
+
+void node_vertex(NodeIn ni, inout vec3 local, inout vec4 vary0, inout vec4 vary1, inout vec4 vary2, inout vec4 vary3) {
+    local += ni.params[0].xyz;
+    vary0 = ni.params[1];
+    vary1 = ni.params[2];
+    vary2 = ni.params[3];
+    vary3 = ni.params[4];
+}
+
+// Runs a node material's node_vertex on `local` (the vertex with its instance's matrix),
+// whose varyings come out in vary.
+void run_node_vertex(inout vec3 local, vec3 local_normal, mat4 model, out vec4 vary[4]) {
+    NodeIn ni;
+    ni.local = local;
+    ni.local_normal = local_normal;
+    ni.world = (model * vec4(local, 1.0)).xyz;
+    ni.normal = normalize((model * vec4(local_normal, 0.0)).xyz);
+    ni.geo_normal = ni.normal;
+    ni.uv = uv;
+    ni.uv1 = uv1;
+    ni.color = color0;
+    ni.frag = vec4(0.0);
+    ni.vary0 = vec4(0.0);
+    ni.vary1 = vec4(0.0);
+    ni.vary2 = vec4(0.0);
+    ni.vary3 = vec4(0.0);
+    ni.model = model;
+    ni.view = node_view;
+    ni.proj = node_proj;
+    ni.info = node_info;
+    NODE_COPY_PARAMS(ni.params, node_params);
+    vec4 v0 = vec4(0.0);
+    vec4 v1 = vec4(0.0);
+    vec4 v2 = vec4(0.0);
+    vec4 v3 = vec4(0.0);
+    node_vertex(ni, local, v0, v1, v2, v3);
+    vary[0] = v0;
+    vary[1] = v1;
+    vary[2] = v2;
+    vary[3] = v3;
+}
 @end
 
 // The main vertex shader, as vs, and as vs_tangent (TANGENT) for geometries with tangents
@@ -112,7 +206,8 @@ layout(binding=0) uniform vs_params {
                         //   moved or sways too; y = the last frame's sway time; zw = the camera's
                         //   jitter (in clip space, per unit of w), left out of the motion
     vec4 bake;          // x = 1: baking a light map (lightmap.c3): drawn where v_uv1 is in it,
-                        //   y = 1: the target's row 0 is its top (texel row r at v = (r + 0.5) / size)
+                        //   y = 1: the target's row 0 is its top (texel row r at v = (r + 0.5) / size);
+                        //   z = 1: a node material's own build (nodes.c3), node_vs_params set
     vec4 surface_vs;    // x = Material.outline: how far the vertices are pushed out along their
                         //   normals, in clip space per unit of w (0: not); yzw = the displacement
                         //   (see displaced). (The block is 512 bytes: sokol rounds a draw's
@@ -143,9 +238,18 @@ out vec4 v_prev_clip;
 out float v_line_distance;
 out vec3 v_instance_color;
 
+out vec4 v_node0;     // a node material's varyings (node_vertex)
+out vec4 v_node1;
+out vec4 v_node2;
+out vec4 v_node3;
+
 void main() {
     v_line_distance = normal.x;
     v_instance_color = instance_color;
+    v_node0 = vec4(0.0);
+    v_node1 = vec4(0.0);
+    v_node2 = vec4(0.0);
+    v_node3 = vec4(0.0);
     if (!fetch_instance(inst_cull)) {
         // outside the clip volume: nothing drawn
         v_world_pos = vec3(0.0);
@@ -163,6 +267,14 @@ void main() {
         return;
     }
     vec3 ip = instance_point(displaced(position, vec4(surface_vs.yzw, 0.0)));
+    if (bake.z > 0.5) {
+        vec4 vary[4];
+        run_node_vertex(ip, instance_dir(normal), model, vary);
+        v_node0 = vary[0];
+        v_node1 = vary[1];
+        v_node2 = vary[2];
+        v_node3 = vary[3];
+    }
     vec4 wp = model * vec4(ip, 1.0);
     wp.xyz = apply_sway(wp.xyz, ip.y, sway);
     material_custom[0] = vs_material_custom[0];
@@ -228,6 +340,7 @@ layout(binding=0) uniform shadow_vs_params {
     vec4 s_material_custom[2];
     vec4 s_frame_custom[2];
     vec4 s_displacement;
+    vec4 s_node_flags;  // as node_flags in vs_params
 };
 
 @include_block vertex_common
@@ -241,6 +354,10 @@ void main() {
         return;
     }
     vec3 ip = instance_point(displaced(position, s_displacement));
+    if (s_node_flags.x > 0.5) {
+        vec4 vary[4];
+        run_node_vertex(ip, instance_dir(normal), s_model, vary);
+    }
     vec4 wp = s_model * vec4(ip, 1.0);
     wp.xyz = apply_sway(wp.xyz, ip.y, s_sway);
     material_custom[0] = s_material_custom[0];
@@ -272,7 +389,142 @@ void main() {
 }
 @end
 
+// The shadow maps' program for a node material whose color_node or opacity_node can cut it
+// (a discard, or an alpha under the material's alpha_test): shadow_vs and shadow_fs, with
+// what node_color reads carried to the fragments. Its node_color is spliced as fs's is.
+@vs shadow_nodes_vs
+layout(binding=0) uniform shadow_vs_params {
+    mat4 s_view_proj;
+    vec4 s_origin;
+    mat4 s_model;
+    vec4 s_uv_transform[2];
+    vec4 s_sway;
+    vec4 s_inst_cull;
+    vec4 s_material_custom[2];
+    vec4 s_frame_custom[2];
+    vec4 s_displacement;
+    vec4 s_node_flags;
+};
+
+@include_block vertex_common
+
+out vec3 v_world_pos;
+out vec3 v_normal;
+out vec2 v_uv;
+out vec2 v_uv1;
+out vec4 v_color;
+out vec4 v_node0;
+out vec4 v_node1;
+out vec4 v_node2;
+out vec4 v_node3;
+
+void main() {
+    v_world_pos = vec3(0.0);
+    v_normal = vec3(0.0, 1.0, 0.0);
+    v_uv = vec2(0.0);
+    v_uv1 = vec2(0.0);
+    v_color = vec4(0.0);
+    v_node0 = vec4(0.0);
+    v_node1 = vec4(0.0);
+    v_node2 = vec4(0.0);
+    v_node3 = vec4(0.0);
+    if (!fetch_instance(s_inst_cull)) {
+        gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+        return;
+    }
+    vec3 ip = instance_point(displaced(position, s_displacement));
+    vec4 vary[4];
+    run_node_vertex(ip, instance_dir(normal), s_model, vary);
+    v_node0 = vary[0];
+    v_node1 = vary[1];
+    v_node2 = vary[2];
+    v_node3 = vary[3];
+    vec4 wp = s_model * vec4(ip, 1.0);
+    wp.xyz = apply_sway(wp.xyz, ip.y, s_sway);
+    material_custom[0] = s_material_custom[0];
+    material_custom[1] = s_material_custom[1];
+    frame_custom[0] = s_frame_custom[0];
+    frame_custom[1] = s_frame_custom[1];
+    vertex_hook(wp.xyz, ip, s_model);
+    v_world_pos = wp.xyz;
+    v_normal = (s_model * vec4(instance_dir(normal), 0.0)).xyz;
+    v_uv = vec2(dot(s_uv_transform[0].xyz, vec3(uv, 1.0)), dot(s_uv_transform[1].xyz, vec3(uv, 1.0)));
+    v_uv1 = uv1;
+    v_color = color0;
+    gl_Position = s_view_proj * vec4(wp.xyz - s_origin.xyz, 1.0);
+}
+@end
+
+@fs shadow_nodes_fs
+@include_block node_common
+layout(binding=0) uniform texture2D tex_map;
+layout(binding=26) uniform texture2D tex_ext0;
+layout(binding=27) uniform texture2D tex_ext1;
+layout(binding=28) uniform texture2D tex_ext2;
+layout(binding=29) uniform texture2D tex_ext3;
+layout(binding=30) uniform texture2D tex_ext4;
+layout(binding=31) uniform texture2D tex_ext5;
+layout(binding=0) uniform sampler tex_smp;
+layout(binding=1) uniform shadow_fs_params {
+    vec4 s_params;  // x = alpha test threshold (0 = off), y = material opacity, z = 1: has a map
+};
+layout(binding=3) uniform node_fs_params {
+    mat4 node_view;
+    mat4 node_proj;
+    mat4 node_model;
+    vec4 node_info;
+    vec4 node_params[NODE_PARAMS];
+};
+
+in vec3 v_world_pos;
+in vec3 v_normal;
+in vec2 v_uv;
+in vec2 v_uv1;
+in vec4 v_color;
+in vec4 v_node0;
+in vec4 v_node1;
+in vec4 v_node2;
+in vec4 v_node3;
+
+// fs_main's stub
+void node_color(NodeIn ni, inout vec4 base) {
+    vec2 uv = ni.uv;
+    base *= texture(sampler2D(tex_ext0, tex_smp), uv) * texture(sampler2D(tex_ext1, tex_smp), uv)
+        * texture(sampler2D(tex_ext2, tex_smp), uv) * texture(sampler2D(tex_ext3, tex_smp), uv)
+        * texture(sampler2D(tex_ext4, tex_smp), uv) * texture(sampler2D(tex_ext5, tex_smp), uv) * ni.params[0];
+}
+
+void main() {
+    vec3 n = normalize(v_normal);
+    if (!gl_FrontFacing) n = -n;
+    NodeIn ni;
+    ni.local = vec3(0.0);
+    ni.local_normal = vec3(0.0);
+    ni.world = v_world_pos;
+    ni.normal = n;
+    ni.geo_normal = n;
+    ni.uv = v_uv;
+    ni.uv1 = v_uv1;
+    ni.color = v_color;
+    ni.frag = vec4(gl_FragCoord.xy, gl_FrontFacing ? 1.0 : 0.0, 0.0);
+    ni.vary0 = v_node0;
+    ni.vary1 = v_node1;
+    ni.vary2 = v_node2;
+    ni.vary3 = v_node3;
+    ni.model = node_model;
+    ni.view = node_view;
+    ni.proj = node_proj;
+    ni.info = node_info;
+    NODE_COPY_PARAMS(ni.params, node_params);
+    vec4 base = vec4(1.0, 1.0, 1.0, s_params.y);
+    if (s_params.z > 0.5) base *= texture(sampler2D(tex_map, tex_smp), v_uv);
+    node_color(ni, base);
+    if (s_params.x > 0.0 && base.a < s_params.x) discard;
+}
+@end
+
 @block fs_main
+@include_block node_common
 layout(binding=0) uniform texture2D tex_map;
 layout(binding=1) uniform texture2D tex_normal;
 layout(binding=2) uniform texture2D tex_arm;
@@ -362,7 +614,7 @@ layout(binding=1) uniform fs_params {
                        //   tiles in fog_volume (0: no volumetric fog, the fog is worked out here)
     vec4 fog_slices;   // x = where its slices start (m of view depth), y = slices per unit of
                        //   log(depth / x)
-    vec4 counts;       // x = directional lights, y = point lights, z = spot lights (all of them, in
+    vec4 counts;       // x = directional lights, y = point lights, z = spot lights, w = rect area lights (all of them, in
                        //   dir_lights, point_lights and spot_lights)
     mat4 cluster_view_proj; // world -> the camera's clip space, for the fragment's cluster
     vec4 cluster_grid;      // xyz = clusters across, up and in depth
@@ -429,6 +681,7 @@ layout(binding=1) uniform fs_params {
                                //   from the color map's (g_uv; each texture has its own
                                //   transform, three's texture.matrix): two rows, as uv_transform;
                                //   the first's w = 1: from the second uv set instead (v_uv1)
+    vec4 node_flags;           // x = 1: a node material's own build (nodes.c3), node_fs_params set
 };
 
 // The maps in map_slots, and the channels each is read from (as three's)
@@ -518,6 +771,79 @@ in vec4 v_clip;
 in vec4 v_prev_clip;
 in float v_line_distance;
 in vec3 v_instance_color;
+in vec4 v_node0;
+in vec4 v_node1;
+in vec4 v_node2;
+in vec4 v_node3;
+
+// A node material's (see node_common): its uniforms, as node_vs_params
+layout(binding=3) uniform node_fs_params {
+    mat4 node_view;
+    mat4 node_proj;
+    mat4 node_model;
+    vec4 node_info;
+    vec4 node_params[NODE_PARAMS];
+};
+
+// The stubs: the color (three's colorNode and opacityNode; before the alpha test), the normal
+// (normalNode; after the normal map), roughness, metalness and the glow (emissive.w = 1: its
+// rgb in place of the material's emissive), and the lit color with its alpha (outputNode;
+// before the fog)
+void node_color(NodeIn ni, inout vec4 base) {
+    vec2 uv = ni.uv;
+    base *= texture(sampler2D(tex_ext0, tex_smp), uv) * texture(sampler2D(tex_ext1, tex_smp), uv)
+        * texture(sampler2D(tex_ext2, tex_smp), uv) * texture(sampler2D(tex_ext3, tex_smp), uv)
+        * texture(sampler2D(tex_ext4, tex_smp), uv) * texture(sampler2D(tex_ext5, tex_smp), uv) * ni.params[0];
+}
+
+void node_normal(NodeIn ni, inout vec3 n) {
+    vec2 uv = ni.uv;
+    n = normalize(n + (texture(sampler2D(tex_ext0, tex_smp), uv) + texture(sampler2D(tex_ext1, tex_smp), uv)
+        + texture(sampler2D(tex_ext2, tex_smp), uv) + texture(sampler2D(tex_ext3, tex_smp), uv)
+        + texture(sampler2D(tex_ext4, tex_smp), uv) + texture(sampler2D(tex_ext5, tex_smp), uv)).xyz * ni.params[0].x);
+}
+
+void node_surface(NodeIn ni, inout float rough, inout float metal, inout vec4 emissive) {
+    vec2 uv = ni.uv;
+    vec4 t = texture(sampler2D(tex_ext0, tex_smp), uv) * texture(sampler2D(tex_ext1, tex_smp), uv)
+        * texture(sampler2D(tex_ext2, tex_smp), uv) * texture(sampler2D(tex_ext3, tex_smp), uv)
+        * texture(sampler2D(tex_ext4, tex_smp), uv) * texture(sampler2D(tex_ext5, tex_smp), uv) * ni.params[0];
+    rough *= t.g;
+    metal *= t.b;
+    emissive = t;
+}
+
+void node_output(NodeIn ni, inout vec4 result) {
+    vec2 uv = ni.uv;
+    result *= texture(sampler2D(tex_ext0, tex_smp), uv) * texture(sampler2D(tex_ext1, tex_smp), uv)
+        * texture(sampler2D(tex_ext2, tex_smp), uv) * texture(sampler2D(tex_ext3, tex_smp), uv)
+        * texture(sampler2D(tex_ext4, tex_smp), uv) * texture(sampler2D(tex_ext5, tex_smp), uv) * ni.params[0];
+}
+
+// What a node material's fragment hooks read: `n` the normal they shade with, `geo_n` the
+// surface's own (both facing the camera)
+NodeIn node_in(vec3 n, vec3 geo_n) {
+    NodeIn ni;
+    ni.local = vec3(0.0);
+    ni.local_normal = vec3(0.0);
+    ni.world = v_world_pos;
+    ni.normal = n;
+    ni.geo_normal = geo_n;
+    ni.uv = v_uv;
+    ni.uv1 = v_uv1;
+    ni.color = vec4(v_color, v_alpha);
+    ni.frag = vec4(gl_FragCoord.xy, gl_FrontFacing ? 1.0 : 0.0, 0.0);
+    ni.vary0 = v_node0;
+    ni.vary1 = v_node1;
+    ni.vary2 = v_node2;
+    ni.vary3 = v_node3;
+    ni.model = node_model;
+    ni.view = node_view;
+    ni.proj = node_proj;
+    ni.info = node_info;
+    NODE_COPY_PARAMS(ni.params, node_params);
+    return ni;
+}
 
 layout(location=0) out vec4 frag_color;
 #ifdef MRT
@@ -543,14 +869,16 @@ const float RECIPROCAL_PI = 0.31830988618;
 
 @include_block tonemapping
 
+// three's window: the light fades out to nothing at `cutoff` (0: never)
+float distance_window(float d, float cutoff) {
+    if (cutoff <= 0.0) return 1.0;
+    float r = d / cutoff;
+    float f = clamp(1.0 - r * r * r * r, 0.0, 1.0);
+    return f * f;
+}
+
 float distance_attenuation(float d, float cutoff, float decay) {
-    float a = 1.0 / max(pow(d, decay), 0.01);
-    if (cutoff > 0.0) {
-        float r = d / cutoff;
-        float f = clamp(1.0 - r * r * r * r, 0.0, 1.0);
-        a *= f * f;
-    }
-    return a;
+    return distance_window(d, cutoff) / max(pow(d, decay), 0.01);
 }
 
 vec3 f_schlick(vec3 f0, float voh) {
@@ -699,7 +1027,14 @@ float g_rough;
 float g_metal;
 vec3 g_f0;        // a standard material's reflectance head on, and at a grazing angle
 float g_f90;      //   (from ior, specular_color and specular_intensity; set after the maps)
-float g_radius;   // source radius of the light being evaluated
+// A light with a size (light_toward), set by the light loops before direct(): g_sized, the
+// direction of its highlight, and how much its shape widens one (x along a tube, y round a
+// ball: light_norm)
+bool g_sized = false;
+vec3 g_spec_l;
+vec2 g_spec_k;
+float g_nol = -1.0; // the light's cosine over the squared distance, when it is not a point's
+                  //   (a tube's, integrated along it): the radiance is then without its falloff
 // three's MeshPhysicalMaterial layers, set after the maps (0: off): a clear coat over the
 // surface (its own normal and roughness), a sheen of fibers on it, a thin film's rainbow
 float g_clearcoat;
@@ -759,8 +1094,46 @@ vec4 pack_depth(float v, int packing, float alpha) {
     return vec4(vuf / 255.0, gf * 256.0 / 255.0, bf * 256.0 / 255.0, af);
 }
 
+// A light with a size, seen in reflections (Karis, "Real Shading in Unreal Engine 4", 2013,
+// the representative point): sets g_spec_l, the direction toward the point of the light nearest
+// the ray `r` reflected off the surface, for the highlight, and g_spec_k for light_norm. `lv`
+// is from the surface to the light's centre, `seg` from its centre to one end (a tube), `radius`
+// its thickness. A tube first takes the point of its segment nearest the ray (his eq. 19), then
+// the ball of `radius` round that point the point of it nearest the ray (eq. 11).
+void light_toward(vec3 r, vec3 lv, vec3 seg, float radius) {
+    g_sized = true;
+    g_spec_k = vec2(0.0);
+    if (dot(seg, seg) > 0.0) {
+        vec3 l0 = lv - seg;
+        vec3 ld = 2.0 * seg;
+        float rld = dot(r, ld);
+        float t = (dot(r, l0) * rld - dot(l0, ld)) / max(dot(ld, ld) - rld * rld, 1e-8);
+        lv = l0 + clamp(t, 0.0, 1.0) * ld;
+        g_spec_k.x = length(seg) / (3.0 * max(length(lv), 1e-4));
+    }
+    if (radius > 0.0) {
+        g_spec_k.y = radius / (3.0 * max(length(lv), 1e-4));
+        // (the light's centre to the ray: Karis' eq. 11 with its sign put right)
+        vec3 to_ray = dot(lv, r) * r - lv;
+        lv += to_ray * clamp(radius / max(length(to_ray), 1e-6), 0.0, 1.0);
+    }
+    g_spec_l = normalize(lv);
+}
+
+// The light the highlight of light_toward's light keeps at roughness alpha `a`: the light stays
+// as bright as the point light at its centre, and this takes away what the highlight gains by
+// moving its source around on the light: a / a' along a tube (eq. 20, a widening in one
+// direction only) times (a / a')^2 for its ball (eq. 14), a' = saturate(a + half the length,
+// or the radius, / (3 distance)) (eq. 10).
+float light_norm(float a) {
+    float k = a / clamp(a + g_spec_k.y, 0.0, 1.0);
+    return a / clamp(a + g_spec_k.x, 0.0, 1.0) * k * k;
+}
+
 // Direct light contribution, following three.js's (r155+) physically based light units.
-// Returns diffuse in rgb; adds specular to `spec`.
+// Returns diffuse in rgb; adds specular to `spec`. `l` is toward the light's centre (the
+// diffuse light's direction); point and spot lights with a size (g_sized) take their
+// highlights from light_toward.
 vec3 direct(int mode, vec3 n, vec3 v, vec3 l, float dist, vec3 radiance, vec3 diffuse_color, inout vec3 spec) {
     bool foliage = (flags() & 2) != 0;
     float ndl = dot(n, l);
@@ -770,7 +1143,7 @@ vec3 direct(int mode, vec3 n, vec3 v, vec3 l, float dist, vec3 radiance, vec3 di
     // edge-on to it stays dark)
     float through = dot(n, v) * ndl < 0.0 ? 0.5 : 1.0;
     float nol = foliage ? through * (0.1 + 0.9 * abs(ndl)) : clamp(ndl, 0.0, 1.0);
-    vec3 irradiance = nol * radiance;
+    vec3 irradiance = (g_nol >= 0.0 ? g_nol : nol) * radiance;
     // the toon material: the gradient's step in place of n.l, and no highlights
     if (mode == 6) return toon_gradient(ndl) * radiance * diffuse_color * RECIPROCAL_PI;
     vec3 h = normalize(l + v);
@@ -781,9 +1154,15 @@ vec3 direct(int mode, vec3 n, vec3 v, vec3 l, float dist, vec3 radiance, vec3 di
             float a = g_clearcoat_rough * g_clearcoat_rough;
             float cnl = clamp(dot(cn, l), 0.0, 1.0);
             float cnv = clamp(dot(cn, v), 1e-4, 1.0);
-            float cnh = clamp(dot(cn, h), 0.0, 1.0);
-            float f = schlick(0.04, 1.0, clamp(dot(v, h), 0.0, 1.0));
-            g_clearcoat_direct += cnl * radiance * f * v_smith(cnv, cnl, a) * d_ggx(cnh, a);
+            // (a light with a size: the point of it the surface under the coat mirrors, as
+            // bright as the coat's roughness keeps it)
+            float cnorm = g_sized ? light_norm(a) : 1.0;
+            vec3 cl = g_sized ? g_spec_l : l;
+            vec3 ch = normalize(cl + v);
+            float cnh = clamp(dot(cn, ch), 0.0, 1.0);
+            float f = schlick(0.04, 1.0, clamp(dot(v, ch), 0.0, 1.0));
+            float ccl = clamp(dot(cn, cl), 0.0, 1.0);
+            g_clearcoat_direct += cnl * radiance * f * v_smith(cnv, ccl, a) * d_ggx(cnh, a) * cnorm;
         }
         if (g_sheen_rough > 0.0) {
             float snv = clamp(dot(n, v), 0.0, 1.0);
@@ -797,34 +1176,93 @@ vec3 direct(int mode, vec3 n, vec3 v, vec3 l, float dist, vec3 radiance, vec3 di
     vec3 result = irradiance * diffuse_color * RECIPROCAL_PI;
     if (mode == 1) return result;
 
-    float noh = clamp(dot(n, h), 0.0, 1.0);
-    float voh = clamp(dot(v, h), 0.0, 1.0);
     if (mode == 2) {
+        float noh = clamp(dot(n, h), 0.0, 1.0);
+        float voh = clamp(dot(v, h), 0.0, 1.0);
         float shininess = mat_params.w;
         float d = RECIPROCAL_PI * (shininess * 0.5 + 1.0) * pow(noh, shininess);
         spec += irradiance * f_schlick(specular.rgb, voh) * 0.25 * d;
     } else {
         float rough = max(g_rough, 0.0525);
         float a = rough * rough;
-        // a light with a size gives a wider, dimmer highlight (Karis' sphere light normalization)
-        float a_wide = clamp(a + g_radius / (2.0 * max(dist, 1e-3)), 0.0, 1.0);
-        float norm = a / a_wide;
+        // a light with a size: the highlight is the light's own shape, seen in the surface
+        // (light_toward), as bright in all as the point light's
+        float norm = 1.0;
+        vec3 sl = l;
+        float snl = nol;
+        if (g_sized) {
+            sl = g_spec_l;
+            norm = light_norm(a);
+            h = normalize(sl + v);
+            snl = clamp(dot(n, sl), 0.0, 1.0);
+        }
+        float noh = clamp(dot(n, h), 0.0, 1.0);
+        float voh = clamp(dot(v, h), 0.0, 1.0);
         float nov = clamp(abs(dot(n, v)), 1e-4, 1.0);
         vec3 fresnel = g_f0 + (vec3(g_f90) - g_f0) * pow(1.0 - voh, 5.0);
         if (g_iridescence > 0.0) fresnel = mix(fresnel, g_iridescence_fresnel, g_iridescence);
-        float vis = v_smith(nov, nol, a_wide);
-        float d = d_ggx(noh, a_wide);
+        float vis = v_smith(nov, snl, a);
+        float d = d_ggx(noh, a);
         if (g_anisotropy > 0.0) {
             // rougher along g_anisotropy_t, by as much as it is anisotropic (three's alphaT)
-            float at = max(mix(a, 1.0, g_anisotropy * g_anisotropy), a_wide);
+            float at = max(mix(a, 1.0, g_anisotropy * g_anisotropy), a);
             vec3 t = g_anisotropy_t;
             vec3 b = g_anisotropy_b;
-            vis = v_smith_aniso(at, a_wide, dot(t, v), dot(b, v), dot(t, l), dot(b, l), nov, nol);
-            d = d_ggx_aniso(at, a_wide, noh, dot(t, h), dot(b, h));
+            vis = v_smith_aniso(at, a, dot(t, v), dot(b, v), dot(t, sl), dot(b, sl), nov, snl);
+            d = d_ggx_aniso(at, a, noh, dot(t, h), dot(b, h));
         }
-        spec += irradiance * fresnel * vis * d * norm * norm;
+        spec += irradiance * fresnel * vis * d * norm;
     }
     return result;
+}
+
+// RectAreaLight, as three's (lights_physical_pars_fragment: LTC_Uv, LTC_Evaluate and
+// RE_Direct_RectArea_Physical), with linearly transformed cosines (Heitz, Dupuy, Hill and
+// Neubelt 2016). The lights are in point_lights after the point lights, three vec4s each:
+// pos = centre + half width's x, color = color * intensity + half width's y, params = half
+// width's z + half height; and after them the two LTC tables (clusters.c3's ltc_entries),
+// a texel an entry (pos = LTC_1's, color = LTC_2's), read here with the bilinear filter
+// three's textures have.
+
+void ltc_tables(int base, vec3 n, vec3 v, float rough, out vec4 t1, out vec4 t2) {
+    // three's LTC_Uv: roughness across, sqrt(1 - n.v) down, at the texels' centres
+    vec2 uv = vec2(rough, sqrt(1.0 - clamp(dot(n, v), 0.0, 1.0))) * (63.0 / 64.0) + 0.5 / 64.0;
+    vec2 p = uv * 64.0 - 0.5;
+    vec2 f = fract(p);
+    ivec2 i0 = clamp(ivec2(floor(p)), ivec2(0), ivec2(63));
+    ivec2 i1 = min(i0 + 1, ivec2(63));
+    int a = base + i0.y * 64 + i0.x;
+    int b = base + i0.y * 64 + i1.x;
+    int c = base + i1.y * 64 + i0.x;
+    int d = base + i1.y * 64 + i1.x;
+    t1 = mix(mix(points[a].pos, points[b].pos, f.x), mix(points[c].pos, points[d].pos, f.x), f.y);
+    t2 = mix(mix(points[a].color, points[b].color, f.x), mix(points[c].color, points[d].color, f.x), f.y);
+}
+
+vec3 ltc_edge(vec3 v1, vec3 v2) {
+    float x = dot(v1, v2);
+    float y = abs(x);
+    float a = 0.8543985 + (0.4965155 + 0.0145206 * y) * y;
+    float b = 3.4175940 + (4.1616724 + y) * y;
+    float k = a / b;
+    float theta_sintheta = x > 0.0 ? k : 0.5 * inversesqrt(max(1.0 - x * x, 1e-7)) - k;
+    return cross(v1, v2) * theta_sintheta;
+}
+
+// How much of the cosine lobe, transformed by m_inv, the rectangle (corners q, from the
+// surface) covers: three's LTC_Evaluate.
+float ltc_evaluate(vec3 n, vec3 v, mat3 m_inv, vec3 q[4]) {
+    vec3 t1 = normalize(v - n * dot(v, n));
+    vec3 t2 = -cross(n, t1);
+    mat3 m = m_inv * transpose(mat3(t1, t2, n));
+    vec3 c0 = normalize(m * q[0]);
+    vec3 c1 = normalize(m * q[1]);
+    vec3 c2 = normalize(m * q[2]);
+    vec3 c3 = normalize(m * q[3]);
+    vec3 f = ltc_edge(c0, c1) + ltc_edge(c1, c2) + ltc_edge(c2, c3) + ltc_edge(c3, c0);
+    // three's LTC_ClippedSphereFormFactor
+    float l = length(f);
+    return max((l * l + f.z) / (l + 1.0), 0.0);
 }
 
 // Length of the part of the segment a-b that lies in the fog (outside the fog-free box).
@@ -1752,6 +2190,25 @@ vec4 env_texel(vec2 uv, float lod) {
     return textureLod(sampler2DArray(tex_probes, env_smp), vec3(uv, g_env_layer), lod);
 }
 
+// The material's own map at its sharpest, as three shows an equirectangular background: drawn
+// into a cube map of twice its texels across, which is read bilinearly. Here, four bilinear
+// reads at the corners of a grid twice as fine, mixed bilinearly; one bilinear read of the map
+// shows its texels as steps where it is magnified.
+vec4 env_texel_smooth(vec2 uv) {
+    vec2 size = vec2(textureSize(sampler2D(tex_env, env_smp), 0)) * 2.0;
+    vec2 p = uv * size - 0.5;
+    vec2 i = floor(p);
+    vec2 f = p - i;
+    vec2 a = (i + 0.5) / size;
+    vec2 b = (i + 1.5) / size;
+    // (around the horizon, the map wraps)
+    vec4 c00 = textureLod(sampler2D(tex_env, env_smp), vec2(fract(a.x), a.y), 0.0);
+    vec4 c10 = textureLod(sampler2D(tex_env, env_smp), vec2(fract(b.x), a.y), 0.0);
+    vec4 c01 = textureLod(sampler2D(tex_env, env_smp), vec2(fract(a.x), b.y), 0.0);
+    vec4 c11 = textureLod(sampler2D(tex_env, env_smp), vec2(fract(b.x), b.y), 0.0);
+    return mix(mix(c00, c10, f.x), mix(c01, c11, f.x), f.y);
+}
+
 // How far the point `q` (relative to where the map was captured) lies behind what the map saw
 // in its direction.
 float env_behind(vec3 q) {
@@ -2062,6 +2519,14 @@ void main() {
     }
     // three's alphaMap: its green channel
     if (has_map(MAP_ALPHA)) g_base.a *= material_map(MAP_ALPHA).g;
+    bool nodes = node_flags.x > 0.5;
+    NodeIn ni;
+    if (nodes) {
+        vec3 fn = normalize(v_normal);
+        if (!gl_FrontFacing && !foliage) fn = -fn;
+        ni = node_in(fn, fn);
+        node_color(ni, g_base);
+    }
     float alpha = g_base.a;
     if ((fl & 1) != 0) alpha *= v_alpha;
 #ifdef NO_DISCARD
@@ -2112,6 +2577,11 @@ void main() {
         n = normalize(abs(det) * n - grad);
     }
     if (mode != 0) normal_hook(geo_n, n);
+    if (nodes && mode != 0) {
+        ni.normal = n;
+        ni.geo_normal = geo_n;
+        node_normal(ni, n);
+    }
 #ifdef MRT
     frag_normal.xy = pack_normal_octahedral(n);
 #endif
@@ -2168,6 +2638,13 @@ void main() {
             if (has_map(MAP_SHEEN_COLOR)) g_sheen_color *= material_map(MAP_SHEEN_COLOR).rgb;
             if (has_map(MAP_SHEEN_ROUGHNESS)) g_sheen_rough *= material_map(MAP_SHEEN_ROUGHNESS).a;
         }
+    }
+    vec4 node_glow = vec4(0.0);
+    if (nodes) {
+        ni.normal = n;
+        node_surface(ni, g_rough, g_metal, node_glow);
+        g_rough = clamp(g_rough, 0.0, 1.0);
+        g_metal = clamp(g_metal, 0.0, 1.0);
     }
     if (mode != 0) {
         // (the hook's opacity counts too, as its contract says: a water's edge fading out by
@@ -2263,7 +2740,7 @@ void main() {
             float width = float(textureSize(sampler2D(tex_env, env_smp), 0).x);
             float lod = g_rough > 0.0 ? env_lod(g_rough, width) : 0.0;
             g_env_layer = -1.0;
-            outc = env_texel(env_uv(d), lod).rgb * env_params.y;
+            outc = (lod > 0.0 ? env_texel(env_uv(d), lod) : env_texel_smooth(env_uv(d))).rgb * env_params.y;
         }
     } else if (mode == 4) {
         // MeshNormalMaterial: the normal in view space as the color (bypasses color
@@ -2313,8 +2790,13 @@ void main() {
         ind_d = outc;
 
         int ndir = int(counts.x);
+        g_sized = false;
+        g_nol = -1.0;
+        // where a light with a size is mirrored from (light_toward), with the material's
+        // surface (not a standard material's: not at all)
+        vec3 mirror_r = reflect(-v, n);
+        bool sized_ok = mode == 3;
         for (int i = 0; i < ndir; i++) {
-            g_radius = 0.0;
             vec3 l = normalize(dirs[i].dir.xyz);
             float lit = int(dir_shadow_params.x) == i + 1 ? dir_shadow(n, l) : 1.0;
             // the other shadowed ones: a tile of shadow_atlas each
@@ -2345,12 +2827,38 @@ void main() {
             vec3 lv = pl.pos.xyz - v_world_pos;
             float d = length(lv);
             // a light source with a size: falloff softens up close instead of blowing out
-            g_radius = pl.params.x;
-            float d_soft = sqrt(d * d + g_radius * g_radius);
-            vec3 radiance = pl.color.rgb * distance_attenuation(d_soft, pl.pos.w, pl.color.w);
+            float radius = pl.params.x;
+            vec3 seg = pl.params.yzw;
+            vec3 l = lv / d;
+            vec3 radiance;
+            g_sized = false;
+            if (sized_ok && radius + abs(seg.x) + abs(seg.y) + abs(seg.z) > 0.0) light_toward(mirror_r, lv, seg, radius);
+            if (dot(seg, seg) > 0.0) {
+                // a tube (PointLight.length): the light of the whole segment, its intensity
+                // spread along it (Karis' eq. 16, the radius softening it as a ball's
+                // falloff: d^2 + radius^2 at length 0), faded out by the distance to its
+                // nearest point
+                vec3 l0 = lv - seg;
+                vec3 l1 = lv + seg;
+                float d0 = length(l0);
+                float d1 = length(l1);
+                vec3 ld = 2.0 * seg;
+                vec3 near = l0 + clamp(-dot(l0, ld) / dot(ld, ld), 0.0, 1.0) * ld;
+                float dn = length(near);
+                g_nol = 2.0 * clamp(0.5 * dot(n, l0) / d0 + 0.5 * dot(n, l1) / d1, 0.0, 1.0)
+                    / max(d0 * d1 + dot(l0, l1) + 2.0 * radius * radius, 1e-4);
+                l = near / max(dn, 1e-6);
+                radiance = pl.color.rgb * distance_window(dn, pl.pos.w);
+            } else {
+                g_nol = -1.0;
+                float d_soft = sqrt(d * d + radius * radius);
+                radiance = pl.color.rgb * distance_attenuation(d_soft, pl.pos.w, pl.color.w);
+            }
             radiance *= fog_transmittance(fog_distance(pl.pos.xyz, v_world_pos));
-            outc += direct(mode, n, v, lv / d, d, radiance, diffuse_color, spec);
+            outc += direct(mode, n, v, l, d, radiance, diffuse_color, spec);
         }
+        g_sized = false;
+        g_nol = -1.0;
         for (int k = 0; k < nspot; k++) {
             int i = baking ? k : int(cluster_lights[first + npoint + k].index);
             vec3 lv = spots[i].pos.xyz - v_world_pos;
@@ -2360,9 +2868,9 @@ void main() {
             vec3 l = lv / d;
             float cone = smoothstep(spots[i].dir.w, spots[i].params.x, dot(-l, spots[i].dir.xyz));
             if (cone <= 0.0) continue;
-            g_radius = spots[i].params.y;
-            float d_soft = sqrt(d * d + g_radius * g_radius);
-            g_radius = spots[i].params.z;
+            float d_soft = sqrt(d * d + spots[i].params.y * spots[i].params.y);
+            g_sized = false;
+            if (sized_ok && spots[i].params.z > 0.0) light_toward(mirror_r, lv, vec3(0.0), spots[i].params.z);
             vec3 radiance = spots[i].color.rgb * cone * distance_attenuation(d_soft, spots[i].pos.w, spots[i].color.w);
             radiance *= fog_transmittance(fog_distance(spots[i].pos.xyz, v_world_pos));
             radiance *= shadow(i, geo_n);
@@ -2370,11 +2878,50 @@ void main() {
         }
         // three's specularMap: the highlights' strength
         if (mode == 2 && has_map(MAP_SPECULAR)) spec *= material_map(MAP_SPECULAR).r;
+        int nrect = int(counts.w);
+        // three's RectAreaLight lights standard and physical materials only
+        if (mode == 3 && nrect > 0) {
+            int ltc_base = int(counts.y) + nrect;
+            float rough = max(g_rough, 0.0525);
+            vec4 t1;
+            vec4 t2;
+            ltc_tables(ltc_base, n, v, rough, t1, t2);
+            mat3 m_inv = mat3(vec3(t1.x, 0.0, t1.y), vec3(0.0, 1.0, 0.0), vec3(t1.z, 0.0, t1.w));
+            vec3 fresnel = g_f0 * t2.x + (vec3(g_f90) - g_f0) * t2.y;
+            mat3 cc_inv = mat3(1.0);
+            float cc_fresnel = 0.0;
+            if (g_clearcoat > 0.0) {
+                vec4 c1;
+                vec4 c2;
+                ltc_tables(ltc_base, g_clearcoat_n, v, max(g_clearcoat_rough, 0.0525), c1, c2);
+                cc_inv = mat3(vec3(c1.x, 0.0, c1.y), vec3(0.0, 1.0, 0.0), vec3(c1.z, 0.0, c1.w));
+                cc_fresnel = 0.04 * c2.x + 0.96 * c2.y;
+            }
+            for (int k = 0; k < nrect; k++) {
+                gpu_point_light ra = points[int(counts.y) + k];
+                vec3 hw = vec3(ra.pos.w, ra.color.w, ra.params.x);
+                vec3 hh = ra.params.yzw;
+                vec3 to = ra.pos.xyz - v_world_pos;
+                // behind the light (it shines from its front only)
+                if (dot(cross(hw, hh), to) < 0.0) continue;
+                vec3 q[4];
+                q[0] = to + hw - hh;
+                q[1] = to - hw - hh;
+                q[2] = to - hw + hh;
+                q[3] = to + hw + hh;
+                vec3 c = ra.color.rgb * fog_transmittance(fog_distance(ra.pos.xyz, v_world_pos));
+                spec += c * fresnel * ltc_evaluate(n, v, m_inv, q);
+                outc += c * diffuse_color * ltc_evaluate(n, v, mat3(1.0), q);
+                if (g_clearcoat > 0.0) g_clearcoat_direct += c * cc_fresnel * ltc_evaluate(g_clearcoat_n, v, cc_inv, q);
+            }
+        }
         spec *= ao;
         // Material.map_emissive: the color map glows too
         vec3 glow = (fl & 64) != 0 ? emissive.rgb * map_rgb : emissive.rgb;
         // three's emissiveMap
         if (has_map(MAP_EMISSIVE)) glow *= material_map(MAP_EMISSIVE).rgb;
+        // a node material's emissiveNode
+        if (node_glow.w > 0.5) glow = node_glow.rgb;
         outc += glow;
         own_light = glow;
         // light baked into the vertex colors, as if from fixed lamps
@@ -2508,6 +3055,15 @@ void main() {
         outc *= k;
         ind_d *= k;
         ind_s *= k;
+    }
+
+    // a node material's outputNode: what the light made of it, and its alpha
+    if (nodes) {
+        ni.normal = n;
+        vec4 lit = vec4(outc, alpha);
+        node_output(ni, lit);
+        outc = lit.rgb;
+        alpha = lit.a;
     }
 
     int fog_mode = int(fog_params.w);
@@ -2693,6 +3249,10 @@ in vec4 v_clip;
 in vec4 v_prev_clip;
 in float v_line_distance;
 in vec3 v_instance_color;
+in vec4 v_node0;
+in vec4 v_node1;
+in vec4 v_node2;
+in vec4 v_node3;
 
 out vec4 frag_color;
 
@@ -2725,7 +3285,8 @@ void main() {
     unread = v_tangent.x * 0.0;
 #endif
     frag_color = vec4(v_clip.w + unread + (v_normal + v_color + v_world_pos + v_clip.xyz + v_prev_clip.xyz).x * 0.0
-        + v_line_distance * 0.0 + v_instance_color.x * 0.0, 0.0, 0.0, alpha);
+        + v_line_distance * 0.0 + v_instance_color.x * 0.0 + (v_node0 + v_node1 + v_node2 + v_node3).x * 0.0,
+        0.0, 0.0, alpha);
 }
 @end
 
@@ -2774,3 +3335,4 @@ void main() {
 @end
 
 @program clear_rect clear_vs clear_fs
+@program shadow_nodes shadow_nodes_vs shadow_nodes_fs

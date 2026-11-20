@@ -1,4 +1,5 @@
 tests/build/
+examples/build/
 driejs/build/
 driejs/out/
 driejs/third_party/
@@ -6,5 +7,6 @@ driejs/vendor/
 driejs/demos/models/
 driejs/demos/textures/
 driejs/demos/fonts/
+driejs/demos/thumbs/
 /build/
 driejs/lib/boomkat.c3l/
