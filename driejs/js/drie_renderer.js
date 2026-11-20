@@ -127,6 +127,22 @@ export class DrieRenderer {
 		// the size of the picture transmission materials refract, times the canvas's (three's)
 		this.transmissionResolutionScale = 1;
 		this.outputColorSpace = "srgb";
+		// what three's examples ask of the GPU (drie's Metal, D3D11 and GL 4.3 backends all have it)
+		this.capabilities = {
+			isWebGL2: true,
+			precision: "highp",
+			logarithmicDepthBuffer: false,
+			reversedDepthBuffer: false,
+			maxTextures: 16,
+			maxVertexTextures: 16,
+			maxTextureSize: 16384,
+			maxCubemapSize: 16384,
+			maxSamples: 4,
+			getMaxAnisotropy: () => 16,
+			getMaxPrecision: () => "highp",
+		};
+		// (no WebGL extensions: KTX2Loader transcodes to plain RGBA)
+		this.extensions = { has: () => false, get: () => null };
 		this.info = {
 			render: { frame: 0, calls: 0, triangles: 0, points: 0, lines: 0 },
 			memory: { geometries: 0, textures: 0 },
