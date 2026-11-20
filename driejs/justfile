@@ -244,7 +244,16 @@ assets: \
     (asset "textures/lava/lavatile.jpg" "8dd33ecfacd108323888479a85cdf10a2159fe82daa247c2f46978952730e76f") \
     (asset "textures/roughness_map.jpg" "261c6f32ab65a6ab1efa76a85702a1f46168081a3eeabd9d0b49de2f4ba4d7a1") \
     (asset "fonts/helvetiker_regular.typeface.json" "d5c5467690f74061179a292af83bd85c4c551e0f106b2af99714f11184c96981") \
-    (asset "models/gltf/Michelle.glb" "7a87e15a99ccbc5e5877be66e1e4ecae0a581adcafa0cce1a5569f49909e968e")
+    (asset "models/gltf/Michelle.glb" "7a87e15a99ccbc5e5877be66e1e4ecae0a581adcafa0cce1a5569f49909e968e") \
+    (asset "models/json/lightmap/lightmap.json" "de4a07ff2d39d5b127c44addae97ce2598ae739cbb1755515ba1094b69e6aaed") \
+    (asset "models/json/lightmap/lightmap-ao-shadow.png" "ce8225d8bd3b01acef4d0fef7350fd16727d41e80d9fe078d0d31abc6cdec53d") \
+    (asset "models/json/lightmap/rocks.jpg" "91a9b679d430fc3114286523c2f149fc9b9dfa65d6b4e67c1b55cc59e779dcd8") \
+    (asset "models/json/lightmap/stone.jpg" "2a60cd6bc4b6033ce4db4683546549ac6e187dc9467db6c9e0fd422068840903") \
+    (asset "textures/ambientcg/Ice002_1K-JPG_Color.jpg" "9aa010f0fa4e01a982e593eb5b06f82671acc9023a67d9451bbc94cacd7ef44c") \
+    (asset "textures/ambientcg/Ice002_1K-JPG_Roughness.jpg" "52a806348c7ddb23f201e4c1fc677e33914f0921ba7253163533daee3c4de121") \
+    (asset "textures/ambientcg/Ice002_1K-JPG_NormalGL.jpg" "f2c190e341fede5bec99c86757529e4df387dba8a1ab8127bcc85b7ed528a018") \
+    (asset "textures/ambientcg/Ice002_1K-JPG_Displacement.jpg" "68be58c53d6e4238dccb0efd3a8c89a947477ff9c51b736e905cb9075e7a3a03") \
+    (asset "textures/ambientcg/Ice003_1K-JPG_Color.jpg" "faee9ddb462d05bc96ebd3a4d412d229381e1d188abf777102e08aa4e696740a")
 
 [private]
 asset path sha256: (fetch examples + "/" + path sha256 "demos/" + path)

@@ -162,6 +162,9 @@ export class DrieRenderer {
 		this.coordinateSystem = 2000;
 		// no WebXR: what three's code reads of it
 		this.xr = { enabled: false, isPresenting: false, addEventListener() {}, removeEventListener() {} };
+		// three's debug settings (WebGLRenderer's and WebGPURenderer's): drie builds no shaders of
+		// three's, so the hooks are never called
+		this.debug = { checkShaderErrors: true, onShaderError: null, onNodeBuilderCreated: null };
 		this.toneMapping = 0;
 		this.toneMappingExposure = 1;
 		// the size of the picture transmission materials refract, times the canvas's (three's)
@@ -519,6 +522,8 @@ export class DrieRenderer {
 				if (o.__drieFrame !== frame) {
 					this._record(o.isSky ? o.__drieSkies.get(sceneId) : o.__drie, false, o.matrixWorld.elements);
 					if (o.__drieOutline !== undefined) this._record(o.__drieOutline, false, o.matrixWorld.elements);
+					for (const e of o.__drieGroups ?? []) this._record(e.id, false, o.matrixWorld.elements);
+					for (const e of o.__drieBatch ?? []) this._record(e.id, false, o.matrixWorld.elements);
 				}
 			}
 		}
@@ -541,11 +546,13 @@ export class DrieRenderer {
 			this._scene.visited++;
 			this._record(id, drawn, o.matrixWorld.elements);
 			if (o.isSky) this._sky(o, id);
+			else if (o.isBatchedMesh) this._batch(o, drawn, frame);
 			else if (o.isMesh || o.isLine) this._refresh(o, frame, drawn);
+			if (o.__drieGroups !== undefined || (o.isMesh && Array.isArray(o.material))) this._groups(o, drawn, frame);
 			if (o.isInstancedMesh) this._instances(o);
 			if (o.isLightProbeGrid && shown && o.__drieVolume !== undefined) this._scene.grids.push(o);
 			if (o.isSkinnedMesh && drawn) this._skin(o, frame);
-			if (o.isMesh && (this._outline || o.__drieOutline !== undefined)) this._outlineOf(o, drawn, sceneId, frame);
+			if (o.isMesh && !o.isBatchedMesh && (this._outline || o.__drieOutline !== undefined)) this._outlineOf(o, drawn, sceneId, frame);
 			if (o.children.length !== 0) this._walk(o, shown, sceneId, frame);
 		}
 	}
@@ -572,6 +579,9 @@ export class DrieRenderer {
 			// with the Sky (at the next render) that the application then moves into another.
 			id = N.sky();
 			(o.__drieSkies ??= new Map()).set(sceneId, id);
+		} else if (o.isBatchedMesh) {
+			// (drawn by a drie mesh for each of its geometries: see _batch)
+			id = N.group();
 		} else if (o.isMesh || o.isLine) {
 			id = this._newMesh(o, this._geometry(o.geometry, this._frame), this._material(o.material, this._frame));
 			o.__drieGeometry = o.geometry.__drie;
@@ -651,6 +661,54 @@ export class DrieRenderer {
 		mesh.__drieColors = colorVersion;
 	}
 
+	// three's BatchedMesh: for each of its geometries a drie instanced mesh of the batch's
+	// geometry, drawing that geometry's indices (Mesh.draw_start, draw_count), with the
+	// batch's visible instances of it: their matrices and colors from the batch's textures,
+	// sent again when those change.
+	_batch(mesh, drawn, frame) {
+		const g = this._geometry(mesh.geometry, frame);
+		const m = this._material(mesh.material, frame);
+		const infos = mesh._geometryInfo;
+		const parts = (mesh.__drieBatch ??= []);
+		const colors = mesh._colorsTexture;
+		const key = `${g} ${m} ${mesh._matricesTexture.version} ${colors ? colors.version : -1} ${mesh._instanceInfo.length} ${infos.length}`;
+		const changed = mesh.__drieBatchKey !== key || mesh._visibilityChanged;
+		mesh.__drieBatchKey = key;
+		mesh._visibilityChanged = false;
+		const flags = (this.shadowMap.enabled && mesh.castShadow ? 2 : 0) | (mesh.receiveShadow ? 1 : 0);
+		for (let i = 0; i < infos.length; i++) {
+			const info = infos[i];
+			let part = parts[i];
+			if (part === undefined || part.g !== g || part.m !== m) {
+				if (part !== undefined) this._record(part.id, false, mesh.matrixWorld.elements);
+				const id = N.instancedMesh(g, m, 0);
+				N.add(this._sceneOf(mesh), id);
+				part = parts[i] = { id, g, m, count: 0, shadow: undefined };
+			}
+			if (changed) {
+				const indexed = mesh.geometry.index !== null;
+				N.meshDrawRange(part.id, indexed ? info.indexStart : info.vertexStart, indexed ? info.indexCount : info.vertexCount);
+				const ids = [];
+				mesh._instanceInfo.forEach((inst, k) => {
+					if (inst.active && inst.visible && inst.geometryIndex === i) ids.push(k);
+				});
+				const matrices = new Float32Array(ids.length * 16);
+				const rgb = new Float32Array(ids.length * 3);
+				const src = mesh._matricesTexture.image.data;
+				ids.forEach((k, j) => {
+					matrices.set(src.subarray(k * 16, k * 16 + 16), j * 16);
+					if (colors) rgb.set(colors.image.data.subarray(k * 4, k * 4 + 3), j * 3);
+				});
+				N.instances(part.id, matrices, ids.length);
+				if (colors) N.instanceColors(part.id, rgb, ids.length);
+				part.count = ids.length;
+			}
+			if (part.shadow !== flags) N.shadow(part.id, (flags & 2) !== 0, (flags & 1) !== 0), (part.shadow = flags);
+			this._record(part.id, drawn && info.active && part.count > 0, mesh.matrixWorld.elements);
+		}
+		for (let i = infos.length; i < parts.length; i++) this._record(parts[i].id, false, mesh.matrixWorld.elements);
+	}
+
 	// Poses a skinned mesh: three's bone matrices (its skeleton is updated once a frame,
 	// however many meshes share it), each between the bind matrix and its inverse.
 	_skin(mesh, frame) {
@@ -672,7 +730,8 @@ export class DrieRenderer {
 
 	// A mesh whose geometry or material changed (or was replaced) gets a new drie mesh.
 	_refresh(mesh, frame, drawn) {
-		const material = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material;
+		const material = Array.isArray(mesh.material)
+			? mesh.material[mesh.geometry.groups[0]?.materialIndex ?? 0] ?? mesh.material[0] : mesh.material;
 		const g = this._geometry(mesh.geometry, frame);
 		const m = this._material(material, frame);
 		if (g === mesh.__drieGeometry && m === mesh.__drieMaterial) {
@@ -687,8 +746,43 @@ export class DrieRenderer {
 		N.add(this._sceneOf(mesh), id);
 		mesh.__drie = id;
 		mesh.__drieShadow = undefined;
+		mesh.__drieRange = undefined;
 		this._record(id, drawn, mesh.matrixWorld.elements);
 		this._shadowFlags(mesh);
+	}
+
+	// A mesh with an array of materials: each of its geometry's groups drawn with its own
+	// (three's), the first by the mesh's drie mesh, the others by drie meshes of their own
+	// that share the geometry, each drawing its group's indices (Mesh.draw_start, draw_count).
+	// Not for instanced and skinned meshes, which draw the first group's material over all.
+	_groups(mesh, drawn, frame) {
+		const groups = mesh.geometry.groups;
+		const extras = (mesh.__drieGroups ??= []);
+		const usable = groups.length > 0 && !mesh.isInstancedMesh && !mesh.isSkinnedMesh && !mesh.isLine;
+		const range = usable ? `${groups[0].start} ${groups[0].count}` : "0 0";
+		if (mesh.__drieRange !== range) {
+			mesh.__drieRange = range;
+			N.meshDrawRange(mesh.__drie, ...(usable ? [groups[0].start, groups[0].count] : [0, 0]));
+		}
+		const count = usable ? groups.length - 1 : 0;
+		const flags = (this.shadowMap.enabled && mesh.castShadow ? 2 : 0) | (mesh.receiveShadow ? 1 : 0);
+		for (let i = 0; i < count; i++) {
+			const group = groups[i + 1];
+			const material = mesh.material[group.materialIndex];
+			const m = material ? this._material(material, frame) : -1;
+			let e = extras[i];
+			if (e === undefined || e.g !== mesh.__drieGeometry || e.m !== m) {
+				if (e !== undefined) this._record(e.id, false, mesh.matrixWorld.elements);
+				const id = N.mesh(mesh.__drieGeometry, m);
+				N.add(this._sceneOf(mesh), id);
+				e = extras[i] = { id, g: mesh.__drieGeometry, m, range: undefined, shadow: undefined };
+			}
+			const r = `${group.start} ${group.count}`;
+			if (e.range !== r) N.meshDrawRange(e.id, group.start, group.count), (e.range = r);
+			if (e.shadow !== flags) N.shadow(e.id, (flags & 2) !== 0, (flags & 1) !== 0), (e.shadow = flags);
+			this._record(e.id, drawn && material !== undefined && material.visible !== false, mesh.matrixWorld.elements);
+		}
+		for (let i = count; i < extras.length; i++) this._record(extras[i].id, false, mesh.matrixWorld.elements);
 	}
 
 	// The outline OutlineEffect draws round a mesh (js/outline_effect.js): a drie mesh of its
@@ -874,7 +968,11 @@ export class DrieRenderer {
 		const flipY = equirect ? !texture.flipY : texture.flipY;
 		if (texture.isDataTexture && (source instanceof Uint16Array || source instanceof Float32Array)) {
 			if (!image.width || !image.height) return -1;
-			texture.__drie = N.floatTexture(source, image.width, image.height, flipY);
+			// (an equirectangular map is left repeating: its u goes on round the seam)
+			texture.__drie = N.floatTexture(source, image.width, image.height, flipY,
+				equirect ? 1000 : texture.wrapS, equirect ? 1000 : texture.wrapT);
+			const { repeat, offset, center } = texture;
+			N.textureUv(texture.__drie, repeat.x, repeat.y, offset.x, offset.y, texture.rotation, center.x, center.y);
 		} else {
 			// Clones of one image (three's texture.clone(), as GLTFLoader makes for
 			// KHR_texture_transform and texCoord) share its upload: drie's Texture.clone
