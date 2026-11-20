@@ -238,6 +238,11 @@ struct Material {
     // material's sampler, its first map's (map, normal_map, arm_map, then the others), and so
     // that one's wrapping.
     Texture* custom_map;
+    // Blurred by how far it is out of focus, by its own distance (not three's): its maps are
+    // read over the blur of the lens's focus at its depth (Renderer.focus_map, from a
+    // BokehPass). For a transparent surface near the lens, a dirty pane, which a depth of field
+    // pass sees through: there, the blur goes by what is behind it.
+    bool defocus;
 }
 
 // A copy of the material to change on its own (like three's Material.clone). Textures are

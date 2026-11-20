@@ -940,6 +940,10 @@ fn RenderTarget* bokeh_target(RenderTarget* t, int w, int h, SgPixelFormat forma
 
 // Draws `color` with its depth of field into `target` (as large as it), `depth` holding each
 // pixel's distance from the camera's plane (m) in g.
+// The distance in focus, as a 1x1 map (r, m) for Renderer.focus_map (Material.defocus): the
+// last render's, the autofocus's or the one set.
+fn Texture* BokehPass.focus_map(&self) => self.focus_dist.read().as_map();
+
 fn void BokehPass.render(&self, RenderTarget* target, SgView color, SgView depth) {
     int w = target.width;
     int h = target.height;
