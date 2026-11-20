@@ -2560,7 +2560,8 @@ fn FsParams build_light_params(Scene* scene, Camera* camera, SpotLight* caster) 
 }
 
 fn Texture* ready(Texture* t) @local {
-    if (!t) t = state.white;
+    // (one with nothing in it yet, as a capture before it is drawn: white, as none)
+    if (!t || (!t.uploaded && !t.source && t.width <= 0)) t = state.white;
     t.upload();
     return t;
 }
