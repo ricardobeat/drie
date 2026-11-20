@@ -56,6 +56,11 @@ shaders:
     # rewrite them to `const int VIEW_X = 0;` (BSD sed -i '' syntax, macOS)
     sed -i '' -E 's/^const int (VIEW_[A-Z0-9_]+) \(([0-9]+)\)$/const int \1 = \2;/' generated/*.c3
 
+# regenerate generated/ltc.c3, RectAreaLight's LTC tables, from three.js's
+# RectAreaLightTexturesLib.js (driejs fetches three.js into driejs/vendor: `just driejs::build`)
+ltc:
+    python3 third_party/ltc/ltc.py driejs/vendor/jsm/lights/RectAreaLightTexturesLib.js generated/ltc.c3
+
 # docs.html: the API of drie's modules, with their comments (docgen.py)
 docs:
     c3c docgen *.c3 generated/*.c3 platform/*.c3 --emit-stdlib=no {{libs}} --json | python3 docgen.py -o docs.html

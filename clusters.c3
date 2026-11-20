@@ -319,6 +319,9 @@ struct LightData @private {
     List{GpuDirLight} dirs;
     List{GpuPointLight} points;
     List{GpuSpotLight} spots;
+    // the RectAreaLights, which go into the point lights' buffer after them, and after them
+    // the LTC tables (only when there are some)
+    List{GpuPointLight} rects;
     List{GpuSpotShadow} shadows;
     List{LightBounds} point_bounds;
     List{LightBounds} spot_bounds;
@@ -341,6 +344,7 @@ fn void LightData.init_lists(&self) {
     self.dirs.allocator = mem;
     self.points.allocator = mem;
     self.spots.allocator = mem;
+    self.rects.allocator = mem;
     self.shadows.allocator = mem;
     self.point_bounds.allocator = mem;
     self.spot_bounds.allocator = mem;
@@ -353,6 +357,7 @@ fn void LightData.clear(&self) {
     self.dirs.clear();
     self.points.clear();
     self.spots.clear();
+    self.rects.clear();
     self.shadows.clear();
     self.point_bounds.clear();
     self.spot_bounds.clear();
@@ -382,6 +387,11 @@ fn void LightData.upload(&self, ClusterGrid* grid, ClusterAssignFn assign, bool 
     if (s.check_pending) s.compare_with_gpu();
     ClusterOutput out = { &self.clusters, &self.indices, &s.gpu_clusters, &s.gpu_indices, &s.gpu_ranges };
     s.on_gpu = assign(grid, self.point_bounds.array_view(), self.spot_bounds.array_view(), &out);
+    if (self.rects.len()) {
+        // (the clusters index the point lights by position: these come after all of them)
+        self.points.add_all(&self.rects);
+        foreach (e : ltc_entries()) self.points.push(e);
+    }
     s.dirs.write(self.dirs.entries, self.dirs.len() * GpuDirLight::size);
     s.points.write(self.points.entries, self.points.len() * GpuPointLight::size);
     s.spots.write(self.spots.entries, self.spots.len() * GpuSpotLight::size);
@@ -468,4 +478,24 @@ fn bool LightData.room(&self, sz count, int cap) {
     );
     self.warned = true;
     return false;
+}
+
+GpuPointLight[] ltc_packed @local;
+
+// The LTC tables (generated/ltc.c3) as the shader reads them from the point lights' buffer:
+// texel i of LTC_1 is vec4 2i, LTC_2's 2i + 1, three vec4s an entry (ltc_vec4 in
+// shader_core.glsl). There is no view slot left for textures of their own.
+fn GpuPointLight[] ltc_entries() @private {
+    if (ltc_packed.len) return ltc_packed;
+    usz texels = LTC_1.len / 4;
+    usz quads  = texels * 2;
+    ltc_packed = mem::new_array(GpuPointLight, (sz)((quads + 2) / 3));
+    float* out = (float*)ltc_packed.ptr;
+    for (usz i = 0; i < texels; i++) {
+        for (usz c = 0; c < 4; c++) {
+            out[i * 8 + c] = LTC_1[i * 4 + c];
+            out[i * 8 + 4 + c] = LTC_2[i * 4 + c];
+        }
+    }
+    return ltc_packed;
 }
