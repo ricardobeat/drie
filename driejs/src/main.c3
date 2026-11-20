@@ -26,7 +26,7 @@ import boomkat;
 import boomkat::builtins, boomkat::hobject;
 import drie, drie::ui;
 import sokol;
-import std::io, std::time, std::math, std::collections::list;
+import std::io, std::time, std::math, std::collections::list, std::compression::deflate;
 import drie::readback, drie::imageio, libc, draco;
 
 const double GEOMETRY_BASE = 1_000_000;
@@ -53,6 +53,9 @@ String base_dir;
 // the working directory, where js/ and vendor/ are
 String root;
 String png_path;
+// --png-width: the picture shrunk to this many pixels across (deflated, with the pipeline cache:
+// `just thumbs`)
+int png_width;
 int frames;
 bool jit = true;
 bool profile;
@@ -1519,6 +1522,49 @@ fn void h_files(JsCtx ctx, void* udata)
 String pending_script;
 String back_path;
 
+// The renderer the pipeline cache's natives work on: the window's.
+fn Renderer* cache_renderer() => first_renderer ? first_renderer : loop_renderer;
+
+// loadPipelineCache(path): starts compiling, in the background, the pipelines a pipeline cache
+// lists (drie's Renderer.load_pipeline_cache): a text file (savePipelineCache), or a PNG with
+// one deflated in a drPc chunk (a thumbnail from `just thumbs`). Returns how many it lists that aren't
+// made yet; 0 for a file without one.
+fn void h_load_pipeline_cache(JsCtx ctx, void* udata)
+{
+    String? path = ctx.arg(0).as_string();
+    if (catch path) { ctx.throw_error(TYPE, "loadPipelineCache: expected a path"); return; }
+    Renderer* r = cache_renderer();
+    if (!r) { ctx.ret_number(0); return; }
+    @pool()
+    {
+        char[]? bytes = file::load_temp(path);
+        if (catch bytes) { ctx.ret_number(0); return; }
+        char[] text = bytes;
+        char[] chunk;
+        if (drie::png::find_chunk(bytes, "drPc", &chunk)) text = deflate::decompress(tmem, chunk) ?? { };
+        ctx.ret_number(r.load_pipeline_cache((String)text));
+    };
+}
+
+// savePipelineCache(path): the pipelines made so far, as a pipeline cache (a text file).
+fn void h_save_pipeline_cache(JsCtx ctx, void* udata)
+{
+    String? path = ctx.arg(0).as_string();
+    if (catch path) { ctx.throw_error(TYPE, "savePipelineCache: expected a path"); return; }
+    Renderer* r = cache_renderer();
+    ctx.ret_bool(r && r.save_pipeline_cache(path));
+}
+
+// pipelineCacheProgress(): how far the loaded pipeline caches have compiled, 0 to 1 (1: all,
+// or none loaded)
+fn void h_pipeline_cache_progress(JsCtx ctx, void* udata)
+{
+    Renderer* r = cache_renderer();
+    if (!r) { ctx.ret_number(1); return; }
+    int[2] n = r.compiling();
+    ctx.ret_number(n[1] ? (double)(n[1] - n[0]) / n[1] : 1);
+}
+
 // run(script): the script in this one's place, in the same window, from the next frame on;
 // Escape there comes back to this one
 fn void h_run(JsCtx ctx, void* udata)
@@ -1703,6 +1749,8 @@ fn void run_offscreen(Renderer* r)
     // antialias: true gives the picture the window's 4 samples, resolved into target.texture_image
     RenderTarget* target = drie::render_target(r.width, r.height, samples: r.sample_count);
     r.set_render_target(target);
+    // (what it draws with is listed as the window's, for the pipeline cache in --png-width's PNG)
+    r.screen_stand_in = target;
     int warmup = frames > 20 ? 10 : 0;
     for (int i = 0; i < warmup; i++)
     {
@@ -1739,7 +1787,52 @@ fn void run_offscreen(Renderer* r)
         io::printn("readback failed");
         return;
     }
+    if (png_width > 0 && png_width < r.width)
+    {
+        // a thumbnail: shrunk, deflated, the pipelines it drew with in a drPc chunk (for
+        // loadPipelineCache)
+        int h = (int)((long)r.height * png_width / r.width);
+        char[] small = shrink(pixels, r.width, r.height, png_width, h);
+        defer free(small);
+        @pool()
+        {
+            // (deflated: a node program's text can run to hundreds of KB)
+            char[] cache = deflate::compress(tmem, r.pipeline_cache(tmem)) ?? { };
+            bool saved = drie::png::write(png_path, small, png_width, h, extra: { { "drPc", cache } }, compress: true);
+            io::printfn(saved ? "saved %s" : "could not save %s", png_path);
+        };
+        return;
+    }
     io::printfn(write_png(png_path, pixels, r.width, r.height) ? "saved %s" : "could not save %s", png_path);
+}
+
+// RGBA pixels, w × h, shrunk to sw × sh: each the mean of the pixels it covers.
+fn char[] shrink(char[] px, int w, int h, int sw, int sh)
+{
+    char[] out = mem::new_array(char, (usz)sw * (usz)sh * 4);
+    for (int y = 0; y < sh; y++)
+    {
+        int y0 = (int)((long)y * h / sh);
+        int y1 = max(y0 + 1, (int)((long)(y + 1) * h / sh));
+        for (int x = 0; x < sw; x++)
+        {
+            int x0 = (int)((long)x * w / sw);
+            int x1 = max(x0 + 1, (int)((long)(x + 1) * w / sw));
+            uint[4] sum;
+            for (int sy = y0; sy < y1; sy++)
+            {
+                for (int sx = x0; sx < x1; sx++)
+                {
+                    usz o = ((usz)sy * (usz)w + (usz)sx) * 4;
+                    for (usz c = 0; c < 4; c++) sum[c] += px[o + c];
+                }
+            }
+            uint n = (uint)((y1 - y0) * (x1 - x0));
+            usz o = ((usz)y * (usz)sw + (usz)x) * 4;
+            for (usz c = 0; c < 4; c++) out[o + c] = (char)((sum[c] + n / 2) / n);
+        }
+    }
+    return out;
 }
 
 // ----------------------------------------------------------------------------
@@ -1945,7 +2038,7 @@ fn void reg(JsValue obj, String name, JsHostFn handler, int arity)
 
 fn int usage()
 {
-    io::printn("usage: driejs [--no-jit] [--frames N] [--profile] [--png out.png] script.js");
+    io::printn("usage: driejs [--no-jit] [--frames N] [--profile] [--png out.png [--png-width N]] script.js");
     return 2;
 }
 
@@ -1967,6 +2060,11 @@ fn int main(String[] args)
             case "--png":
                 if (++i >= args.len) return usage();
                 png_path = args[i];
+            case "--png-width":
+                if (++i >= args.len) return usage();
+                int? n = args[i].to_int();
+                if (catch n) return usage();
+                png_width = n;
             default:
                 script_path = args[i];
         }
@@ -2135,6 +2233,9 @@ fn int main(String[] args)
     reg(natives, "labelScale", &h_label_scale, 0);
     reg(natives, "files", &h_files, 1);
     reg(natives, "run", &h_run, 1);
+    reg(natives, "loadPipelineCache", &h_load_pipeline_cache, 1);
+    reg(natives, "savePipelineCache", &h_save_pipeline_cache, 1);
+    reg(natives, "pipelineCacheProgress", &h_pipeline_cache_progress, 0);
 
     JsValue flag = js.boolean(profile)!!;
     js.set(natives, "profile", flag)!!;

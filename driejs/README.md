@@ -23,6 +23,14 @@ wheel and the arrow keys scroll. Thumbnails are not in git: `just thumbs` render
 frames in; `just thumbs 120 webgl_geometries` for another moment of one demo), and a demo
 without one shows as a grey tile.
 
+Each thumbnail also holds the pipelines its demo drew with: drie's pipeline cache, deflated in
+a `drPc` chunk of the PNG (`--png-width N` writes it, with the picture shrunk to N pixels
+across). The page loads every thumbnail's list when it starts and has the pipelines compiled
+in the background, with a small bar in its top right corner until they are, so a demo, a TSL
+one above all, opens without its shaders' second or two. The host has the cache for scripts
+of their own too: `__drie.savePipelineCache(path)`, `loadPipelineCache(path)` (a text file, or
+a PNG with a `drPc` chunk) and `pipelineCacheProgress()` (0 to 1).
+
 With `--png` (and not `--profile`), `performance.now()` runs on the frames' clock, 1/60 s a frame
 from 0, as three's screenshots are taken: a script that moves things by the time passed (a
 `THREE.Timer`) gives the same picture on any machine.

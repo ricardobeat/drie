@@ -18,3 +18,5 @@
 #include "sokol_framebuffer.h"
 #include "sokol_letterbox.h"
 #include "sokol_cmdbuf.h"
+// drie: background shader compiles that fill the driver cache (sokol_warm.h)
+#include "sokol_warm.h"

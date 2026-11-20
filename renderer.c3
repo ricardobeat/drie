@@ -350,6 +350,15 @@ struct Renderer {
     // Extension: culls the instances of instanced meshes one by one on the GPU, for the
     // camera and the shadow maps drawn every frame (see culling.c3). On by default.
     bool gpu_culling;
+    // Extension: node materials' shaders (nodes.c3) compiled on a worker thread, the mesh left
+    // out of the picture till then, so that a new one doesn't stall a frame for a second or
+    // two (Metal; elsewhere they are compiled at their first draw). On in a window by default,
+    // off without one (init_headless), where a frame shows them as soon as it is rendered.
+    bool compile_in_background;
+    // Extension: a render target that stands for the window in what the pipeline cache records
+    // (save_pipeline_cache): for a program that renders headless on behalf of one with a window,
+    // as driejs makes its demos' thumbnails. Null: none.
+    RenderTarget* screen_stand_in;
     // Extension: what has holes in it (alpha_test cut-outs, LOD cross-fades) is drawn twice:
     // first only its depth, with a cheap shader that cuts the holes, then lit where that depth
     // is, by a shader that cuts nothing. The lit shader then runs once per pixel instead of
@@ -572,7 +581,7 @@ struct Frustum @private {
     Vec4[5] planes;
 }
 
-struct RendererState @local {
+struct RendererState @private {
     Renderer* renderer;
     // the render's camera, for node materials (nodes.c3)
     Mat4 node_view;
@@ -738,7 +747,7 @@ struct RendererState @local {
     SgPipeline[2] seam_pipelines;
 }
 
-RendererState state @local;
+RendererState state @private;
 
 fn Renderer* renderer(bool antialias = true, int width = 800, int height = 600, String title = "drie") {
     Renderer* r = mem::new(Renderer);
@@ -754,6 +763,7 @@ fn Renderer* renderer(bool antialias = true, int width = 800, int height = 600, 
         .lod_scale = 1,
         .auto_time = true,
         .gpu_culling = true,
+        .compile_in_background = true,
         .depth_prepass = true,
         .shadow_map_auto_update = true,
         .depth_prepass_pixels = 1.5f,
@@ -933,6 +943,7 @@ fn void on_init() @local {
 // set_animation_loop: call render() with a render target set, then drie::commit().
 fn void Renderer.init_headless(&self) {
     state.renderer = self;
+    self.compile_in_background = false;
     setup_gfx(readback::headless_environment());
 }
 
@@ -1031,7 +1042,7 @@ fn SgVertexLayoutState vertex_layout(int[9] attrs) @local {
 }
 
 // How a draw of the main pass is made (see Renderer.depth_prepass).
-enum DrawKind : char @local {
+enum DrawKind : char @private {
     // the shader that can cut holes (transparent things, or without a depth prepass)
     CUT,
     // the shader that cuts none, for what has no holes
@@ -1054,7 +1065,7 @@ fn SgPipeline get_pipeline(
     bool depth_write = true,
     bool tangents = false,
     NodeProgram* nodes = null
-) @local {
+) @private {
     int target = rt ? (rt.samples > 1 ? 2 : 1) + (rt.mrt ? 4 : (rt.is_linear() ? 2 : 0)) : 0;
     if (rt && rt.samples != 1 && rt.samples != 4) abort("drie: render targets support 1 or 4 samples");
     if (rt && rt.pixel_format() != RGBA8 && !rt.is_linear()) abort("drie: a scene renders into RGBA8 or RGBA16F");
@@ -1086,6 +1097,24 @@ fn SgPipeline get_pipeline(
         pip = &state.pipelines[tangents ? 1 : 0][depth][vsm ? 1 : 0][kind.ordinal][side.ordinal][blend][wireframe ? 1 : 0][target][a2c ? 1 : 0];
         if (pip.id) return *pip;
     }
+    // (for the pipeline cache: a new pipeline, the target Renderer.screen_stand_in as the window)
+    bool window = !rt || (state.renderer && rt == state.renderer.screen_stand_in);
+    record_pipeline({
+        .program = nodes,
+        .side = side,
+        .transparent = transparent,
+        .wireframe = wireframe,
+        .alpha_test = alpha_test,
+        .blending = blending,
+        .kind = kind,
+        .depth_test = depth_test,
+        .depth_write = depth_write,
+        .tangents = tangents,
+        .vsm = vsm,
+        .target_samples = window ? 0 : rt.samples,
+        .target_format = window ? SgPixelFormat.DEFAULT : rt.pixel_format(),
+        .target_mrt = !window && rt.mrt,
+    });
     SgCullMode cull;
     switch (side) {
         case FRONT_SIDE: cull = BACK;
@@ -1117,7 +1146,6 @@ fn SgPipeline get_pipeline(
             : vsm ? (mrt ? state.mrt_vsm_tangent_shader : state.vsm_tangent_shader)
             : (mrt ? state.mrt_tangent_shader : state.tangent_shader);
     }
-    if (nodes) shader = node_shader(nodes, variant);
     SgPipelineDesc desc = {
         .shader = shader,
         .index_type = UINT32,
@@ -1169,6 +1197,15 @@ fn SgPipeline get_pipeline(
             .dst_factor_alpha = additive ? SgBlendFactor.ONE : SgBlendFactor.ONE_MINUS_SRC_ALPHA,
         };
     }
+    if (nodes) {
+        // (compiled in the background first: none till then, see NodeProgram.busy)
+        if (!nodes.pipeline_ready(key, variant, node_base_desc(nodes, variant), &desc, background())) return { };
+        desc.shader = node_shader(nodes, variant);
+    } else if (pipeline_warmup) {
+        // (a pipeline cache being loaded: compiled in the background, made when first drawn)
+        pipeline_warmup.start(material_shader_desc(variant, tangents, false), &desc);
+        return { };
+    }
     *pip = sg::make_pipeline(&desc);
     if (!pip.id) abort("drie: sokol's pipeline pool is full (pipeline_pool_size in setup_gfx)");
     if (nodes) nodes.pipelines[key] = *pip;
@@ -1180,9 +1217,39 @@ fn SgPipeline get_pipeline(
 fn SgShader node_shader(NodeProgram* p, NodeVariant v) @local {
     SgShader* s = &p.shaders[v.ordinal];
     if (s.id) return *s;
+    *s = p.make_shader(v, node_base_desc(p, v));
+    return *s;
+}
+
+// (a pipeline cache being loaded compiles in the background whatever the renderer's setting)
+fn bool background() @local => (state.renderer && state.renderer.compile_in_background) || pipeline_warmup != null;
+
+// The engine's (or the application's) description of the program that variant `v` of a node
+// program is made from.
+fn SgShaderDesc node_base_desc(NodeProgram* p, NodeVariant v) @local => material_shader_desc(v, false, p.cuts);
+
+// The description of a program of the material shader: the engine's, or the application's
+// (Renderer.shaders); `tangents`: the one for geometries with tangents (no OPAQUE ones: the
+// MAIN ones stand for them, as get_pipeline has it); `cuts`: for SHADOW, the node materials'
+// that cut holes.
+fn SgShaderDesc material_shader_desc(NodeVariant v, bool tangents, bool cuts) @private {
     MaterialShaders a = state.renderer ? state.renderer.shaders : { };
     SgBackend backend = sg::query_backend();
     SgShaderDesc desc;
+    if (tangents) {
+        // (as setup_gfx: the application's all, or the engine's)
+        bool own = a.main != null;
+        switch (v) {
+            case MAIN:
+            case OPAQUE: return own ? a.main_tangent(backend) : shaders::three_tangent_shader_desc(backend);
+            case MRT:
+            case OPAQUE_MRT: return own ? a.main_mrt_tangent(backend) : shaders::three_mrt_tangent_shader_desc(backend);
+            case VSM: return own ? a.main_vsm_tangent(backend) : shaders::three_vsm_tangent_shader_desc(backend);
+            case MRT_VSM: return own ? a.main_mrt_vsm_tangent(backend) : shaders::three_mrt_vsm_tangent_shader_desc(backend);
+            case DEPTH: return own ? a.depth_tangent(backend) : shaders::depth_tangent_shader_desc(backend);
+            case SHADOW: break;
+        }
+    }
     switch (v) {
         case MAIN: desc = a.main ? a.main(backend) : shaders::three_shader_desc(backend);
         case OPAQUE: desc = a.opaque ? a.opaque(backend) : shaders::three_opaque_shader_desc(backend);
@@ -1192,14 +1259,13 @@ fn SgShader node_shader(NodeProgram* p, NodeVariant v) @local {
         case MRT_VSM: desc = a.main_mrt_vsm ? a.main_mrt_vsm(backend) : shaders::three_mrt_vsm_shader_desc(backend);
         case DEPTH: desc = a.depth ? a.depth(backend) : shaders::depth_shader_desc(backend);
         case SHADOW:
-            if (p.cuts) {
+            if (cuts) {
                 desc = a.shadow_nodes ? a.shadow_nodes(backend) : shaders::shadow_nodes_shader_desc(backend);
             } else {
                 desc = a.shadow ? a.shadow(backend) : shaders::shadow_shader_desc(backend);
             }
     }
-    *s = p.make_shader(v, desc);
-    return *s;
+    return desc;
 }
 
 // A node material's uniforms (node_vs_params, and node_fs_params for `fragment`): the
@@ -1221,38 +1287,46 @@ fn void apply_node_params(NodeBuild* b, Mesh* m, bool fragment) @local {
     if (fragment) sg::apply_uniforms(shaders::UB_NODE_FS_PARAMS, &&{ .ptr = &p, .size = shaders::NodeFsParams::size });
 }
 
-fn SgPipeline get_shadow_pipeline(NodeProgram* nodes = null) @local {
+// (a node program's: none while it is compiled in the background, see NodeProgram.busy)
+fn SgPipeline get_shadow_pipeline(NodeProgram* nodes = null) @private {
     SgPipeline* pip = nodes ? &nodes.shadow_pipeline : &state.shadow_pipeline;
     if (pip.id) return *pip;
-    *pip = sg::make_pipeline(
-        &&{
-            .shader = nodes ? node_shader(nodes, SHADOW) : state.shadow_shader,
-            .index_type = UINT32,
-            .cull_mode = NONE,
-            .layout = vertex_layout(
-                {
-                    shaders::ATTR_SHADOW_POSITION,
-                    shaders::ATTR_SHADOW_NORMAL,
-                    shaders::ATTR_SHADOW_UV,
-                    shaders::ATTR_SHADOW_COLOR0,
-                    shaders::ATTR_SHADOW_UV1,
-                    -1,
-                    shaders::ATTR_SHADOW_INST0,
-                    shaders::ATTR_SHADOW_INST1,
-                    shaders::ATTR_SHADOW_INST2
-                }
-            ),
-            .depth = {
-                .pixel_format = DEPTH,
-                .write_enabled = true,
-                .compare = LESS_EQUAL,
-            },
-            .color_count = 0,
-            .colors[0].pixel_format = NONE,
-            .sample_count = 1,
-            .label = "drie-shadow-pipeline",
-        }
-    );
+    SgPipelineDesc desc = {
+        .shader = nodes ? (SgShader){ } : state.shadow_shader,
+        .index_type = UINT32,
+        .cull_mode = NONE,
+        .layout = vertex_layout(
+            {
+                shaders::ATTR_SHADOW_POSITION,
+                shaders::ATTR_SHADOW_NORMAL,
+                shaders::ATTR_SHADOW_UV,
+                shaders::ATTR_SHADOW_COLOR0,
+                shaders::ATTR_SHADOW_UV1,
+                -1,
+                shaders::ATTR_SHADOW_INST0,
+                shaders::ATTR_SHADOW_INST1,
+                shaders::ATTR_SHADOW_INST2
+            }
+        ),
+        .depth = {
+            .pixel_format = DEPTH,
+            .write_enabled = true,
+            .compare = LESS_EQUAL,
+        },
+        .color_count = 0,
+        .colors[0].pixel_format = NONE,
+        .sample_count = 1,
+        .label = "drie-shadow-pipeline",
+    };
+    record_pipeline({ .program = nodes, .shadow = true });
+    if (nodes) {
+        if (!nodes.pipeline_ready(NODE_SHADOW_KEY, SHADOW, node_base_desc(nodes, SHADOW), &desc, background())) return { };
+        desc.shader = node_shader(nodes, SHADOW);
+    } else if (pipeline_warmup) {
+        pipeline_warmup.start(material_shader_desc(SHADOW, false, false), &desc);
+        return { };
+    }
+    *pip = sg::make_pipeline(&desc);
     return *pip;
 }
 
@@ -2445,12 +2519,13 @@ fn void draw_depth_item(DrawItem* item, Mat4 view_proj) @local {
     NodeBuild* nodes  = node_build_of(mat);
     // (a node material's programs read no tangents: its normal map's frame from the uv)
     bool tangents     = !nodes && uses_tangents(item);
-    sg::apply_pipeline(
-        get_pipeline(
-            mat.side, false, false, r.render_target, alpha_test > 0, mat.blending, DEPTH, tangents: tangents,
-            nodes: nodes ? nodes.program : null
-        )
+    SgPipeline pip = get_pipeline(
+        mat.side, false, false, r.render_target, alpha_test > 0, mat.blending, DEPTH, tangents: tangents,
+        nodes: nodes ? nodes.program : null
     );
+    // (a node material's program still compiling: not drawn yet)
+    if (nodes && (!pip.id || nodes.program.busy())) return;
+    sg::apply_pipeline(pip);
     SgBindings bind = { .vertex_buffers[0] = g.vbuf, .index_buffer = g.ibuf };
     bind_instances(&bind, item, tangents);
     Vec4 inst_cull = cull_bind(&bind, item.job - 1);
@@ -2490,7 +2565,7 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     // (a light map's bake draws with the engine's own program)
     NodeBuild* nodes = state.bake.on ? null : node_build_of(mat);
     bool tangents = !state.bake.on && !nodes && uses_tangents(item);
-    sg::apply_pipeline(
+    SgPipeline pip = (
         state.bake.on ? state.bake.pipeline
             : get_pipeline(
                 mat.side,
@@ -2506,6 +2581,9 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
                 nodes ? nodes.program : null
             )
     );
+    // (a node material's program still compiling: not drawn yet)
+    if (nodes && (!pip.id || nodes.program.busy())) return;
+    sg::apply_pipeline(pip);
     // the prepass has cut it out already (the shader takes a negative threshold as "covered")
     if (kind == PRETESTED && alpha_test > 0) alpha_test = -1;
     SgBindings bind = {
@@ -2779,7 +2857,12 @@ fn void draw_shadow_item(DrawItem* item, Mat4 light_vp, Vector3 origin = { 0, 0,
     // a node material's own program (position_node, and shadow_nodes when it cuts holes), then
     // the shared one again
     NodeBuild* nodes = node_build_of(mat);
-    if (nodes) sg::apply_pipeline(get_shadow_pipeline(nodes.program));
+    if (nodes) {
+        // (still compiling: not drawn yet)
+        SgPipeline pip = get_shadow_pipeline(nodes.program);
+        if (!pip.id || nodes.program.busy()) return;
+        sg::apply_pipeline(pip);
+    }
     defer if (nodes) sg::apply_pipeline(get_shadow_pipeline());
     SgBindings bind = {
         .vertex_buffers[0] = m.geometry.vbuf,
@@ -3297,6 +3380,9 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera) {
         state.node_proj = outer_proj;
         state.node_camera = outer_camera;
     }
+    node_epoch++;
+    // (a loaded pipeline cache: more of it, as what it compiles finishes)
+    if (state.renderer) state.renderer.pump_pipeline_cache();
     state.node_view = camera.matrix_world_inverse;
     state.node_proj = camera.projection_matrix;
     state.node_camera = camera_pos;
