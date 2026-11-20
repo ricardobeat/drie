@@ -59,8 +59,9 @@ is drie's renderer (`init()` resolves at once), and the node materials
 (see drie's README). three's NodeBuilder does not run. `js/drie_nodes.js` walks each material's
 `colorNode`, `opacityNode`, `normalNode` (view space, as in three), `roughnessNode`,
 `metalnessNode`, `emissiveNode`, `positionNode`, `fragmentNode` (the color in place of the
-lighting), `outputNode` and `maskNode` (which cuts the shadow too, as three's does without a
-`maskShadowNode`), and rebuilds the graph as drie nodes.
+lighting), `outputNode`, `maskNode` (which cuts the shadow too, as three's does without a
+`maskShadowNode`) and `envNode` (the reflection; the map it reads, if any, lights the material
+as an envMap), and rebuilds the graph as drie nodes.
 In `outputNode`, `output` is a variable that a `Fn` can assign. It runs TSL's `Fn` bodies itself, one call at a time, to collect their statements:
 `toVar`, `assign`, `If`/`ElseIf`/`Else`, `Loop`, `Break`, `Continue` and `Discard`. drie then
 prints the graph in Metal, HLSL or GLSL. A graph is rebuilt when a slot changes or a texture it
@@ -71,10 +72,13 @@ The translator covers:
 
 - constants, uniforms, textures, the geometry's attributes and varyings (including ones assigned
   in `positionNode`)
-- TSL's operators and math, swizzles, conversions and `select`
+- TSL's operators and math, swizzles, conversions and `select`, with comparisons of vectors
+  component by component (a vector of 0 and 1, which `select` mixes by)
 - int and uint arithmetic with bitwise operators (MaterialX noise runs as it is)
 - `Fn` calls with layouts and overloads
 - `bumpMap`, as three's `dHdxy_fwd` and `perturbNormalArb`
+- `normalMap` in tangent space, on three's frame from the derivatives of the position and uv
+  (not the geometry's tangents)
 - `uniformArray` elements, at a constant index or one worked out in the shader
 - `cubeTexture` and `pmremTexture`, read from drie's equirectangular map of the cube map
 - `scene.backgroundNode`, and `scene.environmentNode` drawn into an environment map on the GPU

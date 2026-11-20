@@ -7,6 +7,8 @@
 //     its right (+x), not at its left
 //   - drawn again into the same map with a uniform changed (the red halved): the same texture,
 //     its light halved
+//   - the ball with an env_node in place of the map's reflection, red as the reflected
+//     direction's x: red at its right, none at its left, no green anywhere
 // The picture: the ball, then the ball after the second drawing.
 //
 //   just test render_environment [out.png]   (tests/build/render_environment.png)
@@ -106,6 +108,21 @@ fn int main(String[] args) {
     renderer.render(scene, camera);
     drie::commit();
     readback::read_image(rt.texture_image, S, S, px_b.ptr);
+
+    MeshStandardMaterial* mirror = drie::mesh_standard_material(color: 0xffffff, roughness: 0, metalness: 1);
+    Node dir = nodes::env_direction();
+    mirror.env_node = drie::node_join({ drie::node_call(MAX, dir.x(), zero), zero, zero }, VEC3);
+    ball.material = mirror;
+    char[] px_c = mem::new_array(char, S * S * 4);
+    renderer.render(scene, camera);
+    drie::commit();
+    readback::read_image(rt.texture_image, S, S, px_c.ptr);
+    int[4] env_reds;
+    int max_green;
+    for (int i = 0; i < 4; i++) env_reds[i] = px_c[((usz)at[i][1] * S + (usz)at[i][0]) * 4];
+    for (usz o = 0; o < (usz)S * S * 4; o += 4) max_green = math::max(max_green, (int)px_c[o + 1]);
+    expect(env_reds[2] > 100 && env_reds[3] < 20 && max_green < 20,
+           string::tformat("env_node: red at the right %d, the left %d; the most green %d", env_reds[2], env_reds[3], max_green));
 
     char[] sheet = mem::new_array(char, S * 2 * S * 4);
     for (int y = 0; y < S; y++) {

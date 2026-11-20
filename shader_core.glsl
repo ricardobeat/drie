@@ -825,6 +825,16 @@ void node_surface(NodeIn ni, inout float rough, inout float metal, inout vec4 em
     emissive = t;
 }
 
+// What the environment reflects in direction `dir` (in the world) on a surface of roughness
+// `rough` (envNode; env is the environment map's)
+void node_env(NodeIn ni, vec3 dir, float rough, inout vec3 env) {
+    vec2 uv = ni.uv;
+    vec4 t = texture(sampler2D(tex_ext0, tex_smp), uv) * texture(sampler2D(tex_ext1, tex_smp), uv)
+        * texture(sampler2D(tex_ext2, tex_smp), uv) * texture(sampler2D(tex_ext3, tex_smp), uv)
+        * texture(sampler2D(tex_ext4, tex_smp), uv) * texture(sampler2D(tex_ext5, tex_smp), uv) * ni.params[0];
+    env = env * t.xyz + dir * rough;
+}
+
 void node_output(NodeIn ni, inout vec4 result) {
     vec2 uv = ni.uv;
     result *= texture(sampler2D(tex_ext0, tex_smp), uv) * texture(sampler2D(tex_ext1, tex_smp), uv)
@@ -2975,6 +2985,7 @@ void main() {
         float fresnel = 0.04 + 0.96 * pow(1.0 - clamp(dot(n, v), 0.0, 1.0), 5.0);
         vec3 sky = mix(hemi_ground.rgb, hemi_sky.rgb, 0.5 * reflect(-v, n).y + 0.5) + ambient.rgb;
         if (env_params.x > 0.5) sky = env_reflection(reflect(-v, n), g_rough, n);
+        if (nodes) node_env(ni, reflect(-v, n), g_rough, sky);
         reflection_hook(reflect(-v, n), sky);
         spec += sky * fresnel;
         float spec_a = max(spec.r, max(spec.g, spec.b));
@@ -3002,6 +3013,7 @@ void main() {
             }
             vec3 r = dominant_reflection(reflect(-v, rn), rn, g_rough);
             vec3 env = env_reflection(r, g_rough, n);
+            if (nodes) node_env(ni, r, g_rough, env);
             reflection_hook(r, env);
             env_term = env * fr;
             if (g_sheen_rough > 0.0) env_term *= 1.0 - max(g_sheen_color.r, max(g_sheen_color.g, g_sheen_color.b)) * sheen_albedo(n, v, g_sheen_rough);
@@ -3063,6 +3075,7 @@ void main() {
             if (env_params.x > 0.5) {
                 vec3 r = dominant_reflection(reflect(-v, cn), cn, g_clearcoat_rough);
                 vec3 env = env_reflection(r, g_clearcoat_rough, cn);
+                if (nodes) node_env(ni, r, g_clearcoat_rough, env);
                 reflection_hook(r, env);
                 vec3 reflected = env * environment_brdf(cn, v, vec3(0.04), 1.0, g_clearcoat_rough);
                 coat += reflected;
