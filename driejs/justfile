@@ -107,19 +107,21 @@ draco:
         ln -sfn "$(dirname "$lib")" third_party/draco/lib ;;
     esac
 
-# three.js into vendor/: three.core.js, three.module.js, and examples/jsm as jsm/ (three/addons/...)
+# three.js into vendor/: three.core.js, three.module.js, three.webgpu.js and three.tsl.js
+# (three/webgpu, three/tsl), and examples/jsm as jsm/ (three/addons/...)
 [private]
 three:
     #!/bin/sh
     set -e
-    [ -f vendor/three.core.js ] && [ -d vendor/jsm ] && exit 0
+    [ -f vendor/three.core.js ] && [ -f vendor/three.tsl.js ] && [ -d vendor/jsm ] && exit 0
     tgz=third_party/three-{{three_version}}.tgz
     {{just_executable()}} fetch https://registry.npmjs.org/three/-/three-{{three_version}}.tgz {{three_sha256}} $tgz
     mkdir -p third_party/three-{{three_version}} vendor
     tar -xzf $tgz -C third_party/three-{{three_version}} \
-        package/LICENSE package/build/three.core.js package/build/three.module.js package/examples/jsm
+        package/LICENSE package/build/three.core.js package/build/three.module.js \
+        package/build/three.webgpu.js package/build/three.tsl.js package/examples/jsm
     src=third_party/three-{{three_version}}/package
-    cp $src/LICENSE $src/build/three.core.js $src/build/three.module.js vendor/
+    cp $src/LICENSE $src/build/three.core.js $src/build/three.module.js $src/build/three.webgpu.js $src/build/three.tsl.js vendor/
     [ -d vendor/jsm ] || cp -R $src/examples/jsm vendor/jsm
 
 # the demos' models and textures, from three.js's examples
@@ -147,7 +149,12 @@ assets: \
     (asset "textures/water/Water_1_M_Normal.jpg" "6d7825469a374ff84700b4fb1a2890bd1fce0ca1f777bdd4d5ecdaf15833a804") \
     (asset "textures/golfball.jpg" "7d5f075891eac89ee55620cd8753efe8a969d89cdd73b54fe0ee444ee5da0b15") \
     (asset "textures/pbr/Scratched_gold/Scratched_gold_01_1K_Normal.png" "f6cbad89a8d43188007532a2545f382e225e6def85778fc530681588fb9f6f9c") \
-    (asset "models/gltf/ShadowmappableMesh.glb" "1a5d49c27bf0b884b5cf70562c9023a3b931a90e05944eed02f3c5c226ff1c5d")
+    (asset "models/gltf/ShadowmappableMesh.glb" "1a5d49c27bf0b884b5cf70562c9023a3b931a90e05944eed02f3c5c226ff1c5d") \
+    (asset "textures/equirectangular/pedestrian_overpass_1k.hdr" "3d2c4068676cfead5dce9a12896cf1ebcac4e97914938e3c2987b70cad4e4c4a") \
+    (asset "textures/planets/earth_day_4096.jpg" "cd7712d3e891425d9948ea5ac18d3bb1e7e834ea038188587897e689a7b35d0f") \
+    (asset "textures/planets/earth_night_4096.jpg" "17a868f79c7be40fa1f557e6114d7889d907f18f7a3fce51f33b0b830ef50242") \
+    (asset "textures/planets/earth_bump_roughness_clouds_4096.jpg" "0796f4211c209d1afe9e26a06a283cdc21434430a780a25457b2417568a8591e") \
+    (asset "models/gltf/gears.glb" "059c442459e127e0f79b8337a5b0ea26a6cab3e609723c93ce60cac52d8430af")
 
 [private]
 asset path sha256: (fetch examples + "/" + path sha256 "demos/" + path)

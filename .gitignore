@@ -1,4 +1,5 @@
 tests/build/
+examples/build/
 driejs/build/
 driejs/out/
 driejs/third_party/
