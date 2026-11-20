@@ -27,9 +27,11 @@ run +args: build
 # after `frames` frames, 640 pixels across, into demos/thumbs/ (not in git), each with the
 # pipelines the demo drew with (a pipeline cache: the page compiles them all in the background
 # while it is up, so the demos open without compiling). `just thumbs 30 webgl_geometries`
-# renders that one only
-thumbs frames="30" *names: build
+# renders that one only. It uses out/driejs as it is (`just build` first after a change)
+thumbs frames="30" *names:
     #!/bin/sh
+    # (the driejs there is: built only if there is none)
+    [ -x out/driejs ] || just build || exit 1
     mkdir -p demos/thumbs
     names="{{names}}"
     [ -n "$names" ] || names=$(ls demos/*.js | sed 's|demos/||; s|\.js$||' | grep -v '^index$')
