@@ -1558,6 +1558,8 @@ fn void h_render(JsCtx ctx, void* udata)
         ctx.throw_error(TYPE, "render: invalid argument");
         return;
     }
+    // (before the first frame: nothing to draw with yet; the captures and bakes wait for it)
+    if (!gpu_ready) return;
     time::Clock t = time::clock::now();
     if (captures.len()) run_captures(r);
     if (bakes.len()) run_bakes(r);
@@ -1812,8 +1814,13 @@ fn void h_set_animation_loop(JsCtx ctx, void* udata)
 // Frames
 // ----------------------------------------------------------------------------
 
+// Whether the GPU is up: from the first frame on. A script that renders while it loads (once,
+// with no animation loop) is drawn by the frames, which draw its last picture again.
+bool gpu_ready;
+
 fn bool js_frame(double time_ms)
 {
+    gpu_ready = true;
     if (fixed_clock >= 0) fixed_clock = time_ms;
     fire_timers();
     JsValue? t = js.number(time_ms);
@@ -2185,8 +2192,12 @@ fn int main(String[] args)
         return 1;
     }
 
-    // `import * as THREE from "three"`: three.js's core with drie's renderer as
-    // WebGLRenderer, read from js/ and vendor/ under the working directory.
+    // `import * as THREE from "three"`: three.js's core and its WebGPU build with drie's
+    // renderer as WebGLRenderer and WebGPURenderer, read from js/ and vendor/ under the
+    // working directory. (three's webgpu examples map "three" to the WebGPU build; one
+    // module serves both, as a script loaded after another (demos/index.js) shares its modules.)
+    // The WebGPU build's node materials are drawn by drie: js/drie_nodes.js prints their
+    // graphs into drie's node shaders.
     Path? cwd = path::cwd(mem);
     if (catch cwd)
     {
@@ -2198,21 +2209,13 @@ fn int main(String[] args)
     js.define_module("three", string::tformat(
         "import \"%s/js/dom.js\";\n"
         "import \"%s/js/wasm.js\";\n"
-        "export * from \"%s/vendor/three.core.js\";\n"
-        "export { DrieRenderer as WebGLRenderer } from \"%s/js/drie_renderer.js\";\n"
-        "export { PMREMGenerator } from \"%s/js/pmrem.js\";\n"
-        "export { ShaderChunk, ShaderLib, UniformsLib, UniformsUtils, WebGLRenderTarget, WebGLCubeRenderTarget, WebGLUtils }"
-        " from \"%s/vendor/three.module.js\";\n", root, root, root, root, root, root))!!;
-    // three's WebGPU build (`three/webgpu`, `three/tsl`) for TSL: its node materials drawn by
-    // drie (js/drie_nodes.js prints their graphs into drie's node shaders), with drie's
-    // renderer as WebGPURenderer
-    js.define_module("three/webgpu", string::tformat(
-        "import \"%s/js/dom.js\";\n"
-        "import \"%s/js/wasm.js\";\n"
         "import \"%s/js/drie_nodes.js\";\n"
         "export * from \"%s/vendor/three.webgpu.js\";\n"
-        "export { DrieRenderer as WebGPURenderer } from \"%s/js/drie_renderer.js\";\n"
-        "export { PMREMGenerator } from \"%s/js/pmrem.js\";\n", root, root, root, root, root, root))!!;
+        "export { DrieRenderer as WebGLRenderer, DrieRenderer as WebGPURenderer } from \"%s/js/drie_renderer.js\";\n"
+        "export { PMREMGenerator } from \"%s/js/pmrem.js\";\n"
+        "export { ShaderChunk, ShaderLib, UniformsLib, UniformsUtils, WebGLRenderTarget, WebGLCubeRenderTarget, WebGLUtils }"
+        " from \"%s/vendor/three.module.js\";\n", root, root, root, root, root, root, root))!!;
+    js.define_module("three/webgpu", "export * from \"three\";\n")!!;
     js.define_module("three/tsl", string::tformat(
         "import \"%s/js/dom.js\";\n"
         "export * from \"%s/vendor/three.tsl.js\";\n", root, root))!!;
@@ -2232,6 +2235,17 @@ fn int main(String[] args)
                      string::tformat("export { LightProbeGridWebGL } from \"%s/js/light_probe_grid.js\";\n", root))!!;
     js.define_module("three/addons/helpers/LightProbeGridHelperWebGL.js",
                      string::tformat("export { LightProbeGridHelperWebGL } from \"%s/js/light_probe_grid.js\";\n", root))!!;
+    // and the WebGPU build's LightProbeGrid, the same with three's node shaders
+    js.define_module("three/addons/lighting/LightProbeGrid.js", string::tformat(
+        "export { LightProbeGridWebGL as LightProbeGrid } from \"%s/js/light_probe_grid.js\";\n", root))!!;
+    js.define_module("three/addons/helpers/LightProbeGridHelper.js", string::tformat(
+        "export { LightProbeGridHelperWebGL as LightProbeGridHelper } from \"%s/js/light_probe_grid.js\";\n", root))!!;
+    // drie draws what three's webgpu examples ask of WebGPU
+    js.define_module("three/addons/capabilities/WebGPU.js",
+        "export default class WebGPU {\n"
+        "  static isAvailable() { return true; }\n"
+        "  static getErrorMessage() { return null; }\n"
+        "}\n")!!;
     // three/webgpu examples' Inspector: its parameters panel as lil-gui's (not drawn)
     js.define_module("three/addons/inspector/Inspector.js", string::tformat(
         "import { GUI } from \"%s/js/gui.js\";\n"

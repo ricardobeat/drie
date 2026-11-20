@@ -308,12 +308,14 @@ fn Node node_binary(NodeBinary op, Node a, Node b) {
         case XOR:
             t = BOOL;
         case MUL:
+            // (as TSL: a matrix times a number is a matrix; times a vector, a vec4, the vector
+            // made one first, a vec3 with w = 1)
             if (ta == MAT4 && tb == MAT4) {
                 t = MAT4;
             } else if (ta == MAT4 || tb == MAT4) {
                 NodeType v = ta == MAT4 ? tb : ta;
-                if (v != VEC4) abort("drie: nodes: a matrix multiplies a vec4 (or a matrix)");
-                t = VEC4;
+                if (scalar_of(v) == BOOL) abort("drie: nodes: a matrix multiplies numbers, vectors and matrices");
+                t = components(v) == 1 ? MAT4 : VEC4;
             } else {
                 t = wider(ta, tb);
             }
@@ -1290,8 +1292,15 @@ fn String NodeGen.emit(&self, Node n) {
             NodeType tb = b.type();
             switch (op) {
                 case MUL:
-                    if (ta == MAT4 || tb == MAT4) {
+                    if (ta == MAT4 && tb == MAT4) {
                         e = self.mat_mul(self.emit(a), self.emit(b));
+                        break;
+                    }
+                    if (ta == MAT4 || tb == MAT4) {
+                        NodeType v = ta == MAT4 ? tb : ta;
+                        String x = ta == MAT4 ? self.emit(a) : self.value_as(a, components(v) == 1 ? FLOAT : VEC4);
+                        String y = tb == MAT4 ? self.emit(b) : self.value_as(b, components(v) == 1 ? FLOAT : VEC4);
+                        e = components(v) == 1 ? string::tformat("(%s * %s)", x, y) : self.mat_mul(x, y);
                         break;
                     }
                     nextcase ADD;

@@ -158,6 +158,10 @@ export class DrieRenderer {
 		this.autoClear = true;
 		this.sortObjects = true;
 		this.shadowMap = { enabled: false, type: 1 };
+		// (three's WebGLCoordinateSystem: clip space z from -1 to 1, which CubeCamera reads)
+		this.coordinateSystem = 2000;
+		// no WebXR: what three's code reads of it
+		this.xr = { enabled: false, isPresenting: false, addEventListener() {}, removeEventListener() {} };
 		this.toneMapping = 0;
 		this.toneMappingExposure = 1;
 		// the size of the picture transmission materials refract, times the canvas's (three's)
@@ -213,6 +217,10 @@ export class DrieRenderer {
 
 	getSize(target) {
 		return target.set(this._width, this._height);
+	}
+
+	getDrawingBufferSize(target) {
+		return target.set(this._width * this._pixelRatio, this._height * this._pixelRatio).floor();
 	}
 
 	setSize(width, height) {
@@ -543,15 +551,16 @@ export class DrieRenderer {
 		return N.mesh(g, m);
 	}
 
-	// Sky's uniforms, in the order of N.skyParams. (r177's Sky has no clouds: none when its
+	// Sky's uniforms, in the order of N.skyParams: the material's (Sky) or its own uniform nodes
+	// (SkyMesh, whose clouds move with TSL's time). (r177's Sky has no clouds: none when its
 	// uniforms are missing.)
 	_skyArgs(sky) {
-		const u = sky.material.uniforms;
+		const u = sky.isSkyMesh ? sky : sky.material.uniforms;
 		const v = (name, fallback) => (u[name] ? u[name].value : fallback);
 		const sun = u.sunPosition.value;
 		return [v("turbidity", 2), v("rayleigh", 1), v("mieCoefficient", 0.005), v("mieDirectionalG", 0.8),
 			sun.x, sun.y, sun.z, v("cloudScale", 0.0002), v("cloudSpeed", 0.00002), v("cloudCoverage", 0),
-			v("cloudDensity", 0.4), v("cloudElevation", 0.5), v("showSunDisc", 1), v("time", 0)];
+			v("cloudDensity", 0.4), v("cloudElevation", 0.5), v("showSunDisc", 1), sky.isSkyMesh ? performance.now() / 1000 : v("time", 0)];
 	}
 
 	// Sky's uniforms, sent to its drie sky `id` when one changed.
