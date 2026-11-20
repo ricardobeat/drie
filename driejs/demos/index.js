@@ -1,5 +1,5 @@
-// The demos in this folder, as a page of thumbnails: click one to run it, Escape there comes
-// back here. The wheel (or the arrow keys) scrolls.
+// The demos in this folder, as a page of thumbnails: click one to load its script in this
+// one's place (the same process and window), Escape there comes back here. The wheel (or the arrow keys) scrolls.
 //
 //   just thumbs                  renders each demo's thumbnail into demos/thumbs/
 //   just run demos/index.js
