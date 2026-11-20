@@ -1954,7 +1954,32 @@ vec2 slot_d(int slot, vec2 d) { return vec2(dot(uv_rel[slot * 2].xy, d), dot(uv_
 vec2 slot_dx(int slot) { return slot_d(slot, uv_rel[slot * 2].w > 0.5 ? g_duv1dx : g_duvdx); }
 vec2 slot_dy(int slot) { return slot_d(slot, uv_rel[slot * 2].w > 0.5 ? g_duv1dy : g_duvdy); }
 
-#define slot_texel_at(tex, slot, shift) textureGrad(sampler2D(tex, tex_smp), slot_uv(slot, shift), slot_dx(slot), slot_dy(slot))
+// The slots share one sampler, tex_smp. A slot whose texture wraps otherwise has its uv
+// wrapped here, by uv_rel[slot * 2 + 1].w: 1 + s + 3 t for its wrapping across (s) and down (t),
+// each 0 repeat, 1 clamp to edge, 2 mirrored repeat; 0: as the sampler. The mip level comes
+// from the gradients passed in, so wrapping the uv leaves no seam of blurred mips; a clamp
+// stops half a texel of that level inside the edge (`half_texel`), where a repeating sampler
+// would blend in the far edge.
+float wrap_coord(float x, int mode, float half_texel) {
+    if (mode == 1) return clamp(x, half_texel, 1.0 - half_texel);
+    if (mode == 2) return 1.0 - abs(mod(x, 2.0) - 1.0);
+    return fract(x);
+}
+
+vec2 slot_wrap(int slot, vec2 uv, vec2 size, vec2 dx, vec2 dy) {
+    int code = int(uv_rel[slot * 2 + 1].w + 0.5);
+    if (code == 0) return uv;
+    code -= 1;
+    vec2 ex = dx * size;
+    vec2 ey = dy * size;
+    float lod = clamp(0.5 * log2(max(max(dot(ex, ex), dot(ey, ey)), 1e-8)), 0.0, 16.0);
+    vec2 half_texel = min(0.5 * exp2(lod) / size, vec2(0.5));
+    return vec2(wrap_coord(uv.x, code % 3, half_texel.x), wrap_coord(uv.y, code / 3, half_texel.y));
+}
+
+#define slot_grad_at(tex, slot, uv, dx, dy) textureGrad(sampler2D(tex, tex_smp), \
+    slot_wrap(slot, uv, vec2(textureSize(sampler2D(tex, tex_smp), 0)), dx, dy), dx, dy)
+#define slot_texel_at(tex, slot, shift) slot_grad_at(tex, slot, slot_uv(slot, shift), slot_dx(slot), slot_dy(slot))
 // (hex tiled: the three patches, with the color map's weights; not a map in the second uv set,
 // a light map's, say, which is laid out once over the surface)
 #define slot_texel(tex, slot) ((g_hex && uv_rel[(slot) * 2].w < 0.5) \
@@ -2091,12 +2116,12 @@ vec4 ext_slot_texel(int slot, vec2 uv) {
 
 // One of the six slots at uv, at the mip level that dx and dy (uv per pixel) pick.
 vec4 ext_slot_grad(int slot, vec2 uv, vec2 dx, vec2 dy) {
-    if (slot == 0) return textureGrad(sampler2D(tex_ext0, tex_smp), uv, dx, dy);
-    if (slot == 1) return textureGrad(sampler2D(tex_ext1, tex_smp), uv, dx, dy);
-    if (slot == 2) return textureGrad(sampler2D(tex_ext2, tex_smp), uv, dx, dy);
-    if (slot == 3) return textureGrad(sampler2D(tex_ext3, tex_smp), uv, dx, dy);
-    if (slot == 4) return textureGrad(sampler2D(tex_ext4, tex_smp), uv, dx, dy);
-    if (slot == 5) return textureGrad(sampler2D(tex_ext5, tex_smp), uv, dx, dy);
+    if (slot == 0) return slot_grad_at(tex_ext0, 2, uv, dx, dy);
+    if (slot == 1) return slot_grad_at(tex_ext1, 3, uv, dx, dy);
+    if (slot == 2) return slot_grad_at(tex_ext2, 4, uv, dx, dy);
+    if (slot == 3) return slot_grad_at(tex_ext3, 5, uv, dx, dy);
+    if (slot == 4) return slot_grad_at(tex_ext4, 6, uv, dx, dy);
+    if (slot == 5) return slot_grad_at(tex_ext5, 7, uv, dx, dy);
     return vec4(1.0);
 }
 

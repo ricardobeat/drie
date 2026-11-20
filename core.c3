@@ -430,6 +430,11 @@ struct Mesh {
     Material* material;
     // TRIANGLES, except for lines (see line())
     DrawMode draw_mode;
+    // Triangles: only draw_count of the geometry's indices from draw_start (three's drawRange,
+    // or one of the geometry's groups, drawn with a material of its own by a mesh of its own
+    // that shares the geometry); draw_count 0: all of them. A wireframe draws all.
+    int draw_start;
+    int draw_count;
     // Instancing (see InstancedMesh): 12 floats per instance, the rows of a 3x4 matrix.
     List{float} instance_data;
     int instance_count;
