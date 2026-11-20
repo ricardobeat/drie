@@ -15,6 +15,16 @@ enum Blending {
     ADDITIVE_BLENDING,
 }
 
+// How a transmission material's volume bends the rays through it (Material.refraction_model;
+// not in three.js, as Unity HDRP's refraction models). SPHERE: every ray crosses `thickness`
+// of it, whatever its angle (three's). PLANE: it is a wall `thickness` thick, a pane or a
+// glass's side: a ray that meets it at a slant crosses more of it (thickness / cos), so it
+// is shifted further and tinted more toward the edges of a curved wall, as real glass is.
+enum RefractionModel {
+    SPHERE,
+    PLANE,
+}
+
 // Values match the shader's `mode`.
 constdef MaterialType : int {
     BASIC    = 0,
@@ -119,6 +129,8 @@ struct Material {
     float thickness;
     // times the green channel of this map
     Texture* thickness_map;
+    // SPHERE (three's) or PLANE: see RefractionModel.
+    RefractionModel refraction_model;
     // Index of refraction: how strongly it bends light (1.5: glass, 1.33: water). It also sets
     // how much a dielectric reflects head on: ((ior - 1) / (ior + 1))², 4% for 1.5.
     float ior;
