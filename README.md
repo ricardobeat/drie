@@ -293,7 +293,7 @@ shader generates it into its own sources, and regenerates it whenever `shader_co
 Dupuy, Hill and Neubelt 2016, [ltc_code](https://github.com/selfshadow/ltc_code)), taken from
 three.js's `RectAreaLightTexturesLib.js` (MIT) by `just ltc` (`third_party/ltc/ltc.py`). The shader
 has no view slot left for textures of their own: a frame with rect area lights appends the tables
-(128 KB) to the point lights' buffer, and the shader filters them itself.
+(192 KB) to the point lights' buffer, and the shader filters them itself.
 
 ## cgltf
 

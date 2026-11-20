@@ -657,9 +657,12 @@ float g_rough;
 float g_metal;
 vec3 g_f0;        // a standard material's reflectance head on, and at a grazing angle
 float g_f90;      //   (from ior, specular_color and specular_intensity; set after the maps)
-float g_radius;   // source radius of the light being evaluated (its highlights')
-vec3 g_light_vec; // from the surface to the centre of the point or spot light being evaluated
-vec3 g_half;      // a tube light's half: from its centre to one end (0: a ball or a point)
+// A light with a size (light_toward), set by the light loops before direct(): g_sized, the
+// direction of its highlight, and how much its shape widens one (x along a tube, y round a
+// ball: light_norm)
+bool g_sized = false;
+vec3 g_spec_l;
+vec2 g_spec_k;
 float g_nol = -1.0; // the light's cosine over the squared distance, when it is not a point's
                   //   (a tube's, integrated along it): the radiance is then without its falloff
 // three's MeshPhysicalMaterial layers, set after the maps (0: off): a clear coat over the
@@ -699,39 +702,44 @@ vec2 g_hex_off[3];
 vec3 g_hex_w;
 
 // A light with a size, seen in reflections (Karis, "Real Shading in Unreal Engine 4", 2013,
-// the representative point): the direction toward the point of the light nearest the ray `r`
-// reflected off the surface, for the highlight. The light stays as bright as the point light at
-// its centre; `norm` takes away what the highlight gains by moving its source around on the
-// light, (a / a')^2 for a sphere with a' = saturate(a + radius / (3 distance)) (his eq. 10, 11
-// and 14). A tube (g_half) first takes the point of its segment nearest the ray (his eq. 19)
-// and a / a' with a' = saturate(a + half its length / (3 distance)) (eq. 20, a widening along
-// one direction only), then the ball of `g_radius` around that point. Without a size: the
-// direction to the centre and 1.
-vec3 light_toward(vec3 r, float a, out float norm) {
-    vec3 lv = g_light_vec;
-    norm = 1.0;
-    if (dot(g_half, g_half) > 0.0) {
-        vec3 l0 = lv - g_half;
-        vec3 ld = 2.0 * g_half;
+// the representative point): sets g_spec_l, the direction toward the point of the light nearest
+// the ray `r` reflected off the surface, for the highlight, and g_spec_k for light_norm. `lv`
+// is from the surface to the light's centre, `seg` from its centre to one end (a tube), `radius`
+// its thickness. A tube first takes the point of its segment nearest the ray (his eq. 19), then
+// the ball of `radius` round that point the point of it nearest the ray (eq. 11).
+void light_toward(vec3 r, vec3 lv, vec3 seg, float radius) {
+    g_sized = true;
+    g_spec_k = vec2(0.0);
+    if (dot(seg, seg) > 0.0) {
+        vec3 l0 = lv - seg;
+        vec3 ld = 2.0 * seg;
         float rld = dot(r, ld);
         float t = (dot(r, l0) * rld - dot(l0, ld)) / max(dot(ld, ld) - rld * rld, 1e-8);
         lv = l0 + clamp(t, 0.0, 1.0) * ld;
-        norm = a / clamp(a + length(g_half) / (3.0 * max(length(lv), 1e-4)), 0.0, 1.0);
+        g_spec_k.x = length(seg) / (3.0 * max(length(lv), 1e-4));
     }
-    if (g_radius > 0.0) {
-        float d = length(lv);
+    if (radius > 0.0) {
+        g_spec_k.y = radius / (3.0 * max(length(lv), 1e-4));
         // (the light's centre to the ray: Karis' eq. 11 with its sign put right)
         vec3 to_ray = dot(lv, r) * r - lv;
-        lv += to_ray * clamp(g_radius / max(length(to_ray), 1e-6), 0.0, 1.0);
-        float k = a / clamp(a + g_radius / (3.0 * max(d, 1e-4)), 0.0, 1.0);
-        norm = k * k;
+        lv += to_ray * clamp(radius / max(length(to_ray), 1e-6), 0.0, 1.0);
     }
-    return normalize(lv);
+    g_spec_l = normalize(lv);
+}
+
+// The light the highlight of light_toward's light keeps at roughness alpha `a`: the light stays
+// as bright as the point light at its centre, and this takes away what the highlight gains by
+// moving its source around on the light: a / a' along a tube (eq. 20, a widening in one
+// direction only) times (a / a')^2 for its ball (eq. 14), a' = saturate(a + half the length,
+// or the radius, / (3 distance)) (eq. 10).
+float light_norm(float a) {
+    float k = a / clamp(a + g_spec_k.y, 0.0, 1.0);
+    return a / clamp(a + g_spec_k.x, 0.0, 1.0) * k * k;
 }
 
 // Direct light contribution, following three.js's (r155+) physically based light units.
 // Returns diffuse in rgb; adds specular to `spec`. `l` is toward the light's centre (the
-// diffuse light's direction); point and spot lights with a size (g_radius) take their
+// diffuse light's direction); point and spot lights with a size (g_sized) take their
 // highlights from light_toward.
 vec3 direct(int mode, vec3 n, vec3 v, vec3 l, float dist, vec3 radiance, vec3 diffuse_color, inout vec3 spec) {
     bool foliage = (flags() & 2) != 0;
@@ -751,9 +759,10 @@ vec3 direct(int mode, vec3 n, vec3 v, vec3 l, float dist, vec3 radiance, vec3 di
             float a = g_clearcoat_rough * g_clearcoat_rough;
             float cnl = clamp(dot(cn, l), 0.0, 1.0);
             float cnv = clamp(dot(cn, v), 1e-4, 1.0);
-            // (a light with a size: its highlight on the coat, off the coat's own reflection)
-            float cnorm = 1.0;
-            vec3 cl = g_radius > 0.0 || dot(g_half, g_half) > 0.0 ? light_toward(reflect(-v, cn), a, cnorm) : l;
+            // (a light with a size: the point of it the surface under the coat mirrors, as
+            // bright as the coat's roughness keeps it)
+            float cnorm = g_sized ? light_norm(a) : 1.0;
+            vec3 cl = g_sized ? g_spec_l : l;
             vec3 ch = normalize(cl + v);
             float cnh = clamp(dot(cn, ch), 0.0, 1.0);
             float f = schlick(0.04, 1.0, clamp(dot(v, ch), 0.0, 1.0));
@@ -786,8 +795,9 @@ vec3 direct(int mode, vec3 n, vec3 v, vec3 l, float dist, vec3 radiance, vec3 di
         float norm = 1.0;
         vec3 sl = l;
         float snl = nol;
-        if (g_radius > 0.0 || dot(g_half, g_half) > 0.0) {
-            sl = light_toward(reflect(-v, n), a, norm);
+        if (g_sized) {
+            sl = g_spec_l;
+            norm = light_norm(a);
             h = normalize(sl + v);
             snl = clamp(dot(n, sl), 0.0, 1.0);
         }
@@ -816,12 +826,8 @@ vec3 direct(int mode, vec3 n, vec3 v, vec3 l, float dist, vec3 radiance, vec3 di
 // Neubelt 2016). The lights are in point_lights after the point lights, three vec4s each:
 // pos = centre + half width's x, color = color * intensity + half width's y, params = half
 // width's z + half height; and after them the two LTC tables (clusters.c3's ltc_entries),
-// read here with the bilinear filter three's textures have.
-vec4 ltc_vec4(int base, int q) {
-    gpu_point_light e = points[base + q / 3];
-    int m = q - (q / 3) * 3;
-    return m == 0 ? e.pos : (m == 1 ? e.color : e.params);
-}
+// a texel an entry (pos = LTC_1's, color = LTC_2's), read here with the bilinear filter
+// three's textures have.
 
 void ltc_tables(int base, vec3 n, vec3 v, float rough, out vec4 t1, out vec4 t2) {
     // three's LTC_Uv: roughness across, sqrt(1 - n.v) down, at the texels' centres
@@ -830,12 +836,12 @@ void ltc_tables(int base, vec3 n, vec3 v, float rough, out vec4 t1, out vec4 t2)
     vec2 f = fract(p);
     ivec2 i0 = clamp(ivec2(floor(p)), ivec2(0), ivec2(63));
     ivec2 i1 = min(i0 + 1, ivec2(63));
-    int a = i0.y * 64 + i0.x;
-    int b = i0.y * 64 + i1.x;
-    int c = i1.y * 64 + i0.x;
-    int d = i1.y * 64 + i1.x;
-    t1 = mix(mix(ltc_vec4(base, 2 * a), ltc_vec4(base, 2 * b), f.x), mix(ltc_vec4(base, 2 * c), ltc_vec4(base, 2 * d), f.x), f.y);
-    t2 = mix(mix(ltc_vec4(base, 2 * a + 1), ltc_vec4(base, 2 * b + 1), f.x), mix(ltc_vec4(base, 2 * c + 1), ltc_vec4(base, 2 * d + 1), f.x), f.y);
+    int a = base + i0.y * 64 + i0.x;
+    int b = base + i0.y * 64 + i1.x;
+    int c = base + i1.y * 64 + i0.x;
+    int d = base + i1.y * 64 + i1.x;
+    t1 = mix(mix(points[a].pos, points[b].pos, f.x), mix(points[c].pos, points[d].pos, f.x), f.y);
+    t2 = mix(mix(points[a].color, points[b].color, f.x), mix(points[c].color, points[d].color, f.x), f.y);
 }
 
 vec3 ltc_edge(vec3 v1, vec3 v2) {
@@ -2250,10 +2256,13 @@ void main() {
         ind_d = outc;
 
         int ndir = int(counts.x);
-        g_half = vec3(0.0);
+        g_sized = false;
         g_nol = -1.0;
+        // where a light with a size is mirrored from (light_toward), with the material's
+        // surface (not a standard material's: not at all)
+        vec3 mirror_r = reflect(-v, n);
+        bool sized_ok = mode == 3;
         for (int i = 0; i < ndir; i++) {
-            g_radius = 0.0;
             vec3 l = normalize(dirs[i].dir.xyz);
             float lit = int(dir_shadow_params.x) == i + 1 ? dir_shadow(n, l) : 1.0;
             // the other shadowed ones: a tile of shadow_atlas each
@@ -2284,36 +2293,37 @@ void main() {
             vec3 lv = pl.pos.xyz - v_world_pos;
             float d = length(lv);
             // a light source with a size: falloff softens up close instead of blowing out
-            g_radius = pl.params.x;
-            g_light_vec = lv;
-            g_half = pl.params.yzw;
+            float radius = pl.params.x;
+            vec3 seg = pl.params.yzw;
             vec3 l = lv / d;
             vec3 radiance;
-            if (dot(g_half, g_half) > 0.0) {
+            g_sized = false;
+            if (sized_ok && radius + abs(seg.x) + abs(seg.y) + abs(seg.z) > 0.0) light_toward(mirror_r, lv, seg, radius);
+            if (dot(seg, seg) > 0.0) {
                 // a tube (PointLight.length): the light of the whole segment, its intensity
                 // spread along it (Karis' eq. 16, the radius softening it as a ball's
                 // falloff: d^2 + radius^2 at length 0), faded out by the distance to its
                 // nearest point
-                vec3 l0 = lv - g_half;
-                vec3 l1 = lv + g_half;
+                vec3 l0 = lv - seg;
+                vec3 l1 = lv + seg;
                 float d0 = length(l0);
                 float d1 = length(l1);
-                vec3 ld = 2.0 * g_half;
+                vec3 ld = 2.0 * seg;
                 vec3 near = l0 + clamp(-dot(l0, ld) / dot(ld, ld), 0.0, 1.0) * ld;
                 float dn = length(near);
                 g_nol = 2.0 * clamp(0.5 * dot(n, l0) / d0 + 0.5 * dot(n, l1) / d1, 0.0, 1.0)
-                    / max(d0 * d1 + dot(l0, l1) + 2.0 * g_radius * g_radius, 1e-4);
+                    / max(d0 * d1 + dot(l0, l1) + 2.0 * radius * radius, 1e-4);
                 l = near / max(dn, 1e-6);
                 radiance = pl.color.rgb * distance_window(dn, pl.pos.w);
             } else {
                 g_nol = -1.0;
-                float d_soft = sqrt(d * d + g_radius * g_radius);
+                float d_soft = sqrt(d * d + radius * radius);
                 radiance = pl.color.rgb * distance_attenuation(d_soft, pl.pos.w, pl.color.w);
             }
             radiance *= fog_transmittance(fog_distance(pl.pos.xyz, v_world_pos));
             outc += direct(mode, n, v, l, d, radiance, diffuse_color, spec);
         }
-        g_half = vec3(0.0);
+        g_sized = false;
         g_nol = -1.0;
         for (int k = 0; k < nspot; k++) {
             int i = baking ? k : int(cluster_lights[first + npoint + k].index);
@@ -2324,10 +2334,9 @@ void main() {
             vec3 l = lv / d;
             float cone = smoothstep(spots[i].dir.w, spots[i].params.x, dot(-l, spots[i].dir.xyz));
             if (cone <= 0.0) continue;
-            g_radius = spots[i].params.y;
-            float d_soft = sqrt(d * d + g_radius * g_radius);
-            g_radius = spots[i].params.z;
-            g_light_vec = lv;
+            float d_soft = sqrt(d * d + spots[i].params.y * spots[i].params.y);
+            g_sized = false;
+            if (sized_ok && spots[i].params.z > 0.0) light_toward(mirror_r, lv, vec3(0.0), spots[i].params.z);
             vec3 radiance = spots[i].color.rgb * cone * distance_attenuation(d_soft, spots[i].pos.w, spots[i].color.w);
             radiance *= fog_transmittance(fog_distance(spots[i].pos.xyz, v_world_pos));
             radiance *= shadow(i, geo_n);

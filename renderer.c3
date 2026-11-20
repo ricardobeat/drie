@@ -2038,7 +2038,7 @@ fn FsParams build_light_params(Scene* scene, Camera* camera, SpotLight* caster) 
                 float yl = y.length();
                 Vector3 hw = xl > 0 ? x * (ra.width * 0.5f / xl) : (Vector3) { };
                 Vector3 hh = yl > 0 ? y * (ra.height * 0.5f / yl) : (Vector3) { };
-                // (as a point light's three vectors: see ltc_vec4 in shader_core.glsl)
+                // (as a point light's three vectors: see ltc_tables in shader_core.glsl)
                 g.rects.push(
                     {
                         .pos = { ...m.get_position(), hw.x },
