@@ -41,6 +41,8 @@ constdef MaterialType : int {
     PHONG    = 2,
     STANDARD = 3,
     NORMAL   = 4,
+    MATCAP   = 5,
+    TOON     = 6,
 }
 
 struct Material {
@@ -109,6 +111,17 @@ struct Material {
     // drips) still runs down. Three reads of each map instead of one. Not with a parallax_map or
     // alpha_test, nor for the maps read from the second uv set (a light map).
     float hex_tiling;
+    // A height map (red, 1 = highest) that tilts the normal by how it changes from pixel to
+    // pixel, bump_scale strong (three's bumpMap and bumpScale), after the normal map.
+    Texture* bump_map;
+    float bump_scale;
+    // MeshMatcapMaterial's image of a lit sphere, read where the normal points as the viewer
+    // sees it (three's matcap; without one, a gray gradient from top to bottom).
+    Texture* matcap;
+    // MeshToonMaterial's steps of light: the red of this map, read across by how squarely the
+    // light falls (three's gradientMap; without one, two steps). Read texel by texel when the
+    // texture's `nearest` is on, as three's NearestFilter.
+    Texture* gradient_map;
     // Opacity from the green channel of this map, times `opacity` (three's alphaMap).
     Texture* alpha_map;
     // What glows: emissive * emissive_intensity times this map's rgb (sRGB; three's emissiveMap).
@@ -242,6 +255,10 @@ struct Material {
     // Vertex colors are light baked into the geometry (from lamps that don't need to be real
     // lights) instead of a tint: they light the surface with this strength. 0 = off.
     float vertex_light;
+    // Pushes the vertices out along their normals by this much of the view (clip space per unit
+    // of w), the same on screen at any distance: a back-side material with it, drawn over a mesh's
+    // own, outlines it (three's OutlineEffect, whose thickness this is). 0: off.
+    float outline;
     // Draws the surface as a window onto this render target, pixel for pixel at the same screen
     // position, unlit (for portals and mirrors rendered from another camera).
     RenderTarget* screen_target;
@@ -292,6 +309,12 @@ struct MeshStandardMaterial {
 struct MeshNormalMaterial {
     inline Material material;
 }
+struct MeshMatcapMaterial {
+    inline Material material;
+}
+struct MeshToonMaterial {
+    inline Material material;
+}
 struct LineBasicMaterial {
     inline Material material;
 }
@@ -332,6 +355,7 @@ fn void Material.init_base(
     self.ao_intensity = 1;
     self.light_map_intensity = 1;
     self.reflectivity = 1;
+    self.bump_scale = 1;
     self.refraction_ratio = 0.98f;
     self.clearcoat_normal_scale = { 1, 1 };
     self.sheen_roughness = 1;
@@ -491,5 +515,43 @@ fn MeshNormalMaterial* mesh_normal_material(
 ) {
     MeshNormalMaterial* m = mem::new(MeshNormalMaterial);
     m.init_base(NORMAL, 0xffffff, opacity, transparent, side, wireframe, false);
+    return m;
+}
+// Lit by an image of a lit sphere instead of lights (three's MeshMatcapMaterial): `matcap`
+// read where the normal points as the viewer sees it, times the color.
+fn MeshMatcapMaterial* mesh_matcap_material(
+    Color color = 0xffffff,
+    Texture* matcap = null,
+    float opacity = 1,
+    bool transparent = false,
+    Side side = FRONT_SIDE,
+    bool fog = true,
+    Texture* map = null
+) {
+    MeshMatcapMaterial* m = mem::new(MeshMatcapMaterial);
+    m.init_base(MATCAP, color, opacity, transparent, side, false, fog);
+    m.matcap = matcap;
+    m.map = map;
+    return m;
+}
+
+// Cel shading (three's MeshToonMaterial): lit in steps, from gradient_map, with no highlights.
+fn MeshToonMaterial* mesh_toon_material(
+    Color color = 0xffffff,
+    Texture* gradient_map = null,
+    Color emissive = 0x000000,
+    float emissive_intensity = 1,
+    float opacity = 1,
+    bool transparent = false,
+    Side side = FRONT_SIDE,
+    bool fog = true,
+    Texture* map = null
+) {
+    MeshToonMaterial* m = mem::new(MeshToonMaterial);
+    m.init_base(TOON, color, opacity, transparent, side, false, fog);
+    m.gradient_map = gradient_map;
+    m.emissive = emissive;
+    m.emissive_intensity = emissive_intensity;
+    m.map = map;
     return m;
 }
