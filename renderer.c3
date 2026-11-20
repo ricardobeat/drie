@@ -3012,7 +3012,10 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     // map lights it too, as three's envMap does)
     if (env_map && env_map.has_env_sh && mat.type == STANDARD) {
         env_diffuse = true;
-        foreach (i, c : env_map.env_sh) fs.env_sh[i] = { ...c, 0 };
+        // (the sun in the w of the first six: its direction, then its light)
+        EnvLight* el = &env_map.env_light;
+        float[6] sun = { el.sun_dir.x, el.sun_dir.y, el.sun_dir.z, el.sun.x, el.sun.y, el.sun.z };
+        foreach (i, c : el.sh) fs.env_sh[i] = { ...c, i < 6 ? sun[i] : 0 };
     }
     bind.views[shaders::VIEW_TEX_ENV] = env.view;
     bind.samplers[shaders::SMP_ENV_SMP] = env.sampler;

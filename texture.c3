@@ -84,10 +84,10 @@ struct Texture {
     // For an environment map captured with distances (Renderer.capture_environment): alpha 1
     // stands for this many meters from where it was captured. 0: no distances.
     float env_distance_range;
-    // As Scene.environment, the light it puts on a surface facing each way: its irradiance in
-    // spherical harmonics (env_sh_irradiance), worked out at the upload of a 2:1
+    // As Scene.environment, the light it puts on a surface facing each way (env_light): its
+    // irradiance in spherical harmonics and its sun, worked out at the upload of a 2:1
     // (longitude/latitude) image.
-    Vector3[9] env_sh;
+    EnvLight env_light;
     bool has_env_sh;
     // What prepare() leaves for the upload: the mip levels, largest first, in one block.
     char[] prepared;
@@ -406,7 +406,7 @@ fn void Texture.upload_float(&self) {
     );
     if (self.width == 2 * self.height) {
         int l = env_sh_level(widths[:count]);
-        self.env_sh = env_sh_irradiance(levels[l], { }, widths[l], heights[l], false);
+        self.env_light = env_light(levels[l], { }, widths[l], heights[l], false);
         self.has_env_sh = true;
     }
     for (int i = 1; i < count; i++) mem::free(levels[i].ptr);
@@ -581,7 +581,7 @@ fn void Texture.prepare(&self) {
         int[16] widths;
         for (int i = 0; i < count; i++) widths[i] = math::max(self.width >> i, 1);
         int l = env_sh_level(widths[:count]);
-        self.env_sh = env_sh_irradiance(
+        self.env_light = env_light(
             { },
             levels[l],
             widths[l],
@@ -684,6 +684,115 @@ const float[9] SH_K      = {
 };
 const float[9] SH_BAND   = { 0, 1, 1, 1, 2, 2, 2, 2, 2 };
 const float[3] SH_COSINE = { PI, 2 * PI / 3, PI / 4 };
+
+// The diffuse light of an environment map: all of it but its sun in spherical harmonics
+// (env_sh_irradiance), and its sun on its own, a light from one direction.
+struct EnvLight {
+    Vector3[9] sh;    // irradiance(n) = sum sh[i] * basis_i(n) (sh_basis)
+    Vector3 sun_dir;  // unit, towards the sun
+    Vector3 sun;      // the light the sun gives a surface facing it (0: no sun)
+}
+
+// The light the map puts on a surface facing `n` (as the shader's env_irradiance).
+fn Vector3 EnvLight.irradiance(&self, Vector3 n) {
+    float[9] b;
+    sh_basis(n, &b);
+    Vector3 e;
+    for (int k = 0; k < 9; k++) e += self.sh[k] * b[k];
+    e = { math::max(e.x, 0.0f), math::max(e.y, 0.0f), math::max(e.z, 0.0f) };
+    return e + self.sun * math::max(n.dot(self.sun_dir), 0.0f);
+}
+
+// The diffuse light of a longitude/latitude image of radiance (see env_sh_irradiance for the
+// layout and the pixels). A sun (a small spot far brighter than the rest: its brightest pixel
+// SUN_CONTRAST times the image's average) is taken out of the harmonics, which would spread it
+// all round (a sun at the horizon lighting the ground's underside), and kept as a light from
+// one direction: what the pixels within SUN_RADIUS of the brightest have above the light
+// around them (from SUN_RADIUS to twice that).
+const float SUN_CONTRAST = 30;
+const float SUN_RADIUS   = 8 * DEG2RAD;
+
+fn EnvLight env_light(float[] floats, char[] bytes, int w, int h, bool srgb) {
+    float[] px = mem::new_array(float, (sz)w * h * 4);
+    defer free(px);
+    float mean;
+    float peak = -1;
+    Vector3 peak_dir;
+    for (int y = 0; y < h; y++) {
+        float phi = ((float)y + 0.5f) / h * PI;
+        for (int x = 0; x < w; x++) {
+            sz i = ((sz)y * w + x) * 4;
+            Vector3 c;
+            if (floats.len) {
+                c = { floats[i], floats[i + 1], floats[i + 2] };
+            } else {
+                c = { bytes[i] / 255.0f, bytes[i + 1] / 255.0f, bytes[i + 2] / 255.0f };
+                if (srgb) c = { srgb_to_linear(c.x), srgb_to_linear(c.y), srgb_to_linear(c.z) };
+            }
+            px[i] = c.x;
+            px[i + 1] = c.y;
+            px[i + 2] = c.z;
+            float lum = luminance(c);
+            mean += lum * math::sin(phi);
+            if (lum > peak) {
+                peak = lum;
+                peak_dir = env_dir(x, y, w, h);
+            }
+        }
+    }
+    // (the average over the sphere: sin(phi) weighs the rows by their solid angle)
+    mean /= (float)w * h * 2 / PI;
+    EnvLight env;
+    if (mean > 0 && peak > SUN_CONTRAST * mean) {
+        // the light around the sun, then what the sun has above it
+        Vector3 around;
+        float around_w;
+        for (int y = 0; y < h; y++) {
+            for (int x = 0; x < w; x++) {
+                float a = math::acos(math::clamp(env_dir(x, y, w, h).dot(peak_dir), -1.0f, 1.0f));
+                if (a < SUN_RADIUS || a > 2 * SUN_RADIUS) continue;
+                float o = env_omega(y, w, h);
+                sz i = ((sz)y * w + x) * 4;
+                around += (Vector3) { px[i], px[i + 1], px[i + 2] } * o;
+                around_w += o;
+            }
+        }
+        if (around_w > 0) around /= around_w;
+        Vector3 toward;
+        for (int y = 0; y < h; y++) {
+            for (int x = 0; x < w; x++) {
+                Vector3 d = env_dir(x, y, w, h);
+                if (d.dot(peak_dir) < math::cos(SUN_RADIUS)) continue;
+                sz i = ((sz)y * w + x) * 4;
+                Vector3 extra = {
+                    math::max(px[i] - around.x, 0.0f),
+                    math::max(px[i + 1] - around.y, 0.0f),
+                    math::max(px[i + 2] - around.z, 0.0f)
+                };
+                float o = env_omega(y, w, h);
+                env.sun += extra * o;
+                toward += d * (luminance(extra) * o);
+                px[i] -= extra.x;
+                px[i + 1] -= extra.y;
+                px[i + 2] -= extra.z;
+            }
+        }
+        env.sun_dir = toward.length() > 0 ? toward.normalize() : peak_dir;
+    }
+    env.sh = env_sh_irradiance(px, { }, w, h, false);
+    return env;
+}
+
+fn float luminance(Vector3 c) @local => 0.2126f * c.x + 0.7152f * c.y + 0.0722f * c.z;
+
+// The direction of pixel (x, y) of a w x h longitude/latitude image, and its solid angle.
+fn Vector3 env_dir(int x, int y, int w, int h) @local {
+    float phi   = ((float)y + 0.5f) / h * PI;
+    float theta = (((float)x + 0.5f) / w - 0.5f) * 2 * PI;
+    return { math::cos(theta) * math::sin(phi), math::cos(phi), math::sin(theta) * math::sin(phi) };
+}
+
+fn float env_omega(int y, int w, int h) @local => (2 * PI / w) * (PI / h) * math::sin(((float)y + 0.5f) / h * PI);
 
 // The irradiance of a longitude/latitude image of radiance (rows as uploaded: the first at the
 // top, y up), as 9 coefficients c with irradiance(n) = sum c[i] * basis_i(n): the radiance
