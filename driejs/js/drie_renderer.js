@@ -23,7 +23,8 @@
 // outlines of js/outline_effect.js's OutlineEffect, DataTextures of bytes (RGBA, RG or red),
 // blending (every mode, premultipliedAlpha, and custom blending's equations and factors),
 // toneMapped, a texture's repeat and offset as they change, scene.background as a flat
-// texture, and the maps of MeshStandardMaterial and
+// texture, displacementMap (with its scale and bias), OrthographicCamera, and the maps of
+// MeshStandardMaterial and
 // MeshPhysicalMaterial: normal, roughness, metalness and ao maps, and the physical material's
 // transmission (with its maps), volume, ior, dispersion and specular color and intensity (with
 // theirs), clearcoat, sheen, iridescence and anisotropy (with the geometry's tangents). Any material's lightMap (on the first or the
@@ -399,6 +400,8 @@ export class DrieRenderer {
 			this._scene.lights.push(o);
 		} else if (o.isPerspectiveCamera) {
 			id = N.camera(o.fov, o.aspect, o.near, o.far);
+		} else if (o.isOrthographicCamera) {
+			id = N.orthoCamera(o.left, o.right, o.top, o.bottom, o.near, o.far);
 		} else {
 			id = N.group();
 		}
@@ -761,10 +764,12 @@ export class DrieRenderer {
 		const bump = this._map(material.bumpMap);
 		const matcap = this._texture(material.matcap);
 		const gradient = this._texture(material.gradientMap);
-		const key = `${bump} ${material.bumpScale} ${matcap} ${gradient}`;
+		const displacement = this._map(material.displacementMap);
+		const key = `${bump} ${material.bumpScale} ${matcap} ${gradient} ${displacement} ${material.displacementScale} ${material.displacementBias}`;
 		if (material.__drieSurface === key) return;
 		material.__drieSurface = key;
-		N.materialSurface(material.__drie, bump, material.bumpScale ?? 1, matcap, gradient);
+		N.materialSurface(material.__drie, bump, material.bumpScale ?? 1, matcap, gradient, displacement,
+			material.displacementScale ?? 1, material.displacementBias ?? 0);
 	}
 
 	// blending, premultipliedAlpha and the custom blending's equations and factors (three sets
@@ -893,13 +898,11 @@ export class DrieRenderer {
 	}
 
 	_project(camera) {
-		const p = camera.__drieProjection ?? (camera.__drieProjection = []);
-		if (p[0] === camera.fov && p[1] === camera.aspect && p[2] === camera.near && p[3] === camera.far && p[4] === camera.zoom) return;
-		p[0] = camera.fov;
-		p[1] = camera.aspect;
-		p[2] = camera.near;
-		p[3] = camera.far;
-		p[4] = camera.zoom;
-		N.cameraUpdate(camera.__drie, camera.fov, camera.aspect, camera.near, camera.far, camera.zoom);
+		const c = camera;
+		const key = `${c.fov} ${c.aspect} ${c.near} ${c.far} ${c.zoom} ${c.left} ${c.right} ${c.top} ${c.bottom}`;
+		if (c.__drieProjection === key) return;
+		c.__drieProjection = key;
+		N.cameraUpdate(c.__drie, c.fov ?? 50, c.aspect ?? 1, c.near, c.far, c.zoom, c.left ?? -1, c.right ?? 1, c.top ?? 1,
+			c.bottom ?? -1);
 	}
 }

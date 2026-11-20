@@ -439,6 +439,10 @@ struct Mesh {
     Mat4 motion_prev;
     Mat4 motion_cur;
     int motion_frame;
+    // its material's displacement_map read at each vertex (see the renderer's
+    // displacement_heights), and what they were read for
+    SgBuffer displacement_buf;
+    ulong displacement_key;
 }
 
 // Draws the same geometry many times with one draw call, like THREE.InstancedMesh.

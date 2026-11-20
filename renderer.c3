@@ -464,7 +464,8 @@ fn void Renderer.render_back_faces(&self, RenderTarget* target) {
                         -1,
                         shaders::ATTR_THREE_INST0,
                         shaders::ATTR_THREE_INST1,
-                        shaders::ATTR_THREE_INST2
+                        shaders::ATTR_THREE_INST2,
+                        shaders::ATTR_THREE_HEIGHT
                     }
                 ),
                 .depth = { .pixel_format = DEPTH, .write_enabled = true, .compare = LESS_EQUAL },
@@ -1003,7 +1004,7 @@ fn void on_event(SappEvent* e) @local {
 // position, normal, uv, color, uv1, tangent, and the instance's three rows. Buffer 0: the
 // geometry's vertices, 1: the instances, 2: the second uv set, 3: the tangents (see
 // bind_instances), only for a program that reads them (tangent -1: none).
-fn SgVertexLayoutState vertex_layout(int[9] attrs) @local {
+fn SgVertexLayoutState vertex_layout(int[10] attrs) @local {
     SgVertexLayoutState layout;
     layout.buffers[0].stride = FLOATS_PER_VERTEX * float::size;
     layout.buffers[1] = { .stride = 12 * float::size, .step_func = PER_INSTANCE };
@@ -1020,6 +1021,8 @@ fn SgVertexLayoutState vertex_layout(int[9] attrs) @local {
     layout.attrs[attrs[6]] = { .format = FLOAT4, .offset = 0, .buffer_index = 1 };
     layout.attrs[attrs[7]] = { .format = FLOAT4, .offset = 16, .buffer_index = 1 };
     layout.attrs[attrs[8]] = { .format = FLOAT4, .offset = 32, .buffer_index = 1 };
+    layout.buffers[4].stride = float::size;
+    layout.attrs[attrs[9]] = { .format = FLOAT, .offset = 0, .buffer_index = 4 };
     return layout;
 }
 
@@ -1184,7 +1187,8 @@ fn SgPipeline get_pipeline(
                 tangents ? shaders::ATTR_THREE_TANGENT_TANGENT : -1,
                 shaders::ATTR_THREE_INST0,
                 shaders::ATTR_THREE_INST1,
-                shaders::ATTR_THREE_INST2
+                shaders::ATTR_THREE_INST2,
+                shaders::ATTR_THREE_HEIGHT
             }
         ),
         .depth = {
@@ -1234,7 +1238,8 @@ fn SgPipeline get_shadow_pipeline() @local {
                     -1,
                     shaders::ATTR_SHADOW_INST0,
                     shaders::ATTR_SHADOW_INST1,
-                    shaders::ATTR_SHADOW_INST2
+                    shaders::ATTR_SHADOW_INST2,
+                    shaders::ATTR_SHADOW_HEIGHT
                 }
             ),
             .depth = {
@@ -1269,7 +1274,8 @@ fn void clear_atlas_tile() @local {
                         -1,
                         shaders::ATTR_SHADOW_INST0,
                         shaders::ATTR_SHADOW_INST1,
-                        shaders::ATTR_SHADOW_INST2
+                        shaders::ATTR_SHADOW_INST2,
+                        shaders::ATTR_SHADOW_HEIGHT
                     }
                 ),
                 .depth = { .pixel_format = DEPTH, .write_enabled = true, .compare = ALWAYS },
@@ -2246,6 +2252,51 @@ fn Vec4[2] uv_rows(Texture* t) @local {
 
 fn Vec4[2] uv_transform(Material* mat) @local => uv_rows(uv_base(mat));
 
+// The vertex shaders' Material.displacement_map: scale, bias, and 1 if the heights are read.
+fn Vec4 displacement_params(Material* mat) @local {
+    Texture* t = mat.displacement_map;
+    bool read = t && t.keep_pixels && t.preparing.load() == 2;
+    return { mat.displacement_scale, mat.displacement_bias, read ? 1 : 0, 0 };
+}
+
+// The mesh's vertex attribute of heights: its material's displacement_map read at each
+// vertex's uv (placed by the map's uv transform), worked out again when the geometry, the map
+// or its placement changes. Zeros without a map.
+fn SgBuffer displacement_heights(Mesh* m) @local {
+    Texture* t = m.material.displacement_map;
+    BufferGeometry* g = m.geometry;
+    uint n = g.vertex_count();
+    if (!t) return zeros(n);
+    if (!t.keep_pixels) {
+        Texture* image = t.source ?: t;
+        if (image.preparing.load() == 2) {
+            if (!image.keep_pixels) io::eprintfn("drie: a displacement map was uploaded before it was one: it has no pixels to read");
+        }
+        t.keep_pixels = true;
+        image.keep_pixels = true;
+    }
+    Texture* image = t.source ?: t;
+    if (image.preparing.load() != 2) image.prepare();
+    Vec4[2] rows = uv_rows(t);
+    ulong key = (ulong)(uptr)t * 31 + g.version;
+    for (int i = 0; i < 2; i++) {
+        for (int k = 0; k < 3; k++) key = key * 1000003 + bitcast(rows[i][k], uint);
+    }
+    if (m.displacement_buf.id && m.displacement_key == key) return m.displacement_buf;
+    if (m.displacement_buf.id) sg::destroy_buffer(m.displacement_buf);
+    float[] heights = mem::new_array(float, (usz)math::max(n, 1u));
+    defer free(heights);
+    for (uint v = 0; v < n; v++) {
+        float u0 = g.vertices[(usz)v * FLOATS_PER_VERTEX + 6];
+        float v0 = g.vertices[(usz)v * FLOATS_PER_VERTEX + 7];
+        Vector2 at = { rows[0].x * u0 + rows[0].y * v0 + rows[0].z, rows[1].x * u0 + rows[1].y * v0 + rows[1].z };
+        heights[v] = image.red_at(at);
+    }
+    m.displacement_buf = sg::make_buffer(&&{ .data = { .ptr = heights.ptr, .size = heights.len * float::size }, .label = "drie-displacement" });
+    m.displacement_key = key;
+    return m.displacement_buf;
+}
+
 // The uv of texture t from the uv of `base` (the color map's: see uv_base), for the fragment
 // shader's uv_rel: t's transform after the inverse of base's.
 // (on the second uv set, t's own transform of it: a 1 in the first row's w)
@@ -2397,6 +2448,7 @@ fn VsParams vs_params_of(DrawItem* item, Mat4 view_proj, bool normals = true) @l
     }
     if (state.bake.on) vs.bake = { 1, depth_zero_to_one() ? 1 : 0, 0, 0 };
     vs.outline = { mat.outline, 0, 0, 0 };
+    vs.displacement = displacement_params(mat);
     return vs;
 }
 
@@ -2754,6 +2806,7 @@ fn void draw_shadow_item(DrawItem* item, Mat4 light_vp, Vector3 origin = { 0, 0,
         .s_inst_cull = inst_cull,
         .s_material_custom = mat.custom,
         .s_frame_custom = state.renderer.custom,
+        .s_displacement = displacement_params(mat),
     };
     sg::apply_uniforms(shaders::UB_SHADOW_VS_PARAMS, &&{ .ptr = &vs, .size = ShadowVsParams::size });
     ShadowFsParams fs = {
@@ -2770,6 +2823,7 @@ fn void bind_instances(SgBindings* bind, DrawItem* item, bool tangents = false) 
     Mesh* m = item.mesh;
     BufferGeometry* g = m.geometry;
     bind.vertex_buffers[2] = g.uv1buf.id ? g.uv1buf : zeros(g.vertex_count());
+    bind.vertex_buffers[4] = displacement_heights(m);
     if (tangents) bind.vertex_buffers[3] = g.tangent_buf;
     if (!m.instance_data.len()) {
         bind.vertex_buffers[1] = state.identity_instance;
@@ -3504,7 +3558,8 @@ fn SgPipeline bake_pipeline(SgPixelFormat format) @local {
                     -1,
                     shaders::ATTR_THREE_INST0,
                     shaders::ATTR_THREE_INST1,
-                    shaders::ATTR_THREE_INST2
+                    shaders::ATTR_THREE_INST2,
+                    shaders::ATTR_THREE_HEIGHT
                 }
             ),
             .depth.pixel_format = NONE,

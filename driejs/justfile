@@ -194,7 +194,11 @@ assets: \
     (asset "textures/lensflare/lensflare0.png" "5266c28e6597607f5646801469a7a08f98b4eddd358cef1824745698671802b8") \
     (asset "textures/lensflare/lensflare0_alpha.png" "5f632ba4d17b6645b665c06eba4e57eaee39099009e9322ed58269ad88fc0365") \
     (asset "models/gltf/ferrari_ao.png" "d2b0e56a6191cce2992db488fe59fc788a02aed58717554eefc0e6bf16786430") \
-    (asset "models/gltf/ferrari.glb" "cafe3f48da6797aa9bde75ca768bc5b57db366575fd233e90df186ae988a876e")
+    (asset "models/gltf/ferrari.glb" "cafe3f48da6797aa9bde75ca768bc5b57db366575fd233e90df186ae988a876e") \
+    (asset "models/obj/ninja/normal.png" "aa147cbb271787f793b437607b076fb170555f3f8dc3c392cc29910ca7a63d49") \
+    (asset "models/obj/ninja/ao.jpg" "004c1b0c9829fd5c25d413fce2ff0224e5e62f17f8064af9e34d9c2887e6b41b") \
+    (asset "models/obj/ninja/displacement.jpg" "5da43d969f6c178b1d2d819c5da523c66432a24f351d80afc88b1ada5f2c3f3b") \
+    (asset "models/obj/ninja/ninjaHead_Low.obj" "07819eacecae77a8539fbaf673d9a0908ec2e6383d1b6cedd94544b2a2f2c53b")
 
 [private]
 asset path sha256: (fetch examples + "/" + path sha256 "demos/" + path)

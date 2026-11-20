@@ -159,6 +159,16 @@ struct Material {
     // pixel, bump_scale strong (three's bumpMap and bumpScale), after the normal map.
     Texture* bump_map;
     float bump_scale;
+    // A height map (red) that moves the vertices out along their normals by its red times
+    // displacement_scale, plus displacement_bias (three's displacementMap, displacementScale
+    // and displacementBias). The normals stay as they are, and so do the bounds the frustum
+    // culling goes by. The map is read at each vertex on the CPU, once for each geometry and
+    // placement of the map, so it keeps its pixels (Texture.keep_pixels, which the renderer
+    // sets when it first draws the material: before the upload, unless another material has
+    // drawn with the texture already). An 8-bit image only.
+    Texture* displacement_map;
+    float displacement_scale;
+    float displacement_bias;
     // MeshMatcapMaterial's image of a lit sphere, read where the normal points as the viewer
     // sees it (three's matcap; without one, a gray gradient from top to bottom).
     Texture* matcap;
@@ -405,6 +415,7 @@ fn void Material.init_base(
     self.blend_src_alpha = SRC_ALPHA_FACTOR;
     self.blend_dst_alpha = ONE_MINUS_SRC_ALPHA_FACTOR;
     self.bump_scale = 1;
+    self.displacement_scale = 1;
     self.refraction_ratio = 0.98f;
     self.clearcoat_normal_scale = { 1, 1 };
     self.sheen_roughness = 1;
