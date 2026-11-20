@@ -1288,9 +1288,8 @@ fn SgPipeline get_pipeline(
         if (!nodes.pipeline_ready(key, variant, node_base_desc(nodes, variant), &desc, background())) return { };
         desc.shader = node_shader(nodes, variant);
     } else if (pipeline_warmup) {
-        // (a pipeline cache being loaded: the program compiled in the background, the pipeline
-        // made when first drawn)
-        start_material_shader(variant, tangents);
+        // (a pipeline cache being loaded: compiled in the background, made when first drawn)
+        pipeline_warmup.start(variant, tangents, &desc);
         return { };
     } else {
         desc.shader = material_shader(variant, tangents);
@@ -1345,8 +1344,20 @@ fn void start_material_shader(NodeVariant v, bool tangents) @local {
     if (state.material_shaders[t][v.ordinal].id || state.material_jobs[t][v.ordinal]) return;
     @pool() {
         SgShaderDesc desc = material_shader_desc(v, tangents, false);
-        state.material_jobs[t][v.ordinal] = sg_warm_shader_begin(&desc) + 1;
+        int job = sg_warm_shader_begin(&desc);
+        if (job >= 0) state.material_jobs[t][v.ordinal] = job + 1;
     };
+}
+
+// Makes `job` (sg_warm_begin's or sg_warm_shader_begin's) the one compiling
+// material_shader(v, tangents), if that isn't made or compiling yet: false if it is.
+fn bool claim_material_job(NodeVariant v, bool tangents, int job) @private {
+    if (tangents && v == OPAQUE) v = MAIN;
+    if (tangents && v == OPAQUE_MRT) v = MRT;
+    int t = tangents ? 1 : 0;
+    if (state.material_shaders[t][v.ordinal].id || state.material_jobs[t][v.ordinal]) return false;
+    state.material_jobs[t][v.ordinal] = job + 1;
+    return true;
 }
 
 // How many of the material shader's programs are compiling in the background.
@@ -1501,7 +1512,7 @@ fn SgPipeline get_shadow_pipeline(NodeProgram* nodes = null) @private {
         if (!nodes.pipeline_ready(NODE_SHADOW_KEY, SHADOW, node_base_desc(nodes, SHADOW), &desc, background())) return { };
         desc.shader = node_shader(nodes, SHADOW);
     } else if (pipeline_warmup) {
-        start_material_shader(SHADOW, false);
+        pipeline_warmup.start(SHADOW, false, &desc);
         return { };
     } else {
         desc.shader = material_shader(SHADOW, false);

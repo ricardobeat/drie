@@ -79,6 +79,9 @@ struct PipelineWarmup @private {
     List{PipelineRecord} pending;
     // all it was given (one of each, however many caches list it)
     List{PipelineRecord} loaded;
+    // the engine's pipelines compiling (sg_warm_begin's jobs) whose programs were compiling
+    // already (the others' jobs are their programs': material_jobs)
+    List{int} jobs;
     // node programs whose pipelines it has started
     List{NodeProgram*} programs;
     // the pipelines it has started
@@ -108,6 +111,17 @@ fn bool PipelineWarmup.add(&self, PipelineRecord r) {
     self.loaded.push(r);
     self.pending.push(r);
     return true;
+}
+
+// Compiles the engine's pipeline `desc`, with program `v` of the material shader, in the
+// background (for get_pipeline): the program with it, if it isn't made or compiling yet.
+fn void PipelineWarmup.start(&self, NodeVariant v, bool tangents, SgPipelineDesc* desc) {
+    @pool() {
+        SgShaderDesc shader = material_shader_desc(v, tangents, false);
+        int job = sg_warm_begin(&shader, desc);
+        if (job < 0) return;
+        if (!claim_material_job(v, tangents, job)) self.jobs.push(job);
+    };
 }
 
 // The pipelines (those made so far), as the text load_pipeline_cache takes, in `a`'s memory:
@@ -177,6 +191,7 @@ fn int Renderer.load_pipeline_cache(&self, String text) {
     if (!w.pending.is_initialized()) {
         w.pending.init(mem);
         w.loaded.init(mem);
+        w.jobs.init(mem);
         w.programs.init(mem);
     }
     int added;
@@ -258,6 +273,17 @@ fn int[2] Renderer.compiling(&self) {
     PipelineWarmup* w = &cache_warmup;
     self.pump_pipeline_cache();
     int[2] n = { (int)w.pending.len(), w.started + (int)w.pending.len() };
+    if (w.jobs.is_initialized()) {
+        for (sz i = 0; i < w.jobs.len();) {
+            if (sg_warm_state(w.jobs[i]) == 0) {
+                n[0]++;
+                i++;
+            } else {
+                sg_warm_end(w.jobs[i]);
+                w.jobs.remove_at(i);
+            }
+        }
+    }
     @pool() {
         foreach (p : w.programs) n[0] += p.compiling()[0];
     };
@@ -281,6 +307,9 @@ fn void Renderer.pump_pipeline_cache(&self) {
             return;
     }
     int running;
+    foreach (job : w.jobs) {
+        if (sg_warm_state(job) == 0) running++;
+    }
     @pool() {
         foreach (p : w.programs) running += p.compiling()[0];
     };
