@@ -4,9 +4,13 @@
 //   just thumbs                  renders each demo's thumbnail into demos/thumbs/
 //   just run demos/index.js
 //
-// A demo without a thumbnail shows as a grey tile. This script is driejs's own (not one of
-// three.js's examples): it lists the folder, writes the names and starts the demos through
-// the host (globalThis.__drie: files, label, labelScale, run).
+// A demo without a thumbnail shows as a grey tile. Each thumbnail holds the pipelines its
+// demo drew with (a pipeline cache): the page has them all compiled in the background while it
+// is up, with a bar in its top right corner till they are, so that a demo opens without the
+// second or two its shaders would take. This script is driejs's own (not one of three.js's
+// examples): it lists the folder, writes the names, loads the caches and starts the demos
+// through the host (globalThis.__drie: files, label, labelScale, loadPipelineCache,
+// pipelineCacheProgress, run).
 import * as THREE from 'three';
 
 const host = globalThis.__drie;
@@ -59,6 +63,8 @@ const tiles = names.map( ( name, i ) => {
 
 	if ( host.fileSize( host.baseDir + thumbnail ) > 0 ) {
 
+		host.loadPipelineCache( host.baseDir + thumbnail );
+
 		loader.load( thumbnail, ( texture ) => {
 
 			texture.colorSpace = THREE.SRGBColorSpace;
@@ -85,6 +91,28 @@ const tiles = names.map( ( name, i ) => {
 	return { name, x, y, frame };
 
 } );
+
+// the pipelines' progress: a bar in a box with a 2 point border, at the top right
+const BAR_WIDTH = 160;
+const BAR_HEIGHT = 10;
+const BORDER = 2;
+const barX = width - MARGIN - BAR_WIDTH;
+const barY = MARGIN;
+
+function rectangle( color, x, y, w, h, z ) {
+
+	const mesh = new THREE.Mesh( plane, new THREE.MeshBasicMaterial( { color } ) );
+	mesh.scale.set( w, h, 1 );
+	mesh.position.set( x + w / 2, - ( y + h / 2 ), z );
+	scene.add( mesh );
+	return mesh;
+
+}
+
+const barBorder = rectangle( 0xa0a5af, barX - BORDER, barY - BORDER, BAR_WIDTH + BORDER * 2, BAR_HEIGHT + BORDER * 2, 1 );
+const barInside = rectangle( 0x16181d, barX, barY, BAR_WIDTH, BAR_HEIGHT, 2 );
+const bar = rectangle( 0xa0a5af, barX, barY, BAR_WIDTH, BAR_HEIGHT, 3 );
+const progressBar = [ barBorder, barInside, bar ];
 
 let scroll = 0;
 let hovered = null;
@@ -130,6 +158,18 @@ renderer.setAnimationLoop( () => {
 
 	hovered = tileAt( pointer.x, pointer.y );
 	camera.position.y = - height / 2 - scroll;
+
+	// (it stays put as the page scrolls; gone once all have compiled)
+	const progress = host.pipelineCacheProgress();
+	for ( const mesh of progressBar ) {
+
+		mesh.visible = progress < 1;
+		mesh.position.y = - ( mesh === barBorder ? barY - BORDER : barY ) - mesh.scale.y / 2 - scroll;
+
+	}
+
+	bar.scale.x = BAR_WIDTH * progress;
+	bar.position.x = barX + bar.scale.x / 2;
 
 	const columns = Math.floor( tileWidth / glyph );
 

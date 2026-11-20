@@ -4,6 +4,8 @@
 //   png::write("shot.png", pixels, width, height);              // RGBA, sRGB
 //   png::write("shot.png", pixels, width, height, p3: true);    // RGBA, in Display P3's colors
 // 
+// `compress: true` deflates the pixels (smaller, slower to write).
+//
 // A picture in Display P3 says so in a cICP chunk (P3's primaries and white, sRGB's curve),
 // with cHRM and gAMA for readers that predate it; one in sRGB says so in an sRGB chunk.
 //
@@ -14,7 +16,7 @@
 //   char[] data;
 //   if (png::find_chunk(file_bytes, "abCd", &data)) ...
 module drie::png;
-import std::io, std::collections::list;
+import std::io, std::collections::list, std::compression::deflate;
 
 uint[256] crc_table @local;
 bool crc_ready @local;
@@ -68,7 +70,7 @@ struct Chunk {
 // out) to `path`. `bgra`: blue comes first. `p3`: the colors are Display P3's (the output of a
 // pass with DISPLAY_P3_COLOR_SPACE), not sRGB's.
 fn bool write(String path, char[] pixels, int width, int height, bool p3 = false, bool bgra = false, int channels = 4,
-               Chunk[] extra = {}) {
+               Chunk[] extra = {}, bool compress = false) {
     // raw scanlines: filter byte + RGB
     List{char} raw;
     defer raw.free();
@@ -81,14 +83,21 @@ fn bool write(String path, char[] pixels, int width, int height, bool p3 = false
             raw.push(bgra ? pixels[o] : pixels[o + 2]);
         }
     }
-    // zlib stream with stored blocks
+    // zlib stream with stored blocks, or deflate's
     List{char} z;
     defer z.free();
     z.push(0x78);
-    z.push(0x01);
+    z.push(compress ? 0x9c : 0x01);
     sz total = (sz)raw.len();
     sz pos   = 0;
-    while (pos < total || total == 0) {
+    if (compress) @pool() {
+        char[]? packed = deflate::compress(tmem, raw.entries[:total]);
+        if (catch packed) return false;
+        foreach (c : packed) z.push(c);
+        // (the stored blocks' loop skipped)
+        pos = total;
+    };
+    while (pos < total || (total == 0 && !compress)) {
         sz n = total - pos;
         if (n > 65535) n = 65535;
         bool last = pos + n >= total;

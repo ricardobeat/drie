@@ -251,6 +251,8 @@ A material's maps besides `map`, `normal_map` and `arm_map` share six texture sl
 - **Render target & emissive extras:** `render_target.depth_texture`, `overlay_view` for post-resolve overlays, and alpha `0` for high-emissive light sources (`>= 16`) so post-processing can preserve blown-out lamps.
 - **Headless & LOD scaling:** `renderer.init_headless()` (with `drie::commit()`) and `renderer.lod_scale` global multiplier for `Lod` distances.
 - **Shader hooks:** Custom `.glsl` files can define `vertex_hooks` and `surface_hooks` around `@include shader_core.glsl`.
+- **Pipeline cache** (`pipeline_cache.c3`): like Unreal's PSO cache. drie lists every render pipeline it makes (the engine's and node materials', with the state and target they draw with): save the list from a run that plays the game, load it at the start of the next, and the pipelines compile on worker threads, a few at a time, while frames go on, with `renderer.compiling()` for a loading bar. The list is text and holds no compiled code (node programs go in as their hooks' text), so it doesn't go stale with the driver or GPU, it only gets less complete. Metal only; elsewhere loading does nothing.
+- **Compiling in the background:** a node material's program, which the driver takes a second or two to compile, compiles on a worker thread (`renderer.compile_in_background`, on by default, off headless) and its meshes are left out until it's ready, rather than the frame stalling.
 
 <details>
 <summary>Renderer, compute, and shader hook extension API</summary>
@@ -261,6 +263,8 @@ A material's maps besides `map`, `normal_map` and `arm_map` share six texture sl
 | Compute | `drie::storage_buffer(size)` (`cpu_write: true`), `drie::compute_pass(...)`, `renderer.compute(pass, groups_x)` (or `begin_compute()` / `pass.dispatch()` / `end_compute()`), `drie::readback_slot()`, `buffer.track(slot)`, `drie::read_back(slot, out, bytes)` | — |
 | Depth pre-pass | `renderer.depth_prepass`, `renderer.depth_prepass_pixels` (`1.5`) | Minimum pixels per triangle |
 | Shader hooks | `vertex_hooks`, `surface_hooks`, `@include shader_core.glsl`, `renderer.shaders`, `material.custom`, `renderer.custom` | Accessed in GLSL as `material_custom[]` / `frame_custom[]` |
+| Pipeline cache | `renderer.pipeline_cache(allocator)` (the text), `save_pipeline_cache(path)`, `load_pipeline_cache(text)` / `load_pipeline_cache_file(path)`, `renderer.compiling()` (`{ still compiling, all }`), `renderer.screen_stand_in` | A pipeline drawn into the window is listed as the window's and compiled for whatever window loads it; a headless run that renders for one names the target that stands for it (`screen_stand_in`) |
+| Background compiles | `renderer.compile_in_background` (`true`; `false` after `init_headless`) | Node materials' meshes skip frames until their programs are compiled |
 
 </details>
 
@@ -328,6 +332,7 @@ and by them with only the glowing cubes
 should be a horizontal stripe, whether its direction comes from the tangents, `anisotropy_rotation` or the map
 - `just test lightsize`: `tests/lightsize.c3` lights a glossy floor and two balls with bulbs of radius 0, 0.05 and 0.3 m and tubes 0, 0.5 and 1.5 m long: each highlight on the floor should be the bulb's or the tube's shape at its size, and the rough ball should look about the same under all of them
 - `just test nodes`: `tests/nodes.c3` draws five balls with node materials (a texture times a uniform, stripes, rings pushed out by `position_node` through the depth pre-pass and the shadow maps, a `normal_node` with a fresnel glow, a varying), changes a uniform between two renders, renders with and without the pre-pass, with VSM and into MRT, checks a loop, a break and integer arithmetic against a constant, and discards a ball by a uniform, its shadow with it
+- `just test pipeline_cache`: `tests/pipeline_cache.c3` checks that a render lists its engine and node pipelines, that loading the list again adds none, and that a node program no graph has printed yet compiles in the background until `compiling()` says none are left
 - `just test normals`: `tests/normals.c3` loads Khronos's NormalTangentTest (CC0, no tangents) and
 NormalTangentMirrorTest (CC-BY 4.0, tangents): each normal-mapped cell should reflect the horizon as the real geometry beside it does
 
