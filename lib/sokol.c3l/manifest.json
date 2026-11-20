@@ -5,7 +5,7 @@
     ],
     "targets": {
         "macos-aarch64": {
-            "cflags-override": "-O2 -DNDEBUG -DIMPL -mmacos-version-min=14.0 -x objective-c -DSOKOL_METAL",
+            "cflags-override": "-O2 -DNDEBUG -DIMPL -x objective-c -DSOKOL_METAL",
             "linked-libraries": [
                 "Foundation.framework",
                 "CoreGraphics.framework",
