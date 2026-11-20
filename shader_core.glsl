@@ -593,7 +593,8 @@ layout(binding=1) uniform fs_params {
     vec4 env_pos;      // where the map was captured, w = 1 for box projection
     vec4 env_box_min;  // the room the map shows, for box projection
     vec4 env_box_max;
-    vec4 env_sh[9];    // the scene's environment's irradiance, as Texture.env_sh (rgb)
+    vec4 env_sh[9];    // the scene's environment's irradiance, as Texture.env_light: its
+                       //   harmonics (rgb), its sun's direction (w of 0..2) and light (w of 3..5)
     vec4 screen_params; // xy = 1 / render target size (screen-space map), z = LOD cross-fade (0..1),
                         //   w = 1 fading in, -1 fading out, 0 none
     vec4 cull_min;      // w = 1: fragments inside cull_min..cull_max are not drawn
@@ -2179,14 +2180,19 @@ vec2 env_uv(vec3 d) {
     return vec2(atan(d.z, d.x) * (0.5 * RECIPROCAL_PI) + 0.5, acos(clamp(d.y, -1.0, 1.0)) * RECIPROCAL_PI);
 }
 
-// The light the scene's environment puts on a surface facing n: env_sh's 9 spherical
-// harmonics, in the order of texture.c3's sh_basis.
+// The light the scene's environment puts on a surface facing n, but for its sun (env_sun):
+// env_sh's 9 spherical harmonics, in the order of texture.c3's sh_basis.
 vec3 env_irradiance(vec3 n) {
     vec3 e = env_sh[0].rgb + env_sh[1].rgb * n.y + env_sh[2].rgb * n.z + env_sh[3].rgb * n.x
            + env_sh[4].rgb * (n.x * n.y) + env_sh[5].rgb * (n.y * n.z) + env_sh[6].rgb * (3.0 * n.z * n.z - 1.0)
            + env_sh[7].rgb * (n.x * n.z) + env_sh[8].rgb * (n.x * n.x - n.y * n.y);
     return max(e, vec3(0.0));
 }
+
+vec3 env_sun_dir() { return vec3(env_sh[0].w, env_sh[1].w, env_sh[2].w); }
+
+// The environment's sun on a surface facing n (EnvLight.irradiance is this and env_irradiance).
+vec3 env_sun(vec3 n) { return vec3(env_sh[3].w, env_sh[4].w, env_sh[5].w) * max(dot(n, env_sun_dir()), 0.0); }
 
 // The map being read: the material's own (g_env_layer < 0), or a layer of the scene's probes.
 float g_env_layer;
@@ -2790,8 +2796,17 @@ void main() {
         if (mode == 3) diffuse_color *= (1.0 - g_metal);
 
         vec3 sky_light = ambient.rgb + mix(hemi_ground.rgb, hemi_sky.rgb, 0.5 * n.y + 0.5);
-        // the scene's environment (Scene.environment): the light from all around n
-        if (env_params.z > 0.0) sky_light += env_params.y * env_irradiance(n);
+        // the scene's environment (Scene.environment): the light from all around n, and its
+        // sun, unless a directional light comes from where the sun is: that light is the sun
+        // (with its shadow), the picture's is the same light again
+        if (env_params.z > 0.0) {
+            sky_light += env_params.y * env_irradiance(n);
+            vec3 sun = env_sun(n);
+            for (int i = 0; i < int(counts.x); i++) {
+                if (dot(normalize(dirs[i].dir.xyz), env_sun_dir()) > 0.996) sun = vec3(0.0);
+            }
+            sky_light += env_params.y * sun;
+        }
         float gi_cover;
         vec3 gi = gi_irradiance(n, gi_cover);
         vec3 irradiance = gi_min[0].w > 1.5 ? sky_light * (1.0 - gi_cover) + gi : sky_light + gi;
