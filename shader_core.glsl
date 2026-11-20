@@ -655,7 +655,8 @@ float g_rough;
 float g_metal;
 vec3 g_f0;        // a standard material's reflectance head on, and at a grazing angle
 float g_f90;      //   (from ior, specular_color and specular_intensity; set after the maps)
-float g_radius;   // source radius of the light being evaluated
+float g_radius;   // source radius of the light being evaluated (its highlights')
+vec3 g_light_vec; // from the surface to the centre of the point or spot light being evaluated
 // three's MeshPhysicalMaterial layers, set after the maps (0: off): a clear coat over the
 // surface (its own normal and roughness), a sheen of fibers on it, a thin film's rainbow
 float g_clearcoat;
@@ -692,8 +693,30 @@ bool g_hex = false;
 vec2 g_hex_off[3];
 vec3 g_hex_w;
 
+// A light with a size, seen in reflections (Karis, "Real Shading in Unreal Engine 4", 2013,
+// the representative point): the direction toward the point of the light nearest the ray `r`
+// reflected off the surface, for the highlight. The light stays as bright as the point light at
+// its centre; `norm` takes away what the highlight gains by moving its source around on the
+// light, (a / a')^2 for a sphere with a' = saturate(a + radius / (3 distance)) (his eq. 10, 11
+// and 14). Without a radius: the direction to the centre and 1.
+vec3 light_toward(vec3 r, float a, out float norm) {
+    vec3 lv = g_light_vec;
+    norm = 1.0;
+    if (g_radius > 0.0) {
+        float d = length(lv);
+        // (the light's centre to the ray: Karis' eq. 11 with its sign put right)
+        vec3 to_ray = dot(lv, r) * r - lv;
+        lv += to_ray * clamp(g_radius / max(length(to_ray), 1e-6), 0.0, 1.0);
+        float k = a / clamp(a + g_radius / (3.0 * max(d, 1e-4)), 0.0, 1.0);
+        norm = k * k;
+    }
+    return normalize(lv);
+}
+
 // Direct light contribution, following three.js's (r155+) physically based light units.
-// Returns diffuse in rgb; adds specular to `spec`.
+// Returns diffuse in rgb; adds specular to `spec`. `l` is toward the light's centre (the
+// diffuse light's direction); point and spot lights with a size (g_radius) take their
+// highlights from light_toward.
 vec3 direct(int mode, vec3 n, vec3 v, vec3 l, float dist, vec3 radiance, vec3 diffuse_color, inout vec3 spec) {
     bool foliage = (flags() & 2) != 0;
     float ndl = dot(n, l);
@@ -712,9 +735,14 @@ vec3 direct(int mode, vec3 n, vec3 v, vec3 l, float dist, vec3 radiance, vec3 di
             float a = g_clearcoat_rough * g_clearcoat_rough;
             float cnl = clamp(dot(cn, l), 0.0, 1.0);
             float cnv = clamp(dot(cn, v), 1e-4, 1.0);
-            float cnh = clamp(dot(cn, h), 0.0, 1.0);
-            float f = schlick(0.04, 1.0, clamp(dot(v, h), 0.0, 1.0));
-            g_clearcoat_direct += cnl * radiance * f * v_smith(cnv, cnl, a) * d_ggx(cnh, a);
+            // (a light with a size: its highlight on the coat, off the coat's own reflection)
+            float cnorm = 1.0;
+            vec3 cl = g_radius > 0.0 ? light_toward(reflect(-v, cn), a, cnorm) : l;
+            vec3 ch = normalize(cl + v);
+            float cnh = clamp(dot(cn, ch), 0.0, 1.0);
+            float f = schlick(0.04, 1.0, clamp(dot(v, ch), 0.0, 1.0));
+            float ccl = clamp(dot(cn, cl), 0.0, 1.0);
+            g_clearcoat_direct += cnl * radiance * f * v_smith(cnv, ccl, a) * d_ggx(cnh, a) * cnorm;
         }
         if (g_sheen_rough > 0.0) {
             float snv = clamp(dot(n, v), 0.0, 1.0);
@@ -728,32 +756,41 @@ vec3 direct(int mode, vec3 n, vec3 v, vec3 l, float dist, vec3 radiance, vec3 di
     vec3 result = irradiance * diffuse_color * RECIPROCAL_PI;
     if (mode == 1) return result;
 
-    float noh = clamp(dot(n, h), 0.0, 1.0);
-    float voh = clamp(dot(v, h), 0.0, 1.0);
     if (mode == 2) {
+        float noh = clamp(dot(n, h), 0.0, 1.0);
+        float voh = clamp(dot(v, h), 0.0, 1.0);
         float shininess = mat_params.w;
         float d = RECIPROCAL_PI * (shininess * 0.5 + 1.0) * pow(noh, shininess);
         spec += irradiance * f_schlick(specular.rgb, voh) * 0.25 * d;
     } else {
         float rough = max(g_rough, 0.0525);
         float a = rough * rough;
-        // a light with a size gives a wider, dimmer highlight (Karis' sphere light normalization)
-        float a_wide = clamp(a + g_radius / (2.0 * max(dist, 1e-3)), 0.0, 1.0);
-        float norm = a / a_wide;
+        // a light with a size: the highlight is the light's own shape, seen in the surface
+        // (light_toward), as bright in all as the point light's
+        float norm = 1.0;
+        vec3 sl = l;
+        float snl = nol;
+        if (g_radius > 0.0) {
+            sl = light_toward(reflect(-v, n), a, norm);
+            h = normalize(sl + v);
+            snl = clamp(dot(n, sl), 0.0, 1.0);
+        }
+        float noh = clamp(dot(n, h), 0.0, 1.0);
+        float voh = clamp(dot(v, h), 0.0, 1.0);
         float nov = clamp(abs(dot(n, v)), 1e-4, 1.0);
         vec3 fresnel = g_f0 + (vec3(g_f90) - g_f0) * pow(1.0 - voh, 5.0);
         if (g_iridescence > 0.0) fresnel = mix(fresnel, g_iridescence_fresnel, g_iridescence);
-        float vis = v_smith(nov, nol, a_wide);
-        float d = d_ggx(noh, a_wide);
+        float vis = v_smith(nov, snl, a);
+        float d = d_ggx(noh, a);
         if (g_anisotropy > 0.0) {
             // rougher along g_anisotropy_t, by as much as it is anisotropic (three's alphaT)
-            float at = max(mix(a, 1.0, g_anisotropy * g_anisotropy), a_wide);
+            float at = max(mix(a, 1.0, g_anisotropy * g_anisotropy), a);
             vec3 t = g_anisotropy_t;
             vec3 b = g_anisotropy_b;
-            vis = v_smith_aniso(at, a_wide, dot(t, v), dot(b, v), dot(t, l), dot(b, l), nov, nol);
-            d = d_ggx_aniso(at, a_wide, noh, dot(t, h), dot(b, h));
+            vis = v_smith_aniso(at, a, dot(t, v), dot(b, v), dot(t, sl), dot(b, sl), nov, snl);
+            d = d_ggx_aniso(at, a, noh, dot(t, h), dot(b, h));
         }
-        spec += irradiance * fresnel * vis * d * norm * norm;
+        spec += irradiance * fresnel * vis * d * norm;
     }
     return result;
 }
@@ -2177,6 +2214,7 @@ void main() {
             float d = length(lv);
             // a light source with a size: falloff softens up close instead of blowing out
             g_radius = pl.params.x;
+            g_light_vec = lv;
             float d_soft = sqrt(d * d + g_radius * g_radius);
             vec3 radiance = pl.color.rgb * distance_attenuation(d_soft, pl.pos.w, pl.color.w);
             radiance *= fog_transmittance(fog_distance(pl.pos.xyz, v_world_pos));
@@ -2194,6 +2232,7 @@ void main() {
             g_radius = spots[i].params.y;
             float d_soft = sqrt(d * d + g_radius * g_radius);
             g_radius = spots[i].params.z;
+            g_light_vec = lv;
             vec3 radiance = spots[i].color.rgb * cone * distance_attenuation(d_soft, spots[i].pos.w, spots[i].color.w);
             radiance *= fog_transmittance(fog_distance(spots[i].pos.xyz, v_world_pos));
             radiance *= shadow(i, geo_n);
