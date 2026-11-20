@@ -107,6 +107,11 @@ three.js API coverage:
 - `InstancedMesh` grows: `add_instance(matrix)` appends, `set_matrix_at(index, matrix)` changes one.
   `set_color_at(index, color)` (three's `setColorAt`) tints one, times the material's color;
   instances with colors are drawn whole rather than culled on the GPU.
+- A `Mesh` draws `draw_count` of its geometry's indices from `draw_start` when `draw_count` is
+  above 0 (three's `drawRange`). Meshes that share a geometry and each draw a range of it with
+  their own material are three's geometry groups with an array of materials.
+- A material's maps share one sampler in the shader: the color map's, or else a repeating
+  map's. A map that wraps otherwise has its wrapping done on its uv (`Texture.wrap_s`, `wrap_t`).
 - `Lod` (three.js `LOD`) levels are added with `lod.add_level(object, distance)`, in increasing
   distance. A `null` object shows nothing from that distance on.
 - Perspective cameras follow the window's aspect ratio automatically (`renderer.auto_aspect`),

@@ -2629,6 +2629,13 @@ fn SgBuffer displacement_heights(Mesh* m) @local {
     return m.displacement_buf;
 }
 
+// The shader's slot_wrap code for a slot holding `t` and read through `shared`'s sampler: 0 when
+// they wrap alike, else 1 + s + 3 t for t's wrapping across and down.
+fn float wrap_code(Texture* t, Texture* shared) @local {
+    if (t.wrap_s == shared.wrap_s && t.wrap_t == shared.wrap_t) return 0;
+    return (float)(1 + t.wrap_s.ordinal + 3 * t.wrap_t.ordinal);
+}
+
 // The uv of texture t from the uv of `base` (the color map's: see uv_base), for the fragment
 // shader's uv_rel: t's transform after the inverse of base's.
 // (on the second uv set, t's own transform of it: a 1 in the first row's w)
@@ -2738,7 +2745,12 @@ fn int draw_geometry(DrawItem* item, bool lines) @local {
     if (item.job) instances = cull_draw_count(item.job - 1);
     int elements;
     (void)index_buffer_of(item, lines, &elements);
-    sg::draw(0, elements, instances);
+    int first;
+    if (m.draw_count > 0 && !lines && m.draw_mode == TRIANGLES) {
+        first = math::min(m.draw_start, elements);
+        elements = math::min(m.draw_count, elements - first);
+    }
+    sg::draw(first, elements, instances);
     return elements / (m.is_line() ? 2 : 3) * instances;
 }
 
@@ -3036,9 +3048,23 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     bind.views[shaders::VIEW_TEX_ENV] = env.view;
     bind.samplers[shaders::SMP_ENV_SMP] = env.sampler;
     Texture* first = slots[0] ?: (nodes && nodes.texture_count ? nodes.textures[0] : null);
-    bind.samplers[shaders::SMP_TEX_SMP] = (mat.map ?: (mat.normal_map ?: (arm ?: (first ?: state.white)))).sampler;
+    Texture* shared = mat.map ?: (mat.normal_map ?: (arm ?: (first ?: state.white)));
+    // (without a color map, a repeating texture's sampler: the others' wrapping is then done
+    // on their uv in the shader, see slot_wrap, which with clamping costs nothing at the edges)
+    if (!mat.map) {
+        Texture*[8] maps = { mat.normal_map, arm, slots[0], slots[1], slots[2], slots[3], slots[4], slots[5] };
+        foreach (t : maps) {
+            if (t && t.uploaded && t.wrap_s == REPEAT_WRAPPING && t.wrap_t == REPEAT_WRAPPING) {
+                shared = t;
+                break;
+            }
+        }
+    }
+    shared = ready(shared);
+    bind.samplers[shaders::SMP_TEX_SMP] = shared.sampler;
     if (mat.screen_target) {
         bind.views[shaders::VIEW_TEX_MAP] = mat.screen_target.texture;
+        shared = state.white;
         bind.samplers[shaders::SMP_TEX_SMP] = state.white.sampler;
     }
     if (!state.no_probes.id) {
@@ -3137,6 +3163,12 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     for (int k = 0; k < slots.len; k++) {
         rel = uv_relative(base, slots[k]);
         fs.uv_rel[4 + 2 * k:2] = rel[..];
+    }
+    // each slot's wrapping, where it isn't the shared sampler's (see the shader's slot_wrap)
+    fs.uv_rel[1].w = wrap_code(ready(mat.normal_map), shared);
+    fs.uv_rel[3].w = wrap_code(ready(arm), shared);
+    for (int k = 0; k < slots.len; k++) {
+        if (!nodes || k < slots.len - nodes.texture_count) fs.uv_rel[5 + 2 * k].w = wrap_code(ready(slots[k]), shared);
     }
     fs.clearcoat_params = {
         standard ? mat.clearcoat : 0, mat.clearcoat_roughness, mat.clearcoat_normal_scale.x, mat.clearcoat_normal_scale.y
