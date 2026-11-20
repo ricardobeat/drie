@@ -1,7 +1,7 @@
 // Renderer: owns the window and the GPU, draws a Scene from a Camera.
 module drie;
 import std::collections::list, std::collections::map, std::sort, std::io, std::math;
-import sokol, drie::readback, drie::postprocessing;
+import sokol, drie::readback, drie::postprocessing, drie::nodes;
 
 alias AnimationLoop = fn void(double time_ms);
 alias EventListener = fn void(SappEvent* event);
@@ -786,6 +786,11 @@ struct RendererState @local {
     OrthographicCamera* env_camera;
     RenderTarget* env_small;
     List{EnvTarget} env_targets;
+    // Renderer.render_probe's: the six views, the camera they are drawn with and the graph
+    // that reads them into a map
+    RenderTarget*[6] probe_faces;
+    PerspectiveCamera* probe_camera;
+    MeshBasicMaterial* probe_resample;
     // baking a light map (render_bake): what it draws with, the objects that cast the shadows
     // (not in the bake's scene of lights), and its pipelines: [VSM][RGBA32F]
     BakeState bake;
@@ -4676,6 +4681,95 @@ fn Texture* Renderer.render_environment(&self, Material* material, Texture* into
     self.scissor_test = prev_scissor_test;
     self.viewport = prev_viewport;
     return t;
+}
+
+// The six views of render_probe (and capture_environment): straight ahead, and up.
+const Vector3[6] PROBE_AHEAD = { { 1, 0, 0 }, { -1, 0, 0 }, { 0, 1, 0 }, { 0, -1, 0 }, { 0, 0, 1 }, { 0, 0, -1 } };
+const Vector3[6] PROBE_UP = { { 0, 1, 0 }, { 0, 1, 0 }, { 0, 0, -1 }, { 0, 0, 1 }, { 0, 1, 0 }, { 0, 1, 0 } };
+
+// Renders the scene in every direction from `position` into an environment map, all on the
+// GPU, for Scene.environment or a material's env_map: six views `face_size` texels across, in
+// linear light, read into an equirectangular map 4 * face_size texels around (as
+// render_environment draws a material). Like three's CubeCamera.update with its render target,
+// and cheap enough for every frame; `into`: a map this drew before, drawn again. `diffuse` as
+// render_environment's (it waits for the GPU).
+fn Texture* Renderer.render_probe(
+    &self,
+    Scene* scene,
+    Vector3 position,
+    Texture* into = null,
+    int face_size = 256,
+    float near = 0.1,
+    float far = 1000,
+    bool diffuse = true
+) {
+    if (!state.probe_camera) {
+        state.probe_camera = perspective_camera(90, 1, near, far);
+        for (int i = 0; i < 6; i++) state.probe_faces[i] = render_target(face_size, face_size, 4, RGBA16F);
+        state.probe_resample = probe_resample();
+    }
+    PerspectiveCamera* cam = state.probe_camera;
+    cam.near = near;
+    cam.far = far;
+    cam.update_projection_matrix();
+    RenderTarget* prev_target = self.render_target;
+    bool prev_auto = self.auto_aspect;
+    bool prev_auto_clear = self.auto_clear;
+    bool prev_scissor_test = self.scissor_test;
+    int[4] prev_viewport = self.viewport;
+    self.auto_aspect = false;
+    self.auto_clear = true;
+    self.scissor_test = false;
+    self.viewport = { };
+    for (int i = 0; i < 6; i++) {
+        RenderTarget* face = state.probe_faces[i];
+        face.set_size(face_size, face_size, 4);
+        face.as_map();
+        cam.position = position;
+        cam.up = PROBE_UP[i];
+        cam.update_matrix_world();
+        cam.look_at_vec(position + PROBE_AHEAD[i]);
+        cam.update_matrix_world();
+        self.set_render_target(face);
+        self.render(scene, cam);
+    }
+    self.set_render_target(prev_target);
+    self.auto_aspect = prev_auto;
+    self.auto_clear = prev_auto_clear;
+    self.scissor_test = prev_scissor_test;
+    self.viewport = prev_viewport;
+    return self.render_environment(state.probe_resample, into, 4 * face_size, diffuse);
+}
+
+fn Node vec3_node(Vector3 v) @local => node_const(VEC3, { v.x, v.y, v.z, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 });
+
+// The graph that reads render_probe's six views in each direction: the view the direction
+// is most along, where the direction meets it (first row at the top of a view's texture but
+// in GL), without mip levels.
+fn MeshBasicMaterial* probe_resample() @local {
+    Node d = nodes::normal_geometry();
+    Node a = node_call(ABS, d);
+    Node zero = nodes::num(0);
+    float flip = depth_zero_to_one() ? 1 : -1;
+    Node[6] seen;
+    for (int i = 0; i < 6; i++) {
+        Vector3 ahead = PROBE_AHEAD[i];
+        Vector3 up = PROBE_UP[i];
+        Vector3 right = ahead.cross(up);
+        Node along = node_call(MAX, node_call(DOT, d, vec3_node(ahead)), nodes::num(1e-4f));
+        Node x = node_call(DOT, d, vec3_node(right)) / along;
+        Node y = node_call(DOT, d, vec3_node(up)) / along;
+        Node uv = node_join({ x * 0.5f + 0.5f, y * (-0.5f * flip) + 0.5f }, VEC2);
+        seen[i] = nodes::texture(state.probe_faces[i].as_map(), uv, zero).xyz();
+    }
+    Node along_x = node_binary(GE, a.x(), node_call(MAX, a.y(), a.z()));
+    Node along_y = node_binary(GE, a.y(), a.z());
+    Node on_x = nodes::select(node_binary(GT, d.x(), zero), seen[0], seen[1]);
+    Node on_y = nodes::select(node_binary(GT, d.y(), zero), seen[2], seen[3]);
+    Node on_z = nodes::select(node_binary(GT, d.z(), zero), seen[4], seen[5]);
+    MeshBasicMaterial* m = mesh_basic_material(fog: false);
+    m.color_node = nodes::select(along_x, on_x, nodes::select(along_y, on_y, on_z));
+    return m;
 }
 
 fn void commit() {

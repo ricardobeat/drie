@@ -1593,6 +1593,53 @@ fn void h_render_environment(JsCtx ctx, void* udata)
     ctx.ret_number(into < 0 ? @reg(textures, t, TEXTURE_BASE) : into);
 }
 
+// renderProbe(renderer, scene, x, y, z, into or -1, faceSize, near, far, diffuse): the scene
+// drawn in every direction from (x, y, z) into an environment map (drie's Renderer.render_probe:
+// three's CubeCamera.update), into the one given (a map this made before) or a new one; -1
+// before the first frame (nothing to draw with yet)
+fn void h_render_probe(JsCtx ctx, void* udata)
+{
+    Renderer* r = get_renderer(num_arg(ctx, 0, -1));
+    Object3D* o = get_object(num_arg(ctx, 1, -1));
+    if (r == null || o == null || o.kind != SCENE) { ctx.throw_error(TYPE, "renderProbe: invalid argument"); return; }
+    if (!gpu_ready) { ctx.ret_number(-1); return; }
+    double into = num_arg(ctx, 5, -1);
+    Vector3 p = { (float)num_arg(ctx, 2, 0), (float)num_arg(ctx, 3, 0), (float)num_arg(ctx, 4, 0) };
+    float far = (float)num_arg(ctx, 8, 1000);
+    // (the skies around the probe; render puts them back around the camera)
+    follow_skies(p, far);
+    Texture* t = r.render_probe((Scene*)o, p, into < 0 ? null : get_texture(into), (int)num_arg(ctx, 6, 256),
+                                (float)num_arg(ctx, 7, 0.1), far, bool_arg(ctx, 9, true));
+    ctx.ret_number(into < 0 ? @reg(textures, t, TEXTURE_BASE) : into);
+}
+
+// textureLightProbe(texture, out): out (a Float32Array of 27) = the environment map's light on
+// surfaces as three's LightProbe has it (its sh, rgb by coefficient), the sun in it too; 1, or
+// 0 when the map has none yet
+fn void h_texture_light_probe(JsCtx ctx, void* udata)
+{
+    Texture* t = get_texture(num_arg(ctx, 0, -1));
+    View v;
+    if (t == null || !view_arg(ctx, 1, &v) || v.cls != ObjClass.FLOAT32ARRAY || v.len < 27)
+    {
+        ctx.throw_error(TYPE, "textureLightProbe: expected a texture and a Float32Array of 27");
+        return;
+    }
+    if (!t.has_env_sh) { ctx.ret_number(0); return; }
+    // three's irradiance of coefficients c (SphericalHarmonics3.getIrradianceAt) against drie's
+    // of e (EnvLight.irradiance), term by term: c[k] = e[k] / these
+    float[9] scale = { 0.886227f, 1.023328f, 1.023328f, 1.023328f, 0.858086f, 0.858086f, 0.247708f, 0.858086f, 0.429043f };
+    Vector3[9] e = t.env_light.harmonics();
+    float* out = (float*)v.data;
+    for (int k = 0; k < 9; k++) {
+        Vector3 c = e[k] / scale[k];
+        out[k * 3] = c.x;
+        out[k * 3 + 1] = c.y;
+        out[k * 3 + 2] = c.z;
+    }
+    ctx.ret_number(1);
+}
+
 fn void h_set_clear_color(JsCtx ctx, void* udata)
 {
     Renderer* r = get_renderer(num_arg(ctx, 0, -1));
@@ -2276,6 +2323,11 @@ fn int main(String[] args)
         "export { LightProbeGridWebGL as LightProbeGrid } from \"%s/js/light_probe_grid.js\";\n", root))!!;
     js.define_module("three/addons/helpers/LightProbeGridHelper.js", string::tformat(
         "export { LightProbeGridHelperWebGL as LightProbeGridHelper } from \"%s/js/light_probe_grid.js\";\n", root))!!;
+    // LightProbeGenerator.fromCubeRenderTarget from drie's map of a CubeCamera (DrieRenderer._lightProbe)
+    js.define_module("three/addons/lights/LightProbeGenerator.js", string::tformat(
+        "import { LightProbeGenerator } from \"%s/vendor/jsm/lights/LightProbeGenerator.js\";\n"
+        "LightProbeGenerator.fromCubeRenderTarget = (renderer, target) => renderer._lightProbe(target);\n"
+        "export { LightProbeGenerator };\n", root))!!;
     // drie draws what three's webgpu examples ask of WebGPU
     js.define_module("three/addons/capabilities/WebGPU.js",
         "export default class WebGPU {\n"
@@ -2353,6 +2405,8 @@ fn int main(String[] args)
     reg(natives, "backgroundTexture", &h_background_texture, 5);
     reg(natives, "backgroundMaterial", &h_background_material, 2);
     reg(natives, "renderEnvironment", &h_render_environment, 5);
+    reg(natives, "renderProbe", &h_render_probe, 10);
+    reg(natives, "textureLightProbe", &h_texture_light_probe, 2);
     reg(natives, "textureUv", &h_texture_uv, 8);
     reg(natives, "mesh", &h_mesh, 2);
     reg(natives, "line", &h_line, 3);

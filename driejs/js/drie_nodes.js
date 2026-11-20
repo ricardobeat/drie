@@ -19,7 +19,7 @@
 // for a material whose isNodeMaterial is set.
 
 import * as TSL from "../vendor/three.tsl.js";
-import { MeshBasicNodeMaterial } from "../vendor/three.webgpu.js";
+import { CubeRenderTarget, MeshBasicNodeMaterial } from "../vendor/three.webgpu.js";
 import { BackSide, Vector2 } from "../vendor/three.core.js";
 
 const N = globalThis.__drie;
@@ -56,7 +56,7 @@ const LOOP = { "<": 0, "<=": 1, ">": 2, ">=": 3, while: 4 };
 const SLOTS = ["colorNode", "opacityNode", "normalNode", "roughnessNode", "metalnessNode", "emissiveNode", "positionNode", "outputNode",
 	"maskNode"];
 // and those it hasn't
-const UNSUPPORTED = ["fragmentNode", "vertexNode", "lightsNode", "envNode", "aoNode", "alphaTestNode", "maskShadowNode", "mrtNode",
+const UNSUPPORTED = ["vertexNode", "lightsNode", "envNode", "aoNode", "alphaTestNode", "maskShadowNode", "mrtNode",
 	"castShadowNode", "castShadowPositionNode", "receivedShadowNode", "receivedShadowPositionNode", "shadowPositionNode",
 	"depthNode", "backdropNode", "backdropAlphaNode", "clearcoatNode", "clearcoatRoughnessNode", "clearcoatNormalNode",
 	"sheenNode", "sheenRoughnessNode", "iridescenceNode", "iridescenceIORNode", "iridescenceThicknessNode", "specularIntensityNode",
@@ -431,6 +431,7 @@ class Translator {
 			return target;
 		}
 		if (n.isShaderCallNodeInternal) return this.fnCall(n);
+		if (n.isArrayElementNode) return this.element(n);
 		if (isConditional(n)) {
 			if (typeof n.ifNode?.jsFunc === "function") unsupported("If() as a value (use select())");
 			const [a, b] = this.weak([n.ifNode, n.elseNode]);
@@ -644,6 +645,7 @@ class Translator {
 	}
 
 	texture(n) {
+		if (n.isCubeTextureNode && !n.compareNode && !n.gradNode) return this.cube(n);
 		if (n.isCubeTextureNode || n.isTexture3DNode || n.compareNode || n.depthNode || n.gradNode || n.offsetNode) {
 			unsupported(`this kind of texture node (${nodeName(n)})`);
 		}
@@ -664,21 +666,8 @@ class Translator {
 	// none), as drie's environment maps are read (the shader's env_uv, env_blur and env_lod)
 	pmrem(n) {
 		const texture = n._value ?? n.value;
-		const id = envTextureId(this.renderer, texture);
-		this.textures.push([texture, id, true]);
-		const value = (make) => this.node(TSL.nodeObject(make));
-		let dir;
-		if (n.uvNode) dir = this.node(n.uvNode);
-		else if (this.context.getUV) dir = value(this.context.getUV(n, this.builder));
-		else dir = this.reflectVector();
-		let rough;
-		if (n.levelNode) rough = this.node(n.levelNode);
-		else if (this.context.getTextureLevel) rough = value(this.context.getTextureLevel(n));
-		else rough = this.num(0);
-		const d = this.call("normalize", this.convert(dir, T.vec3));
-		const u = this.add(this.mul(this.call("atan2", this.swizzle(d, "z"), this.swizzle(d, "x")), this.num(0.5 / Math.PI)), this.num(0.5));
-		const v = this.mul(this.call("acos", this.call("clamp", this.swizzle(d, "y"), this.num(-1), this.num(1))), this.num(1 / Math.PI));
-		const r = this.convert(rough, T.float);
+		const [id, dir, level] = this.envInputs(n, texture);
+		const r = this.convert(level, T.float);
 		const lerp = (r0, r1, s0, s1) => this.call("mix", this.num(s0), this.num(s1), this.call("saturate", this.mul(this.sub(r, this.num(r0)), this.num(1 / (r1 - r0)))));
 		const at = (x) => this.bin(">=", r, this.num(x));
 		const sigma = N.nodeSelect(at(0.8), lerp(0.8, 1, 0.526, 0.582), N.nodeSelect(at(0.4), lerp(0.4, 0.8, 0.215, 0.526),
@@ -686,7 +675,41 @@ class Translator {
 				this.mul(this.num(1.37), this.mul(r, r))))));
 		const width = this.swizzle(N.nodeTextureSize(id), "x");
 		const lod = this.call("max", this.call("log2", this.call("max", this.mul(sigma, this.mul(width, this.num(1 / Math.PI))), this.num(1e-6))), this.num(0));
-		return this.swizzle(N.nodeTexture(id, this.join(T.vec2, u, v), lod), "xyz");
+		return this.swizzle(this.envTexel(id, dir, lod), "xyz");
+	}
+
+	// cubeTexture(texture, direction, level): drie's environment map of the cube map (or a
+	// CubeCamera's), read in a direction (by default the context's, or reflectVector) at a mip
+	// level (by default the context's, or the sharpest)
+	cube(n) {
+		const [id, dir, level] = this.envInputs(n, n.value);
+		return this.envTexel(id, dir, this.convert(level, T.float));
+	}
+
+	// An environment map's texture, and the direction and level to read it at: the node's, the
+	// context's (getUV, getTextureLevel), or reflectVector and 0.
+	envInputs(n, texture) {
+		const id = envTextureId(this.renderer, texture);
+		this.textures.push([texture, id, true]);
+		const value = (make) => this.node(TSL.nodeObject(make));
+		let dir;
+		if (n.uvNode) dir = this.node(n.uvNode);
+		else if (this.context.getUV) dir = value(this.context.getUV(n, this.builder));
+		else dir = this.reflectVector();
+		let level;
+		if (n.levelNode) level = this.node(n.levelNode);
+		else if (this.context.getTextureLevel) level = value(this.context.getTextureLevel(n));
+		else level = this.num(0);
+		return [id, dir, level];
+	}
+
+	// An environment map's texel in direction `dir` at mip level `lod`, as drie lays the maps
+	// out (the shader's env_uv)
+	envTexel(id, dir, lod) {
+		const d = this.call("normalize", this.convert(dir, T.vec3));
+		const u = this.add(this.mul(this.call("atan2", this.swizzle(d, "z"), this.swizzle(d, "x")), this.num(0.5 / Math.PI)), this.num(0.5));
+		const v = this.mul(this.call("acos", this.call("clamp", this.swizzle(d, "y"), this.num(-1), this.num(1))), this.num(1 / Math.PI));
+		return N.nodeTexture(id, this.join(T.vec2, u, v), lod);
 	}
 
 	// screenUV, screenSize, viewport...: the pixel's place in the target drawn into, from its
@@ -724,6 +747,36 @@ class Translator {
 			size = this.call("max", this.call("floor", this.bin("/", size, this.call("exp2", level))), this.num(1));
 		}
 		return this.convert(size, T.ivec2);
+	}
+
+	// array.element(i): of a uniformArray, its i-th uniform (one at an index made at runtime
+	// picked from all of them)
+	element(n) {
+		const array = n.node;
+		if (nodeName(array) !== "UniformArrayNode") unsupported(`an element of a ${nodeName(array)}`);
+		const elements = (this.arrays ??= new Map());
+		let ids = elements.get(array);
+		if (ids === undefined) {
+			ids = array.array.map((_, i) => {
+				const type = typeId(array.elementType === "color" ? "vec3" : array.elementType);
+				const id = N.nodeUniform(type);
+				this.types.set(id, type);
+				const u = { node: array, id, type, key: undefined, get: () => array.array[i] };
+				this.uniforms.push(u);
+				setUniform(u);
+				return id;
+			});
+			elements.set(array, ids);
+		}
+		const index = n.indexNode;
+		if (index.isConstNode && typeof index.value === "number") {
+			if (ids[index.value] === undefined) unsupported(`element ${index.value} of a uniformArray of ${ids.length}`);
+			return ids[index.value];
+		}
+		const at = this.convert(this.node(index), T.int);
+		let picked = ids[ids.length - 1];
+		for (let i = ids.length - 2; i >= 0; i--) picked = N.nodeSelect(this.bin("==", at, this.num(i, T.int)), ids[i], picked);
+		return picked;
 	}
 
 	// reference(property, type, object): a uniform that is object's property (by default the
@@ -856,20 +909,21 @@ class Translator {
 		return this.outputVar;
 	}
 
-	// `fog` (outputNode's): the scene's fogNode, on what `n` (or the light) made
-	slot(name, n, fog = null) {
+	// outputNode's `n` is a list of steps, each working on what the last made (`output`): the
+	// material's fragmentNode (in place of the light), its outputNode, the scene's fogNode
+	slot(name, n) {
 		this.block = { first: 0, last: 0 };
 		TSL.setCurrentStack(null);
 		this.outputVar = 0;
+		let id;
 		if (name === "outputNode") {
 			this.outputVar = N.nodeVar(T.vec4, this.builtin(B.OUTPUT));
 			this.types.set(this.outputVar, T.vec4);
 			this.emit(this.outputVar);
-		}
-		let id;
-		if (fog) {
-			if (n) this.emit(N.nodeAssign(this.outputVar, this.convert(this.node(n), T.vec4)));
-			id = this.node(fog);
+			n.forEach((step, i) => {
+				id = this.convert(this.node(step), T.vec4);
+				if (i < n.length - 1) this.emit(N.nodeAssign(this.outputVar, id));
+			});
 		} else {
 			id = this.node(n);
 		}
@@ -925,7 +979,8 @@ function sync(renderer, material, frame) {
 	const slots = SLOTS.map((s) => material[s] ?? null);
 	// (three/webgpu's scene.fogNode: the last step of every material that takes fog)
 	const fog = frame?.scene?.fogNode && material.fog !== false ? frame.scene.fogNode : null;
-	slots.push(fog);
+	const fragment = material.fragmentNode ?? null;
+	slots.push(fog, fragment);
 	let state = material.__drieNodes;
 	const stale = state === undefined || state.material !== material.__drie || slots.some((s, i) => s !== state.slots[i])
 		|| state.textures.some(([t, id, env]) => (env ? envTextureId(renderer, t) : renderer._texture(t)) !== id);
@@ -939,7 +994,10 @@ function sync(renderer, material, frame) {
 		const t = new Translator(renderer, material);
 		const ids = SLOTS.map((s, i) => {
 			const n = slots[i] && slots[i].isNode ? slots[i] : null;
-			if (s === "outputNode" && fog) return t.slot(s, n, fog);
+			if (s === "outputNode") {
+				const steps = [fragment, n, fog].filter((x) => x && x.isNode);
+				return steps.length ? t.slot(s, steps) : 0;
+			}
 			return n ? t.slot(s, n) : 0;
 		});
 		N.materialNodes(material.__drie, ...ids);
@@ -1020,3 +1078,10 @@ function environment(renderer, scene) {
 }
 
 globalThis.__drieNodes = { sync, background, environment };
+
+// three's CubeRenderTarget.fromEquirectangularTexture draws the map into a cube: drie's
+// environment maps are equirectangular, so its texture is the map itself.
+CubeRenderTarget.prototype.fromEquirectangularTexture = function (renderer, texture) {
+	Object.defineProperty(this.texture, "__drieEnvironment", { configurable: true, get: () => renderer._texture(texture, true) });
+	return this;
+};
