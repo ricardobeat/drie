@@ -2,7 +2,9 @@
 # boomkat comes from its jit branch, fetched from c3.ricar.do into lib/boomkat.c3l (project.json).
 
 libs := "--libdir lib --libdir ../lib --lib sokol --lib drie"
-macos := if os() == "macos" { "--macos-min-version 26.0" } else { "" }
+# the macOS c3c builds for: the one it runs on, as clang does for C without a target (and as
+# Homebrew's libdraco and boomkat's C are built), so that the linker finds nothing newer
+macos := if os() == "macos" { "--macos-min-version " + `sw_vers -productVersion 2>/dev/null || true` } else { "" }
 
 # three.js: its npm package (build/ and examples/jsm) and, for the demos' models and textures,
 # its examples at the same release. To update it, change these and the sha256s below.
@@ -17,7 +19,7 @@ default:
 
 # build out/driejs
 build: deps
-    c3c build driejs
+    c3c build driejs {{macos}}
 
 # build, then run: `just run demos/webgl_geometries.js`, `just run --frames 3 --png shot.png demos/x.js`
 run +args: build
@@ -93,7 +95,7 @@ wamr:
     [ -d third_party/wamr ] || git clone -q --depth 1 --branch WAMR-2.4.5 \
         https://github.com/bytecodealliance/wasm-micro-runtime.git third_party/wamr
     cmake -S third_party/wamr/product-mini/platforms/$platform -B third_party/wamr-build \
-        -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_DEPLOYMENT_TARGET=26.0 -DWAMR_BUILD_TARGET=$target \
+        -DCMAKE_BUILD_TYPE=Release -DWAMR_BUILD_TARGET=$target \
         -DWAMR_BUILD_INTERP=1 -DWAMR_BUILD_FAST_INTERP=1 -DWAMR_BUILD_AOT=0 -DWAMR_BUILD_JIT=0 \
         -DWAMR_BUILD_FAST_JIT=0 -DWAMR_BUILD_LIBC_BUILTIN=0 -DWAMR_BUILD_LIBC_WASI=0 \
         -DWAMR_BUILD_SIMD=0 -DWAMR_BUILD_BULK_MEMORY=1 -DWAMR_BUILD_REF_TYPES=1 \

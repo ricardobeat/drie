@@ -3,7 +3,7 @@
     "c-sources": [],
     "targets": {
         "macos-aarch64": {
-            "cflags-override": "-O2 -DNDEBUG -mmacos-version-min=26.0 -Ithird_party/wamr/core/iwasm/include",
+            "cflags-override": "-O2 -DNDEBUG -Ithird_party/wamr/core/iwasm/include",
             "c-sources-override": [
                 "wamr_glue.c"
             ],
@@ -12,7 +12,7 @@
             ]
         },
         "macos-x64": {
-            "cflags-override": "-O2 -DNDEBUG -mmacos-version-min=26.0 -Ithird_party/wamr/core/iwasm/include",
+            "cflags-override": "-O2 -DNDEBUG -Ithird_party/wamr/core/iwasm/include",
             "c-sources-override": [
                 "wamr_glue.c"
             ],
