@@ -3,7 +3,7 @@
     "c-sources": [],
     "targets": {
         "macos-aarch64": {
-            "cflags-override": "-x c++ -std=c++17 -O2 -DNDEBUG -mmacos-version-min=15.0 -isystem third_party/draco/include",
+            "cflags-override": "-x c++ -std=c++17 -O2 -DNDEBUG -isystem third_party/draco/include",
             "c-sources-override": [
                 "draco_cpp.c"
             ],
@@ -15,7 +15,7 @@
             ]
         },
         "macos-x64": {
-            "cflags-override": "-x c++ -std=c++17 -O2 -DNDEBUG -mmacos-version-min=15.0 -isystem third_party/draco/include",
+            "cflags-override": "-x c++ -std=c++17 -O2 -DNDEBUG -isystem third_party/draco/include",
             "c-sources-override": [
                 "draco_cpp.c"
             ],

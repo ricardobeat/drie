@@ -18,7 +18,6 @@
 				"src"
 			],
 			"opt": "O3",
-			"macos-min-version": "15.0",
 			"single-module": true,
 			"fp-math": "relaxed",
 			"debug-info": "none",
