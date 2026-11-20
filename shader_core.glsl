@@ -2732,3 +2732,24 @@ void main() {
 @program depth vs depth_fs
 @program depth_tangent vs_tangent depth_tangent_fs
 @program shadow shadow_vs shadow_fs
+
+// Clears the scissor box (Renderer.clear and render() with scissor_test): a triangle over the
+// whole target at the far depth, in one color.
+@vs clear_vs
+void main() {
+    vec2 p = vec2((gl_VertexIndex << 1) & 2, gl_VertexIndex & 2);
+    gl_Position = vec4(p * 2.0 - 1.0, 1.0, 1.0);
+}
+@end
+
+@fs clear_fs
+layout(binding=0) uniform clear_params {
+    vec4 clear_rgba;
+};
+out vec4 frag_color;
+void main() {
+    frag_color = clear_rgba;
+}
+@end
+
+@program clear_rect clear_vs clear_fs

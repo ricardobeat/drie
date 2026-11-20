@@ -175,6 +175,8 @@ fn void h_renderer(JsCtx ctx, void* udata)
     Renderer* r = drie::renderer(antialias: bool_arg(ctx, 0, true), width: (int)num_arg(ctx, 1, 1280),
                                         height: (int)num_arg(ctx, 2, 720), title: title);
     r.display_fog = true;
+    // (three's apps keep their cameras' aspect themselves)
+    r.auto_aspect = false;
     ctx.ret_number(@reg(renderers, r, RENDERER_BASE));
 }
 
@@ -1431,13 +1433,36 @@ fn void h_render(JsCtx ctx, void* udata)
 fn void h_set_clear_color(JsCtx ctx, void* udata)
 {
     Renderer* r = get_renderer(num_arg(ctx, 0, -1));
-    if (r) r.set_clear_color(color_of(num_arg(ctx, 1, 0)));
+    if (r) r.set_clear_color(color_of(num_arg(ctx, 1, 0)), (float)num_arg(ctx, 2, 1));
 }
 
 fn void h_set_size(JsCtx ctx, void* udata)
 {
     Renderer* r = get_renderer(num_arg(ctx, 0, -1));
     if (r) r.set_size((int)num_arg(ctx, 1, r.width), (int)num_arg(ctx, 2, r.height));
+}
+
+// viewState(renderer, autoClear, viewport x, y, width, height, scissor x, y, width, height,
+// scissorTest): three's, in CSS pixels from the bottom left (the target's pixels may be more)
+fn void h_view_state(JsCtx ctx, void* udata)
+{
+    Renderer* r = get_renderer(num_arg(ctx, 0, -1));
+    if (r == null) return;
+    float scale = r.render_target ? (float)r.render_target.width / r.width : sapp::isvalid() ? sapp::widthf() / r.width : 1;
+    r.auto_clear = bool_arg(ctx, 1, true);
+    for (int i = 0; i < 4; i++)
+    {
+        r.viewport[i] = (int)math::round(num_arg(ctx, (uint)(2 + i), 0) * scale);
+        r.scissor[i] = (int)math::round(num_arg(ctx, (uint)(6 + i), 0) * scale);
+    }
+    r.scissor_test = bool_arg(ctx, 10, false);
+}
+
+// clear(renderer): three's renderer.clear()
+fn void h_clear(JsCtx ctx, void* udata)
+{
+    Renderer* r = get_renderer(num_arg(ctx, 0, -1));
+    if (r) r.clear();
 }
 
 // info(renderer, what): what the last render drew, 0 draw calls, 1 triangles, 2 line segments
@@ -1785,7 +1810,9 @@ fn int main(String[] args)
     reg(natives, "sync", &h_sync, 2);
     reg(natives, "background", &h_background, 2);
     reg(natives, "render", &h_render, 3);
-    reg(natives, "setClearColor", &h_set_clear_color, 2);
+    reg(natives, "setClearColor", &h_set_clear_color, 3);
+    reg(natives, "viewState", &h_view_state, 11);
+    reg(natives, "clear", &h_clear, 1);
     reg(natives, "setSize", &h_set_size, 3);
     reg(natives, "info", &h_info, 2);
     reg(natives, "now", &h_now, 0);

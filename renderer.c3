@@ -68,6 +68,8 @@ struct RenderTarget {
     //                     roughness, a = its metalness
     // Set it before the first set_size. See-through materials write none of them.
     bool mrt;
+    // the frame it was last drawn into (see first_pass)
+    uint drawn_frame;
     SgImage[MRT_COUNT] mrt_color;
     SgImage[MRT_COUNT] mrt_resolve;
     SgView[MRT_COUNT] mrt_color_view;
@@ -286,6 +288,17 @@ struct Renderer {
     bool auto_aspect;
     AnimationLoop animation_loop;
     RenderTarget* render_target;
+    // three's autoClear: render() clears the target before it draws (with scissor_test only
+    // the scissor box, as WebGL's clear). Off, it draws over what the frame has there, unless
+    // the scene's background is a color, which clears as in three.
+    bool auto_clear;
+    // Where render() draws, in pixels of the target from its bottom left: x, y, width, height
+    // (three's setViewport). All zeros: the whole target.
+    int[4] viewport;
+    // three's setScissor and setScissorTest: render() and clear() touch only this box (pixels
+    // from the bottom left).
+    int[4] scissor;
+    bool scissor_test;
     ToneMapping tone_mapping;
     float tone_mapping_exposure;
     // Fog and the background color as three has them: the fog mixed in after tone mapping, in
@@ -629,6 +642,15 @@ struct RendererState @local {
     SgPipeline shadow_pipeline;
     // writes the far depth wherever it draws: clears one tile of the shadow atlas
     SgPipeline tile_clear_pipeline;
+    // Renderer.clear's and scissored render()'s (see clear_rect), and their program
+    SgShader clear_shader;
+    // frames committed (commit()), and the frame the window was last drawn into (first_pass)
+    uint frame;
+    uint window_drawn_frame;
+    // inside on_frame's animation loop: a render() to the window leaves the commit to the end
+    // of the frame (commit_pending), so that several can draw into it
+    bool in_frame;
+    bool commit_pending;
     BufferGeometry* tile_quad;
     List{DrawItem} opaque;
     List{DrawItem} transparent;
@@ -746,6 +768,7 @@ fn Renderer* renderer(bool antialias = true, int width = 800, int height = 600, 
         .clear_color = 0x000000,
         .clear_alpha = 1,
         .auto_aspect = true,
+        .auto_clear = true,
         .tone_mapping_exposure = 1,
         .lod_scale = 1,
         .auto_time = true,
@@ -979,7 +1002,10 @@ fn void apply_window_colors() @local {
 fn void on_frame() @local {
     apply_window_colors();
     foreach (h : state.frame_hooks) h();
+    state.in_frame = true;
     if (state.renderer.animation_loop) state.renderer.animation_loop(stm::ms(stm::since(state.start_ticks)));
+    state.in_frame = false;
+    if (state.commit_pending) commit();
 }
 
 fn void on_cleanup() @local {
@@ -2841,6 +2867,131 @@ fn int cmp_transparent(DrawItem a, DrawItem b) @local {
     return a.depth < b.depth ? -1 : (a.depth > b.depth ? 1 : 0);
 }
 
+// What the target is cleared to for `color`: linear light in a linear target; otherwise as it
+// is (display_fog, three's) or as it comes out of the lit shader, tone mapped, so that it
+// matches fog of the same color.
+fn Vector3 clear_value(Renderer* r, Color color) @local {
+    if (r.render_target && r.render_target.is_linear()) return color_to_linear(color);
+    if (r.display_fog) return { ((color >> 16) & 0xff) / 255.0f, ((color >> 8) & 0xff) / 255.0f, (color & 0xff) / 255.0f };
+    return tone_mapped(r, color);
+}
+
+// Whether this is the frame's first pass into `rt` (or the window), marking it drawn: the
+// first clears the whole target, the others can keep what is there.
+fn bool first_pass(RenderTarget* rt) @local {
+    uint* drawn = rt ? &rt.drawn_frame : &state.window_drawn_frame;
+    bool first = *drawn != state.frame + 1;
+    *drawn = state.frame + 1;
+    return first;
+}
+
+// A pass that keeps what the frame drew into the target before it (all of it cleared when it
+// is the frame's first), and stores what it draws for the next.
+fn void keep_pass(SgPass* pass, bool first, RenderTarget* rt) @local {
+    SgLoadAction load = first ? CLEAR : LOAD;
+    pass.action.colors[0].load_action = load;
+    pass.action.colors[0].store_action = STORE;
+    pass.action.depth = { .load_action = load, .store_action = STORE, .clear_value = 1 };
+    if (rt && rt.mrt) {
+        for (int i = 1; i <= MRT_COUNT; i++) pass.action.colors[i] = { .load_action = load, .store_action = STORE };
+    }
+}
+
+// Renderer.viewport and the scissor box, for the draws of the pass.
+fn void apply_view_rect(Renderer* r) @local {
+    int[4] v = r.viewport;
+    if (v[2] > 0 && v[3] > 0) sg::apply_viewport(v[0], v[1], v[2], v[3], false);
+    int[4] s = r.scissor;
+    if (r.scissor_test) sg::apply_scissor_rect(s[0], s[1], s[2], s[3], false);
+}
+
+// Clears the scissor box of the current pass to `rgba` and the far depth (WebGL's clear with
+// the scissor test on), whatever the viewport.
+fn void clear_rect(Renderer* r, float[4] rgba) @local {
+    RenderTarget* rt = r.render_target;
+    int target = rt ? (rt.samples > 1 ? 2 : 1) + (rt.mrt ? 4 : (rt.is_linear() ? 2 : 0)) : 0;
+    // (in the material pipelines' map, above every key of theirs)
+    ulong key = 1UL << 50 | (ulong)target;
+    SgPipeline pip;
+    if (try known = state.pipelines.get(key)) {
+        pip = known;
+    } else {
+        if (!state.clear_shader.id) state.clear_shader = sg::make_shader(&&shaders::clear_rect_shader_desc(sg::query_backend()));
+        SgPipelineDesc desc = {
+            .shader = state.clear_shader,
+            .depth = { .write_enabled = true, .compare = ALWAYS },
+            .label = "drie-clear-rect",
+        };
+        if (rt) {
+            desc.sample_count = rt.samples;
+            desc.colors[0].pixel_format = rt.pixel_format();
+            desc.depth.pixel_format = DEPTH;
+            if (rt.mrt) {
+                desc.color_count = 1 + MRT_COUNT;
+                for (int i = 0; i < MRT_COUNT; i++) desc.colors[i + 1] = { .pixel_format = mrt_format(i), .write_mask = NONE };
+            }
+        }
+        pip = sg::make_pipeline(&desc);
+        state.pipelines.set(key, pip);
+    }
+    int w = rt ? rt.width : sapp::width();
+    int h = rt ? rt.height : sapp::height();
+    sg::apply_viewport(0, 0, w, h, false);
+    int[4] s = r.scissor;
+    sg::apply_scissor_rect(s[0], s[1], s[2], s[3], false);
+    sg::apply_pipeline(pip);
+    shaders::ClearParams p = { .clear_rgba = { rgba[0], rgba[1], rgba[2], rgba[3] } };
+    sg::apply_uniforms(shaders::UB_CLEAR_PARAMS, &&{ .ptr = &p, .size = shaders::ClearParams::size });
+    sg::draw(0, 3, 1);
+}
+
+// A pass into the window has ended: the frame is committed now, or at the end of the
+// animation loop's frame.
+fn void window_drawn() @local {
+    if (state.in_frame) {
+        state.commit_pending = true;
+    } else {
+        commit();
+    }
+}
+
+// Clears the target (the window, or render_target) to clear_color and the far depth now, as
+// three's renderer.clear(): only the scissor box with scissor_test.
+fn void Renderer.clear(&self) {
+    if (!state.gfx_ready) return;
+    bool first = first_pass(self.render_target);
+    Vector3 c = clear_value(self, self.clear_color);
+    SgPass pass = {
+        .action = {
+            .colors[0] = { .load_action = CLEAR, .store_action = STORE, .clear_value = { c.x, c.y, c.z, self.clear_alpha } },
+            .depth = { .load_action = CLEAR, .store_action = STORE, .clear_value = 1 },
+        },
+        .label = "drie-clear",
+    };
+    if (self.scissor_test) keep_pass(&pass, first, self.render_target);
+    if (self.render_target) {
+        pass.attachments = self.render_target.attachments();
+        if (self.render_target.mrt) {
+            for (int i = 1; i <= MRT_COUNT; i++) {
+                if (!self.scissor_test) pass.action.colors[i] = { .load_action = CLEAR, .store_action = STORE };
+            }
+        }
+    } else {
+        pass.swapchain = sglue::swapchain();
+    }
+    profile::begin_pass(&pass);
+    if (self.scissor_test) clear_rect(self, { c.x, c.y, c.z, self.clear_alpha });
+    sg::end_pass();
+    if (!self.render_target) window_drawn();
+}
+
+// Where render() draws, in pixels from the target's bottom left (three's setViewport);
+// zero width or height: the whole target.
+fn void Renderer.set_viewport(&self, int x, int y, int width, int height) => self.viewport = { x, y, width, height };
+
+// The box render() and clear() touch while scissor_test is on (three's setScissor).
+fn void Renderer.set_scissor(&self, int x, int y, int width, int height) => self.scissor = { x, y, width, height };
+
 // The background color as it comes out of the lit shader, so that it matches fog of the same color.
 fn Vector3 tone_mapped(Renderer* r, Color color) @local {
     Vector3 c = tone_map(color_to_linear(color), r.tone_mapping, r.tone_mapping_exposure);
@@ -3314,7 +3465,8 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera) {
     if (self.auto_aspect && camera.camera_type == PERSPECTIVE && !camera.custom_projection) {
         PerspectiveCamera* pc = (PerspectiveCamera*)camera;
         RenderTarget* rt      = self.render_target;
-        pc.aspect = rt ? (float)rt.width / rt.height : sapp::widthf() / sapp::heightf();
+        pc.aspect = self.viewport[2] > 0 && self.viewport[3] > 0 ? (float)self.viewport[2] / self.viewport[3]
+            : rt ? (float)rt.width / rt.height : sapp::widthf() / sapp::heightf();
     }
     ulong pt = profile::start();
     if (!camera.custom_projection) camera.update_projection_matrix();
@@ -3421,9 +3573,7 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera) {
     pt = profile::start();
 
     Color background = scene.background ? scene.background : self.clear_color;
-    Vector3 clear    = self.render_target && self.render_target.is_linear() ? color_to_linear(background)
-        : self.display_fog
-        ? (Vector3) { ((background >> 16) & 0xff) / 255.0f, ((background >> 8) & 0xff) / 255.0f, (background & 0xff) / 255.0f } : tone_mapped(self, background);
+    Vector3 clear    = clear_value(self, background);
     SgPass pass = {
         .action = {
             .colors[0] = {
@@ -3444,11 +3594,20 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera) {
     } else {
         pass.swapchain = sglue::swapchain();
     }
+    // auto_clear, or a background color (which clears whatever auto_clear says, as three's
+    // does), clears the target first: all of it, or the scissor box. Otherwise what the frame
+    // has drawn there already is kept.
+    bool clears = self.auto_clear || (scene.background && !scene.background_texture);
+    bool whole = clears && !self.scissor_test;
+    bool first = first_pass(self.render_target);
+    if (!whole) keep_pass(&pass, first, self.render_target);
     if (split) {
         // (multisampled: kept for the second half of the pass)
         for (int i = 0; i <= (self.render_target.mrt ? MRT_COUNT : 0); i++) pass.action.colors[i].store_action = STORE;
     }
     profile::begin_pass(&pass);
+    if (!whole && clears) clear_rect(self, { clear.x, clear.y, clear.z, scene.background ? 1.0f : self.clear_alpha });
+    apply_view_rect(self);
     // (not with a cull box: everything would have holes)
     bool prepass = self.depth_prepass && !self.cull_box;
     // pixels per unit of tan(angle) up the view, for prepassed()
@@ -3533,9 +3692,10 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera) {
     if (!self.render_target) draw_overlays();
     sg::end_pass();
     profile::stop("render: main transparent", pt);
-    // When rendering to the window, finish the frame. With a render target, the caller
-    // usually runs more passes (post-processing) and must call drie::commit() at the end.
-    if (!self.render_target) profile::commit();
+    // When rendering to the window, finish the frame (at the end of the animation loop's
+    // frame, when inside it: another render() may draw into it). With a render target, the
+    // caller usually runs more passes (post-processing) and must call drie::commit() at the end.
+    if (!self.render_target) window_drawn();
 }
 
 // A light map's pipeline for the bake's objects (render_bake): the material shader into
@@ -3821,5 +3981,7 @@ fn Texture* Renderer.capture_environment(
 }
 
 fn void commit() {
+    state.commit_pending = false;
+    state.frame++;
     profile::commit();
 }

@@ -106,7 +106,8 @@ three.js API coverage:
 - `InstancedMesh` grows: `add_instance(matrix)` appends, `set_matrix_at(index, matrix)` changes one.
 - `Lod` (three.js `LOD`) levels are added with `lod.add_level(object, distance)`, in increasing
   distance. A `null` object shows nothing from that distance on.
-- Perspective cameras follow the window's aspect ratio automatically (`renderer.auto_aspect`).
+- Perspective cameras follow the window's aspect ratio automatically (`renderer.auto_aspect`),
+  or the viewport's when one is set.
 - Objects are allocated with the heap allocator and never freed. `geometry.dispose()` frees GPU buffers.
 - Create objects outside of `@pool()` blocks. Their lists live on the heap, but anything you
   build with the temp allocator and hand to the library does not outlive the pool.
@@ -249,6 +250,7 @@ A material's maps besides `map`, `normal_map` and `arm_map` share six texture sl
 - **Depth pre-pass:** `renderer.depth_prepass` for `alpha_test` and LOD cross-fade meshes.
 - **Compute validation:** `renderer.check_compute` and `drie::print_compute_checks()` validate GPU cluster and culling results against CPU reference runs.
 - **Render target & emissive extras:** `render_target.depth_texture`, `overlay_view` for post-resolve overlays, and alpha `0` for high-emissive light sources (`>= 16`) so post-processing can preserve blown-out lamps.
+- **Viewports, scissor and clearing:** `renderer.viewport` (`set_viewport`), `renderer.scissor` (`set_scissor`) with `scissor_test`, `auto_clear` and `renderer.clear()`, as three's `setViewport`, `setScissor`, `setScissorTest`, `autoClear` and `clear()`: several renders can share one frame, each in its own part of the window or target, in pixels from the bottom left. A background color clears the scissor box (or all of the target) even with `auto_clear` off, as in three. Several `render()` calls to the window inside the animation loop all go into the same frame, which is shown when the loop's callback returns.
 - **Headless & LOD scaling:** `renderer.init_headless()` (with `drie::commit()`) and `renderer.lod_scale` global multiplier for `Lod` distances.
 - **Shader hooks:** Custom `.glsl` files can define `vertex_hooks` and `surface_hooks` around `@include shader_core.glsl`.
 

@@ -198,7 +198,9 @@ assets: \
     (asset "models/obj/ninja/normal.png" "aa147cbb271787f793b437607b076fb170555f3f8dc3c392cc29910ca7a63d49") \
     (asset "models/obj/ninja/ao.jpg" "004c1b0c9829fd5c25d413fce2ff0224e5e62f17f8064af9e34d9c2887e6b41b") \
     (asset "models/obj/ninja/displacement.jpg" "5da43d969f6c178b1d2d819c5da523c66432a24f351d80afc88b1ada5f2c3f3b") \
-    (asset "models/obj/ninja/ninjaHead_Low.obj" "07819eacecae77a8539fbaf673d9a0908ec2e6383d1b6cedd94544b2a2f2c53b")
+    (asset "models/obj/ninja/ninjaHead_Low.obj" "07819eacecae77a8539fbaf673d9a0908ec2e6383d1b6cedd94544b2a2f2c53b") \
+    (asset "textures/758px-Canestra_di_frutta_(Caravaggio).jpg" "3f9a556c4e12583981427e2d6b7fa268c1a46c9036a23514acd9e179c22ae37f") \
+    (asset "textures/crate.gif" "a890f0a89eadc083cb39bfbe597c1395d7acf47a19f673b5643d4a9c174ea52f")
 
 [private]
 asset path sha256: (fetch examples + "/" + path sha256 "demos/" + path)
