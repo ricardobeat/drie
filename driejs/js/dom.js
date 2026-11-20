@@ -6,6 +6,30 @@
 // Imported by the "three" module before three.js itself.
 const N = globalThis.__drie;
 
+// boomkat's Object.defineProperties (and Object.create's properties) take the first 256 keys
+// only (a fixed array in object_define_properties): more, one at a time. three's TSL defines
+// its 1052 swizzles (.x, .rgb, .zyx...) at once.
+{
+	const defineProperties = Object.defineProperties;
+	const create = Object.create;
+	const many = (props) => props !== null && typeof props === "object" && Reflect.ownKeys(props).length > 256;
+	const defineEach = (o, props) => {
+		const descriptors = [];
+		for (const k of Reflect.ownKeys(props)) {
+			const d = Object.getOwnPropertyDescriptor(props, k);
+			if (d && d.enumerable) descriptors.push([k, props[k]]);
+		}
+		for (const [k, d] of descriptors) Object.defineProperty(o, k, d);
+		return o;
+	};
+	Object.defineProperties = function (o, props) {
+		return many(props) ? defineEach(o, props) : defineProperties(o, props);
+	};
+	Object.create = function (proto, props) {
+		return many(props) ? defineEach(create(proto), props) : props === undefined ? create(proto) : create(proto, props);
+	};
+}
+
 // ----------------------------------------------------------------------------
 // Events and elements
 // ----------------------------------------------------------------------------

@@ -213,6 +213,30 @@ struct Material {
     // For the application's own shader hooks (Renderer.shaders, see shader.glsl), which read
     // them as `material_custom[0]` and `[1]`. The engine's own shader ignores them.
     Vec4[2] custom;
+    // Node graphs (nodes.c3, drie::nodes; three's NodeMaterial and TSL), each in place of a part
+    // of the material where it is set:
+    //   color_node     the color, rgb or rgba (instead of color, the color map and vertex colors)
+    //   opacity_node   its alpha
+    //   normal_node    the normal it is shaded with, in the world (after the normal map)
+    //   roughness_node, metalness_node
+    //   emissive_node  the glow (instead of emissive and emissive_map)
+    //   position_node  the vertex's position in the model (with an instance's matrix), in
+    //                  every pass: the depth prepass and the shadow maps see it too
+    //   output_node    what comes out, rgba, from what the light made of it
+    //                  (nodes::output(); before the fog)
+    //   mask_node      a bool: false cuts the fragment out, in every pass (the shadow maps
+    //                  too), as three's maskNode
+    Node color_node;
+    Node opacity_node;
+    Node normal_node;
+    Node roughness_node;
+    Node metalness_node;
+    Node emissive_node;
+    Node position_node;
+    Node output_node;
+    Node mask_node;
+    // The shaders built for them (at the first draw, and again when one changes).
+    NodeBuild* node_build;
 }
 
 // A copy of the material to change on its own (like three's Material.clone). Textures are
@@ -220,6 +244,8 @@ struct Material {
 fn Material* Material.clone(&self) {
     Material* m = mem::new(Material);
     *m = *self;
+    // (its node shaders: its own build, sharing the program)
+    m.node_build = null;
     return m;
 }
 

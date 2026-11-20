@@ -32,6 +32,12 @@ test name *args:
     c3c compile {{macos}} {{libs}} --lib drie tests/{{name}}.c3 -o tests/build/{{name}}
     tests/build/{{name}} {{args}}
 
+# build and run an example program (examples/): `just example nodes`
+example name *args:
+    mkdir -p examples/build
+    c3c compile {{macos}} {{libs}} --lib drie examples/{{name}}.c3 -o examples/build/{{name}}
+    examples/build/{{name}} {{args}}
+
 # regenerate generated/cgltf.c3, the binding of cgltf (third_party/cgltf/cgltf.h), with
 # bindgen.c3l: `just bindgen=path bindings` for another checkout of it
 bindings:

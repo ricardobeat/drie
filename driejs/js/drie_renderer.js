@@ -168,7 +168,12 @@ export class DrieRenderer {
 
 	setAnimationLoop(callback) {
 		this._loop = callback;
-		N.setAnimationLoop(this._id, callback ?? (this._last ? () => this._redraw() : null));
+		// (an async callback's errors are its promise's: reported as a plain one's are)
+		const loop = callback ? (t) => {
+			const r = callback(t);
+			if (r && typeof r.then === "function") r.then(undefined, (e) => console.error("uncaught error in the animation loop:", e));
+		} : null;
+		N.setAnimationLoop(this._id, loop ?? (this._last ? () => this._redraw() : null));
 	}
 
 	// A page that renders only when something changes (OrbitControls' "change" event, no
@@ -193,6 +198,25 @@ export class DrieRenderer {
 
 	compile() {}
 	dispose() {}
+
+	// three/webgpu's WebGPURenderer is this one too (js/drie_nodes.js draws its node
+	// materials): nothing to wait for
+	init() {
+		return Promise.resolve(this);
+	}
+
+	hasInitialized() {
+		return true;
+	}
+
+	compileAsync() {
+		return Promise.resolve();
+	}
+
+	renderAsync(scene, camera) {
+		this.render(scene, camera);
+		return Promise.resolve();
+	}
 
 	render(scene, camera) {
 		if (!this._last && !this._loop) N.setAnimationLoop(this._id, () => this._redraw());
@@ -227,6 +251,17 @@ export class DrieRenderer {
 		if (profile) t = lap(0, t);
 
 		const frame = ++this._frame;
+		if (globalThis.__drieNodes) {
+			// (for node materials' uniforms: three's NodeFrame)
+			const now = performance.now() / 1000;
+			const f = (this._nodeFrame ??= { id: 0, time: 0, deltaTime: 0, start: now, last: now });
+			f.id = frame;
+			f.time = now - f.start;
+			f.deltaTime = now - f.last;
+			f.last = now;
+			f.camera = camera;
+			f.scene = scene;
+		}
 		let sceneId = scene.__drie;
 		if (sceneId === undefined) sceneId = scene.__drie = N.scene();
 		const state = (this._scene = this._state(scene));
@@ -654,6 +689,7 @@ export class DrieRenderer {
 			this._layers(material);
 			this._lightMap(material);
 			this._depth(material);
+			if (material.isNodeMaterial && globalThis.__drieNodes) globalThis.__drieNodes.sync(this, material, this._nodeFrame);
 			return material.__drie;
 		}
 		const sc = material.specularColor;
@@ -683,6 +719,8 @@ export class DrieRenderer {
 		this._layers(material);
 		this._lightMap(material);
 		this._depth(material);
+		// (three/webgpu's: their TSL graphs, js/drie_nodes.js)
+		if (material.isNodeMaterial && globalThis.__drieNodes) globalThis.__drieNodes.sync(this, material, this._nodeFrame);
 		return material.__drie;
 	}
 

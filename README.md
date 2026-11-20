@@ -149,6 +149,13 @@ Features not in three.js:
 - **Depth test & write:** `material.depth_test` / `depth_write` (three.js `depthTest` / `depthWrite`); a material that isn't tested or doesn't write depth stays out of the depth pre-pass.
 - **Additive blending & draw order:** `material.blending = ADDITIVE_BLENDING` for transparent materials and `object.render_order` for explicit draw order, as in three.js.
 - **World-space box UVs:** `geometry.box_project_uv(tiles_per_unit)` generates box-projected UVs.
+- **Node materials** (`nodes.c3`, `nodes_tsl.c3`): a material's color, opacity, normal, roughness, metalness, glow, vertex positions and final color can come from graphs of nodes built at runtime, as three's TSL and `NodeMaterial` do (`colorNode`, `positionNode`...). drie prints each graph in the backend's own language (Metal, HLSL or GLSL) and swaps it into its material shader's hook functions, so there is no shader compiler in drie: the driver compiles the result, as the browser does with three's WGSL. Uniforms change with `Node.set` without a rebuild. driejs runs three's real TSL on top of it (`three/webgpu`, `three/tsl`). `just example nodes` (`examples/nodes.c3`) burns a torus away with noise and a discard, its shadow with it, twists a column with `position_node`, and swaps a ball's `color_node` while it runs (keys 1 to 4).
+
+```c3
+Node wave = nodes::sin(nodes::position_local().y() * 8 + nodes::time() * 2);
+mat.color_node = nodes::mix(nodes::color(0x2266ff), nodes::color(0xffffff), wave * 0.5f + 0.5f);
+mat.position_node = nodes::position_local() + nodes::normal_local() * (wave * 0.05f);
+```
 
 <details>
 <summary>Material and geometry extension fields</summary>
@@ -163,7 +170,9 @@ Features not in three.js:
 | Iridescence | `material.iridescence` (+ `iridescence_map`), `iridescence_ior`, `iridescence_thickness_min` / `_max` (nm, + `iridescence_thickness_map`) | Loaded from `KHR_materials_iridescence` |
 | Anisotropy | `material.anisotropy`, `anisotropy_rotation` (radians), `anisotropy_map` (rg = direction, b = strength) | Along the tangent: the geometry's `tangents` (glTF's `TANGENT`), else the uv's u from screen derivatives; loaded from `KHR_materials_anisotropy`; `just test anisotropy` |
 
-A material's maps besides `map`, `normal_map` and `arm_map` share six texture slots: up to six distinct textures among them.
+| Node materials | `material.color_node`, `opacity_node`, `normal_node` (world space), `roughness_node`, `metalness_node`, `emissive_node`, `position_node` (in the model; also in the depth pre-pass and the shadow maps), `output_node` (rgba after lighting, before fog; `nodes::output()`), `mask_node` (a bool: false discards, in every pass) | Constructors in `drie::nodes`, named as TSL's: values, `uniform*` (`Node.set`), builtins (`uv()`, `position_world()`, `time()`...), `texture(t, uv, level)`, `varying(x)`, math, swizzles, `select`; ints and uints with bitwise operators; statements: `variable`, `Node.assign`, `if_then`, `loop`, `break_`, `discard`, `block`, `seq`. A discard in `color_node` (or `mask_node`, or alpha under `alpha_test`) cuts the shadow too. Programs are built on first draw and shared by materials whose graphs print the same; up to 32 vec4s of uniforms, four vec4 varyings, and textures in the fragment stage only; `just test nodes`, `just example nodes` |
+
+A material's maps besides `map`, `normal_map` and `arm_map` share six texture slots: up to six distinct textures among them. A node material's textures take slots from the same six.
 
 </details>
 
@@ -307,6 +316,7 @@ and by them with only the glowing cubes
 - `just test physical`: `tests/physical.c3` renders iridescence, a clear coat, sheen and double-sided glass side by side
 - `just test anisotropy`: `tests/anisotropy.c3` loads Khronos's AnisotropyRotationTest (CC-BY 4.0): every band's highlight
 should be a horizontal stripe, whether its direction comes from the tangents, `anisotropy_rotation` or the map
+- `just test nodes`: `tests/nodes.c3` draws five balls with node materials (a texture times a uniform, stripes, rings pushed out by `position_node` through the depth pre-pass and the shadow maps, a `normal_node` with a fresnel glow, a varying), changes a uniform between two renders, renders with and without the pre-pass, with VSM and into MRT, checks a loop, a break and integer arithmetic against a constant, and discards a ball by a uniform, its shadow with it
 - `just test normals`: `tests/normals.c3` loads Khronos's NormalTangentTest (CC0, no tangents) and
 NormalTangentMirrorTest (CC-BY 4.0, tangents): each normal-mapped cell should reflect the horizon as the real geometry beside it does
 
