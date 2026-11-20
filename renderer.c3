@@ -13,6 +13,9 @@ const int DEFAULT_MAX_LIGHTS            = 1024;
 const int DEFAULT_SHADOW_ATLAS_CAPACITY = 8;
 // The most tiles the shadow atlas has.
 const int MAX_ATLAS_TILES @local        = 64;
+// Irradiance volumes a scene can have (Scene.irradiance and irradiance_volumes), as many as
+// the shader's gi_* uniforms hold.
+const int MAX_IRRADIANCE_VOLUMES        = 4;
 
 // How shadow maps are filtered (Renderer.shadow_type), as three's renderer.shadowMap.type.
 enum ShadowType {
@@ -671,7 +674,19 @@ struct RendererState @local {
     Scene* scene;
     // Bound where a scene has no irradiance volume.
     IrradianceVolume* no_irradiance;
+    // the scene's first irradiance volume (no_irradiance without), all of them, and the
+    // texture the shader reads them from: the first one's own, or with more than one the
+    // gi_atlas, all of them side by side (gi_atlas_of)
     IrradianceVolume* irradiance;
+    IrradianceVolume*[MAX_IRRADIANCE_VOLUMES] gi_volumes;
+    int gi_count;
+    SgView gi_view;
+    SgImage gi_atlas;
+    SgView gi_atlas_view;
+    IrradianceVolume*[MAX_IRRADIANCE_VOLUMES] gi_atlas_of;
+    // (bake_irradiance: the volume it bakes, left out of the scene's lights, or added to them)
+    IrradianceVolume* gi_skip;
+    IrradianceVolume* gi_add;
     // the scene's radiance cascades' probes, or a buffer of one dark probe
     StorageBuffer* no_radiance;
     SgView radiance_view;
@@ -2041,6 +2056,77 @@ fn Mat4 shadow_view_proj(SpotLight* sl, bool relative = false) @local {
     return proj.mul(world.invert());
 }
 
+// The scene's irradiance volumes (state.gi_volumes), uploaded, and the texture to read them
+// from (state.gi_view).
+fn void use_irradiance(Scene* scene) @local {
+    if (!state.no_irradiance) state.no_irradiance = irradiance_volume({ 0, 0, 0 }, { 1, 1, 1 }, 1);
+    state.gi_count = 0;
+    if (scene.irradiance && scene.irradiance != state.gi_skip) state.gi_volumes[state.gi_count++] = scene.irradiance;
+    foreach (v : scene.irradiance_volumes) {
+        if (v && v != state.gi_skip && v != state.gi_add && state.gi_count < MAX_IRRADIANCE_VOLUMES) {
+            state.gi_volumes[state.gi_count++] = v;
+        }
+    }
+    if (state.gi_add && scene.irradiance != state.gi_add && state.gi_count < MAX_IRRADIANCE_VOLUMES) {
+        state.gi_volumes[state.gi_count++] = state.gi_add;
+    }
+    for (int i = state.gi_count; i < MAX_IRRADIANCE_VOLUMES; i++) state.gi_volumes[i] = null;
+    state.irradiance = state.gi_count ? state.gi_volumes[0] : state.no_irradiance;
+    bool changed = state.gi_atlas_of != state.gi_volumes;
+    for (int i = 0; i < state.gi_count; i++) {
+        changed |= !state.gi_volumes[i].uploaded;
+        state.gi_volumes[i].upload();
+    }
+    state.irradiance.upload();
+    if (state.gi_count <= 1) {
+        state.gi_view = state.irradiance.view;
+        return;
+    }
+    if (changed || !state.gi_atlas.id) {
+        Vector3 size = gi_atlas_size();
+        int w        = (int)size.x;
+        int h        = (int)size.y;
+        int d        = (int)size.z;
+        ushort[] px  = mem::new_array(ushort, (sz)w * h * d * 4);
+        defer free(px);
+        int x0 = 0;
+        for (int i = 0; i < state.gi_count; i++) {
+            state.gi_volumes[i].fill(px, w, h, x0);
+            x0 += state.gi_volumes[i].nx * 6;
+        }
+        if (state.gi_atlas.id) {
+            sg::destroy_view(state.gi_atlas_view);
+            sg::destroy_image(state.gi_atlas);
+        }
+        state.gi_atlas = sg::make_image(
+            &&{
+                .type = TYPE_3D,
+                .width = w,
+                .height = h,
+                .num_slices = d,
+                .pixel_format = RGBA16F,
+                .data = { .ptr = px.ptr, .size = (usz)px.len * ushort::size },
+            }
+        );
+        state.gi_atlas_view = sg::make_view(&&{ .texture = { .image = state.gi_atlas } });
+        state.gi_atlas_of = state.gi_volumes;
+    }
+    state.gi_view = state.gi_atlas_view;
+}
+
+// The size in pixels of the texture the shader reads the irradiance volumes from: the
+// first one's, or the gi_atlas's.
+fn Vector3 gi_atlas_size() @local {
+    Vector3 size = { 0, 1, 1 };
+    for (int i = 0; i < state.gi_count; i++) {
+        IrradianceVolume* v = state.gi_volumes[i];
+        size.x += (float)(v.nx * 6);
+        size.y = math::max(size.y, (float)v.ny);
+        size.z = math::max(size.z, (float)v.nz);
+    }
+    return size;
+}
+
 fn FsParams build_light_params(Scene* scene, Camera* camera, SpotLight* caster) @local {
     FsParams p;
     Renderer* r  = state.renderer;
@@ -2205,12 +2291,16 @@ fn FsParams build_light_params(Scene* scene, Camera* camera, SpotLight* caster) 
     p.cluster_depth = { grid.near, grid.log_scale, grid.far, 0 };
     g.upload(&grid, r.assign_clusters, r.check_compute);
     p.counts = { ndir, npoint, nspot, 0 };
-    if (scene.irradiance) {
-        IrradianceVolume* v = scene.irradiance;
+    Vector3 atlas = gi_atlas_size();
+    float x0 = 0;
+    for (int i = 0; i < state.gi_count; i++) {
+        IrradianceVolume* v = state.gi_volumes[i];
         Vector3 size        = v.max - v.min;
-        p.gi_min = { ...v.min, v.replaces_ambient ? 2 : 1 };
-        p.gi_inv_size = { 1 / size.x, 1 / size.y, 1 / size.z, v.intensity };
-        p.gi_dims = { v.nx, v.ny, v.nz, v.normal_offset };
+        p.gi_min[i] = { ...v.min, i == 0 && v.replaces_ambient ? 2 : 1 };
+        p.gi_inv_size[i] = { 1 / size.x, 1 / size.y, 1 / size.z, v.intensity };
+        p.gi_dims[i] = { v.nx, v.ny, v.nz, v.normal_offset };
+        p.gi_atlas[i] = { x0 / atlas.x, (float)(v.nx * 6) / atlas.x, (float)v.ny / atlas.y, (float)v.nz / atlas.z };
+        x0 += (float)(v.nx * 6);
     }
     if (scene.reflection_probes && scene.reflection_probes.count) {
         ReflectionProbes* rp = scene.reflection_probes;
@@ -2695,7 +2785,7 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     bool transmission = mat.transmission > 0 && mat.type == STANDARD && state.transmission_mips.id != 0;
     bind.views[shaders::VIEW_TEX_TRANSMISSION] = transmission ? state.transmission_mips_view : none.view;
     bind.samplers[shaders::SMP_TRANSMISSION_SMP] = transmission ? state.mip_sampler : none.sampler;
-    bind.views[shaders::VIEW_TEX_GI] = state.irradiance.view;
+    bind.views[shaders::VIEW_TEX_GI] = state.gi_view;
     bind.views[shaders::VIEW_RC_PROBES] = state.radiance_view;
     bind.samplers[shaders::SMP_GI_SMP] = state.irradiance.sampler;
     // the scene's environment lights the standard materials without a map of their own
@@ -3576,12 +3666,10 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera) {
 
     SpotLight* caster = prepare_and_draw_shadows(scene, camera);
     pt = profile::start();
-    if (!state.no_irradiance) state.no_irradiance = irradiance_volume({ 0, 0, 0 }, { 1, 1, 1 }, 1);
-    state.irradiance = scene.irradiance ?: state.no_irradiance;
+    use_irradiance(scene);
     if (!state.no_radiance) state.no_radiance = storage_buffer(6 * 16, label: "drie-rc-none");
     if (scene.radiance) scene.radiance.upload();
     state.radiance_view = scene.radiance ? scene.radiance.irradiance_buf.view : state.no_radiance.view;
-    state.irradiance.upload();
 
     FsParams fs = build_light_params(scene, camera, caster);
     profile::stop("render: lights/clusters", pt);
@@ -3834,7 +3922,10 @@ fn void Renderer.render_bake(
     RenderInfo info          = self.info;
     bool motion              = state.motion;
     Scene* scene             = state.scene;
+    IrradianceVolume*[MAX_IRRADIANCE_VOLUMES] volumes = state.gi_volumes;
+    int volume_count         = state.gi_count;
     IrradianceVolume* volume = state.irradiance;
+    SgView gi_view           = state.gi_view;
     SgView radiance          = state.radiance_view;
     SgView fog               = state.fog_view;
     SgView probes            = state.probes_view;
@@ -3855,12 +3946,10 @@ fn void Renderer.render_bake(
     cull_begin(false, false);
     prepare_and_draw_shadows(lights, camera, true);
 
-    if (!state.no_irradiance) state.no_irradiance = irradiance_volume({ 0, 0, 0 }, { 1, 1, 1 }, 1);
-    state.irradiance = lights.irradiance ?: state.no_irradiance;
+    use_irradiance(lights);
     if (!state.no_radiance) state.no_radiance = storage_buffer(6 * 16, label: "drie-rc-none");
     if (lights.radiance) lights.radiance.upload();
     state.radiance_view = lights.radiance ? lights.radiance.irradiance_buf.view : state.no_radiance.view;
-    state.irradiance.upload();
     state.scene = lights;
     FsParams fs = build_light_params(lights, camera, null);
     // linear light, as it is; nothing cut away
@@ -3909,6 +3998,9 @@ fn void Renderer.render_bake(
     state.motion = motion;
     state.scene = scene;
     state.irradiance = volume;
+    state.gi_volumes = volumes;
+    state.gi_count = volume_count;
+    state.gi_view = gi_view;
     state.radiance_view = radiance;
     state.fog_view = fog;
     state.probes_view = probes;
@@ -3923,6 +4015,117 @@ alias EnvFaceFn = fn void(Camera* camera);
 // How far it is from `origin` along `dir` to the nearest surface (for capture_environment).
 // Called once for every texel of the map, row by row from the top, always in the same order.
 alias EnvDistanceFn = fn float(Vector3 origin, Vector3 dir);
+
+// Fills the volume with the light at each probe, as three's LightProbeGrid.bake does: the
+// scene drawn all around the probe (six faces of `face_size` pixels, `near` to `far`), and
+// for each of the six directions the light it brings to a surface facing that way. Then,
+// with `bounces`, again that many times with the scene lit by the volume as it is, each time
+// one more bounce of light. The volume does not light the first pass, whether or not the
+// scene has it; the passes after it have it light the scene with the scene's own volumes.
+fn void Renderer.bake_irradiance(&self, Scene* scene, IrradianceVolume* v, int face_size = 8, float near = 0.1,
+                                 float far = 100, int bounces = 0) {
+    Vector3[6] fwd = { { 1, 0, 0 }, { -1, 0, 0 }, { 0, 1, 0 }, { 0, -1, 0 }, { 0, 0, 1 }, { 0, 0, -1 } };
+    Vector3[6] ups = { { 0, 1, 0 }, { 0, 1, 0 }, { 0, 0, -1 }, { 0, 0, 1 }, { 0, 1, 0 }, { 0, 1, 0 } };
+    int fs = math::max(face_size, 1);
+    // the six faces side by side, in linear light
+    RenderTarget* rt = render_target(fs * 6, fs, 1, SgPixelFormat.RGBA16F);
+    PerspectiveCamera* cam = perspective_camera(90, 1, near, far);
+    ushort[] pixels = mem::new_array(ushort, (sz)fs * 6 * fs * 4);
+    float[] baked = mem::new_array(float, v.data.len);
+    // each texel's direction and the solid angle it covers, for the faces' integrals
+    Vector3[] dirs = mem::new_array(Vector3, (sz)fs * fs * 6);
+    float[] solid = mem::new_array(float, (sz)fs * fs);
+    defer {
+        free(pixels);
+        free(baked);
+        free(dirs);
+        free(solid);
+        rt.dispose();
+        free(rt);
+        free(cam);
+    }
+    for (int i = 0; i < 6; i++) {
+        Vector3 right = fwd[i].cross(ups[i]);
+        for (int sy = 0; sy < fs; sy++) {
+            for (int sx = 0; sx < fs; sx++) {
+                float fx = ((float)sx + 0.5f) / fs * 2 - 1;
+                // (the first row is the top, as capture_environment reads them)
+                float fy = 1 - ((float)sy + 0.5f) / fs * 2;
+                Vector3 d = fwd[i] + right * fx + ups[i] * fy;
+                dirs[((sz)i * fs + sy) * fs + sx] = d.normalize();
+                float r2 = 1 + fx * fx + fy * fy;
+                if (i == 0) solid[(sz)sy * fs + sx] = (4.0f / (float)(fs * fs)) / (r2 * math::sqrt(r2));
+            }
+        }
+    }
+
+    RenderTarget* prev_target = self.render_target;
+    bool prev_auto_aspect = self.auto_aspect;
+    bool prev_auto_clear = self.auto_clear;
+    bool prev_scissor_test = self.scissor_test;
+    int[4] prev_viewport = self.viewport;
+    int[4] prev_scissor = self.scissor;
+    self.auto_aspect = false;
+    self.auto_clear = true;
+    self.scissor_test = true;
+    for (int pass = 0; pass <= bounces; pass++) {
+        state.gi_skip = pass == 0 ? v : null;
+        state.gi_add = pass == 0 ? null : v;
+        for (int z = 0; z < v.nz; z++) {
+            for (int y = 0; y < v.ny; y++) {
+                for (int x = 0; x < v.nx; x++) {
+                    Vector3 position = v.probe_position(x, y, z);
+                    self.set_render_target(rt);
+                    for (int i = 0; i < 6; i++) {
+                        self.viewport = { i * fs, 0, fs, fs };
+                        self.scissor = self.viewport;
+                        cam.position = position;
+                        cam.up = ups[i];
+                        cam.update_matrix_world();
+                        cam.look_at_vec(position + fwd[i]);
+                        cam.update_matrix_world();
+                        self.render(scene, cam);
+                    }
+                    commit();
+                    readback::read_image(rt.texture_image, fs * 6, fs, (char*)pixels.ptr, 8);
+                    Vector3[6] sum;
+                    for (int i = 0; i < 6; i++) {
+                        for (int sy = 0; sy < fs; sy++) {
+                            for (int sx = 0; sx < fs; sx++) {
+                                sz p = ((sz)sy * fs * 6 + (sz)i * fs + sx) * 4;
+                                Vector3 light = { half_to_float(pixels[p]), half_to_float(pixels[p + 1]), half_to_float(pixels[p + 2]) };
+                                Vector3 d = dirs[((sz)i * fs + sy) * fs + sx];
+                                float w = solid[(sz)sy * fs + sx];
+                                // the cosine of each axis: + or - of one of d's components
+                                for (int a = 0; a < 3; a++) {
+                                    float c = d[a];
+                                    if (c > 0) sum[a * 2] += light * (c * w);
+                                    if (c < 0) sum[a * 2 + 1] += light * (-c * w);
+                                }
+                            }
+                        }
+                    }
+                    for (int dir = 0; dir < 6; dir++) {
+                        sz o = v.offset(x, y, z, dir);
+                        baked[o] = sum[dir].x;
+                        baked[o + 1] = sum[dir].y;
+                        baked[o + 2] = sum[dir].z;
+                    }
+                }
+            }
+        }
+        v.data[..] = baked[..];
+        v.uploaded = false;
+    }
+    state.gi_skip = null;
+    state.gi_add = null;
+    self.set_render_target(prev_target);
+    self.auto_aspect = prev_auto_aspect;
+    self.auto_clear = prev_auto_clear;
+    self.scissor_test = prev_scissor_test;
+    self.viewport = prev_viewport;
+    self.scissor = prev_scissor;
+}
 
 // Renders the scene in every direction from `position`, like a light probe, into an
 // equirectangular texture for Material.env_map or Scene.environment. With `hdr` the scene is
