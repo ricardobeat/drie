@@ -226,7 +226,21 @@ assets: \
     (asset "textures/planets/earth_night_4096.jpg" "17a868f79c7be40fa1f557e6114d7889d907f18f7a3fce51f33b0b830ef50242") \
     (asset "textures/planets/earth_bump_roughness_clouds_4096.jpg" "0796f4211c209d1afe9e26a06a283cdc21434430a780a25457b2417568a8591e") \
     (asset "models/gltf/gears.glb" "059c442459e127e0f79b8337a5b0ea26a6cab3e609723c93ce60cac52d8430af") \
-    (asset "models/gltf/venice_mask.glb" "b9003245b0b73e31673600b53dd7050bb16af8220cf7cf5643347b4dc9bf4d34")
+    (asset "models/gltf/venice_mask.glb" "b9003245b0b73e31673600b53dd7050bb16af8220cf7cf5643347b4dc9bf4d34") \
+    (asset "textures/equirectangular/752-hdri-skies-com_1k.hdr" "fe2d6641d4798d49e86548a81bc7e313caa16d99aac38b49808bf975b164d8c5") \
+    (asset "models/gltf/DamagedHelmet/glTF/DamagedHelmet.gltf" "efe99dfac198094a30c71dc02a4d3421f0eef6bf335aeb695daa4d62134cd93f") \
+    (asset "models/gltf/DamagedHelmet/glTF/DamagedHelmet.bin" "61b33ead6aa3de23f39f02aaf0965bc3988575716a768f45b15d5ea3fb783fdf") \
+    (asset "models/gltf/DamagedHelmet/glTF/Default_albedo.jpg" "2dc95e87aeb0cd7c8a65ef0eb8b23212388da0534ca379811427a9a8780511f5") \
+    (asset "models/gltf/DamagedHelmet/glTF/Default_AO.jpg" "7024051b65ed2ead8d24ebc9bd5ea61d4c21639a57b15dab29870668bcc6b90f") \
+    (asset "models/gltf/DamagedHelmet/glTF/Default_emissive.jpg" "dd0057989f22f93a4ab796d06ebf85a7c12fbfae1d59a86ae8b0c54770dc1159") \
+    (asset "models/gltf/DamagedHelmet/glTF/Default_metalRoughness.jpg" "0f05e7ffbeaa974f7d2c83436b04109969966d64ab188cbc3a19a265a0a69ae0") \
+    (asset "models/gltf/DamagedHelmet/glTF/Default_normal.jpg" "f253ba09a90a86ffd8a807dc45d7953111f8b3421e15d7a21d1e915b01dd33c1") \
+    (asset "textures/cube/MilkyWay/dark-s_px.jpg" "4fc919173e1a913c8a105ff9aad6658d223c397befc18411f54ecbf79c1f4307") \
+    (asset "textures/cube/MilkyWay/dark-s_nx.jpg" "de81e2d2ccb09d3d7ed4da87798cbee822bed3924815ff9f5ef763358376927d") \
+    (asset "textures/cube/MilkyWay/dark-s_py.jpg" "1e22430a2ae93f49b3bc0fffea84d200fa62fbef5a7bc87ac788295007b88e89") \
+    (asset "textures/cube/MilkyWay/dark-s_ny.jpg" "60e5367a89a993aec88698062561fe5899f27027381962ff07b25daa70a8146e") \
+    (asset "textures/cube/MilkyWay/dark-s_pz.jpg" "f948bb2192d0a1ee47a96965419bc12e3f804c4b9104df16edbf3911a4a85553") \
+    (asset "textures/cube/MilkyWay/dark-s_nz.jpg" "b8b9ffd16dbeb067454f95e85ed4723036e59296192898db1ea96f063c37e5ad")
 
 [private]
 asset path sha256: (fetch examples + "/" + path sha256 "demos/" + path)
