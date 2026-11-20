@@ -1536,6 +1536,15 @@ fn void h_background_texture(JsCtx ctx, void* udata)
     s.background_flat = bool_arg(ctx, 4, false);
 }
 
+// backgroundMaterial(scene, material or -1): a material drawn behind everything, on a sphere
+// around the camera (three's scene.backgroundNode, as a node material)
+fn void h_background_material(JsCtx ctx, void* udata)
+{
+    Object3D* o = get_object(num_arg(ctx, 0, -1));
+    if (o == null || o.kind != SCENE) { ctx.throw_error(TYPE, "backgroundMaterial: not a scene"); return; }
+    ((Scene*)o).background_material = get_material(num_arg(ctx, 1, -1));
+}
+
 // textureUv(texture, repeatX, repeatY, offsetX, offsetY, rotation, centerX, centerY): its uv
 // placement, changed (three's repeat, offset, rotation and center need no needsUpdate)
 fn void h_texture_uv(JsCtx ctx, void* udata)
@@ -1567,6 +1576,21 @@ fn void h_render(JsCtx ctx, void* udata)
     follow_skies({ cam.matrix_world[3][0], cam.matrix_world[3][1], cam.matrix_world[3][2] }, cam.far);
     r.render((Scene*)so, cam);
     render_ns += (long)t.to_now();
+}
+
+// renderEnvironment(renderer, material, into or -1, width, diffuse): `material` drawn into an
+// equirectangular environment map (drie's Renderer.render_environment: three's
+// scene.environmentNode), into the one given (a map this made before) or a new one; -1 before
+// the first frame (nothing to draw with yet)
+fn void h_render_environment(JsCtx ctx, void* udata)
+{
+    Renderer* r = get_renderer(num_arg(ctx, 0, -1));
+    Material* m = get_material(num_arg(ctx, 1, -1));
+    if (r == null || m == null) { ctx.throw_error(TYPE, "renderEnvironment: invalid argument"); return; }
+    if (!gpu_ready) { ctx.ret_number(-1); return; }
+    double into = num_arg(ctx, 2, -1);
+    Texture* t = r.render_environment(m, into < 0 ? null : get_texture(into), (int)num_arg(ctx, 3, 512), bool_arg(ctx, 4, true));
+    ctx.ret_number(into < 0 ? @reg(textures, t, TEXTURE_BASE) : into);
 }
 
 fn void h_set_clear_color(JsCtx ctx, void* udata)
@@ -2014,6 +2038,18 @@ fn void h_node_texture(JsCtx ctx, void* udata)
     ctx.ret_number(nodes::texture(t, node_arg(ctx, 1), node_arg(ctx, 2)).id);
 }
 
+// nodeTextureSize(texture): its size in texels, a vec2 (a texture not loaded yet: 1 x 1)
+fn void h_node_texture_size(JsCtx ctx, void* udata)
+{
+    Texture* t = get_texture(num_arg(ctx, 0, -1));
+    if (t == null)
+    {
+        if (!white_texture) white_texture = drie::data_texture({ 255, 255, 255, 255 }, 1, 1);
+        t = white_texture;
+    }
+    ctx.ret_number(nodes::texture_size(t).id);
+}
+
 // nodeVarying(x)
 fn void h_node_varying(JsCtx ctx, void* udata) => ctx.ret_number(nodes::varying(node_arg(ctx, 0)).id);
 
@@ -2289,6 +2325,7 @@ fn int main(String[] args)
     reg(natives, "nodeSet", &h_node_set, 5);
     reg(natives, "nodeBuiltin", &h_node_builtin, 2);
     reg(natives, "nodeTexture", &h_node_texture, 3);
+    reg(natives, "nodeTextureSize", &h_node_texture_size, 1);
     reg(natives, "nodeVarying", &h_node_varying, 1);
     reg(natives, "nodeBinary", &h_node_binary, 3);
     reg(natives, "nodeCall", &h_node_call, 4);
@@ -2314,6 +2351,8 @@ fn int main(String[] args)
     reg(natives, "textMask", &h_text_mask, 10);
     reg(natives, "imageFree", &h_image_free, 1);
     reg(natives, "backgroundTexture", &h_background_texture, 5);
+    reg(natives, "backgroundMaterial", &h_background_material, 2);
+    reg(natives, "renderEnvironment", &h_render_environment, 5);
     reg(natives, "textureUv", &h_texture_uv, 8);
     reg(natives, "mesh", &h_mesh, 2);
     reg(natives, "line", &h_line, 3);

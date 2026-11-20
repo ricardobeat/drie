@@ -390,6 +390,11 @@ struct Scene {
     bool background_flat;
     float background_blurriness;
     float background_intensity;
+    // A material drawn behind everything in place of the background color or texture, on the
+    // inside of a sphere around the camera (three's scene.backgroundNode: a node material that
+    // reads the view's direction, e.g. normal_geometry). Give it depth_write false and fog
+    // false. It shows through transmission materials too.
+    Material* background_material;
     // Like three's matrixWorldAutoUpdate: render() refreshes every object's world matrix first.
     // Switch it off for a second render of an unchanged scene in the same frame (update
     // whatever did move yourself).

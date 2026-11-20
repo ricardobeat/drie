@@ -401,7 +401,9 @@ export class DrieRenderer {
 		this._fog(scene, sceneId);
 		this._background(scene, sceneId);
 		const environment = scene.environment;
-		const env = environment ? (environment.__drieEnvironment ?? this._texture(environment)) : -1;
+		let env = environment ? (environment.__drieEnvironment ?? this._texture(environment)) : -1;
+		// (three/webgpu's scene.environmentNode: its graph drawn into a map, js/drie_nodes.js)
+		if (scene.environmentNode && globalThis.__drieNodes) env = globalThis.__drieNodes.environment(this, scene);
 		const envIntensity = scene.environmentIntensity ?? 1;
 		if (scene.__drieEnvironment !== env || scene.__drieEnvironmentIntensity !== envIntensity) {
 			scene.__drieEnvironment = env;
@@ -760,6 +762,13 @@ export class DrieRenderer {
 	// scene.background as an equirectangular texture or a cube map, or a flat picture over the
 	// view (a texture of another mapping) (a color: see render()).
 	_background(scene, sceneId) {
+		// (three/webgpu's scene.backgroundNode: a node material drawn behind everything,
+		// js/drie_nodes.js)
+		const material = scene.backgroundNode && globalThis.__drieNodes ? globalThis.__drieNodes.background(this, scene) : -1;
+		if (scene.__drieBackgroundMaterial !== material) {
+			scene.__drieBackgroundMaterial = material;
+			N.backgroundMaterial(sceneId, material);
+		}
 		const background = scene.background;
 		// (a PMREMGenerator's texture is drie's capture of a scene)
 		const texture = background && background.isTexture ? (background.__drieEnvironment ?? this._texture(background)) : -1;
@@ -1001,7 +1010,7 @@ export class DrieRenderer {
 			this._surface(material);
 			this._blend(material);
 			this._depth(material);
-			if (material.isNodeMaterial && globalThis.__drieNodes) globalThis.__drieNodes.sync(this, material, this._nodeFrame);
+			if (this._hasNodes(material)) globalThis.__drieNodes.sync(this, material, this._nodeFrame);
 			return material.__drie;
 		}
 		const sc = material.specularColor;
@@ -1037,9 +1046,15 @@ export class DrieRenderer {
 		this._surface(material);
 		this._blend(material);
 		this._depth(material);
-		// (three/webgpu's: their TSL graphs, js/drie_nodes.js)
-		if (material.isNodeMaterial && globalThis.__drieNodes) globalThis.__drieNodes.sync(this, material, this._nodeFrame);
+		if (this._hasNodes(material)) globalThis.__drieNodes.sync(this, material, this._nodeFrame);
 		return material.__drie;
+	}
+
+	// Whether drie draws the material with TSL graphs (js/drie_nodes.js): three/webgpu's node
+	// materials, and any material in a scene with a fogNode (or that was in one)
+	_hasNodes(material) {
+		if (!globalThis.__drieNodes) return false;
+		return material.isNodeMaterial || !!this._nodeFrame?.scene?.fogNode || material.__drieNodes !== undefined;
 	}
 
 	// Colors and numbers that three reads into uniforms every frame, so changing them needs

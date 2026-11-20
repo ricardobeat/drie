@@ -112,6 +112,12 @@ fn Node texture(Texture* t, Node at = { }, Node level = { }) {
     return drie::add_node({ .op = TEXTURE, .type = VEC4, .texture = t, .count = 2, .args = { at.id, level.id, 0, 0 } });
 }
 
+// The size of `t`'s largest level in texels, a vec2 (three's textureSize).
+fn Node texture_size(Texture* t) {
+    if (!t) abort("drie: nodes::texture_size of no texture");
+    return drie::add_node({ .op = TEXTURE, .type = VEC2, .texture = t, .kind = 1 });
+}
+
 // `x` worked out per vertex and blended across the triangle (three's varying()).
 fn Node varying(Node x) => drie::add_node({ .op = VARYING, .type = x.type(), .count = 1, .args = { x.id, 0, 0, 0 } });
 
