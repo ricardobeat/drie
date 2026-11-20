@@ -482,20 +482,16 @@ fn bool LightData.room(&self, sz count, int cap) {
 
 GpuPointLight[] ltc_packed @local;
 
-// The LTC tables (generated/ltc.c3) as the shader reads them from the point lights' buffer:
-// texel i of LTC_1 is vec4 2i, LTC_2's 2i + 1, three vec4s an entry (ltc_vec4 in
-// shader_core.glsl). There is no view slot left for textures of their own.
+// The LTC tables (generated/ltc.c3) as the shader reads them from the point lights' buffer
+// (ltc_tables in shader_core.glsl): a texel an entry, LTC_1's in pos, LTC_2's in color (params
+// unused: one load per texel and table). There is no view slot left for textures of their own.
 fn GpuPointLight[] ltc_entries() @private {
     if (ltc_packed.len) return ltc_packed;
     usz texels = LTC_1.len / 4;
-    usz quads  = texels * 2;
-    ltc_packed = mem::new_array(GpuPointLight, (sz)((quads + 2) / 3));
-    float* out = (float*)ltc_packed.ptr;
-    for (usz i = 0; i < texels; i++) {
-        for (usz c = 0; c < 4; c++) {
-            out[i * 8 + c] = LTC_1[i * 4 + c];
-            out[i * 8 + 4 + c] = LTC_2[i * 4 + c];
-        }
+    ltc_packed = mem::new_array(GpuPointLight, (sz)texels);
+    foreach (i, &e : ltc_packed) {
+        e.pos = { LTC_1[i * 4], LTC_1[i * 4 + 1], LTC_1[i * 4 + 2], LTC_1[i * 4 + 3] };
+        e.color = { LTC_2[i * 4], LTC_2[i * 4 + 1], LTC_2[i * 4 + 2], LTC_2[i * 4 + 3] };
     }
     return ltc_packed;
 }
