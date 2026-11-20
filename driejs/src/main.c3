@@ -1451,7 +1451,7 @@ List{Label} labels;
 bool labels_shown;
 
 // label(text, x, y, r, g, b): a line of text over this frame's picture, its top left corner at
-// x, y in window points, in the stats panel's font (a glyph 8 by 8 canvas units, the canvas
+// x, y in window points, in the stats panel's size (a glyph 8 by 8 canvas units, the canvas
 // about 720 units high); r, g, b from 0 to 255
 fn void h_label(JsCtx ctx, void* udata)
 {
@@ -1484,7 +1484,8 @@ fn void draw_labels()
     float k = sapp::dpi_scale() / scale;
     sdtx::set_context(sdtx::default_context());
     sdtx::canvas(sapp::widthf() / scale, sapp::heightf() / scale);
-    sdtx::font(ui::FONT_ORIC);
+    // (the stats panel's Oric font has a pound sign where the underscore goes)
+    sdtx::font(ui::FONT_CPC);
     sdtx::origin(0, 0);
     foreach (l : labels)
     {
