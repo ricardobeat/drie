@@ -75,6 +75,16 @@ constdef MaterialType : int {
     NORMAL   = 4,
     MATCAP   = 5,
     TOON     = 6,
+    DEPTH    = 7,
+}
+
+// How MeshDepthMaterial writes the depth (three's depthPacking): BASIC_DEPTH_PACKING as a
+// gray (white near), or spread over the channels for more than 8 bits.
+enum DepthPacking {
+    BASIC_DEPTH_PACKING,
+    RGBA_DEPTH_PACKING,
+    RGB_DEPTH_PACKING,
+    RG_DEPTH_PACKING,
 }
 
 struct Material {
@@ -176,6 +186,8 @@ struct Material {
     // light falls (three's gradientMap; without one, two steps). Read texel by texel when the
     // texture's `nearest` is on, as three's NearestFilter.
     Texture* gradient_map;
+    // MeshDepthMaterial's packing of the depth.
+    DepthPacking depth_packing;
     // Opacity from the green channel of this map, times `opacity` (three's alphaMap).
     Texture* alpha_map;
     // What glows: emissive * emissive_intensity times this map's rgb (sRGB; three's emissiveMap).
@@ -367,6 +379,9 @@ struct MeshMatcapMaterial {
     inline Material material;
 }
 struct MeshToonMaterial {
+    inline Material material;
+}
+struct MeshDepthMaterial {
     inline Material material;
 }
 struct LineBasicMaterial {
@@ -591,6 +606,22 @@ fn MeshMatcapMaterial* mesh_matcap_material(
     MeshMatcapMaterial* m = mem::new(MeshMatcapMaterial);
     m.init_base(MATCAP, color, opacity, transparent, side, false, fog);
     m.matcap = matcap;
+    m.map = map;
+    return m;
+}
+
+// The depth as a color (three's MeshDepthMaterial): its window depth, 0 at the near plane and
+// 1 at the far one, packed as `depth_packing` says. Not color managed, as three's.
+fn MeshDepthMaterial* mesh_depth_material(
+    DepthPacking depth_packing = BASIC_DEPTH_PACKING,
+    float opacity = 1,
+    bool transparent = false,
+    Side side = FRONT_SIDE,
+    Texture* map = null
+) {
+    MeshDepthMaterial* m = mem::new(MeshDepthMaterial);
+    m.init_base(DEPTH, 0xffffff, opacity, transparent, side, false, false);
+    m.depth_packing = depth_packing;
     m.map = map;
     return m;
 }
