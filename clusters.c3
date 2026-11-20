@@ -242,7 +242,8 @@ fn void fill_clusters(
 
 // The sphere a point light can light: all of space without a distance cutoff.
 fn LightBounds point_light_bounds(PointLight* pl) @private {
-    return { pl.matrix_world.get_position(), pl.distance > 0 ? pl.distance : -1 };
+    // (a tube reaches as far from either end)
+    return { pl.matrix_world.get_position(), pl.distance > 0 ? pl.distance + math::max(pl.length, 0.0f) * 0.5f : -1 };
 }
 
 // The sphere around a spot light's cone.

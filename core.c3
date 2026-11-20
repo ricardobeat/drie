@@ -716,6 +716,13 @@ struct PointLight {
     // disc as big as the bulb, on a rough one as before, with the same light in all (Karis'
     // representative point, "Real Shading in Unreal Engine 4", 2013). 0: a point.
     float radius;
+    // Extension: a tube light (a fluorescent tube, a strip), `length` meters long along the
+    // light's own x axis (its world rotation's; scale is left out), centred on its position,
+    // `radius` thick. Its intensity is spread along it: the light falls off from the whole
+    // segment (with the distance to its nearest point for `distance`'s cutoff, and as the
+    // square of the distance whatever `decay`) and its highlights are long, the tube's own shape
+    // (Karis' tube lights). Casts no shadow, as point lights. 0: a ball of `radius`.
+    float length;
 }
 
 // Shadow settings of a light, like three's light.shadow.
