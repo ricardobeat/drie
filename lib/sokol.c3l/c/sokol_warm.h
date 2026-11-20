@@ -9,6 +9,9 @@
 //   ... later frames: sg_warm_state(job): 0 running, 1 done, 2 failed
 //   sg_warm_end(job);                                       // once done or failed
 //
+// sg_warm_shader_begin(&shader_desc) compiles the shader alone (its two functions), for a
+// program whose pipelines are made later: several of them at once, on as many threads.
+//
 // Metal only. Included at the end of sokol.c, with sokol_gfx's implementation.
 #if defined(SOKOL_IMPL)
 
@@ -129,6 +132,42 @@ int sg_warm_begin(const sg_shader_desc* shader_desc, const sg_pipeline_desc* pip
     return job;
 }
 
+int sg_warm_shader_begin(const sg_shader_desc* shader_desc) {
+    if (!_sg.valid || !shader_desc) return -1;
+    sg_shader_desc sd = _sg_shader_desc_defaults(shader_desc);
+    if (!sd.vertex_func.source || !sd.fragment_func.source || sd.vertex_func.bytecode.ptr || sd.fragment_func.bytecode.ptr) {
+        return -1;
+    }
+    int job = -1;
+    for (int i = 0; i < SG_WARM_JOBS; i++) {
+        int free_slot = 0;
+        if (atomic_compare_exchange_strong(&_sg_warm_jobs[i], &free_slot, 1)) {
+            job = i;
+            break;
+        }
+    }
+    if (job < 0) return -1;
+    NSString* vs_src = [[NSString alloc] initWithUTF8String:sd.vertex_func.source];
+    NSString* fs_src = [[NSString alloc] initWithUTF8String:sd.fragment_func.source];
+    id<MTLDevice> device = _sg.mtl.device;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        @autoreleasepool {
+            NSError* err = nil;
+            id<MTLLibrary> lib = [device newLibraryWithSource:vs_src options:nil error:&err];
+            bool ok = lib != nil;
+            _SG_OBJC_RELEASE(lib);
+            lib = ok ? [device newLibraryWithSource:fs_src options:nil error:&err] : nil;
+            ok = lib != nil;
+            _SG_OBJC_RELEASE(lib);
+            atomic_store(&_sg_warm_jobs[job], ok ? 2 : 3);
+        }
+    });
+    // (the block holds its own references to what it uses)
+    _SG_OBJC_RELEASE(vs_src);
+    _SG_OBJC_RELEASE(fs_src);
+    return job;
+}
+
 int sg_warm_state(int job) {
     if (job < 0 || job >= SG_WARM_JOBS) return 2;
     int s = atomic_load(&_sg_warm_jobs[job]);
@@ -147,6 +186,11 @@ void sg_warm_end(int job) {
 int sg_warm_begin(const sg_shader_desc* shader_desc, const sg_pipeline_desc* pipeline_desc) {
     (void)shader_desc;
     (void)pipeline_desc;
+    return -1;
+}
+
+int sg_warm_shader_begin(const sg_shader_desc* shader_desc) {
+    (void)shader_desc;
     return -1;
 }
 

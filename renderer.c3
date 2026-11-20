@@ -1,6 +1,6 @@
 // Renderer: owns the window and the GPU, draws a Scene from a Camera.
 module drie;
-import std::collections::list, std::collections::map, std::sort, std::io, std::math;
+import std::collections::list, std::collections::map, std::sort, std::io, std::math, std::thread;
 import sokol, drie::readback, drie::postprocessing, drie::nodes;
 
 alias AnimationLoop = fn void(double time_ms);
@@ -480,7 +480,7 @@ fn void Renderer.render_back_faces(&self, RenderTarget* target) {
     if (!state.back_pipeline.id) {
         state.back_pipeline = sg::make_pipeline(
             &&{
-                .shader = state.depth_shader,
+                .shader = material_shader(DEPTH, false),
                 .index_type = UINT32,
                 .cull_mode = FRONT,
                 .face_winding = CCW,
@@ -615,22 +615,13 @@ struct RendererState @private {
     List{EventFilter} event_filters;
     List{FrameHook} overlays;
     bool gfx_ready;
-    SgShader shader;
-    SgShader opaque_shader;
-    SgShader depth_shader;
-    SgShader shadow_shader;
-    SgShader mrt_shader;
-    SgShader opaque_mrt_shader;
-    // Renderer.shadow_type = VSM: the main programs that read the maps' moments, and the blur
-    // that makes them (vsm.glsl)
-    SgShader vsm_shader;
-    SgShader mrt_vsm_shader;
-    // for geometries with tangents (none: they go without, see uses_tangents)
-    SgShader tangent_shader;
-    SgShader mrt_tangent_shader;
-    SgShader vsm_tangent_shader;
-    SgShader mrt_vsm_tangent_shader;
-    SgShader depth_tangent_shader;
+    // The material shader's programs (material_shader), by NodeVariant, for geometries without
+    // tangents [0] and with them [1]: each made the first time a draw takes it, and compiled
+    // in the background before that when a render sees that it will (start_material_shaders):
+    // the jobs, + 1 (0: none)
+    SgShader[8][2] material_shaders;
+    int[8][2] material_jobs;
+    // the blur that makes the moments of Renderer.shadow_type = VSM's maps (vsm.glsl)
     SgShader vsm_blur_shader;
     SgPipeline vsm_blur_pipeline;
     SgSampler vsm_sampler;
@@ -922,7 +913,8 @@ alias ShaderDescFn = fn SgShaderDesc(SgBackend backend);
 // `three_mrt_tangent_shader_desc`, `three_vsm_tangent_shader_desc`,
 // `three_mrt_vsm_tangent_shader_desc` and `depth_tangent_shader_desc` (null: the engine's; with a `main` of its own and no
 // tangents' programs, those geometries' normal maps take their frame from the uv instead); for the
-// shadows of node materials that cut holes `shadow_nodes_shader_desc`.
+// shadows of node materials that cut holes `shadow_nodes_shader_desc`. Read when a program is
+// first made (material_shader): set Renderer.shaders before the first render.
 struct MaterialShaders {
     ShaderDescFn main;
     ShaderDescFn opaque;
@@ -960,36 +952,8 @@ fn void setup_gfx(SgEnvironment environment) @local {
     );
     stm::setup();
     state.start_ticks = stm::now();
-    MaterialShaders s = state.renderer ? state.renderer.shaders : { };
+    // (the material shader's programs are made when they are first drawn with: material_shader)
     SgBackend backend = sg::query_backend();
-    state.shader = sg::make_shader(&&(s.main ? s.main(backend) : shaders::three_shader_desc(backend)));
-    state.opaque_shader = sg::make_shader(
-        &&(s.opaque ? s.opaque(backend) : shaders::three_opaque_shader_desc(backend))
-    );
-    state.depth_shader = sg::make_shader(&&(s.depth ? s.depth(backend) : shaders::depth_shader_desc(backend)));
-    state.shadow_shader = sg::make_shader(&&(s.shadow ? s.shadow(backend) : shaders::shadow_shader_desc(backend)));
-    state.mrt_shader = sg::make_shader(&&(s.main_mrt ? s.main_mrt(backend) : shaders::three_mrt_shader_desc(backend)));
-    state.opaque_mrt_shader = sg::make_shader(
-        &&(s.opaque_mrt ? s.opaque_mrt(backend) : shaders::three_opaque_mrt_shader_desc(backend))
-    );
-    state.vsm_shader = sg::make_shader(&&(s.main_vsm ? s.main_vsm(backend) : shaders::three_vsm_shader_desc(backend)));
-    state.mrt_vsm_shader = sg::make_shader(
-        &&(s.main_mrt_vsm ? s.main_mrt_vsm(backend) : shaders::three_mrt_vsm_shader_desc(backend))
-    );
-    // the tangents' programs: a material shader's own, the engine's if it has none of its own
-    // (all of them or none)
-    ShaderDescFn[5] tangent_descs = s.main
-        ? { s.main_tangent, s.main_mrt_tangent, s.main_vsm_tangent, s.main_mrt_vsm_tangent, s.depth_tangent }
-        : { &shaders::three_tangent_shader_desc, &shaders::three_mrt_tangent_shader_desc,
-            &shaders::three_vsm_tangent_shader_desc, &shaders::three_mrt_vsm_tangent_shader_desc,
-            &shaders::depth_tangent_shader_desc };
-    SgShader*[5] tangent_shaders = { &state.tangent_shader, &state.mrt_tangent_shader, &state.vsm_tangent_shader,
-                                     &state.mrt_vsm_tangent_shader, &state.depth_tangent_shader };
-    bool all = true;
-    foreach (desc : tangent_descs) all = all && desc;
-    if (all) {
-        foreach (i, desc : tangent_descs) *tangent_shaders[i] = sg::make_shader(&&desc(backend));
-    }
     state.vsm_blur_shader = sg::make_shader(&&shaders::vsm_shader_desc(backend));
     state.white = data_texture({ 255, 255, 255, 255 }, 1, 1, NO_COLOR_SPACE);
     float[12] identity = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0 };
@@ -1272,33 +1236,10 @@ fn SgPipeline get_pipeline(
         case BACK_SIDE: cull = FRONT;
         case DOUBLE_SIDE: cull = NONE;
     }
-    SgShader shader;
-    NodeVariant variant;
+    NodeVariant variant = variant_of(kind, rt);
     bool mrt = rt && rt.mrt;
-    switch (kind) {
-        case CUT:
-            shader = mrt ? state.mrt_shader : state.shader;
-            variant = mrt ? MRT : MAIN;
-        case SOLID:
-        case PRETESTED:
-            shader = mrt ? state.opaque_mrt_shader : state.opaque_shader;
-            variant = mrt ? OPAQUE_MRT : OPAQUE;
-        case DEPTH:
-            shader = state.depth_shader;
-            variant = DEPTH;
-    }
-    if (vsm) {
-        shader = mrt ? state.mrt_vsm_shader : state.vsm_shader;
-        variant = mrt ? MRT_VSM : VSM;
-    }
-    // (the tangents' programs can all cut holes: the opaque draws take them too)
-    if (tangents) {
-        shader = kind == DEPTH ? state.depth_tangent_shader
-            : vsm ? (mrt ? state.mrt_vsm_tangent_shader : state.vsm_tangent_shader)
-            : (mrt ? state.mrt_tangent_shader : state.tangent_shader);
-    }
+    // (the shader: see below)
     SgPipelineDesc desc = {
-        .shader = shader,
         .index_type = UINT32,
         .primitive_type = wireframe ? LINES : TRIANGLES,
         .cull_mode = wireframe ? NONE : cull,
@@ -1347,9 +1288,12 @@ fn SgPipeline get_pipeline(
         if (!nodes.pipeline_ready(key, variant, node_base_desc(nodes, variant), &desc, background())) return { };
         desc.shader = node_shader(nodes, variant);
     } else if (pipeline_warmup) {
-        // (a pipeline cache being loaded: compiled in the background, made when first drawn)
-        pipeline_warmup.start(material_shader_desc(variant, tangents, false), &desc);
+        // (a pipeline cache being loaded: the program compiled in the background, the pipeline
+        // made when first drawn)
+        start_material_shader(variant, tangents);
         return { };
+    } else {
+        desc.shader = material_shader(variant, tangents);
     }
     SgPipeline pip = sg::make_pipeline(&desc);
     if (!pip.id) abort("drie: sokol's pipeline pool is full (pipeline_pool_size in setup_gfx)");
@@ -1368,6 +1312,89 @@ fn SgShader node_shader(NodeProgram* p, NodeVariant v) @local {
     if (s.id) return *s;
     *s = p.make_shader(v, node_base_desc(p, v));
     return *s;
+}
+
+// The program of the material shader (the engine's, or the application's: Renderer.shaders)
+// for variant `v`, for geometries with tangents or without: made the first time it is asked
+// for (after its compile in the background, if one was started: start_material_shader).
+fn SgShader material_shader(NodeVariant v, bool tangents) @local {
+    // (the tangents' programs all cut holes: the opaque draws take them too)
+    if (tangents && v == OPAQUE) v = MAIN;
+    if (tangents && v == OPAQUE_MRT) v = MRT;
+    int t = tangents ? 1 : 0;
+    SgShader* s = &state.material_shaders[t][v.ordinal];
+    if (s.id) return *s;
+    // (the driver's cache has it once its compile is done: made again at once then, rather
+    // than a second time beside it)
+    int job = state.material_jobs[t][v.ordinal] - 1;
+    if (job >= 0) {
+        while (sg_warm_state(job) == 0) thread::sleep_ms(1);
+        sg_warm_end(job);
+        state.material_jobs[t][v.ordinal] = 0;
+    }
+    *s = sg::make_shader(&&material_shader_desc(v, tangents, false));
+    return *s;
+}
+
+// Starts compiling material_shader(v, tangents) in the background (Metal; elsewhere it is
+// compiled when first asked for), if it isn't made or compiling yet.
+fn void start_material_shader(NodeVariant v, bool tangents) @local {
+    if (tangents && v == OPAQUE) v = MAIN;
+    if (tangents && v == OPAQUE_MRT) v = MRT;
+    int t = tangents ? 1 : 0;
+    if (state.material_shaders[t][v.ordinal].id || state.material_jobs[t][v.ordinal]) return;
+    @pool() {
+        SgShaderDesc desc = material_shader_desc(v, tangents, false);
+        state.material_jobs[t][v.ordinal] = sg_warm_shader_begin(&desc) + 1;
+    };
+}
+
+// How many of the material shader's programs are compiling in the background.
+fn int material_shaders_compiling() @private {
+    int n;
+    foreach (row : state.material_jobs) {
+        foreach (job : row) {
+            if (job > 0 && sg_warm_state(job - 1) == 0) n++;
+        }
+    }
+    return n;
+}
+
+// Starts compiling, all at once, the programs of the material shader that this render's draws
+// will take (as get_pipeline picks them): rather than one after the other as they come to
+// them, a second or more each the first time (the driver keeps them after that).
+fn void start_material_shaders(Renderer* r, Scene* scene, bool prepass) @local {
+    RenderTarget* rt = r.render_target;
+    // the background (draw_background: drawn as a cut-out)
+    Material* bg = scene.background_material;
+    if ((bg && !node_build_of(bg)) || scene.background_texture) start_material_shader(variant_of(CUT, rt), false);
+    for (int list = 0; list < 2; list++) {
+        foreach (&item : list == 0 ? state.opaque : state.transparent) {
+            if (node_build_of(item.mesh.material)) continue;
+            bool tangents = uses_tangents(item);
+            DrawKind kind = list == 1 || draws_lines(item) || has_holes(item) ? CUT : SOLID;
+            if (list == 0 && kind == CUT && prepass && prepassed(item)) kind = PRETESTED;
+            start_material_shader(variant_of(kind, rt), tangents);
+            if (list == 0 && prepass && prepassed(item)) start_material_shader(DEPTH, tangents);
+        }
+    }
+}
+
+// The material shader's variant a draw of `kind` into `rt` takes.
+fn NodeVariant variant_of(DrawKind kind, RenderTarget* rt) @local {
+    bool mrt = rt && rt.mrt;
+    if (kind == DEPTH) return DEPTH;
+    if (state.renderer && state.renderer.shadow_type == VSM) return mrt ? MRT_VSM : VSM;
+    if (kind == CUT) return mrt ? MRT : MAIN;
+    return mrt ? OPAQUE_MRT : OPAQUE;
+}
+
+// Whether the material shader has programs for geometries with tangents: the engine's has,
+// an application's (Renderer.shaders) if it gives all five.
+fn bool has_tangent_programs() @private {
+    MaterialShaders a = state.renderer ? state.renderer.shaders : { };
+    if (!a.main) return true;
+    return a.main_tangent && a.main_mrt_tangent && a.main_vsm_tangent && a.main_mrt_vsm_tangent && a.depth_tangent;
 }
 
 // (a pipeline cache being loaded compiles in the background whatever the renderer's setting)
@@ -1441,7 +1468,7 @@ fn SgPipeline get_shadow_pipeline(NodeProgram* nodes = null) @private {
     SgPipeline* pip = nodes ? &nodes.shadow_pipeline : &state.shadow_pipeline;
     if (pip.id) return *pip;
     SgPipelineDesc desc = {
-        .shader = nodes ? (SgShader){ } : state.shadow_shader,
+        .shader = { },
         .index_type = UINT32,
         .cull_mode = NONE,
         .layout = vertex_layout(
@@ -1474,8 +1501,10 @@ fn SgPipeline get_shadow_pipeline(NodeProgram* nodes = null) @private {
         if (!nodes.pipeline_ready(NODE_SHADOW_KEY, SHADOW, node_base_desc(nodes, SHADOW), &desc, background())) return { };
         desc.shader = node_shader(nodes, SHADOW);
     } else if (pipeline_warmup) {
-        pipeline_warmup.start(material_shader_desc(SHADOW, false, false), &desc);
+        start_material_shader(SHADOW, false);
         return { };
+    } else {
+        desc.shader = material_shader(SHADOW, false);
     }
     *pip = sg::make_pipeline(&desc);
     return *pip;
@@ -1486,7 +1515,7 @@ fn void clear_atlas_tile() @local {
     if (!state.tile_clear_pipeline.id) {
         state.tile_clear_pipeline = sg::make_pipeline(
             &&{
-                .shader = state.shadow_shader,
+                .shader = material_shader(SHADOW, false),
                 .index_type = UINT32,
                 .cull_mode = NONE,
                 .layout = vertex_layout(
@@ -3958,7 +3987,7 @@ fn void copy_for_transmission(Renderer* r, SgPass* pass) @local {
 fn bool uses_tangents(DrawItem* item) @local {
     Material* mat = item.mesh.material;
     BufferGeometry* g = item.mesh.geometry;
-    if (!state.tangent_shader.id || (usz)g.tangents.len() < (usz)g.vertex_count() * 4) return false;
+    if (!has_tangent_programs() || (usz)g.tangents.len() < (usz)g.vertex_count() * 4) return false;
     return mat.normal_map || (mat.type == STANDARD && (mat.clearcoat_normal_map || mat.anisotropy != 0));
 }
 
@@ -4132,6 +4161,7 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera) {
     int view = cull_view(&frustum);
     foreach (&item : state.opaque) item.job = cull_job(item.mesh, view) + 1;
     foreach (&item : state.transparent) item.job = cull_job(item.mesh, view) + 1;
+    start_material_shaders(self, scene, self.depth_prepass && !self.cull_box);
     profile::stop("render: sort + jobs", pt);
 
     SpotLight* caster = prepare_and_draw_shadows(scene, camera);
@@ -4309,7 +4339,7 @@ fn SgPipeline bake_pipeline(SgPixelFormat format) @local {
     if (pip.id) return *pip;
     *pip = sg::make_pipeline(
         &&{
-            .shader = vsm ? state.vsm_shader : state.opaque_shader,
+            .shader = material_shader(vsm ? VSM : OPAQUE, false),
             .index_type = UINT32,
             .cull_mode = NONE,
             .layout = vertex_layout(
