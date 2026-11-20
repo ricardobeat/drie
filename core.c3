@@ -425,6 +425,11 @@ struct Mesh {
     int instance_count;
     SgBuffer instance_buf;
     bool instances_uploaded;
+    // Each instance's color, 3 floats in linear light (InstancedMesh.set_color_at); none:
+    // white. Uploaded to instance_color_buf when they change.
+    List{float} instance_colors;
+    SgBuffer instance_color_buf;
+    bool instance_colors_uploaded;
     // Bounding sphere of all instances in local space, for culling.
     Vector3 instance_center;
     float instance_radius;
@@ -469,9 +474,34 @@ fn void InstancedMesh.set_matrix_at(&self, int index, Mat4 m) {
     self.instances_uploaded = false;
 }
 
+// Its color (three's setColorAt): the material's color times this, as vertex colors are.
+// Instances whose color isn't set are white.
+fn void InstancedMesh.set_color_at(&self, int index, Color color) {
+    Vector3 c = color_to_linear(color);
+    self.set_linear_color_at(index, c.x, c.y, c.z);
+}
+
+// The same in linear light (three's instanceColor holds these).
+fn void InstancedMesh.set_linear_color_at(&self, int index, float r, float g, float b) {
+    if (index < 0 || index >= self.instance_count) return;
+    if (!self.instance_colors.len()) {
+        self.instance_colors.allocator = mem;
+        for (int i = 0; i < self.instance_count * 3; i++) self.instance_colors.push(1);
+    }
+    float* c = &self.instance_colors[(sz)index * 3];
+    c[0] = r;
+    c[1] = g;
+    c[2] = b;
+    self.instance_colors_uploaded = false;
+}
+
 // Appends an instance and returns its index.
 fn int InstancedMesh.add_instance(&self, Mat4 m) {
     for (int i = 0; i < 12; i++) self.instance_data.push(0);
+    if (self.instance_colors.len()) {
+        for (int i = 0; i < 3; i++) self.instance_colors.push(1);
+        self.instance_colors_uploaded = false;
+    }
     self.instance_count++;
     self.set_matrix_at(self.instance_count - 1, m);
     return self.instance_count - 1;

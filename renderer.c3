@@ -478,7 +478,8 @@ fn void Renderer.render_back_faces(&self, RenderTarget* target) {
                         shaders::ATTR_THREE_INST0,
                         shaders::ATTR_THREE_INST1,
                         shaders::ATTR_THREE_INST2,
-                        shaders::ATTR_THREE_HEIGHT
+                        shaders::ATTR_THREE_HEIGHT,
+                        shaders::ATTR_THREE_INSTANCE_COLOR
                     }
                 ),
                 .depth = { .pixel_format = DEPTH, .write_enabled = true, .compare = LESS_EQUAL },
@@ -642,6 +643,9 @@ struct RendererState @local {
     SgPipeline shadow_pipeline;
     // writes the far depth wherever it draws: clears one tile of the shadow atlas
     SgPipeline tile_clear_pipeline;
+    // white instance colors (see whites)
+    SgBuffer whites;
+    uint whites_count;
     // Renderer.clear's and scissored render()'s (see clear_rect), and their program
     SgShader clear_shader;
     // frames committed (commit()), and the frame the window was last drawn into (first_pass)
@@ -1027,10 +1031,11 @@ fn void on_event(SappEvent* e) @local {
     foreach (l : state.listeners) l(e);
 }
 
-// position, normal, uv, color, uv1, tangent, and the instance's three rows. Buffer 0: the
-// geometry's vertices, 1: the instances, 2: the second uv set, 3: the tangents (see
-// bind_instances), only for a program that reads them (tangent -1: none).
-fn SgVertexLayoutState vertex_layout(int[10] attrs) @local {
+// position, normal, uv, color, uv1, tangent, the instance's three rows, the height and the
+// instance's color. Buffer 0: the geometry's vertices, 1: the instances, 2: the second uv set,
+// 3: the tangents, 4: the heights, 5: the instances' colors (see bind_instances); the tangent
+// and the instance color only for a program that reads them (-1: none).
+fn SgVertexLayoutState vertex_layout(int[11] attrs) @local {
     SgVertexLayoutState layout;
     layout.buffers[0].stride = FLOATS_PER_VERTEX * float::size;
     layout.buffers[1] = { .stride = 12 * float::size, .step_func = PER_INSTANCE };
@@ -1049,6 +1054,10 @@ fn SgVertexLayoutState vertex_layout(int[10] attrs) @local {
     layout.attrs[attrs[8]] = { .format = FLOAT4, .offset = 32, .buffer_index = 1 };
     layout.buffers[4].stride = float::size;
     layout.attrs[attrs[9]] = { .format = FLOAT, .offset = 0, .buffer_index = 4 };
+    if (attrs[10] >= 0) {
+        layout.buffers[5] = { .stride = 3 * float::size, .step_func = PER_INSTANCE };
+        layout.attrs[attrs[10]] = { .format = FLOAT3, .offset = 0, .buffer_index = 5 };
+    }
     return layout;
 }
 
@@ -1214,7 +1223,8 @@ fn SgPipeline get_pipeline(
                 shaders::ATTR_THREE_INST0,
                 shaders::ATTR_THREE_INST1,
                 shaders::ATTR_THREE_INST2,
-                shaders::ATTR_THREE_HEIGHT
+                shaders::ATTR_THREE_HEIGHT,
+                shaders::ATTR_THREE_INSTANCE_COLOR
             }
         ),
         .depth = {
@@ -1265,7 +1275,8 @@ fn SgPipeline get_shadow_pipeline() @local {
                     shaders::ATTR_SHADOW_INST0,
                     shaders::ATTR_SHADOW_INST1,
                     shaders::ATTR_SHADOW_INST2,
-                    shaders::ATTR_SHADOW_HEIGHT
+                    shaders::ATTR_SHADOW_HEIGHT,
+                    -1
                 }
             ),
             .depth = {
@@ -1301,7 +1312,8 @@ fn void clear_atlas_tile() @local {
                         shaders::ATTR_SHADOW_INST0,
                         shaders::ATTR_SHADOW_INST1,
                         shaders::ATTR_SHADOW_INST2,
-                        shaders::ATTR_SHADOW_HEIGHT
+                        shaders::ATTR_SHADOW_HEIGHT,
+                        -1
                     }
                 ),
                 .depth = { .pixel_format = DEPTH, .write_enabled = true, .compare = ALWAYS },
@@ -2364,6 +2376,38 @@ fn SgBuffer zeros(uint vertices) @local {
     return state.zeros;
 }
 
+// White for `instances` instances: the instance colors of a mesh without any.
+fn SgBuffer whites(uint instances) @local {
+    if (state.whites.id && state.whites_count >= instances) return state.whites;
+    if (state.whites.id) sg::destroy_buffer(state.whites);
+    uint n = math::max(instances, 1024u, state.whites_count * 2);
+    float[] white = mem::new_array(float, (usz)n * 3);
+    defer free(white);
+    white[..] = 1;
+    state.whites = sg::make_buffer(
+        &&{ .data = { .ptr = white.ptr, .size = (usz)n * 3 * float::size }, .label = "drie-whites" }
+    );
+    state.whites_count = n;
+    return state.whites;
+}
+
+// The mesh's instance colors on the GPU (InstancedMesh.set_color_at), uploaded when they
+// changed; white without any.
+fn SgBuffer instance_colors(Mesh* m) @local {
+    if (!m.instance_colors.len()) return whites((uint)math::max(m.instance_count, 1));
+    if (!m.instance_colors_uploaded) {
+        if (m.instance_color_buf.id) sg::destroy_buffer(m.instance_color_buf);
+        m.instance_color_buf = sg::make_buffer(
+            &&{
+                .data = { .ptr = m.instance_colors.entries, .size = (usz)m.instance_colors.len() * float::size },
+                .label = "drie-instance-colors",
+            }
+        );
+        m.instance_colors_uploaded = true;
+    }
+    return m.instance_color_buf;
+}
+
 fn Vec4 sway_params(Material* mat) @local => { state.renderer.time, mat.sway, mat.sway_speed, 0 };
 
 // Whether `item` is drawn as lines: a wireframe material, or a Line.
@@ -2851,6 +2895,7 @@ fn void bind_instances(SgBindings* bind, DrawItem* item, bool tangents = false) 
     BufferGeometry* g = m.geometry;
     bind.vertex_buffers[2] = g.uv1buf.id ? g.uv1buf : zeros(g.vertex_count());
     bind.vertex_buffers[4] = displacement_heights(m);
+    bind.vertex_buffers[5] = instance_colors(m);
     if (tangents) bind.vertex_buffers[3] = g.tangent_buf;
     if (!m.instance_data.len()) {
         bind.vertex_buffers[1] = state.identity_instance;
@@ -3720,7 +3765,8 @@ fn SgPipeline bake_pipeline(SgPixelFormat format) @local {
                     shaders::ATTR_THREE_INST0,
                     shaders::ATTR_THREE_INST1,
                     shaders::ATTR_THREE_INST2,
-                    shaders::ATTR_THREE_HEIGHT
+                    shaders::ATTR_THREE_HEIGHT,
+                    shaders::ATTR_THREE_INSTANCE_COLOR
                 }
             ),
             .depth.pixel_format = NONE,

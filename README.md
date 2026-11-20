@@ -104,6 +104,8 @@ three.js API coverage:
 - `Raycaster` collects hits into a list you pass in (three's `optionalTarget`) and gives
   `normal` in world space.
 - `InstancedMesh` grows: `add_instance(matrix)` appends, `set_matrix_at(index, matrix)` changes one.
+  `set_color_at(index, color)` (three's `setColorAt`) tints one, times the material's color;
+  instances with colors are drawn whole rather than culled on the GPU.
 - `Lod` (three.js `LOD`) levels are added with `lod.add_level(object, distance)`, in increasing
   distance. A `null` object shows nothing from that distance on.
 - Perspective cameras follow the window's aspect ratio automatically (`renderer.auto_aspect`),
