@@ -30,20 +30,32 @@ struct FragUv {
     Node dy1;
 }
 
-// One of the six shared map slots at the material's uv (shader_core.glsl's slot_texel, without
-// hex tiling): its own uv (uv_rel), wrapped as its texture wraps.
-fn Node ext_texel(FragUv* f, int slot) {
-    int u = slot + 2;
+// The uv of slot `u` of uv_rel (0: the normal map, 1: the arm map, 2..7: the shared slots) at
+// the material's uv, and how it changes from one pixel to the next (shader_core.glsl's
+// slot_uv, slot_dx, slot_dy).
+fn Node slot_uv(FragUv* f, int u) {
+    Node r0 = drie::fs_in("uv_rel", k: u * 2);
+    Node r1 = drie::fs_in("uv_rel", k: u * 2 + 1);
+    Node p = nodes::vec3(nodes::select(r0.w().greater_than(nodes::num(0.5f)), f.uv1, f.uv), 1);
+    return nodes::vec2(nodes::dot(r0.xyz(), p), nodes::dot(r1.xyz(), p));
+}
+
+fn Node slot_d(FragUv* f, int u, bool y) {
     Node r0 = drie::fs_in("uv_rel", k: u * 2);
     Node r1 = drie::fs_in("uv_rel", k: u * 2 + 1);
     Node second = r0.w().greater_than(nodes::num(0.5f));
-    Node p = nodes::vec3(nodes::select(second, f.uv1, f.uv), 1);
-    Node suv = nodes::vec2(nodes::dot(r0.xyz(), p), nodes::dot(r1.xyz(), p));
-    Node ddx = nodes::select(second, f.dx1, f.dx);
-    Node ddy = nodes::select(second, f.dy1, f.dy);
-    Node dx = nodes::vec2(nodes::dot(r0.xy(), ddx), nodes::dot(r1.xy(), ddx));
-    Node dy = nodes::vec2(nodes::dot(r0.xy(), ddy), nodes::dot(r1.xy(), ddy));
-    int view = shaders::VIEW_TEX_EXT0 + slot;
+    Node d = y ? nodes::select(second, f.dy1, f.dy) : nodes::select(second, f.dx1, f.dx);
+    return nodes::vec2(nodes::dot(r0.xy(), d), nodes::dot(r1.xy(), d));
+}
+
+// Slot `u` of uv_rel's texture (`view`) at the material's uv (slot_texel, without hex tiling):
+// its own uv, wrapped as its texture wraps.
+fn Node slot_texel(FragUv* f, int u, int view) => slot_grad_at(u, view, slot_uv(f, u), slot_d(f, u, false), slot_d(f, u, true));
+
+// Slot `u` of uv_rel's texture (`view`) at its uv `suv` with derivatives dx and dy, wrapped as
+// its texture wraps (slot_grad_at).
+fn Node slot_grad_at(int u, int view, Node suv, Node dx, Node dy) {
+    Node r1 = drie::fs_in("uv_rel", k: u * 2 + 1);
     Node size = nodes::convert(drie::node_sample(SIZE, view, shaders::SMP_TEX_SMP, TEX_2D, { }), VEC2);
     // slot_wrap: 1 + s + 3 t for the wrapping across (s) and down (t), 0: as the sampler
     Node code = nodes::convert(r1.w() + 0.5f, INT);
@@ -59,6 +71,9 @@ fn Node ext_texel(FragUv* f, int slot) {
     Node at = nodes::select(code.equal(nodes::int_(0)), suv, wrapped);
     return drie::node_sample(GRAD, view, shaders::SMP_TEX_SMP, TEX_2D, at, dx, dy);
 }
+
+// One of the six shared map slots (tex_ext0..5) at the material's uv.
+fn Node ext_texel(FragUv* f, int slot) => slot_texel(f, slot + 2, shaders::VIEW_TEX_EXT0 + slot);
 
 fn Node wrap_coord(Node x, Node mode, Node half) {
     Node mirrored = nodes::abs(nodes::mod(x, 2) - 1).one_minus();
