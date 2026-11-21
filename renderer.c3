@@ -3133,12 +3133,11 @@ fn bool material_key_of(DrawItem* item, DrawKind kind, FsParams* fs, Vec4[6]* ma
     bool standard = type == STANDARD;
     float alpha_test = alpha_test_of(mat);
     // (drawn by the material shader: glass, hex tiling, defocus, screen-space and planar
-    // reflections, reflection probes, the fog's volume, its lights' glow and its light shafts)
+    // reflections, the fog's volume, its lights' glow and its light shafts)
     if (mat.glass || (mat.hex_tiling > 0 && alpha_test <= 0)) return false;
     if (mat.defocus && r.focus_map && r.focus_aperture > 0) return false;
     if (r.ssr_color.id && r.ssr_depth.id && mat.ssr > 0) return false;
     if (mat.reflector && mat.reflector.rendered && mat.reflector.target) return false;
-    if (!mat.env_map && mat.env_probes && state.probes_view.id) return false;
     int fog = mat.fog ? (int)fs.fog_params.w : 0;
     if (fog && (fs.fog_grid.w > 0 || fs.fog_color.w > 0)) return false;
     if (fog == 3 && fs.fog_sun_dir.w > 0 && fs.fog_sun_color.w > 0 && fs.dir_shadow_params.x > 0.5f) return false;
@@ -3149,6 +3148,10 @@ fn bool material_key_of(DrawItem* item, DrawKind kind, FsParams* fs, Vec4[6]* ma
     if (lit) {
         if (state.gi_count > 0 || fs.rc_size.w > 0) return false;
     }
+    // the scene's reflection probes in place of the environment (on the lit materials but
+    // lambert)
+    bool probes = lit && type != LAMBERT && !mat.env_map && mat.env_probes && state.probes_view.id;
+    if (probes) env_map = null;
 
     RenderTarget* rt = r.render_target;
     bool cut = kind == CUT;
@@ -3195,7 +3198,8 @@ fn bool material_key_of(DrawItem* item, DrawKind kind, FsParams* fs, Vec4[6]* ma
         .normal_map = lit && mat.normal_map != null,
         .tangents = lit && uses_tangents(item),
         .env_light = standard && env_map && env_map.has_env_sh,
-        .env_reflect = standard && env_map,
+        .env_reflect = (standard && env_map) || probes,
+        .probes = probes,
         .env_box = standard && env_map && mat.env_box_min != mat.env_box_max,
         .toon_nearest = type == TOON && mat.gradient_map && mat.gradient_map.nearest,
         .shadows = shadows,

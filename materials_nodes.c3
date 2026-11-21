@@ -93,6 +93,7 @@ bitstruct MaterialKey : char[32] {
     bool iridescence : 65;       //   a thin film's rainbow,
     bool anisotropy : 66;        //   highlights drawn out along a direction,
     bool transmission : 67;      //   the picture behind it refracted through its volume
+    bool probes : 68;            // it mirrors the scene's reflection probes (Material.env_probes)
 }
 
 // The map roles (shader_core.glsl's MAP_*) a key holds a slot for.
@@ -616,7 +617,7 @@ fn void build_material_graph(MaterialKey key, ProgramGraph* graph) @private {
     } else {
         Lit lit = { .key = key, .n = n, .geo_n = geo_n, .v = v, .world = world, .rough = rough, .metal = metal,
                     .ao = ao, .parallax = px, .f = &f, .v_normal = v_normal, .tangent = vtx.tangent, .irid_fn = -1, .frag = fc.xy(), .shadow = shadow_fns(key), .ltc_fn = -1,
-                    .refraction = { -1, -1, -1 } };
+                    .refraction = { -1, -1, -1 }, .probe_fn = -1 };
         lit.shade(&f, rgb, map_rgb, v_color.xyz());
         outc = lit.outc;
         ind_d = lit.ind_d;
@@ -765,6 +766,7 @@ struct Lit @local {
     Node irid_fresnel;
     Node irid_f0;
     int irid_fn;
+    int probe_fn;          // probe_sample's function (-1: not made yet)
     Refraction refraction;
     Node aniso;
     Node aniso_t;
@@ -805,6 +807,10 @@ fn void Lit.shade(&self, FragUv* f, Node rgb, Node map_rgb, Node v_color) {
         self.f90 = nodes::mix(strength, 1, self.metal);
         self.diffuse = rgb * self.metal.one_minus();
         self.layers(f, rgb, dielectric);
+    } else if (key.env_reflect) {
+        // (the reflection probes on a phong or toon material)
+        self.f0 = nodes::mix(nodes::vec3(0.04f), rgb, self.metal);
+        self.f90 = nodes::num(1);
     }
     Node diffuse = self.diffuse;
 
@@ -1022,7 +1028,7 @@ fn void Lit.shade(&self, FragUv* f, Node rgb, Node map_rgb, Node v_color) {
             rn = nodes::select(self.aniso.greater_than(nodes::num(0)), nodes::normalize(nodes::mix(bent, n, k * k)), n);
         }
         Node r = dominant_reflection(nodes::reflect(v.negate(), rn), rn, rough);
-        env_term = env_sample(key, r, rough, self.world, self.frag) * fr;
+        env_term = env_sample(key, &self.probe_fn, r, rough, self.world, self.frag, n) * fr;
         if (key.sheen) env_term = env_term * (max3(self.sheen_color) * sheen_albedo(n, v, self.sheen_rough)).one_minus();
         self.ind_s = env_term;
     }
@@ -1068,7 +1074,7 @@ fn void Lit.shade(&self, FragUv* f, Node rgb, Node map_rgb, Node v_color) {
         Node coat = self.cc_light;
         if (key.env_reflect) {
             Node r = dominant_reflection(nodes::reflect(v.negate(), cn), cn, self.cc_rough);
-            Node reflected = env_sample(key, r, self.cc_rough, self.world, self.frag) * environment_brdf(cn, v, nodes::vec3(0.04f), nodes::num(1), self.cc_rough);
+            Node reflected = env_sample(key, &self.probe_fn, r, self.cc_rough, self.world, self.frag, cn) * environment_brdf(cn, v, nodes::vec3(0.04f), nodes::num(1), self.cc_rough);
             coat = coat + reflected;
             self.ind_s = self.ind_s + reflected * self.cc;
         }
@@ -1427,28 +1433,129 @@ fn Node env_blur(Node rough) @local {
     return nodes::select(rough.greater_than_equal(nodes::num(0.8f)), nodes::mix(0.526f, 0.582f, (rough - 0.8f) / 0.2f), b);
 }
 
-// The material's map in direction d, blurred for `rough` (env_sample, the material's own map):
-// box projected, the ray met with the room's walls first, or with what a map with distances
-// (env_params.w, their range) saw in the room. `frag` is the pixel's position in the target.
-fn Node env_sample(MaterialKey key, Node d, Node rough, Node world, Node frag) @local {
+// What the surface mirrors in direction d, blurred for `rough` (shader_core.glsl's
+// env_reflection): the material's own map, box projected (the ray met with the room's walls
+// first, or with what a map with distances saw in the room); or the scene's reflection probes
+// (key.probes), mixed by the boxes `world` is in. `facing` is the surface's normal, `frag` the
+// pixel's position in the target; `probe_fn` the probes' function (-1: not made yet).
+fn Node env_sample(MaterialKey key, int* probe_fn, Node d, Node rough, Node world, Node frag, Node facing) @local {
+    if (key.probes) return probe_reflection(probe_fn, d, rough, world, frag, facing);
     if (key.env_box) {
-        Node inv = 1.0f / d;
-        Node t_far = nodes::max((fs_in("env_box_max", VEC3) - world) * inv, (fs_in("env_box_min", VEC3) - world) * inv);
-        Node t = nodes::max(nodes::min(nodes::min(t_far.x(), t_far.y()), t_far.z()), 0);
-        Node o = world - fs_in("env_pos", VEC3);
-        d = nodes::normalize(o + d * env_march(o, d, t, rough, frag));
+        EnvSource own = { .pos = fs_in("env_pos", VEC3), .lo = fs_in("env_box_min", VEC3), .hi = fs_in("env_box_max", VEC3),
+                          .range = fs_in("env_params", FLOAT, 3) };
+        d = own.project(d, rough, world, frag);
     }
-    Node width = nodes::convert(shading::env_size().x(), FLOAT);
-    return shading::env_level(shading::env_uv(d), shading::env_lod(env_blur(rough), width)).xyz() * fs_in("env_params", FLOAT, 1);
+    return env_read({ }, d, rough);
+}
+
+// A map a reflection is read from: where it was captured, its box, the range of its
+// distances (0: none) and, for a probe, its layer of the probes' texture (none: the
+// material's own map).
+struct EnvSource @local {
+    Node layer;
+    Node pos;
+    Node lo;
+    Node hi;
+    Node range;
+}
+
+// The direction from where the map was captured to where the ray from `world` in direction
+// d meets the room (box projection).
+fn Node EnvSource.project(&self, Node d, Node rough, Node world, Node frag) {
+    Node inv = 1.0f / d;
+    Node t_far = nodes::max((self.hi - world) * inv, (self.lo - world) * inv);
+    Node t = nodes::max(nodes::min(nodes::min(t_far.x(), t_far.y()), t_far.z()), 0);
+    Node o = world - self.pos;
+    return nodes::normalize(o + d * self.march(o, d, t, rough, frag));
+}
+
+// The map in direction d at the level `rough` blurs it to.
+fn Node env_read(Node layer, Node d, Node rough) @local {
+    Node size = layer.id ? node_sample(SIZE, shaders::VIEW_TEX_PROBES, shaders::SMP_ENV_SMP, TEX_ARRAY, nodes::int_(0)) : shading::env_size();
+    Node width = nodes::convert(size.x(), FLOAT);
+    return env_texel(layer, shading::env_uv(d), shading::env_lod(env_blur(rough), width)).xyz() * fs_in("env_params", FLOAT, 1);
+}
+
+fn Node env_texel(Node layer, Node uv, Node lod) @local {
+    if (!layer.id) return shading::env_level(uv, lod);
+    return node_sample(LEVEL, shaders::VIEW_TEX_PROBES, shaders::SMP_ENV_SMP, TEX_ARRAY, nodes::vec3(uv, layer), lod);
+}
+
+// The scene's reflection probes in direction d: the probe whose box `world` is in (or just
+// outside of, facing in: a window pane in the room's wall), cross-faded with its neighbour
+// over the blend width outside the box, and with the probe for everywhere else (its box
+// empty) beyond that.
+fn Node probe_reflection(int* probe_fn, Node d, Node rough, Node world, Node frag, Node facing) @local {
+    Node first = nodes::variable(nodes::int_(-1));
+    Node second = nodes::variable(nodes::int_(-1));
+    Node outer = nodes::variable(nodes::int_(-1));
+    Node w1 = nodes::variable(nodes::num(0));
+    Node w2 = nodes::variable(nodes::num(0));
+    Node i = nodes::loop_index(INT);
+    Node lo = fs_at("probe_min", VEC4, i);
+    Node hi = fs_at("probe_max", VEC4, i);
+    Node empty = nodes::dot(nodes::abs(hi.xyz() - lo.xyz()), nodes::vec3(1)).equal(nodes::num(0));
+    Node below = world - lo.xyz();
+    Node above = hi.xyz() - world;
+    Node inside = nodes::min(nodes::min(below.x(), nodes::min(below.y(), below.z())), nodes::min(above.x(), nodes::min(above.y(), above.z())));
+    Node w = nodes::clamp(inside / nodes::max(lo.w(), 1e-3f) + 1.0f, 0, 1);
+    // the outer side of the room's own wall shows what is outside
+    w = nodes::select(nodes::dot(facing, fs_at("probe_pos", VEC3, i) - world).less_than_equal(nodes::num(0)), 0.0f, w);
+    Node rank = nodes::if_then(w.greater_than(w1),
+                               nodes::block(second.assign(first), w2.assign(w1), first.assign(i), w1.assign(w)),
+                               nodes::block(nodes::if_then(w.greater_than(w2), nodes::block(second.assign(i), w2.assign(w)))));
+    Node body = nodes::block(nodes::if_then(empty, nodes::block(outer.assign(i), nodes::continue_()), nodes::block(rank)));
+    Node pick = nodes::loop(i, nodes::int_(0), nodes::convert(fs_in("probe_info", FLOAT), INT), body);
+    Node sum = w1 + w2;
+    Node has_outer = outer.greater_than_equal(nodes::int_(0));
+    // with a probe for everywhere else the boxes' shares stay as they are (it takes the rest);
+    // without one they are made to add up to all of it
+    Node rest = nodes::select(has_outer, nodes::max(sum.one_minus(), 0), 0.0f);
+    Node norm = 1.0f / nodes::max(nodes::select(has_outer, nodes::max(sum, 1.0f), sum), 1e-4f);
+    Node result = nodes::variable(nodes::vec3(0));
+    Node[6] st = { first, second, outer, w1, w2, pick };
+    Node[3] which = { first, second, outer };
+    Node[3] share = { w1 * norm, w2 * norm, rest };
+    Node[3] add;
+    for (int k = 0; k < 3; k++) {
+        Node seen = probe_sample(probe_fn, d, rough, world, frag, which[k], nodes::num(k == 2 ? 0.0f : 1.0f));
+        Node on = nodes::logical_and(which[k].greater_than_equal(nodes::int_(0)), share[k].greater_than(nodes::num(0)));
+        add[k] = nodes::if_then(on, nodes::block(result.assign(result + seen * (share[k] * fs_at("probe_max", FLOAT, which[k], 3)))));
+    }
+    return nodes::seq(nodes::block(st[0], st[1], st[2], st[3], st[4], st[5], result, add[0], add[1], add[2]), result);
+}
+
+// Probe `index`'s map in direction d, box projected where `boxed` is 1 (the function
+// probe_sample of the program, made once: `fn_id` -1 makes it).
+fn Node probe_sample(int* fn_id, Node d, Node rough, Node world, Node frag, Node index, Node boxed) @local {
+    if (*fn_id < 0) {
+        NodeType[6] types = { VEC3, FLOAT, VEC3, VEC2, INT, FLOAT };
+        int f = node_func("probe_sample", VEC3, &types);
+        Node pd = node_param(f, 0);
+        Node pr = node_param(f, 1);
+        Node pw = node_param(f, 2);
+        Node pf = node_param(f, 3);
+        Node pi = node_param(f, 4);
+        Node pb = node_param(f, 5);
+        Node pos = fs_at("probe_pos", VEC4, pi);
+        EnvSource probe = { .layer = nodes::convert(pi, FLOAT), .pos = pos.xyz(), .lo = fs_at("probe_min", VEC3, pi),
+                            .hi = fs_at("probe_max", VEC3, pi), .range = pos.w() };
+        Node dir = nodes::variable(pd);
+        Node box = nodes::if_then(pb.greater_than(nodes::num(0.5f)), nodes::block(dir.assign(probe.project(pd, pr, pw, pf))));
+        node_func_body(f, nodes::seq(nodes::block(dir, box), env_read(probe.layer, dir, pr)));
+        *fn_id = f;
+    }
+    Node[6] args = { d, rough, world, frag, index, boxed };
+    return node_call_fn(*fn_id, &args);
 }
 
 // How far the ray from `o` (relative to where the map was captured) in direction d goes, `t`
 // to the room's walls, before it goes behind something the map saw: a map with distances walks
 // it through the room in 72 steps and stops there (not far behind: then it only passes at the
 // back of it, out of the map's sight). Only for sharp reflections (rough < 0.3); t otherwise.
-fn Node env_march(Node o, Node d, Node t, Node rough, Node frag) @local {
+fn Node EnvSource.march(&self, Node o, Node d, Node t, Node rough, Node frag) {
     const int STEPS = 72;
-    Node range = fs_in("env_params", FLOAT, 3);
+    Node range = self.range;
     Node dt = t / (float)STEPS;
     // the distances come in steps of 1/255 of their range: nearer than that to a surface, a
     // ray is not yet behind it (or a wall seen at a glancing angle breaks up into rings, one
@@ -1463,9 +1570,9 @@ fn Node env_march(Node o, Node d, Node t, Node rough, Node frag) @local {
     Node mid = (lo + hi) * 0.5f;
     Node k = nodes::loop_index(UINT);
     Node halve = nodes::loop(k, nodes::uint_(0), nodes::uint_(4),
-                             nodes::block(nodes::if_then(env_behind(o + d * mid, range).greater_than(slack),
+                             nodes::block(nodes::if_then(self.behind(o + d * mid).greater_than(slack),
                                                          nodes::block(hi.assign(mid)), nodes::block(lo.assign(mid)))));
-    Node behind = env_behind(o + d * at, range);
+    Node behind = self.behind(o + d * at);
     Node hit = nodes::logical_and(behind.greater_than(slack), behind.less_than(dt + 0.12f + slack));
     Node i = nodes::loop_index(UINT);
     Node step = nodes::loop(i, nodes::uint_(0), nodes::uint_(STEPS),
@@ -1476,10 +1583,10 @@ fn Node env_march(Node o, Node d, Node t, Node rough, Node frag) @local {
 }
 
 // How far the point `q` (relative to where the map was captured) lies behind what the map saw
-// in its direction (its alpha: the distance over `range`).
-fn Node env_behind(Node q, Node range) @local {
+// in its direction (its alpha: the distance over the range).
+fn Node EnvSource.behind(&self, Node q) {
     Node len = nodes::length(q);
-    return len - shading::env_level(shading::env_uv(q / len), nodes::num(0)).w() * range;
+    return len - env_texel(self.layer, shading::env_uv(q / len), nodes::num(0)).w() * self.range;
 }
 
 // Interleaved gradient noise (Jimenez's), as shader_core.glsl's ssr_noise.
