@@ -59,6 +59,9 @@ struct NodeFunc {
     int count;
     Node body;               // what it returns: a value (a SEQ with its statements); VOID: a block's SEQ
     uint mark;               // node_count() when it was made
+    // nodes::function's: calls with the same arguments are one value, and can be hoisted out
+    // of an if (hoist_shared); no discard
+    bool pure;
 }
 
 List{NodeFunc} node_funcs @local;
@@ -67,10 +70,13 @@ List{uint} node_args @local;
 // A new function `name` returning a `ret` of `params`: its parameters are node_param(f, i), its
 // body is set with node_func_body. Functions are printed in a program once per stage that calls
 // them; `name` is what they are called there (unique among a program's functions).
-fn int node_func(String name, NodeType ret, NodeType[] params) {
+fn int node_func(String name, NodeType ret, NodeType[] params, bool pure = false) {
     if (params.len > 12) abort("drie: nodes: a function of more than 12 parameters");
+    foreach (t : params) {
+        if (t == VOID) abort("drie: nodes: %s has a parameter of no type (VOID)", name);
+    }
     if (!node_funcs.is_initialized()) node_funcs.init(mem);
-    NodeFunc f = { .name = name.copy(mem), .ret = ret, .count = (int)params.len, .mark = node_count() };
+    NodeFunc f = { .name = name.copy(mem), .ret = ret, .count = (int)params.len, .mark = node_count(), .pure = pure };
     foreach (i, t : params) f.params[i] = t;
     node_funcs.push(f);
     return (int)node_funcs.len() - 1;
@@ -313,6 +319,7 @@ struct GenBody @local {
 
 struct FuncDone @local {
     bool printed;
+    bool printing;
     bool block;
     List{int} views;
     List{int} samplers;
@@ -515,8 +522,8 @@ fn uint[] merge_sets(uint[] a, uint[] b) @local {
 
 fn uint ProgramGen.builtin_var(&self, NodeBuiltin b) => self.nodes + 1 + b.ordinal;
 
-// The variables (and builtins) `n`'s value reads. A SEQ's is worked out once, where it is
-// printed, and reads none after; a builtin reads what it is bound to.
+// The variables (and builtins) `n`'s value reads. A SEQ's are what its statements and value
+// read and don't assign themselves; a builtin reads what it is bound to.
 fn uint[] ProgramGen.vars_of(&self, Node n) {
     if (self.var_set_done[n.id]) return self.var_sets[n.id];
     NodeData* d = node_data(n);
@@ -526,6 +533,24 @@ fn uint[] ProgramGen.vars_of(&self, Node n) {
             r = mem::temp_array(uint, 1);
             r[0] = n.id;
         case SEQ:
+            // (a builtin it reads can be bound to it)
+            self.var_sets[n.id] = { };
+            self.var_set_done[n.id] = true;
+            sz count = (sz)self.nodes + 1;
+            bool[] seen = mem::temp_array(bool, count);
+            bool[] reads = mem::temp_array(bool, count + NodeBuiltin::len);
+            bool[] assigns = mem::temp_array(bool, count + NodeBuiltin::len);
+            self.seq_reads_in(d.args[0], seen, reads, assigns);
+            self.seq_reads({ d.args[1] }, seen, reads, assigns);
+            uint k;
+            foreach (i, x : reads) {
+                if (x && !assigns[i]) k++;
+            }
+            r = mem::temp_array(uint, k);
+            k = 0;
+            foreach (i, x : reads) {
+                if (x && !assigns[i]) r[k++] = (uint)i;
+            }
         case CONST:
         case UNIFORM:
         case PARAM:
@@ -549,6 +574,81 @@ fn uint[] ProgramGen.vars_of(&self, Node n) {
     self.var_sets[n.id] = r;
     self.var_set_done[n.id] = true;
     return r;
+}
+
+// What the statements from `first` read and assign, for a SEQ's vars_of.
+fn void ProgramGen.seq_reads_in(&self, uint first, bool[] seen, bool[] reads, bool[] assigns) {
+    for (uint s = first; s; s = node_data({ s }).next) self.seq_reads({ s }, seen, reads, assigns);
+}
+
+fn void ProgramGen.seq_reads(&self, Node n, bool[] seen, bool[] reads, bool[] assigns) {
+    if (!n.id || n.id >= seen.len || seen[n.id]) return;
+    seen[n.id] = true;
+    NodeData* d = node_data(n);
+    switch (d.op) {
+        case VAR:
+            reads[n.id] = true;
+            self.seq_reads({ d.args[0] }, seen, reads, assigns);
+        case SEQ:
+            foreach (v : self.vars_of(n)) reads[v] = true;
+            self.seq_assigns_in(d.args[0], assigns);
+        case ASSIGN:
+            NodeData* t = node_data({ d.args[0] });
+            assigns[t.op == VAR ? d.args[0] : t.args[0]] = true;
+            self.seq_reads({ d.args[0] }, seen, reads, assigns);
+            self.seq_reads({ d.args[1] }, seen, reads, assigns);
+        case IF:
+            self.seq_reads({ d.args[0] }, seen, reads, assigns);
+            self.seq_reads_in(d.args[1], seen, reads, assigns);
+            self.seq_reads_in(d.args[2], seen, reads, assigns);
+        case LOOP:
+            if (d.args[0]) assigns[d.args[0]] = true;
+            for (int i = 0; i < 3; i++) self.seq_reads({ d.args[i] }, seen, reads, assigns);
+            self.seq_reads_in(d.args[3], seen, reads, assigns);
+        case BIND:
+            assigns[self.builtin_var((NodeBuiltin)d.kind)] = true;
+            self.seq_reads({ d.args[0] }, seen, reads, assigns);
+        case BUILTIN:
+            reads[self.builtin_var((NodeBuiltin)d.kind)] = true;
+            Node bound = self.binding[d.kind];
+            if (bound.id) {
+                foreach (v : self.vars_of(bound)) reads[v] = true;
+            }
+        case VARYING:
+            if (self.stage == VERTEX) self.seq_reads({ d.args[0] }, seen, reads, assigns);
+        case CALL_FN:
+            for (int i = 0; i < d.count; i++) self.seq_reads({ call_arg(d, i) }, seen, reads, assigns);
+        case CONST:
+        case UNIFORM:
+        case PARAM:
+        case ATTRIBUTE:
+        case SYSTEM:
+            break;
+        default:
+            for (int i = 0; i < 4; i++) self.seq_reads({ d.args[i] }, seen, reads, assigns);
+    }
+}
+
+// What the statements from `first` assign, in their blocks too (not in SEQs in them).
+fn void ProgramGen.seq_assigns_in(&self, uint first, bool[] assigns) {
+    for (uint s = first; s; s = node_data({ s }).next) {
+        NodeData* d = node_data({ s });
+        switch (d.op) {
+            case ASSIGN:
+                NodeData* t = node_data({ d.args[0] });
+                assigns[t.op == VAR ? d.args[0] : t.args[0]] = true;
+            case IF:
+                self.seq_assigns_in(d.args[1], assigns);
+                self.seq_assigns_in(d.args[2], assigns);
+            case LOOP:
+                if (d.args[0]) assigns[d.args[0]] = true;
+                self.seq_assigns_in(d.args[3], assigns);
+            case BIND:
+                assigns[self.builtin_var((NodeBuiltin)d.kind)] = true;
+            default:
+                break;
+        }
+    }
 }
 
 fn bool ProgramGen.printed(&self, Node n) {
@@ -703,6 +803,7 @@ fn void ProgramGen.statement(&self, Node s) {
                 case 1: self.line("continue;");
                 case 2:
                     if (self.stage != FRAGMENT) abort("drie: nodes: discard is for the fragment stage");
+                    if (self.body.func >= 0 && node_funcs[self.body.func].pure) abort("drie: nodes: discard in a function (%s)", node_funcs[self.body.func].name);
                     self.p.discards = true;
                     self.line(self.discard());
                 default:
@@ -816,6 +917,9 @@ fn bool ProgramGen.hoistable(&self, Node n, char[] can, bool[] assigned) {
             case CONVERT:
             case NOT:
                 for (int i = 0; i < 4 && ok; i++) ok = self.hoistable({ d.args[i] }, can, assigned);
+            case CALL_FN:
+                ok = d.type != VOID && node_funcs[call_func(d)].pure;
+                for (int i = 0; i < d.count && ok; i++) ok = self.hoistable({ call_arg(d, i) }, can, assigned);
             default:
                 ok = false;
         }
@@ -1176,6 +1280,11 @@ fn FuncDone* ProgramGen.func(&self, int f) {
     FuncDone* done = &self.func_done[f];
     if (done.printed) return done;
     NodeFunc* fd = node_funcs.get_ref(f);
+    if (done.printing) abort("drie: nodes: %s calls itself", fd.name);
+    foreach (i, &other : self.func_done) {
+        if (other.printed && i < node_funcs.len() && node_funcs[i].name == fd.name) abort("drie: nodes: two functions named %s in one program", fd.name);
+    }
+    done.printing = true;
     GenBody* outer = self.body;
     GenBody* b = self.new_body(f);
     self.body = b;
@@ -1185,6 +1294,7 @@ fn FuncDone* ProgramGen.func(&self, int f) {
         self.line("return %s;", self.value_as(fd.body, fd.ret));
     }
     self.body = outer;
+    done.printing = false;
     done.printed = true;
     done.block = b.block;
     done.views.init(tmem);
@@ -1303,7 +1413,20 @@ fn String ProgramGen.emit(&self, Node n) {
             self.line("%s %s = %s;", self.type_name(d.type), v, init);
             return v;
         case SEQ:
-            self.statements(d.args[0]);
+            // (printed again where its variables are still declared: they start again from
+            // their first values)
+            bool again = self.body.serial[n.id] > 0;
+            for (uint st = d.args[0]; st; st = node_data({ st }).next) {
+                NodeData* sd = node_data({ st });
+                Node v = sd.op == EVAL ? (Node) { sd.args[0] } : (Node) { st };
+                NodeData* vd = node_data(v);
+                if (again && vd.op == VAR && self.printed(v)) {
+                    self.line("%s = %s;", self.name(v), vd.args[0] ? self.value_as({ vd.args[0] }, vd.type) : self.zero(vd.type));
+                    self.assigned(v.id);
+                    continue;
+                }
+                self.statement({ st });
+            }
             if (!d.args[1]) {
                 self.mark(n);
                 return "";
@@ -1395,7 +1518,7 @@ fn String ProgramGen.emit(&self, Node n) {
     // reads a variable has the same variables as that node, and the same assignments since)
     String key = string::tformat("%s %s", self.type_name(d.type), e);
     GenBody* b = self.body;
-    uint[2]? had = d.op == CALL_FN ? NOT_FOUND~ : b.exprs[key];
+    uint[2]? had = d.op == CALL_FN && !node_funcs[call_func(&d)].pure ? NOT_FOUND~ : b.exprs[key];
     if (try had) {
         Node m = { had[0] };
         if (b.serial[m.id] == had[1] && self.printed(m)) {

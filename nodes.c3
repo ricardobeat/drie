@@ -26,9 +26,10 @@
 //
 // Graphs hold floats, ints, uints, bools and their vectors, and 4x4 matrices. They can also
 // hold statements, for TSL's Fn bodies: variables, assignments, ifs, loops, break, continue
-// and discard, in blocks that seq() turns into a value (see drie::nodes). A value is printed
-// once where it is first needed, and printed again after an assignment when it reads a
-// variable, or outside the block it was printed in.
+// and discard, in blocks that seq() turns into a value (see drie::nodes), and call functions
+// (nodes::function, three's Fn with a layout), which a program prints once and calls. A value
+// is printed once where it is first needed, and printed again after an assignment when it
+// reads a variable, or outside the block it was printed in.
 module drie;
 import std::collections::list, std::collections::map, std::io, sokol, drie::nodes;
 
@@ -36,6 +37,32 @@ import std::collections::list, std::collections::map, std::io, sokol, drie::node
 // uniform's value (Node.set). See drie::nodes for the constructors.
 struct Node {
     uint id;
+}
+
+// A graph function (nodes::function), printed once in each stage that calls it.
+struct NodeFunction {
+    int id;
+}
+
+fn Node NodeFunction.param(self, int i) => node_param(self.id, i);
+
+// Sets its body: the value it returns (a seq() for statements before it).
+fn NodeFunction NodeFunction.returns(self, Node value) {
+    node_func_body(self.id, value);
+    return self;
+}
+
+// A call, of nodes or numbers.
+macro Node NodeFunction.call(self, ...) {
+    $if $vaarg.len == 0:
+        return node_call_fn(self.id, { });
+    $else
+        Node[$vaarg.len] args;
+        $for var $i = 0; $i < $vaarg.len; $i++:
+            args[$i] = nodes::to_node($vaarg[$i]);
+        $endfor
+        return node_call_fn(self.id, &args);
+    $endif
 }
 
 enum NodeType : char {
@@ -1657,11 +1684,13 @@ fn String NodeGen.emit(&self, Node n) {
             // (the screen's depth, nodes::viewport_depth...: only generated programs read it)
             self.unsupported = "the screen's depth (nodes::ssr_on, viewport_depth, screen_position)";
             e = self.zero(d.type);
+        case PARAM:
+        case CALL_FN:
+            self.unsupported = "graph functions (nodes::function)";
+            e = self.zero(d.type);
         case STORAGE:
         case ATTRIBUTE:
         case SYSTEM:
-        case PARAM:
-        case CALL_FN:
         case BIND:
             abort("drie: nodes: a %s node is for whole programs (nodes_program.c3), not a material's hooks", d.op);
     }

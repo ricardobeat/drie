@@ -9,8 +9,9 @@
 //   4. normal_node: vertical ridges in the shading of a smooth metal sphere, and an
 //      emissive_node orange rim (fresnel)
 //   5. color_node from a varying of the position in the model
-// then statements and integers against a constant, and a ball that a uniform discards along
-// with its shadow.
+// then statements and integers against a constant, a ball that a uniform discards along
+// with its shadow, graph functions (nodes::function) against the same graphs inlined, and a
+// seq() reading normal_world() in two steps that bind it to different normals.
 //
 //   just test nodes [out.png]   (tests/build/nodes.png; nodes_2.png: the second picture)
 module nodes_test;
@@ -83,6 +84,28 @@ fn Generated generated(Material* mat) {
         if (mp.key.mrt && mp.program.shader.id) g.mrt = true;
     }
     return g;
+}
+
+fn int count_of(String s, String what) {
+    int n;
+    for (usz i = 0; i + what.len <= s.len; i++) {
+        if (s[i:what.len] == what) n++;
+    }
+    return n;
+}
+
+fn Node inline_hash(Node p) => nodes::fract(nodes::sin(nodes::dot(p, nodes::vec2(127.1f, 311.7f))) * 43758.5453f);
+
+// tests' graph functions, as C3 functions making the nodes
+fn Node inline_noise(Node p, Node scale) {
+    Node np = p * scale;
+    Node i = nodes::floor(np);
+    Node f = nodes::fract(np);
+    Node u = f * f * (3.0f - f * 2.0f);
+    Node shade = nodes::variable(nodes::mix(nodes::mix(inline_hash(i), inline_hash(i + nodes::vec2(1, 0)), u.x()),
+                                            nodes::mix(inline_hash(i + nodes::vec2(0, 1)), inline_hash(i + nodes::vec2(1, 1)), u.x()), u.y()));
+    return nodes::seq(nodes::block(shade, nodes::if_then(shade.greater_than(nodes::num(0.9f)),
+        nodes::block(shade.assign(shade * 0.5f)))), shade);
 }
 
 fn bool save(String path, char[] px) {
@@ -345,6 +368,112 @@ fn int main(String[] args) {
         io::printfn("uniform discard: the shadow %s, then %s; the ball %s, then %s", shade[0], shade[1], blue[0], blue[1]);
         expect(blue[0][2] > blue[0][0] + 40 && math::abs(blue[1][2] - blue[1][0]) < 20, "a discard a uniform decides: the ball, then none");
         expect(shade[1][0] > shade[0][0] + 30, "a discard a uniform decides: its shadow goes too");
+    }
+    // graph functions: a noise of a hash reading a uniform, called three times
+    // in the fragment stage and once in the vertex stage; the same graphs inlined, made by C3
+    // functions, draw the same picture; a function reads a texture
+    {
+        Scene* flat = drie::scene();
+        Node scale = nodes::uniform(1.0f);
+        Texture* tex = checker();
+        NodeFunction hash = nodes::function("hash", FLOAT, VEC2);
+        Node hp = hash.param(0);
+        hash.returns(nodes::fract(nodes::sin(nodes::dot(hp, nodes::vec2(127.1f, 311.7f))) * 43758.5453f));
+        NodeFunction noise = nodes::function("noise", FLOAT, VEC2);
+        Node np = noise.param(0) * scale;
+        Node ni = nodes::floor(np);
+        Node nf = nodes::fract(np);
+        Node nu = nf * nf * (3.0f - nf * 2.0f);
+        Node shade = nodes::variable(nodes::mix(nodes::mix(hash.call(ni), hash.call(ni + nodes::vec2(1, 0)), nu.x()),
+                                                nodes::mix(hash.call(ni + nodes::vec2(0, 1)), hash.call(ni + nodes::vec2(1, 1)), nu.x()), nu.y()));
+        noise.returns(nodes::seq(nodes::block(shade, nodes::if_then(shade.greater_than(nodes::num(0.9f)),
+            nodes::block(shade.assign(shade * 0.5f)))), shade));
+        NodeFunction tinted = nodes::function("tinted", VEC3, VEC3, VEC2);
+        tinted.returns(tinted.param(0) * nodes::texture(tex, tinted.param(1)).xyz());
+        NodeFunction bulge = nodes::function("bulge", VEC3, VEC3, VEC3);
+        bulge.returns(bulge.param(0) + bulge.param(1) * (noise.call(bulge.param(0).xy() * 4) * 0.1f));
+
+        Material* called = drie::mesh_basic_material(color: 0xffffff);
+        Node u = nodes::uv();
+        called.color_node = tinted.call(nodes::vec3(noise.call(u * 8), noise.call(u * 16 + 3), noise.call(u * 32 + 7)), u * 2);
+        called.position_node = bulge.call(nodes::position_local(), nodes::normal_local());
+        Material* inlined = drie::mesh_basic_material(color: 0xffffff);
+        inlined.color_node = nodes::vec3(inline_noise(u * 8, scale), inline_noise(u * 16 + 3, scale), inline_noise(u * 32 + 7, scale))
+                           * nodes::texture(tex, u * 2).xyz();
+        Node lp = nodes::position_local();
+        inlined.position_node = lp + nodes::normal_local() * (inline_noise(lp.xy() * 4, scale) * 0.1f);
+        Mesh* ball = drie::mesh(drie::sphere_geometry(1.2f, 64, 32), called);
+        flat.add(ball);
+        PerspectiveCamera* cam = drie::perspective_camera(40, (float)W / H, 0.1f, 100);
+        cam.position = { 0, 0, 6 };
+        cam.look_at_vec({ 0, 0, 0 });
+        renderer.set_render_target(rt);
+        renderer.render(flat, cam);
+        drie::commit();
+        readback::read_image(rt.texture_image, W, H, px.ptr);
+        String vs;
+        String fs;
+        foreach (mp : called.node_build.programs.tvalues()) {
+            if (mp.key.shadow) continue;
+            vs = mp.program.vs;
+            fs = mp.program.fs;
+        }
+        ball.material = inlined;
+        renderer.render(flat, cam);
+        drie::commit();
+        readback::read_image(rt.texture_image, W, H, px2.ptr);
+        String fpath = string::tformat("%s_functions.png", out_path.ends_with(".png") ? out_path[:^4] : out_path);
+        if (!save(fpath, px)) return 1;
+        int worst;
+        int differ;
+        foreach (i, c : px) {
+            int d = math::abs((int)c - (int)px2[i]);
+            if (d) differ++;
+            worst = math::max(worst, d);
+        }
+        int defined = count_of(fs, "float fn_noise(");
+        io::printfn("functions: fs %d B (fn_noise defined %d times, called %d), vs %d B; against inlined: %d bytes differ, by up to %d",
+                    fs.len, defined, count_of(fs, "fn_noise(") - defined, vs.len, differ, worst);
+        expect(defined == 1 && count_of(fs, "fn_noise(") >= 4, "a function called three times prints once");
+        expect(count_of(fs, "float fn_hash(") == 1,
+               "a function a function calls prints once");
+        expect(count_of(vs, "3 fn_bulge(") == 1 && count_of(vs, "float fn_noise(") == 1, "functions in the vertex stage");
+        expect(differ == 0, "functions: the picture of the same graphs inlined");
+    }
+    // a seq() reading normal_world() in color_node (the surface's normal) and emissive_node
+    // (normal_node's, straight up): its value in each step
+    {
+        Scene* dark = drie::scene();
+        Node v = nodes::variable(nodes::normal_world());
+        Node n = nodes::seq(nodes::block(v, v.assign(v * 1.0f)), v);
+        Material* seqd = drie::mesh_standard_material(color: 0xffffff);
+        seqd.normal_node = nodes::vec3(0, 1, 0);
+        seqd.color_node = nodes::vec3(0) * n;
+        seqd.emissive_node = n * 0.5f + 0.5f;
+        Material* plain = drie::mesh_standard_material(color: 0x000000);
+        plain.normal_node = nodes::vec3(0, 1, 0);
+        plain.emissive_node = nodes::normal_world() * 0.5f + 0.5f;
+        Mesh* left = drie::mesh(drie::sphere_geometry(0.8f, 32, 16), seqd);
+        left.position = { -1.5f, 0, 0 };
+        Mesh* right = drie::mesh(drie::sphere_geometry(0.8f, 32, 16), plain);
+        right.position = { 1.5f, 0, 0 };
+        dark.add(left);
+        dark.add(right);
+        PerspectiveCamera* cam = drie::perspective_camera(40, (float)W / H, 0.1f, 100);
+        cam.position = { 0, 0, 6 };
+        cam.look_at_vec({ 0, 0, 0 });
+        renderer.set_render_target(rt);
+        renderer.render(dark, cam);
+        drie::commit();
+        readback::read_image(rt.texture_image, W, H, px2.ptr);
+        float worst;
+        foreach (Vector3 q : (Vector3[]) { { 0, 0.5f, 0.6f }, { 0.5f, -0.4f, 0.4f }, { -0.5f, 0, 0.6f } }) {
+            float[3] x = rgb_at(px2, pixel_of(cam, { q.x - 1.5f, q.y, q.z }));
+            float[3] y = rgb_at(px2, pixel_of(cam, { q.x + 1.5f, q.y, q.z }));
+            for (int c = 0; c < 3; c++) worst = math::max(worst, math::abs(x[c] - y[c]));
+        }
+        io::printfn("seq after a bind: up to %.1f from normal_world()", worst);
+        expect(worst < 2, "a seq() reading normal_world() is printed again after normal_node binds it");
     }
     io::printfn("saved %s, %s", out_path, second);
     return failures ? 1 : 0;
