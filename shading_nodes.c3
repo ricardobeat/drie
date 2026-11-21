@@ -344,3 +344,35 @@ fn Node tone_map_gamut(Node c, int mode, Node exposure, bool p3) {
     if (mode == TONE_AGX) return nodes::clamp(srgb_to_p3 * (rec2020_to_srgb() * agx_rec2020(e)), 0, 1);
     return srgb_to_p3 * tone_map(c, mode, exposure);
 }
+
+// A world direction in the camera's view space (x right, y up, z towards the viewer).
+fn Node to_view(Node d) {
+    Node right = drie::fs_in("camera_right", VEC3);
+    Node up = drie::fs_in("camera_up", VEC3);
+    Node back = nodes::cross(right, up);
+    return nodes::vec3(nodes::dot(d, right), nodes::dot(d, up), nodes::dot(d, back));
+}
+
+// Window depth `v` packed as three packs it (Material.depth_packing, `packing`: 0 basic, as
+// 1 - v in gray with the material's opacity; 1 RGBA, 2 RGB and 3 RG, 8 bits a channel).
+fn Node pack_depth(Node v, int packing, Node alpha) {
+    if (packing == 0) return nodes::vec4(nodes::vec3(v.one_minus()), alpha);
+    Node low = packing == 1 ? nodes::vec4(0) : nodes::vec4(0, 0, 0, 1);
+    Node high = packing == 3 ? nodes::vec4(1, 1, 0, 1) : nodes::vec4(1);
+    Node packed;
+    switch (packing) {
+        case 3:
+            Node x = v * 256.0f;
+            packed = nodes::vec4(nodes::floor(x) / 255.0f, nodes::fract(x), 0, 1);
+        case 2:
+            Node x = v * 65536.0f;
+            Node y = nodes::floor(x) / 256.0f;
+            packed = nodes::vec4(nodes::floor(y) / 255.0f, nodes::fract(y) * (256.0f / 255.0f), nodes::fract(x), 1);
+        default:
+            Node x = v * 16777216.0f;
+            Node y = nodes::floor(x) / 256.0f;
+            Node z = nodes::floor(y) / 256.0f;
+            packed = nodes::vec4(nodes::floor(z) / 255.0f, nodes::fract(z) * (256.0f / 255.0f), nodes::fract(y) * (256.0f / 255.0f), nodes::fract(x));
+    }
+    return nodes::select(v.less_than_equal(nodes::num(0)), low, nodes::select(v.greater_than_equal(nodes::num(1)), high, packed));
+}

@@ -3118,9 +3118,10 @@ fn void material_slots(Material* mat, NodeBuild* nodes, Texture*[6]* slots, Vec4
     }
 }
 
-// Whether `item` draws with a generated program (materials_nodes.c3), and its key: the
-// materials and features materials_nodes.c3 covers, outside a light map's bake and without
-// the application's programs (Renderer.shaders), which then draw every material.
+// Whether `item` draws with a generated program (materials_nodes.c3), and its key: every
+// built-in material in the main pass (SOLID and CUT draws), but not node materials, nor in a
+// light map's bake, nor with the application's programs (Renderer.shaders), which then draw
+// every material.
 fn bool material_key_of(DrawItem* item, DrawKind kind, FsParams* fs, Vec4[6]* map_slots, MaterialKey* key) @local {
     Mesh* m = item.mesh;
     Material* mat = m.material;
@@ -3128,8 +3129,7 @@ fn bool material_key_of(DrawItem* item, DrawKind kind, FsParams* fs, Vec4[6]* ma
     if (classic_materials || state.bake.on || r.shaders.main || node_build_of(mat)) return false;
     if (kind != CUT && kind != SOLID) return false;
     MaterialType type = mat.type;
-    if (type != BASIC && type != LAMBERT && type != PHONG && type != STANDARD && type != TOON) return false;
-    bool lit = type != BASIC;
+    bool lit = type == LAMBERT || type == PHONG || type == STANDARD || type == TOON;
     bool standard = type == STANDARD;
     float alpha_test = alpha_test_of(mat);
     int fog = mat.fog ? (int)fs.fog_params.w : 0;
@@ -3146,7 +3146,7 @@ fn bool material_key_of(DrawItem* item, DrawKind kind, FsParams* fs, Vec4[6]* ma
     if (probes) env_map = null;
     bool backdrop = m == state.background;
     // three's envMap on a basic, lambert or phong material
-    bool env_combine = mat.env_map && !backdrop && !standard;
+    bool env_combine = mat.env_map && !backdrop && (type == BASIC || type == LAMBERT || type == PHONG);
     // what it mirrors of the environment (its map or the probes): glass on any material, or
     // the reflections over the light but on lambert materials and the background
     bool env_reflect = (env_map || probes) && (mat.glass || (type != LAMBERT && !backdrop && !env_combine));
@@ -3195,8 +3195,10 @@ fn bool material_key_of(DrawItem* item, DrawKind kind, FsParams* fs, Vec4[6]* ma
         .channels = lit && mat.light_channels != 0,
         .map_emissive = lit && mat.map_emissive,
         .baked = lit && vc && mat.vertex_light > 0,
-        .normal_map = lit && mat.normal_map != null,
-        .tangents = lit && uses_tangents(item),
+        // (the normal map on every type but basic: the normal and matcap materials show it)
+        .normal_map = type != BASIC && mat.normal_map != null,
+        .tangents = type != BASIC && uses_tangents(item),
+        .depth_packing = type == DEPTH ? (char)mat.depth_packing.ordinal : 0,
         .env_light = standard && env_map && env_map.has_env_sh,
         .env_reflect = env_reflect,
         .glass = mat.glass,

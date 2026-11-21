@@ -104,6 +104,7 @@ bitstruct MaterialKey : char[32] {
     bool fog_volume : 76;        // the fog's froxel volume (in place of its analytic fog),
     bool fog_glow : 77;          //   its lights' glow,
     bool fog_shafts : 78;        //   its light shafts (the sun's shadow in it)
+    char depth_packing : 79..80; // a depth material's Material.depth_packing
 }
 
 // The map roles (shader_core.glsl's MAP_*) a key holds a slot for.
@@ -612,6 +613,23 @@ fn void build_material_graph(MaterialKey key, ProgramGraph* graph) @private {
         n = nodes::normalize(n * nodes::abs(det) - grad);
     }
     if (key.mrt) mrt_normal = nodes::vec4(shading::pack_normal_octahedral(n), 0, 1);
+    if (key.type == (char)MaterialType.NORMAL || key.type == (char)MaterialType.DEPTH) {
+        // MeshNormalMaterial: the normal in view space as the color; MeshDepthMaterial: the
+        // window depth, packed as Material.depth_packing says. Neither is lit, fogged or color
+        // managed (three's), and both take the material's opacity alone.
+        if (key.type == (char)MaterialType.NORMAL) {
+            graph.colors[0] = nodes::vec4(nodes::normalize(shading::to_view(n)) * 0.5f + 0.5f, base.w());
+        } else {
+            graph.colors[0] = shading::pack_depth(fc.z(), key.depth_packing, base.w());
+        }
+        if (key.mrt) {
+            graph.colors[1] = mrt_normal;
+            graph.colors[2] = velocity;
+            graph.colors[3] = nodes::vec4(0, 0, rough, metal);
+        }
+        if (ncuts) graph.fragment = drie::node_block(cuts[:ncuts]);
+        return;
+    }
 
     Node camera = fs_in("camera_pos");
     Node to_cam = camera.xyz() - world;
@@ -636,11 +654,28 @@ fn void build_material_graph(MaterialKey key, ProgramGraph* graph) @private {
     Lit lit = { .key = key, .n = n, .geo_n = geo_n, .v = v, .world = world, .rough = rough, .metal = metal, .alpha = alpha,
                 .ao = ao, .parallax = px, .f = &f, .v_normal = v_normal, .tangent = vtx.tangent, .irid_fn = -1, .frag = fc.xy(),
                 .shadow = shadow_fns(key), .ltc_fn = -1, .refraction = { -1, -1, -1 }, .probe_fn = -1, .ssr_fn = -1 };
-    if (key.type == (char)MaterialType.BASIC) {
-        outc = rgb;
+    if (key.type == (char)MaterialType.MATCAP) {
+        // MeshMatcapMaterial: the matcap image at the view-space normal, from a frame turned
+        // toward the viewer (three's), times the color
+        Node vd = nodes::normalize(shading::to_view(v));
+        Node vn = nodes::normalize(shading::to_view(n));
+        Node x = nodes::normalize(nodes::vec3(vd.z(), 0, vd.x().negate()));
+        Node y = nodes::cross(vd, x);
+        Node muv = nodes::vec2(nodes::dot(x, vn), nodes::dot(y, vn)) * 0.495f + 0.5f;
+        Node matcap;
+        int ms = key.slot(MAP_MATCAP) - 1;
+        if (ms >= 0) {
+            matcap = shading::slot_grad_at(ms + 2, shaders::VIEW_TEX_EXT0 + ms, muv, nodes::dfdx(muv), nodes::dfdy(muv)).xyz();
+        } else {
+            matcap = nodes::vec3(nodes::mix(nodes::num(0.2f), nodes::num(0.8f), muv.y()));
+        }
+        outc = rgb * matcap;
+    }
+    if (key.type == (char)MaterialType.BASIC || key.type == (char)MaterialType.MATCAP) {
+        if (key.type == (char)MaterialType.BASIC) outc = rgb;
         // three's lightMap: the indirect light is the map's instead of 1
-        if (key.slot(MAP_LIGHT)) outc = outc * (role_texel(key, &f, MAP_LIGHT).xyz() * (fs_in("light_map_params", FLOAT) * shading::RECIPROCAL_PI));
-        if (key.background) {
+        if (key.type == (char)MaterialType.BASIC && key.slot(MAP_LIGHT)) outc = outc * (role_texel(key, &f, MAP_LIGHT).xyz() * (fs_in("light_map_params", FLOAT) * shading::RECIPROCAL_PI));
+        if (key.background && key.type == (char)MaterialType.BASIC) {
             // the scene's background: its map in the direction of the view, blurred about as
             // three's PMREM blurs it for backgroundBlurriness
             Node d = nodes::normalize(world - camera.xyz());
