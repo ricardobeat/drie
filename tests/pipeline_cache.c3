@@ -55,14 +55,14 @@ fn int main(String[] args) {
     drie::commit();
 
     String text = renderer.pipeline_cache(tmem);
-    expect(text.starts_with("drie-pipelines 2\n"), "the list has its header");
+    expect(text.starts_with("drie-pipelines 3\n"), "the list has its header");
     expect(count_lines(text, "N ") == 1, "it has the node material's program");
-    expect(count_lines(text, "P -1 ") >= 1, "and the engine's pipeline");
+    expect(count_lines(text, "G ") >= 1, "and the engine material's pipeline, with its generated program");
     expect(count_lines(text, "P 0 ") >= 1, "and the node material's");
 
     // what the render made: listed, nothing to compile
     int listed = renderer.load_pipeline_cache(text);
-    expect(listed == count_lines(text, "P ") + count_lines(text, "S "), "loading it takes every pipeline");
+    expect(listed == count_lines(text, "P ") + count_lines(text, "S ") + count_lines(text, "G ") + count_lines(text, "H "), "loading it takes every pipeline");
     expect(renderer.load_pipeline_cache(text) == 0, "loading it again adds none");
     renderer.render(scene, camera);
     drie::commit();
