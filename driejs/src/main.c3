@@ -1767,6 +1767,12 @@ fn void h_now(JsCtx ctx, void* udata)
     ctx.ret_number((double)(long)start_clock.to_now() / 1e6);
 }
 
+// Whether now() is the frames' own clock (see fixed_clock).
+fn void h_fixed_clock(JsCtx ctx, void* udata)
+{
+    ctx.ret_bool(fixed_clock >= 0);
+}
+
 // stats(fps, fpsMin, fpsMax, ms, msMin, msMax), from js/stats.js each frame (fps -1 until
 // the first second has passed). The first call puts the panel over the picture.
 double[6] stats_values;
@@ -2664,6 +2670,7 @@ fn int main(String[] args)
     reg(natives, "setSize", &h_set_size, 3);
     reg(natives, "info", &h_info, 2);
     reg(natives, "now", &h_now, 0);
+    reg(natives, "fixedClock", &h_fixed_clock, 0);
     reg(natives, "setAnimationLoop", &h_set_animation_loop, 2);
     reg(natives, "stats", &h_stats, 6);
     reg(natives, "shadow", &h_shadow, 3);

@@ -1,6 +1,6 @@
 // Renderer: owns the window and the GPU, draws a Scene from a Camera.
 module drie;
-import std::collections::list, std::collections::map, std::sort, std::io, std::math, std::thread;
+import std::collections::list, std::collections::map, std::sort, std::io, std::math, std::thread, std::os::env;
 import sokol, drie::readback, drie::postprocessing, drie::nodes;
 
 alias AnimationLoop = fn void(double time_ms);
@@ -837,6 +837,7 @@ fn Renderer* renderer(bool antialias = true, int width = 800, int height = 600, 
     state.opaque.allocator = mem;
     state.transparent.allocator = mem;
     if (!state.pipelines.is_initialized()) state.pipelines.init(mem);
+    classic_materials = (env::tget_var("DRIE_CLASSIC_MATERIALS") ?? "") != "";
     state.casters.allocator = mem;
     state.spot_casters.allocator = mem;
     foreach (&l : state.sun_casters) l.allocator = mem;
@@ -1182,7 +1183,8 @@ fn SgPipeline get_pipeline(
     bool depth_test = true,
     bool depth_write = true,
     bool tangents = false,
-    NodeProgram* nodes = null
+    NodeProgram* nodes = null,
+    MaterialProgram* gen = null
 ) @private {
     int target = rt ? (rt.samples > 1 ? 2 : 1) + (rt.mrt ? 4 : (rt.is_linear() ? 2 : 0)) : 0;
     if (rt && rt.samples != 1 && rt.samples != 4) abort("drie: render targets support 1 or 4 samples");
@@ -1206,7 +1208,10 @@ fn SgPipeline get_pipeline(
     ulong key = blend | (ulong)(tangents ? 1 : 0) << 27 | (ulong)depth << 28 | (ulong)(vsm ? 1 : 0) << 30
         | (ulong)kind.ordinal << 31 | (ulong)side.ordinal << 33 | (ulong)(wireframe ? 1 : 0) << 35
         | (ulong)target << 36 | (ulong)(a2c ? 1 : 0) << 39 | (ulong)(transparent ? 1 : 0) << 40;
-    if (nodes) {
+    if (gen) {
+        SgPipeline? found = gen.pipelines[key];
+        if (try found) return found;
+    } else if (nodes) {
         SgPipeline? found = nodes.pipelines[key];
         if (try found) return found;
     } else {
@@ -1214,7 +1219,8 @@ fn SgPipeline get_pipeline(
     }
     // (for the pipeline cache: a new pipeline, the target Renderer.screen_stand_in as the window)
     bool window = !rt || (state.renderer && rt == state.renderer.screen_stand_in);
-    record_pipeline({
+    // (the cache records the material shader's pipelines only)
+    if (!gen) record_pipeline({
         .program = nodes,
         .side = side,
         .transparent = transparent,
@@ -1283,7 +1289,9 @@ fn SgPipeline get_pipeline(
         }
     }
     desc.colors[0].blend = blend_state(blend);
-    if (nodes) {
+    if (gen) {
+        desc.shader = gen.program.make();
+    } else if (nodes) {
         // (compiled in the background first: none till then, see NodeProgram.busy)
         if (!nodes.pipeline_ready(key, variant, node_base_desc(nodes, variant), &desc, background())) return { };
         desc.shader = node_shader(nodes, variant);
@@ -1296,7 +1304,9 @@ fn SgPipeline get_pipeline(
     }
     SgPipeline pip = sg::make_pipeline(&desc);
     if (!pip.id) abort("drie: sokol's pipeline pool is full (pipeline_pool_size in setup_gfx)");
-    if (nodes) {
+    if (gen) {
+        gen.pipelines[key] = pip;
+    } else if (nodes) {
         nodes.pipelines[key] = pip;
     } else {
         state.pipelines.set(key, pip);
@@ -3045,61 +3055,10 @@ fn void draw_depth_item(DrawItem* item, Mat4 view_proj) @local {
     draw_geometry(item, false);
 }
 
-fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = CUT) @local {
-    Mesh* m           = item.mesh;
-    Material* mat     = m.material;
-    BufferGeometry* g = m.geometry;
-    bool lines        = draws_lines(item);
-    int elements;
-    SgBuffer indices  = index_buffer_of(item, lines, &elements);
-    Renderer* r       = state.renderer;
-
-    Texture* map = ready(mat.map);
-    if (mat.screen_target) map = state.white;
-    float alpha_test = alpha_test_of(mat);
-    // (a light map's bake draws with the engine's own program)
-    NodeBuild* nodes = state.bake.on ? null : node_build_of(mat);
-    bool tangents = !state.bake.on && !nodes && uses_tangents(item);
-    SgPipeline pip = (
-        state.bake.on ? state.bake.pipeline
-            : get_pipeline(
-                mat.side,
-                mat.transparent,
-                lines,
-                r.render_target,
-                alpha_test > 0,
-                blend_key(mat),
-                kind,
-                mat.depth_test,
-                mat.depth_write,
-                tangents,
-                nodes ? nodes.program : null
-            )
-    );
-    // (a node material's program still compiling: not drawn yet)
-    if (nodes && (!pip.id || nodes.program.busy())) return;
-    sg::apply_pipeline(pip);
-    // the prepass has cut it out already (the shader takes a negative threshold as "covered")
-    if (kind == PRETESTED && alpha_test > 0) alpha_test = -1;
-    SgBindings bind = {
-        .vertex_buffers[0] = g.vbuf,
-        .index_buffer = indices,
-    };
-    bind_instances(&bind, item, tangents);
-    Vec4 inst_cull = cull_bind(&bind, item.job - 1);
-    bind.views[shaders::VIEW_TEX_MAP] = map.view;
-    bind.views[shaders::VIEW_TEX_NORMAL] = ready(mat.normal_map).view;
-    // roughness and metalness: three's maps a channel each, in the arm map's place
-    Texture* arm = mat.arm_map ?: (mat.roughness_map ?: mat.metalness_map);
-    int arm_bits;
-    if (mat.arm_map) {
-        arm_bits = 7;
-    } else if (arm) {
-        arm_bits = (mat.roughness_map ? 2 : 0) | (mat.metalness_map == arm ? 4 : 0);
-    }
-    bind.views[shaders::VIEW_TEX_ARM] = ready(arm).view;
-    // the material's other maps, in the six slots they share (white where a slot is empty):
-    // by role, in the order of the shader's MAP_*; one image in two roles takes one slot
+// The material's other maps, in the six slots they share (white where a slot is empty): by
+// role, in the order of the shader's MAP_*; one image in two roles takes one slot.
+// `map_slots`: each role's slot (-1: none), as FsParams.map_slots.
+fn void material_slots(Material* mat, NodeBuild* nodes, Texture*[6]* slots, Vec4[6]* map_slots) @local {
     bool standard = mat.type == STANDARD;
     bool refracts = standard && mat.transmission > 0;
     Renderer* lens = state.renderer;
@@ -3129,28 +3088,160 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
         mat.type == TOON ? mat.gradient_map : null,
         mat.type != BASIC && mat.type != MATCAP ? mat.bump_map : null,
     };
-    Texture*[6] slots;
     int used;
-    Vec4[6] map_slots;
     // (a node material's textures take the last slots: see NodeBuild.textures)
-    int room = slots.len - (nodes ? nodes.texture_count : 0);
+    int room = 6 - (nodes ? nodes.texture_count : 0);
     foreach (i, t : roles) {
         int slot = -1;
         if (t) {
             for (int k = 0; k < used; k++) {
-                if (slots[k] == t) slot = k;
+                if ((*slots)[k] == t) slot = k;
             }
             // (more than six images: the rest are left out)
             if (slot < 0 && used < room) {
-                slots[used] = t;
+                (*slots)[used] = t;
                 slot = used++;
             }
         }
-        map_slots[i / 4][i % 4] = (float)slot;
+        (*map_slots)[i / 4][i % 4] = (float)slot;
     }
     if (nodes) {
-        for (int k = 0; k < nodes.texture_count; k++) slots[slots.len - 1 - k] = nodes.textures[k];
+        for (int k = 0; k < nodes.texture_count; k++) (*slots)[5 - k] = nodes.textures[k];
     }
+}
+
+// Whether `item` draws with a generated program (materials_nodes.c3), and its key: the
+// materials and features materials_nodes.c3 covers, outside a light map's bake and without
+// the application's programs (Renderer.shaders), which then draw every material.
+fn bool material_key_of(DrawItem* item, DrawKind kind, FsParams* fs, Vec4[6]* map_slots, MaterialKey* key) @local {
+    Mesh* m = item.mesh;
+    Material* mat = m.material;
+    Renderer* r = state.renderer;
+    if (classic_materials || state.bake.on || r.shaders.main || node_build_of(mat)) return false;
+    if (mat.type != BASIC || (kind != CUT && kind != SOLID)) return false;
+    float alpha_test = alpha_test_of(mat);
+    // (drawn by the material shader: glass, hex tiling, the roughness and metalness maps,
+    // defocus, screen-space and planar reflections, reflection probes, the fog's volume and
+    // its lights' glow)
+    if (mat.glass || (mat.hex_tiling > 0 && alpha_test <= 0)) return false;
+    if (mat.arm_map || mat.roughness_map || mat.metalness_map) return false;
+    if (mat.defocus && r.focus_map && r.focus_aperture > 0) return false;
+    if (r.ssr_color.id && r.ssr_depth.id && mat.ssr > 0) return false;
+    if (mat.reflector && mat.reflector.rendered && mat.reflector.target) return false;
+    if (!mat.env_map && mat.env_probes && state.probes_view.id) return false;
+    int fog = mat.fog ? (int)fs.fog_params.w : 0;
+    if (fog && (fs.fog_grid.w > 0 || fs.fog_color.w > 0)) return false;
+
+    RenderTarget* rt = r.render_target;
+    bool cut = kind == CUT;
+    bool vc = mat.vertex_colors;
+    bool backdrop = m == state.background;
+    bool linear = fs.output_params.x > 0.5f;
+    *key = {
+        .type = (char)mat.type,
+        .mrt = rt && rt.mrt,
+        .cut = cut,
+        .cull_box = cut && r.cull_box,
+        .dash = cut && m.is_line() && mat.dash_size > 0 && mat.gap_size > 0,
+        .dither = cut && item.fade_dir != 0,
+        .screen = mat.screen_target != null,
+        .tint = vc && mat.vertex_light <= 0,
+        .vertex_alpha = vc,
+        .foliage = mat.foliage,
+        .map = mat.map != null,
+        .alpha_test = cut && alpha_test > 0,
+        .background = backdrop,
+        .env_combine = mat.env_map && !backdrop,
+        .vertex_occlusion = mat.vertex_occlusion && vc,
+        .premultiplied = mat.premultiplied_alpha,
+        .fog = (char)fog,
+        .fog_box = fog && fs.fog_box_min.w >= 0.5f,
+        .fog_height = fog && fs.fog_height.y > 0,
+        .fog_sun = fog && fs.fog_sun_dir.w > 0,
+        .display_fog = fog && fs.fog_height.z > 0.5f,
+        .linear = linear,
+        .tone = linear || !mat.tone_mapped ? 0 : (char)fs.output_params.z,
+        .display = linear ? 0 : (char)fs.output_params.w,
+        .gpu_cull = item.job > 0 && cull.active,
+        .displacement = displacement_params(mat).z > 0.5f,
+        .sway = mat.sway > 0,
+        .outline = mat.outline > 0,
+        .motion = rt && rt.mrt && state.motion,
+    };
+    // the shared slots' maps it reads, by role (see material_slots)
+    float alpha_slot = (*map_slots)[3][0];
+    float light_slot = (*map_slots)[3][2];
+    float specular_slot = (*map_slots)[4][2];
+    key.alpha_slot = (char)(alpha_slot + 1);
+    key.light_slot = (char)(light_slot + 1);
+    if (key.env_combine) key.specular_slot = (char)(specular_slot + 1);
+    return true;
+}
+
+fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = CUT) @local {
+    Mesh* m           = item.mesh;
+    Material* mat     = m.material;
+    BufferGeometry* g = m.geometry;
+    bool lines        = draws_lines(item);
+    int elements;
+    SgBuffer indices  = index_buffer_of(item, lines, &elements);
+    Renderer* r       = state.renderer;
+
+    Texture* map = ready(mat.map);
+    if (mat.screen_target) map = state.white;
+    float alpha_test = alpha_test_of(mat);
+    // (a light map's bake draws with the engine's own program)
+    NodeBuild* nodes = state.bake.on ? null : node_build_of(mat);
+    Texture*[6] slots;
+    Vec4[6] map_slots;
+    material_slots(mat, nodes, &slots, &map_slots);
+    // the material's own generated program, where it has one (materials_nodes.c3)
+    MaterialKey key;
+    MaterialProgram* gen = material_key_of(item, kind, fs, &map_slots, &key) ? material_program(key) : null;
+    bool tangents = !state.bake.on && !nodes && !gen && uses_tangents(item);
+    SgPipeline pip = (
+        state.bake.on ? state.bake.pipeline
+            : get_pipeline(
+                mat.side,
+                mat.transparent,
+                lines,
+                r.render_target,
+                alpha_test > 0,
+                blend_key(mat),
+                kind,
+                mat.depth_test,
+                mat.depth_write,
+                tangents,
+                nodes ? nodes.program : null,
+                gen
+            )
+    );
+    // (a node material's program still compiling: not drawn yet)
+    if (nodes && (!pip.id || nodes.program.busy())) return;
+    sg::apply_pipeline(pip);
+    // the prepass has cut it out already (the shader takes a negative threshold as "covered")
+    if (kind == PRETESTED && alpha_test > 0) alpha_test = -1;
+    SgBindings bind = {
+        .vertex_buffers[0] = g.vbuf,
+        .index_buffer = indices,
+    };
+    bind_instances(&bind, item, tangents);
+    Vec4 inst_cull = cull_bind(&bind, item.job - 1);
+    bind.views[shaders::VIEW_TEX_MAP] = map.view;
+    bind.views[shaders::VIEW_TEX_NORMAL] = ready(mat.normal_map).view;
+    // roughness and metalness: three's maps a channel each, in the arm map's place
+    Texture* arm = mat.arm_map ?: (mat.roughness_map ?: mat.metalness_map);
+    int arm_bits;
+    if (mat.arm_map) {
+        arm_bits = 7;
+    } else if (arm) {
+        arm_bits = (mat.roughness_map ? 2 : 0) | (mat.metalness_map == arm ? 4 : 0);
+    }
+    bind.views[shaders::VIEW_TEX_ARM] = ready(arm).view;
+    bool standard = mat.type == STANDARD;
+    Renderer* lens = state.renderer;
+    bool defocus = mat.defocus && lens.focus_map && lens.focus_aperture > 0;
+    bool classic = mat.type == BASIC || mat.type == LAMBERT || mat.type == PHONG;
     for (int k = 0; k < slots.len; k++) bind.views[shaders::VIEW_TEX_EXT0 + k] = ready(slots[k]).view;
     bool backdrop = m == state.background;
     int ext_bits = backdrop ? 32 : 0;
@@ -3253,12 +3344,21 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     bind.samplers[shaders::SMP_SHADOW_SMP] = state.shadow_sampler;
     if (vsm) bind.samplers[shaders::SMP_VSM_SMP] = state.vsm_sampler;
     lights_gpu.bind(&bind);
-    sg::apply_bindings(&bind);
+    if (gen) {
+        SgBindings own = program_bindings(gen.program, &bind);
+        sg::apply_bindings(&own);
+    } else {
+        sg::apply_bindings(&bind);
+    }
 
     VsParams vs = vs_params_of(item, view_proj);
     vs.inst_cull = inst_cull;
     vs.bake[2] = nodes ? 1 : 0;
-    sg::apply_uniforms(shaders::UB_VS_PARAMS, &&{ .ptr = &vs, .size = VsParams::size });
+    if (gen) {
+        apply_program_uniforms(gen.program, VERTEX, &vs, fs);
+    } else {
+        sg::apply_uniforms(shaders::UB_VS_PARAMS, &&{ .ptr = &vs, .size = VsParams::size });
+    }
     if (nodes) apply_node_params(nodes, m, true);
     fs.node_flags = { nodes ? 1 : 0, 0, 0, 0 };
 
@@ -3370,7 +3470,11 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     }
     float fog_mode = fs.fog_params.w;
     if (!mat.fog) fs.fog_params.w = 0;
-    sg::apply_uniforms(shaders::UB_FS_PARAMS, &&{ .ptr = fs, .size = FsParams::size });
+    if (gen) {
+        apply_program_uniforms(gen.program, FRAGMENT, &vs, fs);
+    } else {
+        sg::apply_uniforms(shaders::UB_FS_PARAMS, &&{ .ptr = fs, .size = FsParams::size });
+    }
     fs.fog_params.w = fog_mode;
 
     r.info.calls++;

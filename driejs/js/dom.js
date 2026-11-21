@@ -494,6 +494,11 @@ globalThis.navigator = { userAgent: "boomkat" };
 globalThis.location = { href: "file:///", protocol: "file:", host: "", hostname: "", pathname: "/", search: "", hash: "",
 	origin: "null", reload() {}, toString() { return this.href; } };
 globalThis.performance = { now: () => N.now() };
+// (on the frames' own clock, Date.now() too: from a fixed date, as many demos animate by it)
+if (N.fixedClock()) {
+	const start = Date.UTC(2025, 0, 1);
+	Date.now = () => start + N.now();
+}
 globalThis.requestAnimationFrame = () => 0;
 globalThis.cancelAnimationFrame = () => {};
 
