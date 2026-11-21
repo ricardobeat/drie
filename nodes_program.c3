@@ -969,7 +969,12 @@ fn String ProgramGen.user_texture(&self, Node n, NodeData* d) {
         s.args = { };
         return string::tformat("%s(%s)", self.type_name(VEC2), self.sample(n, &s));
     }
-    if (d.args[1]) s.kind = (char)NodeSampling.LEVEL.ordinal;
+    if (d.kind == 2) {
+        s.kind = (char)NodeSampling.GRAD.ordinal;
+        s.args[2] = d.args[2];
+    } else if (d.args[1]) {
+        s.kind = (char)NodeSampling.LEVEL.ordinal;
+    }
     return self.sample(n, &s);
 }
 
@@ -1028,7 +1033,19 @@ fn String ProgramGen.read_varying(&self, Node n) {
 fn String ProgramGen.builtin(&self, Node n, NodeBuiltin b) {
     if (self.body.func >= 0) abort("drie: nodes: %s is read in main, not in a function", b);
     Node bound = self.binding[b.ordinal];
-    if (!bound.id) abort("drie: nodes: nothing is %s in this program's %s stage", b, self.stage);
+    if (!bound.id) {
+        switch (b) {
+            case MATERIAL_COLOR: abort("drie: nodes: material_color() is for color_node and opacity_node");
+            case MATERIAL_ROUGHNESS:
+            case MATERIAL_METALNESS: abort("drie: nodes: material_roughness() and material_metalness() are for roughness_node, metalness_node and the surface step's nodes");
+            case ENV_COLOR: abort("drie: nodes: env_color() is for env_node");
+            case INSTANCE_MATRIX: abort("drie: nodes: instance_matrix() is for the vertex stage (position_node)");
+            case OUTPUT: abort("drie: nodes: output() is for output_node");
+            case ENV_DIRECTION:
+            case ENV_ROUGHNESS: abort("drie: nodes: env_direction() and env_roughness() are for env_node");
+            default: abort("drie: nodes: nothing is %s in this program's %s stage", b, self.stage);
+        }
+    }
     return self.emit(bound);
 }
 

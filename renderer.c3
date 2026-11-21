@@ -1545,7 +1545,7 @@ fn Vec4[] user_block(NodeBuild* b, Mesh* m) @local {
 // The views of a node material's textures (NodeBuild.textures; none without a build).
 fn SgView[NODE_TEXTURES] user_views(NodeBuild* b) @local {
     SgView[NODE_TEXTURES] v;
-    for (int k = 0; k < NODE_TEXTURES; k++) v[k] = ready(b && k < b.texture_count ? b.textures[k] : null).view;
+    for (int k = 0; k < NODE_TEXTURES; k++) v[k] = ready(b && k < b.texture_count ? b.texture(k) : null).view;
     return v;
 }
 
@@ -3190,6 +3190,9 @@ fn void draw_depth_item(DrawItem* item, Mat4 view_proj) @local {
 // The material's other maps, in the six slots they share (white where a slot is empty): by
 // role, in the order of the shader's MAP_*; one image in two roles takes one slot.
 // `map_slots`: each role's slot (-1: none), as FsParams.map_slots.
+// Whether the material has a clear coat (Material.clearcoat, or a graph for it).
+fn bool coated(Material* mat) @local => mat.clearcoat > 0 || mat.clearcoat_node.id || mat.clearcoat_roughness_node.id;
+
 fn void material_slots(Material* mat, NodeBuild* nodes, Texture*[6]* slots, Vec4[6]* map_slots) @local {
     bool standard = mat.type == STANDARD;
     bool refracts = standard && mat.transmission > 0;
@@ -3204,9 +3207,9 @@ fn void material_slots(Material* mat, NodeBuild* nodes, Texture*[6]* slots, Vec4
         refracts ? mat.thickness_map : null,
         standard && mat.iridescence > 0 ? mat.iridescence_map : null,
         standard && mat.iridescence > 0 ? mat.iridescence_thickness_map : null,
-        standard && mat.clearcoat > 0 ? mat.clearcoat_map : null,
-        standard && mat.clearcoat > 0 ? mat.clearcoat_roughness_map : null,
-        standard && mat.clearcoat > 0 ? mat.clearcoat_normal_map : null,
+        standard && coated(mat) ? mat.clearcoat_map : null,
+        standard && coated(mat) ? mat.clearcoat_roughness_map : null,
+        standard && coated(mat) ? mat.clearcoat_normal_map : null,
         standard && mat.sheen > 0 ? mat.sheen_color_map : null,
         standard && mat.sheen > 0 ? mat.sheen_roughness_map : null,
         mat.alpha_map,
@@ -3238,7 +3241,7 @@ fn void material_slots(Material* mat, NodeBuild* nodes, Texture*[6]* slots, Vec4
         (*map_slots)[i / 4][i % 4] = (float)slot;
     }
     if (nodes) {
-        for (int k = 0; k < nodes.texture_count; k++) (*slots)[5 - k] = nodes.textures[k];
+        for (int k = 0; k < nodes.texture_count; k++) (*slots)[5 - k] = nodes.texture(k);
     }
 }
 
@@ -3379,7 +3382,7 @@ fn bool material_key_of(DrawItem* item, DrawKind kind, FsParams* fs, Vec4[6]* ma
         .tubes = lit && lights_gpu.tubes,
         .rect_lights = standard && fs.counts.w > 0,
         .parallax = standard && mat.parallax_map && mat.parallax_scale > 0,
-        .clearcoat = standard && mat.clearcoat > 0,
+        .clearcoat = standard && coated(mat),
         .sheen = standard && mat.sheen > 0 && (mat.sheen_color.x > 0 || mat.sheen_color.y > 0 || mat.sheen_color.z > 0),
         .iridescence = standard && mat.iridescence > 0,
         .anisotropy = standard && mat.anisotropy > 0,
@@ -3545,7 +3548,7 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     // (a node material's textures, which its graphs read with this sampler too)
     Texture*[NODE_TEXTURES] own_textures;
     if (build) {
-        for (int k = 0; k < build.texture_count; k++) own_textures[k] = build.textures[k];
+        for (int k = 0; k < build.texture_count; k++) own_textures[k] = build.texture(k);
     }
     Texture* first = slots[0] ?: own_textures[0];
     Texture* shared = mat.map ?: (mat.normal_map ?: (arm ?: (first ?: state.white)));
@@ -3773,7 +3776,7 @@ fn void draw_shadow_item(DrawItem* item, Mat4 light_vp, Vector3 origin = { 0, 0,
     // tex_ext(5 - k), as draw_item binds them)
     if (nodes && nodes.program.cuts) {
         for (int k = 0; k < NODE_TEXTURES; k++) {
-            Texture* t = k < nodes.texture_count ? nodes.textures[k] : null;
+            Texture* t = k < nodes.texture_count ? nodes.texture(k) : null;
             bind.views[shaders::VIEW_TEX_EXT5 - k] = ready(t).view;
         }
     }

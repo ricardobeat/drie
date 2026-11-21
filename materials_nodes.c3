@@ -368,13 +368,15 @@ fn void user_color(NodeBuild* build, Node n, Node* rgb, Node* a, Node[] holes, i
     Node mask = build.slots[8];
     Node color = build.slots[0];
     Node opacity = build.slots[1];
+    // (MATERIAL_COLOR: the color and opacity as they come to this step)
+    Node own = nodes::vec4(*rgb, *a);
     if (mask.id) {
         if (mask.type() != BOOL) abort("drie: mask_node is a bool");
         holes[(*count)++] = nodes::if_then(nodes::logical_not(bound(mask, { rebind(NORMAL_WORLD, n), rebind(NORMAL_GEOMETRY, n) })),
                                            nodes::block(nodes::discard()));
     }
     if (color.id) {
-        Node c = bound(color, { rebind(NORMAL_WORLD, n), rebind(NORMAL_GEOMETRY, n) });
+        Node c = bound(color, { rebind(NORMAL_WORLD, n), rebind(NORMAL_GEOMETRY, n), rebind(MATERIAL_COLOR, own) });
         if (build.program.cuts) holes[(*count)++] = drie::node_eval(c);
         if (color.type() == VEC4) {
             *rgb = c.xyz();
@@ -384,7 +386,7 @@ fn void user_color(NodeBuild* build, Node n, Node* rgb, Node* a, Node[] holes, i
         }
     }
     if (opacity.id) {
-        Node o = bound(nodes::convert(opacity, FLOAT), { rebind(NORMAL_WORLD, n), rebind(NORMAL_GEOMETRY, n) });
+        Node o = bound(nodes::convert(opacity, FLOAT), { rebind(NORMAL_WORLD, n), rebind(NORMAL_GEOMETRY, n), rebind(MATERIAL_COLOR, own) });
         if (build.program.cuts) holes[(*count)++] = drie::node_eval(o);
         *a = o;
     }
@@ -490,6 +492,13 @@ fn VertexValues vertex_stage(MaterialKey key, NodeBuild* build = null, UserBinds
         (*b)[NodeBuiltin.UV1.ordinal] = node_attribute(shaders::ATTR_THREE_UV1, VEC2);
         (*b)[NodeBuiltin.VERTEX_COLOR.ordinal] = color0;
         (*b)[NodeBuiltin.INSTANCE_INDEX.ordinal] = o.instance_index;
+        // (the rows' matrix, by its columns: instance_matrix() * vec4(p, 1) is inst.point(p))
+        Node[4] cols;
+        for (int j = 0; j < 4; j++) {
+            String c = "xyzw"[j:1];
+            cols[j] = nodes::vec4(inst.m0.swizzle(c), inst.m1.swizzle(c), inst.m2.swizzle(c), j == 3 ? 1.0f : 0.0f);
+        }
+        (*b)[NodeBuiltin.INSTANCE_MATRIX.ordinal] = node_matrix(&cols, MAT4);
         Node moved = build.slots[6];
         if (moved.id) {
             Node at = nodes::variable(nodes::convert(moved, VEC3));
@@ -701,7 +710,7 @@ fn void build_material_graph(MaterialKey key, ProgramGraph* graph, ProgramGraph*
     int nholes;
     // a node material's slots (NodeBuild.slots: none without one), and the facing vertex normal
     // its color step reads
-    Node[12] user;
+    Node[NODE_SLOTS] user;
     Node user_n;
     if (build) {
         user = build.slots;
@@ -953,18 +962,23 @@ fn void build_material_graph(MaterialKey key, ProgramGraph* graph, ProgramGraph*
     Node phong_specular = fs_in("specular", VEC3);
     Node shininess = fs_in("mat_params", FLOAT, 3);
     if (build) {
-        if (user[3].id) rough = nodes::clamp(bound(nodes::convert(user[3], FLOAT), { rebind(NORMAL_WORLD, n), rebind(NORMAL_GEOMETRY, geo_n) }), 0, 1);
-        if (user[4].id) metal = nodes::clamp(bound(nodes::convert(user[4], FLOAT), { rebind(NORMAL_WORLD, n), rebind(NORMAL_GEOMETRY, geo_n) }), 0, 1);
-        if (user[5].id) user_glow = bound(nodes::convert(user[5], VEC3), { rebind(NORMAL_WORLD, n), rebind(NORMAL_GEOMETRY, geo_n) });
+        // (MATERIAL_ROUGHNESS and MATERIAL_METALNESS: the material's own, after its maps)
+        Node own_rough = rough;
+        Node own_metal = metal;
+        Node[4] sb = { rebind(NORMAL_WORLD, n), rebind(NORMAL_GEOMETRY, geo_n), rebind(MATERIAL_ROUGHNESS, own_rough),
+                       rebind(MATERIAL_METALNESS, own_metal) };
+        if (user[3].id) rough = nodes::clamp(bound(nodes::convert(user[3], FLOAT), &sb), 0, 1);
+        if (user[4].id) metal = nodes::clamp(bound(nodes::convert(user[4], FLOAT), &sb), 0, 1);
+        if (user[5].id) user_glow = bound(nodes::convert(user[5], VEC3), &sb);
         if (key.type == (char)MaterialType.PHONG) {
-            if (user[10].id) phong_specular = bound(nodes::convert(user[10], VEC3), { rebind(NORMAL_WORLD, n), rebind(NORMAL_GEOMETRY, geo_n) });
-            if (user[11].id) shininess = bound(nodes::convert(user[11], FLOAT), { rebind(NORMAL_WORLD, n), rebind(NORMAL_GEOMETRY, geo_n) });
+            if (user[10].id) phong_specular = bound(nodes::convert(user[10], VEC3), &sb);
+            if (user[11].id) shininess = bound(nodes::convert(user[11], FLOAT), &sb);
         }
     }
     Lit lit = { .key = key, .n = n, .geo_n = geo_n, .v = v, .world = world, .rough = rough, .metal = metal, .alpha = alpha,
                 .ao = ao, .parallax = px, .f = &f, .v_normal = v_normal, .tangent = vtx.tangent, .irid_fn = -1, .frag = fc.xy(),
                 .shadow = shadow_fns(key), .ltc_fn = -1, .refraction = { -1, -1, -1 }, .probe_fn = -1, .ssr_fn = -1,
-                .user_glow = user_glow, .user_env = user[9], .phong_specular = phong_specular, .shininess = shininess };
+                .user_glow = user_glow, .user_env = user[9], .user_cc = user[12], .user_cc_rough = user[13], .phong_specular = phong_specular, .shininess = shininess };
     if (key.type == (char)MaterialType.MATCAP) {
         // MeshMatcapMaterial: the matcap image at the view-space normal, from a frame turned
         // toward the viewer (three's), times the color
@@ -1220,6 +1234,8 @@ struct Lit @local {
     // shininess_node, or the material's)
     Node user_glow;
     Node user_env;
+    Node user_cc;          // clearcoat_node, clearcoat_roughness_node (none: the material's)
+    Node user_cc_rough;
     Node phong_specular;
     Node shininess;
     // what it comes to: all of the light, and the indirect diffuse part of it
@@ -1636,7 +1652,8 @@ fn void Lit.finish(&self) {
 fn Node Lit.env_node(&self, Node env, Node dir, Node rough) {
     if (!self.user_env.id) return env;
     return bound(nodes::convert(self.user_env, VEC3), { rebind(ENV_DIRECTION, dir), rebind(ENV_ROUGHNESS, rough),
-                                                        rebind(NORMAL_WORLD, self.n), rebind(NORMAL_GEOMETRY, self.geo_n) });
+                                                        rebind(NORMAL_WORLD, self.n), rebind(NORMAL_GEOMETRY, self.geo_n),
+                                                        rebind(ENV_COLOR, env) });
 }
 
 // The physical material's layers (key.clearcoat, sheen, iridescence, anisotropy) from its
@@ -1650,9 +1667,14 @@ fn void Lit.layers(&self, FragUv* f, Node base, Node dielectric) {
         Node p = fs_in("clearcoat_params");
         Node cc = p.x();
         if (key.slot(MAP_CLEARCOAT)) cc = cc * role_texel(key, f, MAP_CLEARCOAT).x();
+        // (a node material's clearcoat_node and clearcoat_roughness_node in their place)
+        if (self.user_cc.id) cc = bound(nodes::convert(self.user_cc, FLOAT), { rebind(NORMAL_WORLD, self.n), rebind(NORMAL_GEOMETRY, geo_n) });
         self.cc = nodes::clamp(cc, 0, 1);
         Node rough = p.y();
         if (key.slot(MAP_CLEARCOAT_ROUGHNESS)) rough = rough * role_texel(key, f, MAP_CLEARCOAT_ROUGHNESS).y();
+        if (self.user_cc_rough.id) {
+            rough = bound(nodes::convert(self.user_cc_rough, FLOAT), { rebind(NORMAL_WORLD, self.n), rebind(NORMAL_GEOMETRY, geo_n) });
+        }
         self.cc_rough = nodes::clamp(rough, 0.045f, 1);
         self.cc_n = geo_n;
         if (key.slot(MAP_CLEARCOAT_NORMAL)) {
