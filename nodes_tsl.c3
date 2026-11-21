@@ -304,3 +304,24 @@ fn Node continue_() => drie::node_jump(1);
 fn Node discard() => drie::node_jump(2);
 
 fn Node seq(Node block, Node value = { }) => drie::node_seq(block, value);
+
+// ---- functions (three's Fn with a layout)
+//
+//   NodeFunction hash = nodes::function("hash", FLOAT, VEC2);
+//   Node p = hash.param(0);
+//   hash.returns(nodes::fract(nodes::sin(nodes::dot(p, nodes::vec2(127.1f, 311.7f))) * 43758.5453f));
+//   Node n = hash.call(nodes::uv() * 8) + hash.call(nodes::uv() * 8 + 1);
+//
+// A function `name` (letters, digits, _) returning a `ret`. It is printed once in each stage
+// of a program that calls it, as fn_`name`; a C3 function making nodes prints them again at
+// every use. The body can read uniforms, textures (material_map too), statements without
+// discard, and other functions, but not builtins (uv(), position_world(), time()...) or
+// varyings: pass those as parameters. Make functions once, like the graphs that call them.
+// Programs for an application's material shader (Renderer.shaders) can't call them.
+fn NodeFunction function(String name, NodeType ret, NodeType... params) {
+    if (!name.len) abort("drie: nodes: a function needs a name");
+    foreach (c : name) {
+        if (!c.is_alnum() && c != '_') abort("drie: nodes: '%s' is not a function's name (letters, digits and _)", name);
+    }
+    return { drie::node_func(string::tformat("fn_%s", name), ret, params, true) };
+}
