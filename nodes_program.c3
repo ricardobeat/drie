@@ -191,9 +191,14 @@ struct ProgramGraph {
     Node position;          // vertex: the clip position (a vec4; a SEQ for statements before it)
     Node[4] colors;         // fragment: its outputs (vec4s; 0 past the last); none: depth only
     Node fragment;          // fragment: a statement worked out before the outputs (0: none)
-    // a program sharing another's vertex stage (the depth prepass the main pass's, so both
-    // place vertices exactly alike): its vertex source and varyings, the fragment's from them
-    ShaderProgram* vertex_of;
+    // Two programs that place vertices exactly alike (the depth prepass and the main pass
+    // that tests against its depth with EQUAL) share one vertex stage: the one whose fragment
+    // stage reads less is built first with `fragment_only` (no vertex stage yet), the other
+    // with it as `varyings_from`, its varyings first and then its own; the first then takes
+    // the second's vertex stage (ShaderProgram.take_vertex). Its fragment stage reads the
+    // first of the varyings, which every backend allows.
+    bool fragment_only;
+    ShaderProgram* varyings_from;
 }
 
 struct ProgramView {
@@ -204,6 +209,7 @@ struct ProgramView {
     NodeType elem;            // a storage buffer's: VEC4, UVEC4 or UINT
     int msl;                  // Metal's texture(n), or buffer(n) for a storage buffer
     int hlsl;                 // HLSL's t register
+    int glsl;                 // GLSL's binding of a storage buffer (its place in the list when made)
 }
 
 struct ProgramSampler {
@@ -312,7 +318,6 @@ struct ProgramGen @local {
     DString funcs;           // the stage's functions, each before its callers
     FuncDone[] func_done;    // by node_funcs index
     NodeBuild* build;
-    bool fixed_varyings;     // varyings are the shared vertex stage's: none added
     bool frag_coord;
     bool front_facing;
     bool instance_id;
@@ -736,7 +741,7 @@ fn int ProgramGen.view(&self, int source, bool storage, NodeTextureKind kind, No
         hlsl++;
     }
     p.views.push({ .stage = self.stage, .source = source, .storage = storage, .kind = kind, .elem = elem,
-                   .msl = storage ? 8 + msl : msl, .hlsl = hlsl });
+                   .msl = storage ? 8 + msl : msl, .hlsl = hlsl, .glsl = (int)p.views.len() });
     int at = (int)p.views.len() - 1;
     self.uses_view(at);
     return at;
@@ -995,7 +1000,6 @@ fn int ProgramGen.varying(&self, Node n) {
     foreach (i, v : p.varyings) {
         if (v.id == n.id) return (int)i;
     }
-    if (self.fixed_varyings) abort("drie: nodes: a fragment stage reads a varying its shared vertex stage has not");
     p.varyings.push(n);
     return (int)p.varyings.len() - 1;
 }
@@ -1377,9 +1381,8 @@ fn ShaderProgram* build_program(NodeLang lang, ProgramGraph* graph, NodeBuild* b
     @pool() {
         // the fragment stage first: it finds the varyings
         ProgramGen* f = new_gen(p, FRAGMENT, build, fragment_bind);
-        if (graph.vertex_of) {
-            foreach (v : graph.vertex_of.varyings) p.varyings.push(v);
-            f.fixed_varyings = true;
+        if (graph.varyings_from) {
+            foreach (v : graph.varyings_from.varyings) p.varyings.push(v);
         }
         if (graph.fragment.id) f.statement(graph.fragment);
         String[4] colors;
@@ -1392,18 +1395,7 @@ fn ShaderProgram* build_program(NodeLang lang, ProgramGraph* graph, NodeBuild* b
             f.line(lang == GLSL ? "c%d = %s;" : "fout.c%d = %s;", i, colors[i]);
         }
         p.fs = f.fragment_source().copy(mem);
-        if (graph.vertex_of) {
-            p.vs = graph.vertex_of.vs.copy(mem);
-            p.rows[0].free();
-            p.rows[0].init(mem);
-            foreach (r : graph.vertex_of.rows[0]) p.rows[0].push(r);
-            p.block_rows[0] = graph.vertex_of.block_rows[0];
-            p.attrs = graph.vertex_of.attrs;
-            foreach (v : graph.vertex_of.views) {
-                if (v.stage == VERTEX) p.views.push(v);
-            }
-            return p;
-        }
+        if (graph.fragment_only) return p;
         ProgramGen* v = new_gen(p, VERTEX, build, vertex_bind);
         String pos = v.value_as(graph.position, VEC4);
         foreach (i, n : p.varyings) {
@@ -1673,7 +1665,7 @@ fn SgShaderDesc ShaderProgram.desc(&self) {
             b.readonly = true;
             b.msl_buffer_n = (char)v.msl;
             b.hlsl_register_t_n = (char)v.hlsl;
-            b.glsl_binding_n = (char)i;
+            b.glsl_binding_n = (char)v.glsl;
         } else {
             SgShaderTextureView* t = &d.views[i].texture;
             t.stage = sg_stage(v.stage);
@@ -1715,6 +1707,38 @@ fn SgShader ShaderProgram.make(&self) {
         abort("drie: a generated program failed to build");
     }
     return self.shader;
+}
+
+// Takes `from`'s vertex stage (see ProgramGraph.fragment_only): its source, block, attributes,
+// views and samplers.
+fn void ShaderProgram.take_vertex(&self, ShaderProgram* from) {
+    self.vs = from.vs.copy(mem);
+    self.rows[0].clear();
+    foreach (r : from.rows[0]) self.rows[0].push(r);
+    self.block_rows[0] = from.block_rows[0];
+    self.attrs = from.attrs;
+    // (each at its own place in this program's lists: Metal and HLSL number them per stage,
+    // GLSL's source names them as printed, which the pairs and storage bindings keep)
+    int[32] view_at;
+    foreach (i, v : from.views) {
+        if (v.stage != VERTEX) continue;
+        view_at[i] = (int)self.views.len();
+        self.views.push(v);
+    }
+    int[16] sampler_at;
+    foreach (i, sm : from.samplers) {
+        if (sm.stage != VERTEX) continue;
+        sampler_at[i] = (int)self.samplers.len();
+        self.samplers.push(sm);
+    }
+    foreach (pr : from.pairs) {
+        if (pr.stage != VERTEX) continue;
+        foreach (mine : self.pairs) {
+            if (((ZString)mine.name).str_view() == ((ZString)pr.name).str_view()) abort("drie: nodes: two programs sharing a vertex stage name a sampler alike");
+        }
+        String name = ((ZString)pr.name).str_view().copy(mem);
+        self.pairs.push({ .stage = VERTEX, .view = view_at[pr.view], .sampler = sampler_at[pr.sampler], .name = (ZString)name.ptr });
+    }
 }
 
 // The language the backend's programs are printed in.
