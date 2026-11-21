@@ -1,4 +1,6 @@
 // Reads the current game controller (DualSense, DualShock, Xbox, MFi...) through Apple's
+// (Built on every platform from the same list of C files: empty where it is not Apple.)
+#if defined(__APPLE__)
 // GameController framework. Compiled as Objective-C.
 #import <GameController/GameController.h>
 #include <stdbool.h>
@@ -77,3 +79,4 @@ bool gc_poll(GcState* s) {
     if (name) strlcpy(s->name, name.UTF8String, sizeof s->name);
     return true;
 }
+#endif // __APPLE__

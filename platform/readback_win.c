@@ -1,4 +1,6 @@
 // Copies a D3D11 texture (BGRA8/RGBA8) into CPU memory through a staging texture.
+// (Built on every platform from the same list of C files: empty where it is not Windows.)
+#if defined(_WIN32)
 #define COBJMACROS
 #include <d3d11.h>
 #include <stdbool.h>
@@ -111,3 +113,4 @@ bool rb_fetch(int slot, void* out, int bytes, bool wait) {
     ID3D11DeviceContext_Unmap(rb_staging_ctx[slot], (ID3D11Resource*)rb_staging[slot], 0);
     return true;
 }
+#endif // _WIN32
