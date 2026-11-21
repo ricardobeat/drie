@@ -96,6 +96,8 @@ bitstruct MaterialKey : char[32] {
     bool probes : 68;            // it mirrors the scene's reflection probes (Material.env_probes)
     bool gi : 69;                // the scene's irradiance volumes (lit materials),
     bool rc : 70;                //   its radiance cascades
+    bool ssr : 71;               // screen-space reflections (Material.ssr, lit materials)
+    bool reflector : 72;         // a planar Reflector's picture (Material.reflector, lit materials)
 }
 
 // The map roles (shader_core.glsl's MAP_*) a key holds a slot for.
@@ -619,7 +621,7 @@ fn void build_material_graph(MaterialKey key, ProgramGraph* graph) @private {
     } else {
         Lit lit = { .key = key, .n = n, .geo_n = geo_n, .v = v, .world = world, .rough = rough, .metal = metal,
                     .ao = ao, .parallax = px, .f = &f, .v_normal = v_normal, .tangent = vtx.tangent, .irid_fn = -1, .frag = fc.xy(), .shadow = shadow_fns(key), .ltc_fn = -1,
-                    .refraction = { -1, -1, -1 }, .probe_fn = -1 };
+                    .refraction = { -1, -1, -1 }, .probe_fn = -1, .ssr_fn = -1 };
         lit.shade(&f, rgb, map_rgb, v_color.xyz());
         outc = lit.outc;
         ind_d = lit.ind_d;
@@ -769,6 +771,7 @@ struct Lit @local {
     Node irid_f0;
     int irid_fn;
     int probe_fn;          // probe_sample's function (-1: not made yet)
+    int ssr_fn;            // screen_reflection's
     Refraction refraction;
     Node aniso;
     Node aniso_t;
@@ -1046,6 +1049,44 @@ fn void Lit.shade(&self, FragUv* f, Node rgb, Node map_rgb, Node v_color) {
         if (key.sheen) env_term = env_term * (max3(self.sheen_color) * sheen_albedo(n, v, self.sheen_rough)).one_minus();
         self.ind_s = env_term;
     }
+    Node mirror_term;
+    if (key.ssr || key.reflector) {
+        // the surface's sheen: a mirror image, strongest at a glancing angle (far off, where a
+        // pixel covers many bumps of the normal map, each would throw the image somewhere
+        // else: blotches. There the surface mirrors as if flat)
+        Node v = self.v;
+        Node bumps = nodes::smoothstep(1.5f, 5.0f, nodes::length(fs_in("camera_pos", VEC3) - self.world)).one_minus() * 0.5f;
+        Node rn = nodes::normalize(nodes::mix(self.geo_n, n, bumps));
+        Node fresnel = nodes::pow(nodes::clamp(nodes::dot(rn, v), 0, 1).one_minus(), 5) * 0.96f + 0.04f;
+        Node mirrored;
+        Node found;
+        Node strength;
+        if (key.reflector) {
+            // the planar reflection: the picture of the mirrored scene where the ray points
+            Node seen = planar_reflection(rn, v, self.rough, self.world, self.frag);
+            mirrored = seen.xyz();
+            found = seen.w() * fs_in("reflector_params", FLOAT);
+            strength = nodes::num(1);
+        }
+        if (key.ssr) {
+            // what is on screen near it, where a ray finds that: sharper, at full size
+            Node near = screen_reflection(&self.ssr_fn, rn, self.geo_n, v, self.rough, self.world, self.frag);
+            Node ssr = fs_in("ssr_params", FLOAT);
+            if (key.reflector) {
+                mirrored = nodes::select(found.greater_than(nodes::num(0)), nodes::mix(mirrored, near.xyz(), near.w()), near.xyz());
+                found = nodes::max(found, near.w());
+                strength = nodes::max(strength, ssr);
+            } else {
+                mirrored = near.xyz();
+                found = near.w();
+                strength = ssr;
+            }
+        }
+        // where something was found, it takes the place of the surroundings' map
+        mirror_term = mirrored * (found * fresnel * strength * ao);
+        if (env_term.id) env_term = env_term * nodes::clamp(found * strength, 0, 1).one_minus();
+        self.ind_s = env_term.id ? env_term + mirror_term : mirror_term;
+    }
     Node highlights = spec;
     // three's specularMap: the highlights' strength
     if (key.type == (char)MaterialType.PHONG && key.slot(MAP_SPECULAR)) highlights = highlights * role_texel(key, f, MAP_SPECULAR).x();
@@ -1062,6 +1103,7 @@ fn void Lit.shade(&self, FragUv* f, Node rgb, Node map_rgb, Node v_color) {
         self.ind_d = self.ind_d + b;
     }
     if (env_term.id) result = result + env_term;
+    if (mirror_term.id) result = result + mirror_term;
     bool shiny = key.type != (char)MaterialType.LAMBERT && key.type != (char)MaterialType.TOON;
     self.outc = shiny ? result + highlights : result;
     if (key.transmission) {
@@ -1074,6 +1116,7 @@ fn void Lit.shade(&self, FragUv* f, Node rgb, Node map_rgb, Node v_color) {
         Node refracted = self.refraction.light(n, self.v, self.world, self.rough, self.diffuse, thickness, self.f0, self.f90);
         Node kept = highlights + glow;
         if (env_term.id) kept = kept + env_term;
+        if (mirror_term.id) kept = kept + mirror_term;
         self.outc = nodes::mix(nodes::max(self.outc - kept, nodes::vec3(0)), refracted, amount) + kept;
     }
     // the physical material's layers over it all: the sheen, then the clear coat, which lets

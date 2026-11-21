@@ -194,6 +194,12 @@ fn Node linear_to_srgb(Node c) {
     return nodes::mix(lo, hi, nodes::step(nodes::vec3(0.0031308f), c));
 }
 
+fn Node srgb_to_linear(Node c) {
+    Node lo = c / 12.92f;
+    Node hi = nodes::pow((c + 0.055f) / 1.055f, nodes::vec3(2.4f));
+    return nodes::mix(lo, hi, nodes::step(nodes::vec3(0.04045f), c));
+}
+
 fn Node rrt_odt_fit(Node v) {
     Node a = v * (v + 0.0245786f) - 0.000090537f;
     Node b = v * (v * 0.983729f + 0.4329510f) + 0.238081f;

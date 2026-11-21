@@ -353,3 +353,200 @@ fn Node[2] rc_irradiance(Node n, Node world) @private {
     Node light = nodes::select(wsum.greater_than(nodes::num(1e-4f)), sum / wsum * size.w(), fallback);
     return { nodes::seq(nodes::block(sum, wsum, sum_any, wsum_any, probes), light), fade };
 }
+
+// ---- mirror images: the planar reflector's picture and screen-space reflections
+
+// Interleaved gradient noise (Jimenez's), as shader_core.glsl's ssr_noise, at the pixel
+// `frag` turned with the frame (ssr_params.z).
+fn Node frame_noise(Node frag, Node shift = { }) @private {
+    Node p = frag + nodes::vec2(47.0f, 17.0f) * fs_in("ssr_params", FLOAT, 2);
+    if (shift.id) p = p + shift;
+    return nodes::fract(nodes::fract(nodes::dot(p, nodes::vec2(0.06711056f, 0.00583715f))) * 52.9829189f);
+}
+
+// A Reflector's picture (reflector.c3) where the ray from `world` along the normal n's
+// reflection would be seen: exact for a flat surface, and for a bumpy one as if what it
+// mirrors were reflector_params.y away. Blurred by roughness (eight taps on a disc turned at
+// every pixel); w: how much was found, fading out at the picture's edges.
+fn Node planar_reflection(Node n, Node v, Node rough, Node world, Node frag) @private {
+    Node params = fs_in("reflector_params");
+    Node r = nodes::reflect(v.negate(), n);
+    Node clip = fs_in("reflector_view_proj", MAT4) * nodes::vec4(world + r * params.y(), 1);
+    Node ndc = clip.xy() / nodes::max(clip.w(), 1e-4f);
+    ndc = nodes::select(fs_in("ssr_params", FLOAT, 3).greater_than(nodes::num(0.5f)), nodes::vec2(ndc.x(), ndc.y().negate()), ndc);
+    Node uv = ndc * 0.5f + 0.5f;
+    Node edge = nodes::min(uv, nodes::vec2(1) - uv);
+    Node found = nodes::select(clip.w().greater_than(nodes::num(0)), nodes::smoothstep(-0.02f, 0.03f, nodes::min(edge.x(), edge.y())), 0.0f);
+    Node size = nodes::convert(ssr_texture(shaders::VIEW_REFLECTOR_MAP, SIZE, nodes::int_(0)), VEC2);
+    Node spread = rough * rough * params.z();
+    Node radius = nodes::vec2(spread * size.y() / size.x(), spread);
+    Node turn = frame_noise(frag) * (2.0f * (float)math::PI);
+    Node sum = nodes::variable(nodes::vec3(0));
+    Node k = nodes::loop_index(INT);
+    Node a = turn + nodes::convert(k, FLOAT) * 2.39996f;
+    Node at = uv + nodes::vec2(nodes::cos(a), nodes::sin(a)) * radius * nodes::sqrt((nodes::convert(k, FLOAT) + 0.5f) / 8.0f);
+    Node tap = nodes::min(ssr_texture(shaders::VIEW_REFLECTOR_MAP, LEVEL, at, nodes::num(0)).xyz(), nodes::vec3(64));
+    Node taps = nodes::loop(k, nodes::int_(0), nodes::int_(8), nodes::block(sum.assign(sum + tap)));
+    return nodes::seq(nodes::block(sum, taps), nodes::vec4(sum / 8.0f, found));
+}
+
+fn Node ssr_texture(int view, NodeSampling how, Node coords = { }, Node a = { }) @local
+    => node_sample(how, view, shaders::SMP_SSR_SMP, TEX_2D, coords, a);
+
+// Where a world-space point was in the last frame: xy = uv, z = distance from the camera's plane.
+fn Node ssr_project(Node p) @local {
+    Node clip = fs_in("ssr_view_proj", MAT4) * nodes::vec4(p, 1);
+    Node ndc = clip.xy() / nodes::max(clip.w(), 1e-4f);
+    ndc = nodes::select(fs_in("ssr_params", FLOAT, 3).greater_than(nodes::num(0.5f)), nodes::vec2(ndc.x(), ndc.y().negate()), ndc);
+    return nodes::vec3(ndc * 0.5f + 0.5f, clip.w());
+}
+
+// The last frame's distance from the camera's plane at uv: the depth source's (green), or its
+// back faces' (red of ssr_back).
+fn Node ssr_depth_at(int view, Node uv, bool back = false) @local {
+    Node size = ssr_texture(view, SIZE, nodes::int_(0));
+    Node texel = nodes::clamp(nodes::convert(uv * nodes::convert(size, VEC2), IVEC2), nodes::convert(nodes::int_(0), IVEC2), size - nodes::int_(1));
+    Node c = ssr_texture(view, FETCH, texel, nodes::int_(0));
+    return back ? c.x() : c.y();
+}
+
+// A microfacet normal of a GGX surface as the eye sees them (the distribution of visible
+// normals, Heitz 2018), in the surface's own frame (z = its normal); ve = towards the eye.
+fn Node ggx_visible_normal(Node ve, Node alpha, Node u) @local {
+    Node vh = nodes::normalize(nodes::vec3(ve.xy() * alpha, ve.z()));
+    Node lensq = nodes::dot(vh.xy(), vh.xy());
+    Node t1 = nodes::select(lensq.greater_than(nodes::num(1e-8f)), nodes::vec3(vh.y().negate(), vh.x(), 0) * nodes::inverse_sqrt(lensq),
+                            nodes::vec3(1, 0, 0));
+    Node t2 = nodes::cross(vh, t1);
+    Node rad = nodes::sqrt(u.x());
+    Node phi = u.y() * (2.0f * (float)math::PI);
+    Node a = rad * nodes::cos(phi);
+    Node b = rad * nodes::sin(phi);
+    Node half_z = (vh.z() + 1.0f) * 0.5f;
+    b = half_z.one_minus() * nodes::sqrt(nodes::max((a * a).one_minus(), 0)) + half_z * b;
+    Node nh = t1 * a + t2 * b + vh * nodes::sqrt(nodes::max((a * a + b * b).one_minus(), 0));
+    return nodes::normalize(nodes::vec3(nh.xy() * alpha, nodes::max(nh.z(), 1e-4f)));
+}
+
+// Screen-space reflection (shader_core.glsl's screen_reflection, the function
+// screen_reflection(n, geo_n, v, rough, world, frag) of the program, made once: `fn_id` -1
+// makes it): follows the mirrored view ray through the last frame's depth and returns what it
+// runs into there (linear, as the camera saw it); w: how much was found, 0 when the ray leaves
+// the picture or hits nothing. A rough surface sends its one ray somewhere in a wider cone,
+// which shows as noise until something downstream (a temporal filter, a tape) evens it out.
+fn Node screen_reflection(int* fn_id, Node n, Node geo_n, Node v, Node rough, Node world, Node frag) @private {
+    if (*fn_id < 0) {
+        NodeType[6] types = { VEC3, VEC3, VEC3, FLOAT, VEC3, VEC2 };
+        int f = node_func("screen_reflection", VEC4, &types);
+        Node pn = node_param(f, 0);
+        Node pg = node_param(f, 1);
+        Node pv = node_param(f, 2);
+        Node pr = node_param(f, 3);
+        Node pw = node_param(f, 4);
+        Node pf = node_param(f, 5);
+        node_func_body(f, ssr_march(pn, pg, pv, pr, pw, pf));
+        *fn_id = f;
+    }
+    Node[6] args = { n, geo_n, v, rough, world, frag };
+    return node_call_fn(*fn_id, &args);
+}
+
+// (how many steps a reflected ray takes at most, Renderer.ssr_steps; how much of a rough
+// surface's lobe the ray itself is sent through, the inner part, by chance: the frames add up
+// to it, the rest is blurred from what the ray finds; all of it by chance makes a small bright
+// thing into a patch of sparks)
+const int SSR_MAX_STEPS @local = 128;
+const float SSR_LOBE_SHARE @local = 0.45;
+const float SSR_BLUR @local = 0.28;
+
+fn Node ssr_march(Node n, Node geo_n, Node v, Node rough, Node world, Node frag) @local {
+    Node n1 = frame_noise(frag);
+    Node n2 = frame_noise(frag, nodes::vec2(31.7f, 11.3f));
+    Node turn = n1 * (2.0f * (float)math::PI);
+    // the ray mirrors off one of the surface's microfacets, picked as the eye meets them: a
+    // rough floor draws a light out into a streak towards the eye, as a real one does
+    Node alpha = rough * rough;
+    Node up = nodes::select(nodes::abs(n.y()).less_than(nodes::num(0.9f)), nodes::vec3(0, 1, 0), nodes::vec3(1, 0, 0));
+    Node tx = nodes::normalize(nodes::cross(up, n));
+    Node ty = nodes::cross(n, tx);
+    Node ve = nodes::normalize(nodes::vec3(nodes::dot(v, tx), nodes::dot(v, ty), nodes::max(nodes::dot(v, n), 0.05f)));
+    Node h = ggx_visible_normal(ve, alpha, nodes::vec2(n2 * SSR_LOBE_SHARE, n1));
+    Node r = nodes::reflect(v.negate(), nodes::normalize(tx * h.x() + ty * h.y() + n * h.z()));
+    Node away = nodes::if_then(nodes::dot(r, geo_n).less_than(nodes::num(0.02f)), nodes::block(node_return(nodes::vec4(0))));
+
+    Node origin = world + geo_n * 0.02f;
+    Node screen_px = nodes::convert(ssr_texture(shaders::VIEW_SSR_DEPTH, SIZE, nodes::int_(0)), VEC2);
+    Node step_len = nodes::variable(nodes::num(0.06f));
+    Node t = nodes::variable((n2 + 0.4f) * 0.06f);
+    Node t_prev = nodes::variable(nodes::num(0));
+    Node quality = fs_in("quality_params");
+    Node steps = nodes::select(quality.y().greater_than(nodes::num(0)), nodes::min(nodes::convert(quality.y(), INT), nodes::int_(SSR_MAX_STEPS)),
+                               nodes::int_(40));
+    Node max_step = nodes::select(quality.z().greater_than(nodes::num(0)), quality.z(), 6.0f);
+    Node thickness = fs_in("ssr_thickness");
+    Node i = nodes::loop_index(INT);
+    Node s = ssr_project(origin + r * t);
+    Node outside = nodes::logical_or(nodes::logical_or(s.z().less_than(nodes::num(0.05f)), s.x().less_than(nodes::num(0))),
+                                     nodes::logical_or(nodes::logical_or(s.y().less_than(nodes::num(0)), s.x().greater_than(nodes::num(1))),
+                                                       s.y().greater_than(nodes::num(1))));
+    // behind what the camera saw there: where the ray went in lies between the step before
+    // and this one (steps get longer than thin things are thick, so this is found first)
+    Node behind = (s.z() - ssr_depth_at(shaders::VIEW_SSR_DEPTH, s.xy())).greater_than(nodes::num(0.02f));
+    Node lo = nodes::variable(t_prev);
+    Node hi = nodes::variable(t);
+    Node mid = (lo + hi) * 0.5f;
+    Node m = ssr_project(origin + r * mid);
+    Node k = nodes::loop_index(INT);
+    Node halve = nodes::loop(k, nodes::int_(0), nodes::int_(6), nodes::block(nodes::if_then(
+        (m.z() - ssr_depth_at(shaders::VIEW_SSR_DEPTH, m.xy())).greater_than(nodes::num(0.02f)),
+        nodes::block(hi.assign(mid)), nodes::block(lo.assign(mid)))));
+    // and there it has to be inside the thing, not past it: as thick as its back faces say, or
+    // else about as thick as a thing is, fading out past that
+    Node p_in = ssr_project(origin + r * hi);
+    Node front = ssr_depth_at(shaders::VIEW_SSR_DEPTH, p_in.xy());
+    Node back = nodes::variable(nodes::num(0));
+    Node read_back = nodes::if_then(thickness.x().greater_than(nodes::num(0.5f)),
+                                    nodes::block(back.assign(ssr_depth_at(shaders::VIEW_SSR_BACK, p_in.xy(), true))));
+    Node backed = nodes::logical_and(back.greater_than(front + 0.005f), back.less_than(front + 2.0f));
+    Node hit = nodes::select(backed, nodes::smoothstep(0.0f, 0.03f, p_in.z() - back).one_minus(),
+                             nodes::smoothstep(0.15f, 0.3f, p_in.z() - front).one_minus());
+    Node edge = nodes::min(p_in.xy(), nodes::vec2(1) - p_in.xy());
+    Node found = hit * nodes::smoothstep(0.0f, 0.07f, nodes::min(edge.x(), edge.y())) * nodes::smoothstep(0.6f, 1.0f, hi / thickness.y()).one_minus();
+    // what a rough surface mirrors is spread over a disc that grows with the way the ray went:
+    // a few taps over it, turned differently at every pixel
+    Node size = nodes::convert(ssr_texture(shaders::VIEW_SSR_COLOR, SIZE, nodes::int_(0)), VEC2);
+    Node spread = alpha * SSR_BLUR * hi / nodes::max(p_in.z(), 0.1f);
+    Node radius = nodes::vec2(spread * size.y() / size.x(), spread);
+    Node sum = nodes::variable(nodes::vec3(0));
+    Node j = nodes::loop_index(INT);
+    Node a = turn + nodes::convert(j, FLOAT) * 2.39996f;
+    Node at = p_in.xy() + nodes::vec2(nodes::cos(a), nodes::sin(a)) * radius * nodes::sqrt((nodes::convert(j, FLOAT) + 0.5f) / 8.0f);
+    Node c = ssr_texture(shaders::VIEW_SSR_COLOR, LEVEL, at, nodes::num(0));
+    // as it was lit, kept within bounds so a few bright pixels don't feed themselves frame
+    // after frame; or back from what the tone mapping made of it, roughly (light sources were
+    // far over white)
+    Node lin = shading::srgb_to_linear(c.xyz());
+    lin = lin / nodes::max(max3(lin) * -0.7f + 1.0f, 0.3f);
+    Node toned = lin * (c.w().one_minus() * 5.0f + 1.0f) / nodes::max(fs_in("camera_pos", FLOAT, 3), 0.05f);
+    Node tap = nodes::select(fs_in("output_params", FLOAT, 1).greater_than(nodes::num(0.5f)), nodes::min(c.xyz(), nodes::vec3(64)), toned);
+    Node gather = nodes::loop(j, nodes::int_(0), nodes::int_(8), nodes::block(sum.assign(sum + tap)));
+    Node seen = nodes::if_then(hit.greater_than(nodes::num(0)), nodes::block(sum, gather, node_return(nodes::vec4(sum / 8.0f, found))));
+    Node met = nodes::if_then(behind, nodes::block(lo, hi, halve, back, read_back, seen));
+    // longer steps further out, but never more than a few pixels on the screen: a step longer
+    // than something is thick would go through it without seeing it
+    Node longer = step_len * 1.2f;
+    Node next = ssr_project(origin + r * (t + step_len));
+    Node px = nodes::length((next.xy() - s.xy()) * screen_px);
+    Node shorten = nodes::if_then(nodes::logical_and(next.z().greater_than(nodes::num(0.05f)), px.greater_than(max_step)),
+                                  nodes::block(step_len.assign(step_len * (max_step / px))));
+    Node body = nodes::block(nodes::if_then(i.greater_than_equal(steps), nodes::block(nodes::break_())),
+                             nodes::if_then(outside, nodes::block(nodes::break_())),
+                             met,
+                             t_prev.assign(t),
+                             step_len.assign(longer),
+                             shorten,
+                             t.assign(t + step_len),
+                             nodes::if_then(t.greater_than(thickness.y()), nodes::block(nodes::break_())));
+    Node march = nodes::loop(i, nodes::int_(0), nodes::int_(SSR_MAX_STEPS), body);
+    return nodes::seq(nodes::block(away, step_len, t, t_prev, march), nodes::vec4(0));
+}
