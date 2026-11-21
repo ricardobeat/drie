@@ -864,6 +864,69 @@ fn void h_image_free(JsCtx ctx, void* udata)
     d.pixels = null;
 }
 
+// gainmapApply(sdr, gain, out, params): UltraHDRLoader's HDR recovery over RGBA8 pixels,
+// the gain map already stretched to the SDR image's size. out is a Uint16Array (half floats)
+// or a Float32Array of the same length, its alpha left as it is. params (Float32Array):
+// gainMapMin, gainMapMax, offsetSDR, offsetHDR, 1/gamma, weightFactor. The arithmetic is the
+// loader's own, in doubles, its sRGB table included.
+fn void h_gainmap_apply(JsCtx ctx, void* udata)
+{
+    View sdr;
+    View gain;
+    View out;
+    float[] p = floats_arg(ctx, 3);
+    if (!view_arg(ctx, 0, &sdr) || !view_arg(ctx, 1, &gain) || !view_arg(ctx, 2, &out) || p.len < 6
+        || (sdr.cls != ObjClass.UINT8ARRAY && sdr.cls != ObjClass.UINT8CLAMPEDARRAY)
+        || (gain.cls != ObjClass.UINT8ARRAY && gain.cls != ObjClass.UINT8CLAMPEDARRAY)
+        || (out.cls != ObjClass.UINT16ARRAY && out.cls != ObjClass.FLOAT32ARRAY)
+        || gain.len < sdr.len || out.len < sdr.len)
+    {
+        ctx.throw_error(TYPE, "gainmapApply: expected two byte arrays, an output array and its parameters");
+        return;
+    }
+    double[1024] table;
+    foreach (i, &t : table) *t = math::pow((double)i * 0.003717127 + 0.0521327014, 2.4);
+    double lo = p[0];
+    double range = (double)p[1] - p[0];
+    double offset_sdr = p[2];
+    double offset_hdr = p[3];
+    double inv_gamma = p[4];
+    double weight = p[5];
+    bool gamma_one = inv_gamma == 1.0;
+    // the boost for each of the 256 gain-map values
+    double[256] boost;
+    foreach (g, &b : boost)
+    {
+        double v = (double)g * 0.00392156862745098;
+        double log_boost = lo + range * (gamma_one ? v : math::pow(v, inv_gamma));
+        *b = log_boost * weight == 0.0 ? 1.0 : math::pow(2.0, log_boost * weight);
+    }
+    char* s = (char*)sdr.data;
+    char* g = (char*)gain.data;
+    bool half = out.cls == ObjClass.UINT16ARRAY;
+    for (usz i = 0; i < sdr.len; i += 4)
+    {
+        for (usz c = i; c < i + 3; c++)
+        {
+            double hdr = ((double)s[c] + offset_sdr) * boost[g[c]] - offset_hdr;
+            double lin;
+            if (hdr < 10.31475) {
+                lin = hdr * 0.000303527;
+            } else if (hdr < 1024) {
+                lin = table[(int)hdr];
+            } else {
+                lin = math::pow(hdr * 0.003717127 + 0.0521327014, 2.4);
+            }
+            float f = (float)math::clamp(lin, 0.0, 65504.0);
+            if (half) {
+                ((ushort*)out.data)[c] = drie::float_to_half(f);
+            } else {
+                ((float*)out.data)[c] = f;
+            }
+        }
+    }
+}
+
 // shadow(object, cast, receive)
 fn void h_shadow(JsCtx ctx, void* udata)
 {
@@ -2584,6 +2647,9 @@ fn int main(String[] args)
         "  createParameters(title) { return new GUI({ title }); }\n"
         "}\n", root))!!;
     // RectAreaLightUniformsLib fills WebGLRenderer's UniformsLib: drie has the tables itself
+    // three's UltraHDRLoader applies the gain map in JS: this one natively
+    js.define_module("three/addons/loaders/UltraHDRLoader.js",
+                     string::tformat("export * from \"%s/js/ultrahdr.js\";\n", root))!!;
     js.define_module("three/addons/lights/RectAreaLightUniformsLib.js",
                      string::tformat("export * from \"%s/js/rect_area_light.js\";\n", root))!!;
     // three's ProgressiveLightMap (and its WebGPU one, with the same methods) draws with shaders
@@ -2647,6 +2713,7 @@ fn int main(String[] args)
     reg(natives, "textMetrics", &h_text_metrics, 6);
     reg(natives, "textMask", &h_text_mask, 10);
     reg(natives, "imageFree", &h_image_free, 1);
+    reg(natives, "gainmapApply", &h_gainmap_apply, 4);
     reg(natives, "backgroundTexture", &h_background_texture, 5);
     reg(natives, "backgroundMaterial", &h_background_material, 2);
     reg(natives, "renderEnvironment", &h_render_environment, 5);
