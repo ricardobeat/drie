@@ -100,6 +100,7 @@ bitstruct MaterialKey : char[32] {
     bool reflector : 72;         // a planar Reflector's picture (Material.reflector)
     bool glass : 73;             // Material.glass: its reflections stay however clear it is
     bool hex : 74;               // Material.hex_tiling
+    bool defocus : 75;           // Material.defocus: the maps blurred by the lens's
 }
 
 // The map roles (shader_core.glsl's MAP_*) a key holds a slot for.
@@ -119,6 +120,8 @@ const int MAP_ALPHA = 12;
 const int MAP_EMISSIVE = 13;
 const int MAP_LIGHT = 14;
 const int MAP_ANISOTROPY = 15;
+const int MAP_CUSTOM = 16;
+const int MAP_FOCUS = 17;
 const int MAP_SPECULAR = 18;
 const int MAP_MATCAP = 19;
 const int MAP_GRADIENT = 20;
@@ -135,17 +138,17 @@ fn uint KeyWords.hash(self) => (uint)(self.lo.hash() ^ self.hi.hash() * 31);
 fn bool KeyWords.equals(self, KeyWords other) @operator(==) => self.lo == other.lo && self.hi == other.hi;
 
 // Where role `role`'s slot is in the key's high word: three bits each from its bit 64 (the
-// key's bit 192; MAP_CUSTOM and MAP_FOCUS, 16 and 17, are the material shader's only).
-fn int map_role_bit(int role) @local => 64 + 3 * (role < 16 ? role : role - 2);
+// key's bit 192; MAP_CUSTOM, 16, the application's hooks' map, is the material shader's only).
+fn int map_role_bit(int role) @local => 64 + 3 * (role < 16 ? role : role - 1);
 
 // The shared slot role `role`'s map is in, + 1 (0: none).
 fn int MaterialKey.slot(self, int role) {
-    if (role == 16 || role == 17) return 0;
+    if (role == MAP_CUSTOM) return 0;
     return (int)((bitcast(self, KeyWords).hi >> map_role_bit(role)) & 7);
 }
 
 fn void MaterialKey.set_slot(&self, int role, int slot) {
-    if (role == 16 || role == 17) return;
+    if (role == MAP_CUSTOM) return;
     int at = map_role_bit(role);
     KeyWords w = bitcast(*self, KeyWords);
     w.hi = (w.hi & ~((uint128)7 << at)) | ((uint128)(slot & 7) << at);
@@ -508,6 +511,19 @@ fn void build_material_graph(MaterialKey key, ProgramGraph* graph) @private {
     rgb = rgb * nodes::varying(vtx.instance_color);
     Node a = base.w();
     FragUv f = { .uv = v_uv, .dx = nodes::dfdx(v_uv), .dy = nodes::dfdy(v_uv) };
+    Node widen;
+    if (key.defocus) {
+        // Material.defocus: the maps read over the lens's blur at this distance, as wide as it
+        // is (the depth of field pass sees through what is transparent)
+        Node focus = fs_in("focus_params");
+        Node at = node_sample(LEVEL, shaders::VIEW_TEX_EXT0 + key.slot(MAP_FOCUS) - 1, shaders::SMP_TEX_SMP, TEX_2D, nodes::vec2(0.5f), nodes::num(0));
+        Node fd = nodes::max(at.x(), 0.01f);
+        Node z = nodes::max(nodes::length(world - fs_in("camera_pos", VEC3)), 0.01f);
+        Node blur = nodes::min(focus.x() / fd * nodes::abs((fd / z).one_minus()), focus.y());
+        widen = nodes::max(blur * 2.0f, 1.0f);
+        f.dx = f.dx * widen;
+        f.dy = f.dy * widen;
+    }
     Parallax px;
     if (key.parallax) {
         // parallax_map: where the view ray meets the height map, for all of the material's maps
@@ -525,6 +541,10 @@ fn void build_material_graph(MaterialKey key, ProgramGraph* graph) @private {
         f.uv1 = nodes::varying(vtx.uv1);
         f.dx1 = nodes::dfdx(f.uv1);
         f.dy1 = nodes::dfdy(f.uv1);
+        if (widen.id) {
+            f.dx1 = f.dx1 * widen;
+            f.dy1 = f.dy1 * widen;
+        }
     }
     // Material.hex_tiling
     if (key.hex) f.hex_setup(fs_in("parallax_params", FLOAT, 3));
