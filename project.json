@@ -1,0 +1,57 @@
+{
+    "langrev": "1",
+    "dependency-search-paths": [
+        "lib"
+    ],
+    "dependencies": [
+        "sokol"
+    ],
+    "sources": [
+        "./*",
+        "generated/*",
+        "platform/*"
+    ],
+    "c-sources": [
+        "display.c",
+        "platform/cgltf.c"
+    ],
+    "output": "build",
+    "targets": {
+        "drie-macos": {
+            "type": "executable",
+            "cflags": "-O2 -DNDEBUG -x objective-c -fobjc-arc",
+            "c-sources": [
+                "platform/readback.c",
+                "platform/imageio.c",
+                "platform/gamectl.c"
+            ],
+            "linked-libraries": [
+                "AppKit.framework",
+                "QuartzCore.framework",
+                "CoreGraphics.framework",
+                "Metal.framework",
+                "Foundation.framework",
+                "ImageIO.framework",
+                "CoreText.framework",
+                "CoreFoundation.framework",
+                "GameController.framework"
+            ]
+        },
+        "drie-linux": {
+            "type": "executable"
+        },
+        "drie-windows": {
+            "type": "executable",
+            "c-sources": [
+                "platform/readback_win.c",
+                "platform/imageio_win.c",
+                "platform/gamectl_win.c"
+            ],
+            "linked-libraries": [
+                "d3d11",
+                "ole32",
+                "windowscodecs"
+            ]
+        }
+    }
+}
