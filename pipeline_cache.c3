@@ -20,10 +20,12 @@
 //
 // Loading compiles a few at a time on worker threads (Metal only: elsewhere it does
 // nothing), so the frames go on: a pipeline still compiling when something wants it is
-// made then, at once if the driver has finished it (a node material's mesh is left out till
-// its pipelines are ready, see Renderer.compile_in_background). Node materials' programs are
-// in the list too, as their hooks' text: when a graph that prints the same text is drawn, it
-// gets the program already made. The list is text, one line a pipeline (see
+// made then, after its compile in the background (or left out of the frame till its
+// pipelines are ready, for a node material with Renderer.compile_in_background). The
+// materials' generated programs are listed by their MaterialKey; with the material shader
+// (DRIE_CLASSIC_MATERIALS, Renderer.shaders) node materials' programs are in the list too, as
+// their hooks' text: when a graph that prints the same text is drawn, it gets the program
+// already made. The list is text, one line a pipeline (see
 // Renderer.pipeline_cache); it holds no compiled code, so it doesn't go stale when the
 // driver, the GPU or drie's own shaders change, only less complete.
 //

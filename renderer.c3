@@ -370,10 +370,10 @@ struct Renderer {
     // Extension: culls the instances of instanced meshes one by one on the GPU, for the
     // camera and the shadow maps drawn every frame (see culling.c3). On by default.
     bool gpu_culling;
-    // Extension: node materials' shaders (nodes.c3) compiled on a worker thread, the mesh left
-    // out of the picture till then, so that a new one doesn't stall a frame for a second or
-    // two (Metal; elsewhere they are compiled at their first draw). On in a window by default,
-    // off without one (init_headless), where a frame shows them as soon as it is rendered.
+    // Extension: a node material's mesh is left out of the picture, shadows included, while
+    // its programs compile on worker threads (Metal), so that a new one doesn't hold up the
+    // frames. Off by default: a frame waits for the programs its draws take, which start
+    // compiling all at once when the render begins.
     bool compile_in_background;
     // Extension: a render target that stands for the window in what the pipeline cache records
     // (save_pipeline_cache): for a program that renders headless on behalf of one with a window,
@@ -821,7 +821,6 @@ fn Renderer* renderer(bool antialias = true, int width = 800, int height = 600, 
         .lod_scale = 1,
         .auto_time = true,
         .gpu_culling = true,
-        .compile_in_background = true,
         .depth_prepass = true,
         .shadow_map_auto_update = true,
         .depth_prepass_pixels = 1.5f,
@@ -976,7 +975,6 @@ fn void on_init() @local {
 // set_animation_loop: call render() with a render target set, then drie::commit().
 fn void Renderer.init_headless(&self) {
     state.renderer = self;
-    self.compile_in_background = false;
     setup_gfx(readback::headless_environment());
 }
 
@@ -1396,25 +1394,38 @@ fn int material_shaders_compiling() @private {
 // only, rather than each compiling in turn on this thread (from tens of milliseconds to a
 // second or more each, the first time: the driver keeps them after that). `fs` is the
 // render's light parameters (build_light_params), which the programs' keys read.
-fn void start_material_programs(Renderer* r, FsParams* fs, bool prepass) @local {
+fn void start_material_programs(Renderer* r, Scene* scene, Camera* camera, FsParams* fs, bool prepass) @local {
     if (classic_materials || r.shaders.main) return;
+    start_background_program(scene, camera, fs);
     for (int list = 0; list < 2; list++) {
         foreach (&item : list == 0 ? state.opaque : state.transparent) {
-            Material* mat = item.mesh.material;
             // (the kinds the main pass draws them with, see render)
             DrawKind kind = list == 1 || draws_lines(item) || has_holes(item) ? CUT : SOLID;
-            bool pre = list == 0 && kind == CUT && prepass && prepassed(item);
-            if (pre) kind = PRETESTED;
-            Texture*[6] slots;
-            Vec4[6] map_slots;
-            material_slots(mat, null, &slots, &map_slots);
-            MaterialKey key;
-            if (!material_key_of(item, kind, fs, &map_slots, &key)) continue;
-            MaterialProgram* gen = material_program(key, draw_build(mat));
-            gen.program.start();
-            if (gen.depth) gen.depth.start();
+            if (list == 0 && kind == CUT && prepass && prepassed(item)) kind = PRETESTED;
+            start_item_program(item, kind, fs);
         }
     }
+}
+
+// Starts compiling the generated program (and its depth prepass's) that draw_item takes for
+// `item` drawn as `kind` with `fs`, into the current render target, if it isn't made yet.
+fn void start_item_program(DrawItem* item, DrawKind kind, FsParams* fs) @local {
+    Texture*[6] slots;
+    Vec4[6] map_slots;
+    material_slots(item.mesh.material, null, &slots, &map_slots);
+    MaterialKey key;
+    if (!material_key_of(item, kind, fs, &map_slots, &key)) return;
+    MaterialProgram* gen = material_program(key, draw_build(item.mesh.material));
+    gen.program.start();
+    if (gen.depth) gen.depth.start();
+}
+
+// start_item_program for the scene's background and the lit fog's backdrop (draw_background,
+// draw_backdrop), where it has them.
+fn void start_background_program(Scene* scene, Camera* camera, FsParams* fs) @local {
+    DrawItem item;
+    if (background_item(scene, camera, &item)) start_item_program(&item, CUT, fs);
+    if (backdrop_item(scene, camera, &item)) start_item_program(&item, has_holes(&item) ? CUT : SOLID, fs);
 }
 
 // Starts compiling, all at once, the programs of the material shader that this render's draws
@@ -4088,10 +4099,11 @@ fn Vector3 tone_map(Vector3 c, ToneMapping mode, float exposure) {
 }
 
 // Fog that is lit by lights isn't one color: where the view ends in empty space, a sphere
-// just inside the far plane picks up the same fog as the geometry in front of it.
-fn void draw_backdrop(Scene* scene, Camera* camera, Mat4 view_proj, FsParams* fs) @local {
-    if (!scene.fog || scene.fog.light_scatter <= 0 || camera.camera_type != PERSPECTIVE) return;
-    if (state.renderer.prof_no_fog_scatter) return;
+// just inside the far plane picks up the same fog as the geometry in front of it. False when
+// there is none to draw; otherwise `item` is it, placed around the camera.
+fn bool backdrop_item(Scene* scene, Camera* camera, DrawItem* item) @local {
+    if (!scene.fog || scene.fog.light_scatter <= 0 || camera.camera_type != PERSPECTIVE) return false;
+    if (state.renderer.prof_no_fog_scatter) return false;
     if (!state.backdrop) {
         MeshBasicMaterial* mat = mesh_basic_material();
         mat.side = BACK_SIDE;
@@ -4103,84 +4115,85 @@ fn void draw_backdrop(Scene* scene, Camera* camera, Mat4 view_proj, FsParams* fs
     float r = ((PerspectiveCamera*)camera).far * 0.9f;
     m.matrix_world = mat4_compose(camera.matrix_world.get_position(), { 0, 0, 0 }, { r, r, r });
     m.geometry.upload();
-    DrawItem item = { m, 0, 0, 0, 0, 1 };
-    draw_item(&item, view_proj, fs, has_holes(&item) ? CUT : SOLID);
+    *item = { m, 0, 0, 0, 0, 1 };
+    return true;
 }
 
-// The scene's background_texture (three's scene.background as an equirectangular texture):
-// a sphere around the camera, just inside its far plane, that shows the map in each direction
-// (see the shader's background mode). Drawn before the opaque scene, without writing depth.
-fn void draw_background(Scene* scene, Camera* camera, Mat4 view_proj, FsParams* fs) @local {
+fn void draw_backdrop(Scene* scene, Camera* camera, Mat4 view_proj, FsParams* fs) @local {
+    DrawItem item;
+    if (backdrop_item(scene, camera, &item)) draw_item(&item, view_proj, fs, has_holes(&item) ? CUT : SOLID);
+}
+
+// The scene's background, as draw_background draws it (as a cut-out), placed around the
+// camera: false when there is none. scene.background_material on a sphere just inside the far
+// plane; a flat background_texture on a quad between the near and far planes that covers the
+// view, drawn without depth; otherwise the background_texture (three's scene.background as an
+// equirectangular texture) on a sphere that shows the map in each direction (see the
+// material's background mode), drawn before the opaque scene, without writing depth.
+fn bool background_item(Scene* scene, Camera* camera, DrawItem* item) @local {
+    Mesh* m;
     if (scene.background_material) {
         if (!state.background_sphere) {
             state.background_sphere = mesh(sphere_geometry(1, 32, 16), scene.background_material);
             state.background_sphere.receive_shadow = false;
         }
-        Mesh* m = state.background_sphere;
+        m = state.background_sphere;
         m.material = scene.background_material;
         float r = camera.far * 0.9f;
         m.matrix_world = mat4_compose(camera.matrix_world.get_position(), { 0, 0, 0 }, { r, r, r });
-        m.geometry.upload();
-        DrawItem item = { m, 0, 0, 0, 0, 1 };
-        draw_item(&item, view_proj, fs);
-        return;
+    } else if (scene.background_texture && scene.background_flat) {
+        if (!state.background_quad) {
+            MeshBasicMaterial* mat = mesh_basic_material(fog: false);
+            mat.depth_test = false;
+            mat.depth_write = false;
+            state.background_quad = mesh(plane_geometry(2, 2), mat);
+            state.background_quad.receive_shadow = false;
+        }
+        m = state.background_quad;
+        Texture* t = scene.background_texture;
+        m.material.map = t;
+        m.material.tone_mapped = t.color_space != SRGB_COLOR_SPACE;
+        float d = (camera.near + camera.far) * 0.5f;
+        float cx;
+        float cy;
+        float hw;
+        float hh;
+        if (camera.camera_type == PERSPECTIVE) {
+            PerspectiveCamera* pc = (PerspectiveCamera*)camera;
+            hh = d * math::tan(pc.fov * (float)math::PI / 360.0f) / camera.zoom;
+            hw = hh * pc.aspect;
+        } else {
+            OrthographicCamera* oc = (OrthographicCamera*)camera;
+            cx = (oc.left + oc.right) * 0.5f;
+            cy = (oc.top + oc.bottom) * 0.5f;
+            hw = (oc.right - oc.left) * 0.5f / camera.zoom;
+            hh = (oc.top - oc.bottom) * 0.5f / camera.zoom;
+        }
+        m.matrix_world = camera.matrix_world.mul(mat4_compose({ cx, cy, -d }, { 0, 0, 0 }, { hw * 1.01f, hh * 1.01f, 1 }));
+    } else if (scene.background_texture && camera.camera_type == PERSPECTIVE) {
+        if (!state.background) {
+            MeshBasicMaterial* mat = mesh_basic_material(transparent: true, side: BACK_SIDE, fog: false);
+            state.background = mesh(sphere_geometry(1, 32, 16), mat);
+            state.background.receive_shadow = false;
+        }
+        m = state.background;
+        m.material.env_map = scene.background_texture;
+        m.material.env_intensity = scene.background_intensity;
+        // (the shader reads the blur from the roughness)
+        m.material.roughness = math::clamp(scene.background_blurriness, 0, 1);
+        float r = ((PerspectiveCamera*)camera).far * 0.9f;
+        m.matrix_world = mat4_compose(camera.matrix_world.get_position(), { 0, 0, 0 }, { r, r, r });
+    } else {
+        return false;
     }
-    if (scene.background_texture && scene.background_flat) {
-        draw_flat_background(scene, camera, view_proj, fs);
-        return;
-    }
-    if (!scene.background_texture || camera.camera_type != PERSPECTIVE) return;
-    if (!state.background) {
-        MeshBasicMaterial* mat = mesh_basic_material(transparent: true, side: BACK_SIDE, fog: false);
-        state.background = mesh(sphere_geometry(1, 32, 16), mat);
-        state.background.receive_shadow = false;
-    }
-    Mesh* m = state.background;
-    m.material.env_map = scene.background_texture;
-    m.material.env_intensity = scene.background_intensity;
-    // (the shader reads the blur from the roughness)
-    m.material.roughness = math::clamp(scene.background_blurriness, 0, 1);
-    float r = ((PerspectiveCamera*)camera).far * 0.9f;
-    m.matrix_world = mat4_compose(camera.matrix_world.get_position(), { 0, 0, 0 }, { r, r, r });
     m.geometry.upload();
-    DrawItem item = { m, 0, 0, 0, 0, 1 };
-    draw_item(&item, view_proj, fs);
+    *item = { m, 0, 0, 0, 0, 1 };
+    return true;
 }
 
-// A flat background_texture: a quad between the camera's near and far planes that covers its
-// view, drawn without depth.
-fn void draw_flat_background(Scene* scene, Camera* camera, Mat4 view_proj, FsParams* fs) @local {
-    if (!state.background_quad) {
-        MeshBasicMaterial* mat = mesh_basic_material(fog: false);
-        mat.depth_test = false;
-        mat.depth_write = false;
-        state.background_quad = mesh(plane_geometry(2, 2), mat);
-        state.background_quad.receive_shadow = false;
-    }
-    Mesh* m = state.background_quad;
-    Texture* t = scene.background_texture;
-    m.material.map = t;
-    m.material.tone_mapped = t.color_space != SRGB_COLOR_SPACE;
-    float d = (camera.near + camera.far) * 0.5f;
-    float cx;
-    float cy;
-    float hw;
-    float hh;
-    if (camera.camera_type == PERSPECTIVE) {
-        PerspectiveCamera* pc = (PerspectiveCamera*)camera;
-        hh = d * math::tan(pc.fov * (float)math::PI / 360.0f) / camera.zoom;
-        hw = hh * pc.aspect;
-    } else {
-        OrthographicCamera* oc = (OrthographicCamera*)camera;
-        cx = (oc.left + oc.right) * 0.5f;
-        cy = (oc.top + oc.bottom) * 0.5f;
-        hw = (oc.right - oc.left) * 0.5f / camera.zoom;
-        hh = (oc.top - oc.bottom) * 0.5f / camera.zoom;
-    }
-    m.matrix_world = camera.matrix_world.mul(mat4_compose({ cx, cy, -d }, { 0, 0, 0 }, { hw * 1.01f, hh * 1.01f, 1 }));
-    m.geometry.upload();
-    DrawItem item = { m, 0, 0, 0, 0, 1 };
-    draw_item(&item, view_proj, fs);
+fn void draw_background(Scene* scene, Camera* camera, Mat4 view_proj, FsParams* fs) @local {
+    DrawItem item;
+    if (background_item(scene, camera, &item)) draw_item(&item, view_proj, fs);
 }
 
 // The transmission picture's mip levels, for a picture of width x height.
@@ -4304,6 +4317,21 @@ fn void render_transmission(Renderer* r, Scene* scene, Camera* camera, Mat4 view
     tfs.output_params = { 1, fs.output_params.y, fs.output_params.z, 0 };
     Color background = scene.background ? scene.background : r.clear_color;
     Vector3 clear    = color_to_linear(background);
+    // (this pass's programs, all at once: start_material_programs started the main pass's)
+    if (!classic_materials && !r.shaders.main) {
+        start_background_program(scene, camera, &tfs);
+        for (int list = 0; list < 2; list++) {
+            foreach (&item : list == 0 ? state.opaque : state.transparent) {
+                Material* mat = item.mesh.material;
+                if (list == 0 && !refracts(item)) start_item_program(item, mat.wireframe || has_holes(item) ? CUT : SOLID, &tfs);
+                if (refracts(item) && mat.side == DOUBLE_SIDE) {
+                    mat.side = BACK_SIDE;
+                    start_item_program(item, list == 0 && !mat.wireframe && !has_holes(item) ? SOLID : CUT, &tfs);
+                    mat.side = DOUBLE_SIDE;
+                }
+            }
+        }
+    }
     profile::begin_pass(
         &&{
             .action = {
@@ -4581,7 +4609,7 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera) {
     }
     profile::stop("render: volumetric fog", pt);
     pt = profile::start();
-    start_material_programs(self, &fs, self.depth_prepass && !self.cull_box);
+    start_material_programs(self, scene, camera, &fs, self.depth_prepass && !self.cull_box);
     profile::stop("render: start programs", pt);
     pt = profile::start();
     // what the transmission materials refract: the opaque scene behind them, without them
@@ -4594,7 +4622,12 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera) {
     // engines that draw the scene once do. Otherwise (a tone mapped picture can't be refracted
     // as light), the opaque scene is drawn again for it first, as three does.
     bool split = refraction && self.render_target && self.render_target.is_linear();
-    if (refraction && !split) render_transmission(self, scene, camera, view_proj_rel, &fs);
+    if (refraction && !split) {
+        render_transmission(self, scene, camera, view_proj_rel, &fs);
+        // (the refracting materials' programs read the transmission's map, made by its first
+        // pass: their keys change with it)
+        start_material_programs(self, scene, camera, &fs, self.depth_prepass && !self.cull_box);
+    }
     profile::stop("render: transmission", pt);
     pt = profile::start();
 
