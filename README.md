@@ -284,7 +284,7 @@ A material's maps besides `map`, `normal_map` and `arm_map` share six texture sl
 - **Headless & LOD scaling:** `renderer.init_headless()` (with `drie::commit()`) and `renderer.lod_scale` global multiplier for `Lod` distances.
 - **Shader hooks:** Custom `.glsl` files can define `vertex_hooks` and `surface_hooks` around `@include shader_core.glsl`.
 - **Pipeline cache** (`pipeline_cache.c3`): like Unreal's PSO cache. drie lists every render pipeline it makes (the engine's and node materials', with the state and target they draw with): save the list from a run that plays the game, load it at the start of the next, and the pipelines compile on worker threads, a few at a time, while frames go on, with `renderer.compiling()` for a loading bar. The list is text and holds no compiled code (node programs go in as their hooks' text), so it doesn't go stale with the driver or GPU, it only gets less complete. Metal only; elsewhere loading does nothing.
-- **Compiling in the background:** a node material's program, which the driver takes a second or two to compile, compiles on a worker thread (`renderer.compile_in_background`, on by default, off headless) and its meshes are left out until it's ready, rather than the frame stalling.
+- **Compiling in the background:** a render starts compiling the programs its draws take on worker threads, all at once, and each draw waits only for its own. With `renderer.compile_in_background` (off by default) a node material's meshes are left out of the frame until their programs are ready, rather than the frame waiting.
 - **The material shader's programs** (main, opaque, depth, shadow, and their MRT, VSM and tangent variants: about 180 KB of Metal each, two to three seconds for the driver to compile the first time) are made when a draw first takes one, not at startup. A render starts compiling, all at once on worker threads (Metal), the ones its draws and background will take, and a draw waits only for its own. After that the driver's cache has them. `Renderer.shaders` is read then too: set it before the first render.
 
 <details>
@@ -297,7 +297,7 @@ A material's maps besides `map`, `normal_map` and `arm_map` share six texture sl
 | Depth pre-pass | `renderer.depth_prepass`, `renderer.depth_prepass_pixels` (`1.5`) | Minimum pixels per triangle |
 | Shader hooks | `vertex_hooks`, `surface_hooks`, `@include shader_core.glsl`, `renderer.shaders`, `material.custom`, `renderer.custom` | Accessed in GLSL as `material_custom[]` / `frame_custom[]` |
 | Pipeline cache | `renderer.pipeline_cache(allocator)` (the text), `save_pipeline_cache(path)`, `load_pipeline_cache(text)` / `load_pipeline_cache_file(path)`, `renderer.compiling()` (`{ still compiling, all }`), `renderer.screen_stand_in` | A pipeline drawn into the window is listed as the window's and compiled for whatever window loads it; a headless run that renders for one names the target that stands for it (`screen_stand_in`) |
-| Background compiles | `renderer.compile_in_background` (`true`; `false` after `init_headless`) | Node materials' meshes skip frames until their programs are compiled |
+| Background compiles | `renderer.compile_in_background` (`false`) | Node materials' meshes skip frames until their programs are compiled |
 
 </details>
 
