@@ -410,6 +410,13 @@ fn Node ssr_depth_at(int view, Node uv, bool back = false) @local {
     return back ? c.x() : c.y();
 }
 
+// A node material's view of the same (nodes::ssr_on, screen_position, viewport_depth): whether
+// the depth is there (the material's ssr, with the renderer's screen-space reflections), where
+// a point is, and the depth at a uv. A program reads them only where its graphs do.
+fn Node node_ssr_on() => fs_in("ssr_params", FLOAT).greater_than(nodes::num(0));
+fn Node node_ssr_project(Node p) => ssr_project(nodes::convert(p, VEC3));
+fn Node node_viewport_depth(Node uv) => ssr_depth_at(shaders::VIEW_SSR_DEPTH, nodes::convert(uv, VEC2));
+
 // A microfacet normal of a GGX surface as the eye sees them (the distribution of visible
 // normals, Heitz 2018), in the surface's own frame (z = its normal); ve = towards the eye.
 fn Node ggx_visible_normal(Node ve, Node alpha, Node u) @local {

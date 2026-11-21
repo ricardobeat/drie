@@ -70,7 +70,7 @@ enum NodeOp : char {
     UNIFORM,  // value (Node.set)
     BUILTIN,  // fn: a NodeBuiltin
     TEXTURE,  // texture; args[0] = uv, args[1] = the level (0: from the derivatives); kind 1:
-              //   its size instead (a vec2)
+              //   its size instead (a vec2); kind 2: with the gradients args[1] and args[2]
     VARYING,  // args[0], worked out per vertex
     BINARY,   // fn: a NodeBinary
     CALL,     // fn: a NodeFn, args
@@ -162,6 +162,13 @@ enum NodeBuiltin : char {
     ENV_DIRECTION,    // the direction the surface reflects, in the world (in env_node)
     ENV_ROUGHNESS,    // the roughness it reflects with (in env_node)
     INSTANCE_INDEX,   // the instance's index in its mesh (0 without instances), a float
+    // the material's own value at the step a graph replaces, for a graph that changes it:
+    MATERIAL_COLOR,     // rgba (in color_node, opacity_node): the color after its maps, vertex
+                        //   and instance colors, and its opacity
+    MATERIAL_ROUGHNESS, // (in roughness_node, metalness_node and the surface step's others):
+    MATERIAL_METALNESS, //   after the material's maps
+    ENV_COLOR,          // the environment's reflection along ENV_DIRECTION (in env_node)
+    INSTANCE_MATRIX,    // the instance's matrix (identity without instances; vertex stage)
 }
 
 enum NodeBinary : char {
@@ -714,6 +721,7 @@ struct NodeProgram {
     String specular_body;
     bool cuts;               // color_node or opacity_node can cut holes: a discard, or alpha
                              // (with the material's alpha_test), which the shadow maps cut too
+    String unsupported;      // what the graphs use that the hooks can't print ("": nothing)
     SgShader[8] shaders;     // by NodeVariant
     HashMap{ulong, SgPipeline} pipelines;
     SgPipeline shadow_pipeline;
@@ -797,7 +805,8 @@ fn bool NodeProgram.pipeline_ready(&self, ulong key, NodeVariant v, SgShaderDesc
 
 // A material's build: its graphs' program, and where its uniforms and textures go.
 struct NodeBuild {
-    Node[12] slots;          // the material's *_node fields it was built from
+    Node[NODE_SLOTS] slots;  // the material's *_node fields it was built from
+    Material* material;      // whose they are (its maps for nodes::material_map)
     NodeProgram* program;
     List{Node} uniforms;     // in their order in node_params (a matrix takes four)
     Texture*[NODE_TEXTURES] textures; // node texture k: tex_ext(5 - k), or a generated program's
@@ -810,6 +819,17 @@ struct NodeBuild {
     // node_epoch): then none of it is drawn, in any pass (see material_busy)
     uint busy_epoch;
     bool busy_now;
+}
+
+// Node texture k: the texture a graph names, or for nodes::material_map the material's map.
+fn Texture* NodeBuild.texture(&self, int k) {
+    Texture* t = self.textures[k];
+    if (try m = map_of_mark(t)) {
+        Texture* own = self.material.own_map(m);
+        if (!own) abort("drie: a node material reads nodes::material_map(%s), and the material has no %s", m, m);
+        return own;
+    }
+    return t;
 }
 
 HashMap{String, NodeProgram*} node_programs @local;
@@ -840,19 +860,26 @@ struct NodeGen @local {
     int params;   // node_params used
     bool output;  // printing node_output's body (nodes::output() is there)
     bool env;     // printing node_env's (nodes::env_direction() and env_roughness() are there)
+    bool color;   // printing node_color's (nodes::material_color() is there)
+    bool surface; // printing node_surface's (material_roughness() and material_metalness())
     bool discards; // a discard printed
+    // what the graphs use that the hooks can't print (the program aborts when it is made)
+    String unsupported;
 }
 
-fn Node[12] node_slots(Material* mat) @local {
-    Node[12] s = {
+// How many *_node fields a material has (NodeBuild.slots).
+const int NODE_SLOTS = 14;
+
+fn Node[NODE_SLOTS] node_slots(Material* mat) @local {
+    Node[NODE_SLOTS] s = {
         mat.color_node, mat.opacity_node, mat.normal_node, mat.roughness_node, mat.metalness_node,
         mat.emissive_node, mat.position_node, mat.output_node, mat.mask_node, mat.env_node,
-        mat.specular_node, mat.shininess_node
+        mat.specular_node, mat.shininess_node, mat.clearcoat_node, mat.clearcoat_roughness_node
     };
     return s;
 }
 
-fn bool same_nodes(Node[12] a, Node[12] b) @local {
+fn bool same_nodes(Node[NODE_SLOTS] a, Node[NODE_SLOTS] b) @local {
     foreach (i, n : a) {
         if (n.id != b[i].id) return false;
     }
@@ -869,7 +896,7 @@ fn bool has_nodes(Material* mat) {
 // The material's build, made or remade if its nodes changed; null without nodes.
 fn NodeBuild* node_build_of(Material* mat) {
     if (!has_nodes(mat)) return null;
-    Node[12] slots = node_slots(mat);
+    Node[NODE_SLOTS] slots = node_slots(mat);
     NodeBuild* b = mat.node_build;
     if (b && same_nodes(b.slots, slots)) return b;
     // (its program stays: other materials may share it, and the same graphs may come back)
@@ -880,6 +907,7 @@ fn NodeBuild* node_build_of(Material* mat) {
     }
     b = mem::new(NodeBuild);
     b.slots = slots;
+    b.material = mat;
     b.uniforms.init(mem);
     mat.node_build = b;
     NodeLang lang;
@@ -905,6 +933,7 @@ fn NodeBuild* node_build_of(Material* mat) {
         g.kept = mem::temp_array(String, count);
         // the fragment stage first: it finds the varyings the vertex stage writes
         g.stage = FRAGMENT;
+        g.color = true;
         String color = g.body(fn void(NodeGen* g, Material* mat) {
             if (mat.mask_node.id) {
                 if (mat.mask_node.type() != BOOL) abort("drie: mask_node is a bool");
@@ -921,10 +950,12 @@ fn NodeBuild* node_build_of(Material* mat) {
             }
             if (mat.opacity_node.id) g.line("base.w = %s;", g.value_as(mat.opacity_node, FLOAT));
         }, mat);
+        g.color = false;
         bool cuts = g.discards || mat.opacity_node.id || (mat.color_node.id && mat.color_node.type() == VEC4);
         String normal = g.body(fn void(NodeGen* g, Material* mat) {
             if (mat.normal_node.id) g.line("n = normalize(%s);", g.value_as(mat.normal_node, VEC3));
         }, mat);
+        g.surface = true;
         String surface = g.body(fn void(NodeGen* g, Material* mat) {
             if (mat.roughness_node.id) g.line("rough = %s;", g.value_as(mat.roughness_node, FLOAT));
             if (mat.metalness_node.id) g.line("metal = %s;", g.value_as(mat.metalness_node, FLOAT));
@@ -934,6 +965,7 @@ fn NodeBuild* node_build_of(Material* mat) {
                 g.line("emissive = %s;", g.zero(VEC4));
             }
         }, mat);
+        g.surface = false;
         g.output = true;
         String output = g.body(fn void(NodeGen* g, Material* mat) {
             if (mat.output_node.id) {
@@ -982,17 +1014,21 @@ fn NodeBuild* node_build_of(Material* mat) {
             }
             for (sz i = g.varyings.len(); i < NODE_VARYINGS; i++) g.line("vary%d = %s;", i, g.zero(VEC4));
         }, mat);
-        b.program = node_program({ vertex, color, normal, surface, output, env, specular }, cuts);
+        if (mat.clearcoat_node.id || mat.clearcoat_roughness_node.id) g.unsupported = "clearcoat_node and clearcoat_roughness_node";
+        // (the material's maps its graphs read: there when it is built)
+        for (int k = 0; k < b.texture_count; k++) b.texture(k);
+        b.program = node_program({ vertex, color, normal, surface, output, env, specular }, cuts, g.unsupported);
     };
     return b;
 }
 
 // The program of these hook bodies (vertex, color, normal, surface, output), made the first
 // time: shared by the materials whose graphs print them.
-fn NodeProgram* node_program(String[NODE_HOOKS] bodies, bool cuts) @private {
+fn NodeProgram* node_program(String[NODE_HOOKS] bodies, bool cuts, String unsupported = "") @private {
     @pool() {
         String key = string::tformat("%s\n--\n%s\n--\n%s\n--\n%s\n--\n%s\n--\n%s\n--\n%s\n--\n%s", bodies[0], bodies[1],
                                      bodies[2], bodies[3], bodies[4], bodies[5], bodies[6], cuts);
+        if (unsupported.len) key = string::tformat("%s\n--\n%s", key, unsupported);
         if (!node_programs.is_initialized()) node_programs.init(mem);
         NodeProgram*? found = node_programs[key];
         if (try found) return found;
@@ -1005,6 +1041,7 @@ fn NodeProgram* node_program(String[NODE_HOOKS] bodies, bool cuts) @private {
         p.env_body = bodies[5].copy(mem);
         p.specular_body = bodies[6].copy(mem);
         p.cuts = cuts;
+        p.unsupported = unsupported.copy(mem);
         p.pipelines.init(mem);
         node_programs[key.copy(mem)] = p;
         return p;
@@ -1244,6 +1281,22 @@ fn String NodeGen.builtin(&self, Node n, NodeBuiltin b) {
         case INSTANCE_INDEX:
             if (fragment) return self.read_varying(n);
             return "ni.frag.w";
+        case MATERIAL_COLOR:
+            if (!self.color) abort("drie: nodes: material_color() is for color_node and opacity_node");
+            return "base";
+        case MATERIAL_ROUGHNESS:
+            if (!self.surface) abort("drie: nodes: material_roughness() is for roughness_node and metalness_node");
+            return "rough";
+        case MATERIAL_METALNESS:
+            if (!self.surface) abort("drie: nodes: material_metalness() is for roughness_node and metalness_node");
+            return "metal";
+        case ENV_COLOR:
+            if (!self.env) abort("drie: nodes: env_color() is for env_node");
+            return "env";
+        case INSTANCE_MATRIX:
+            if (fragment) abort("drie: nodes: instance_matrix() is for the vertex stage (position_node)");
+            self.unsupported = "instance_matrix()";
+            return string::tformat("%s(1.0)", self.type_name(MAT4));
     }
 }
 
@@ -1272,6 +1325,15 @@ fn String NodeGen.texture(&self, Node n, NodeData* d) {
         }
     }
     String uv = self.value_as({ d.args[0] }, VEC2);
+    if (d.kind == 2) {
+        String dx = self.value_as({ d.args[1] }, VEC2);
+        String dy = self.value_as({ d.args[2] }, VEC2);
+        switch (self.lang) {
+            case GLSL: return string::tformat("textureGrad(tex_ext%d_tex_smp, %s, %s, %s)", slot, uv, dx, dy);
+            case MSL: return string::tformat("tex_ext%d.sample(tex_smp, %s, gradient2d(%s, %s))", slot, uv, dx, dy);
+            case HLSL: return string::tformat("tex_ext%d.SampleGrad(tex_smp, %s, %s, %s)", slot, uv, dx, dy);
+        }
+    }
     bool lod = d.args[1] != 0;
     String level = lod ? self.value_as({ d.args[1] }, FLOAT) : "";
     switch (self.lang) {
@@ -1591,8 +1653,11 @@ fn String NodeGen.emit(&self, Node n) {
                 e = string::tformat("(!%s)", self.value_as({ d.args[0] }, BOOL));
             }
         case INPUT:
-        case STORAGE:
         case SAMPLE:
+            // (the screen's depth, nodes::viewport_depth...: only generated programs read it)
+            self.unsupported = "the screen's depth (nodes::ssr_on, viewport_depth, screen_position)";
+            e = self.zero(d.type);
+        case STORAGE:
         case ATTRIBUTE:
         case SYSTEM:
         case PARAM:
@@ -1666,6 +1731,9 @@ fn String splice_body(String src, String name, String body) @local {
 // `desc` (the engine's or the application's program) with the hooks' bodies swapped, its
 // sources in temporary memory.
 fn SgShaderDesc NodeProgram.spliced(&self, NodeVariant v, SgShaderDesc desc) {
+    if (self.unsupported.len) {
+        abort("drie: a node material uses %s, which the application's material shader (Renderer.shaders) has no hook for: only generated programs draw it", self.unsupported);
+    }
     String vs = splice_body(((ZString)desc.vertex_func.source).str_view(), "node_vertex", self.vertex_body);
     desc.vertex_func.source = vs.zstr_tcopy();
     if (v == SHADOW && self.cuts) {

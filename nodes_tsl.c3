@@ -109,12 +109,50 @@ fn Node env_roughness() => builtin(ENV_ROUGHNESS, FLOAT);
 // The instance's index in its InstancedMesh (0 for a plain mesh), a float (three's instanceIndex).
 fn Node instance_index() => builtin(INSTANCE_INDEX, FLOAT);
 
+// The material's own value at the step a graph replaces, to change it rather than replace it:
+// in color_node and opacity_node its color (rgb: after its map, vertex and instance colors;
+// a: its opacity); in roughness_node and metalness_node (and the surface step's emissive,
+// specular and shininess nodes) its roughness and metalness after its maps.
+fn Node material_color() => builtin(MATERIAL_COLOR, VEC4);
+fn Node material_roughness() => builtin(MATERIAL_ROUGHNESS, FLOAT);
+fn Node material_metalness() => builtin(MATERIAL_METALNESS, FLOAT);
+// In Material.env_node: what the environment itself reflects along env_direction() at
+// env_roughness(), rgb (what env_node replaces).
+fn Node env_color() => builtin(ENV_COLOR, VEC3);
+// The instance's matrix in the vertex stage (position_node): instance_matrix() * vec4(p, 1)
+// is p moved as the instance moves it; the identity for a mesh without instances.
+fn Node instance_matrix() => builtin(INSTANCE_MATRIX, MAT4);
+
+// Whether the screen's depth (viewport_depth) is there this frame: on a material with
+// Material.ssr, when the renderer has screen-space reflections' depth.
+fn Node ssr_on() => drie::node_ssr_on();
+// Where world-space point `p` is on the screen: xy its uv there (as viewport_depth takes it),
+// z its distance from the camera's plane (m), as viewport_depth measures.
+fn Node screen_position(Node p) => drie::node_ssr_project(p);
+// The distance from the camera's plane (m) of what the screen shows at uv `at` (three's
+// viewportLinearDepth), the frame's opaque surfaces: behind a transparent surface at
+// screen_position(p), viewport_depth(s.xy()) - s.z() is how deep the water is there. Only
+// where ssr_on() holds.
+fn Node viewport_depth(Node at) => drie::node_viewport_depth(at);
+
+// Material map `which` of the material drawn, where a graph reads a texture (texture,
+// texture_grad, texture_size): one graph in several materials reads each one's own. The
+// material must have it when its programs are built.
+fn Texture* material_map(MaterialMap which) => drie::material_map_mark(which);
+
 // `t` read at `at` (the mesh's uv by default): its rgba, as the material's maps (sRGB images
 // in linear values). `level`: a mip level (none: from the pixel's footprint).
 fn Node texture(Texture* t, Node at = { }, Node level = { }) {
     if (!t) abort("drie: nodes::texture of no texture");
     if (!at.id) at = uv();
     return drie::add_node({ .op = TEXTURE, .type = VEC4, .texture = t, .count = 2, .args = { at.id, level.id, 0, 0 } });
+}
+
+// `t` read at `uv` with the gradients `dx` and `dy` of the uv from one pixel to the next
+// (three's texture().grad()).
+fn Node texture_grad(Texture* t, Node uv, Node dx, Node dy) {
+    if (!t) abort("drie: nodes::texture_grad of no texture");
+    return drie::add_node({ .op = TEXTURE, .type = VEC4, .texture = t, .kind = 2, .count = 3, .args = { uv.id, dx.id, dy.id, 0 } });
 }
 
 // The size of `t`'s largest level in texels, a vec2 (three's textureSize).

@@ -371,6 +371,9 @@ struct Material {
     //                  map's reflection, whose light on surfaces stays)
     //   specular_node  a phong material's specular color, rgb (instead of specular)
     //   shininess_node and its shininess
+    //   clearcoat_node a standard material's clear coat, 0..1 (three's clearcoatNode: in place
+    //                  of clearcoat and clearcoat_map; set, it turns the coat on)
+    //   clearcoat_roughness_node  and the coat's roughness (clearcoatRoughnessNode)
     Node color_node;
     Node opacity_node;
     Node normal_node;
@@ -383,6 +386,8 @@ struct Material {
     Node env_node;
     Node specular_node;
     Node shininess_node;
+    Node clearcoat_node;
+    Node clearcoat_roughness_node;
     // The shaders built for them (at the first draw, and again when one changes).
     NodeBuild* node_build;
 }
@@ -395,6 +400,49 @@ fn Material* Material.clone(&self) {
     // (its node shaders: its own build, sharing the program)
     m.node_build = null;
     return m;
+}
+
+// The material's own maps, as a graph reads them without naming a Texture
+// (nodes::material_map): each material whose graphs read one samples its own.
+enum MaterialMap : char {
+    MAP,
+    NORMAL_MAP,
+    ARM_MAP,
+    ROUGHNESS_MAP,
+    METALNESS_MAP,
+    AO_MAP,
+    EMISSIVE_MAP,
+    ALPHA_MAP,
+    BUMP_MAP,
+    CUSTOM_MAP,
+}
+
+// What a graph holds in place of a material's map `m` (nodes::material_map): a mark, never
+// drawn, that the material's build swaps for its texture (NodeBuild.texture).
+Texture[MaterialMap::len] material_map_marks @local;
+
+fn Texture* material_map_mark(MaterialMap m) => &material_map_marks[m.ordinal];
+
+// Which map `t` is a mark of, if it is one.
+fn MaterialMap? map_of_mark(Texture* t) {
+    Texture* first = &material_map_marks[0];
+    if (t < first || t >= first + MaterialMap::len) return NOT_FOUND~;
+    return (MaterialMap)(t - first);
+}
+
+fn Texture* Material.own_map(&self, MaterialMap m) {
+    switch (m) {
+        case MAP: return self.map;
+        case NORMAL_MAP: return self.normal_map;
+        case ARM_MAP: return self.arm_map;
+        case ROUGHNESS_MAP: return self.roughness_map;
+        case METALNESS_MAP: return self.metalness_map;
+        case AO_MAP: return self.ao_map;
+        case EMISSIVE_MAP: return self.emissive_map;
+        case ALPHA_MAP: return self.alpha_map;
+        case BUMP_MAP: return self.bump_map;
+        case CUSTOM_MAP: return self.custom_map;
+    }
 }
 
 struct MeshBasicMaterial {
