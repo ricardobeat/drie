@@ -22,7 +22,7 @@
 // what they read. Names number the nodes in the order they are printed, so the same graphs
 // print the same text whatever else was made before, and the driver's cache knows them.
 module drie;
-import std::collections::list, std::collections::map, std::io, sokol;
+import std::collections::list, std::collections::map, std::io, std::thread, sokol;
 
 // The uniform blocks programs read rows of (INPUT), in the order the renderer hands them to
 // ShaderProgram.gather.
@@ -247,6 +247,9 @@ struct ShaderProgram {
     int colors;
     bool discards;
     SgShader shader;
+    // its compile in the background, plus 1 (0: none): sg_warm_shader_begin's, or the job of
+    // a pipeline that compiles it with it (sg_warm_begin's, see claim)
+    int job;
 }
 
 fn void ShaderProgram.free(&self) {
@@ -1700,6 +1703,13 @@ fn SgShaderDesc ShaderProgram.desc(&self) {
 // The program made (once): its sources are printed if the backend's compiler takes them not.
 fn SgShader ShaderProgram.make(&self) {
     if (self.shader.id) return self.shader;
+    // (the driver's cache has it once its compile in the background is done: made at once
+    // then, rather than a second time beside it)
+    if (self.job) {
+        while (sg_warm_state(self.job - 1) == 0) thread::sleep_ms(1);
+        sg_warm_end(self.job - 1);
+        self.job = 0;
+    }
     SgShaderDesc d = self.desc();
     self.shader = sg::make_shader(&d);
     if (sg::query_shader_state(self.shader) != VALID) {
@@ -1708,6 +1718,27 @@ fn SgShader ShaderProgram.make(&self) {
     }
     return self.shader;
 }
+
+// Starts compiling the program on a worker thread (Metal; elsewhere it is compiled when
+// make first asks for it), if it isn't made or compiling yet.
+fn void ShaderProgram.start(&self) {
+    if (self.shader.id || self.job) return;
+    SgShaderDesc d = self.desc();
+    int job = sg_warm_shader_begin(&d);
+    if (job >= 0) self.job = job + 1;
+}
+
+// Makes `job` (sg_warm_begin's, a pipeline's that compiles the program) the one compiling the
+// program, if it isn't made or compiling yet: false if it is (the job is then the caller's to
+// end).
+fn bool ShaderProgram.claim(&self, int job) {
+    if (self.shader.id || self.job) return false;
+    self.job = job + 1;
+    return true;
+}
+
+// Whether its compile in the background is still running.
+fn bool ShaderProgram.compiling(&self) => self.job && sg_warm_state(self.job - 1) == 0;
 
 // Takes `from`'s vertex stage (see ProgramGraph.fragment_only): its source, block, attributes,
 // views and samplers.

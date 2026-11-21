@@ -170,6 +170,8 @@ fn void MaterialKey.set_slot(&self, int role, int slot) {
 // A generated program and its pipelines (by get_pipeline's key); with MaterialKey.prepassed,
 // the depth prepass's too, which shares its vertex stage.
 struct MaterialProgram {
+    // what it was built from (for the pipeline cache)
+    MaterialKey key;
     ShaderProgram* program;
     ShaderProgram* depth;
     HashMap{ulong, SgPipeline} pipelines;
@@ -195,13 +197,14 @@ fn MaterialProgram* material_program(MaterialKey key) @private {
         build_material_graph(key, &graph, &prepass);
     }
     MaterialProgram* mp = mem::new(MaterialProgram);
+    mp.key = key;
     // (DRIE_PROGRAM_SALT: a term the output depends on, at a pixel no target reaches, so the
     // compiled code differs from any earlier run's and the driver has none of it cached; for
     // timing a cold start)
     if (try salt = env::tget_var("DRIE_PROGRAM_SALT")) {
         float far = 1e7f + (float)(salt.hash() & 0xffff);
         Node off = nodes::select(node_system(FRAG_COORD).x().greater_than(nodes::num(far)), nodes::num(1e-20f), nodes::num(0));
-        graph.colors[0] = graph.colors[0] + nodes::vec4(off, 0, 0, 0);
+        if (graph.colors[0].id) graph.colors[0] = graph.colors[0] + nodes::vec4(off, 0, 0, 0);
         if (key.prepassed) prepass.colors[0] = prepass.colors[0] + nodes::vec4(off, 0, 0, 0);
     }
     // (the prepass's fragment stage first: its varyings are the first of the main program's,

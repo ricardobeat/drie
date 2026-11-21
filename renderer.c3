@@ -1221,8 +1221,9 @@ fn SgPipeline get_pipeline(
     }
     // (for the pipeline cache: a new pipeline, the target Renderer.screen_stand_in as the window)
     bool window = !rt || (state.renderer && rt == state.renderer.screen_stand_in);
-    // (the cache records the material shader's pipelines only)
-    if (!gen) record_pipeline({
+    record_pipeline({
+        .generated = gen != null,
+        .key = gen ? gen.key : { },
         .program = nodes,
         .side = side,
         .transparent = transparent,
@@ -1292,7 +1293,13 @@ fn SgPipeline get_pipeline(
     }
     desc.colors[0].blend = blend_state(blend);
     if (gen) {
-        desc.shader = (kind == DEPTH ? gen.depth : gen.program).make();
+        ShaderProgram* own = kind == DEPTH ? gen.depth : gen.program;
+        if (pipeline_warmup) {
+            // (a pipeline cache being loaded: compiled in the background, made when first drawn)
+            pipeline_warmup.start_generated(own, &desc);
+            return { };
+        }
+        desc.shader = own.make();
     } else if (nodes) {
         // (compiled in the background first: none till then, see NodeProgram.busy)
         if (!nodes.pipeline_ready(key, variant, node_base_desc(nodes, variant), &desc, background())) return { };
@@ -1383,10 +1390,41 @@ fn int material_shaders_compiling() @private {
     return n;
 }
 
+// Starts compiling, all at once on worker threads, the generated programs (materials_nodes.c3)
+// that this render's draws will take and that aren't made yet: a draw then waits for its own
+// only, rather than each compiling in turn on this thread (from tens of milliseconds to a
+// second or more each, the first time: the driver keeps them after that). `fs` is the
+// render's light parameters (build_light_params), which the programs' keys read.
+fn void start_material_programs(Renderer* r, FsParams* fs, bool prepass) @local {
+    if (classic_materials || r.shaders.main) return;
+    for (int list = 0; list < 2; list++) {
+        foreach (&item : list == 0 ? state.opaque : state.transparent) {
+            Material* mat = item.mesh.material;
+            if (node_build_of(mat)) continue;
+            // (the kinds the main pass draws them with, see render)
+            DrawKind kind = list == 1 || draws_lines(item) || has_holes(item) ? CUT : SOLID;
+            bool pre = list == 0 && kind == CUT && prepass && prepassed(item);
+            if (pre) kind = PRETESTED;
+            Texture*[6] slots;
+            Vec4[6] map_slots;
+            material_slots(mat, null, &slots, &map_slots);
+            MaterialKey key;
+            if (!material_key_of(item, kind, fs, &map_slots, &key)) continue;
+            MaterialProgram* gen = material_program(key);
+            gen.program.start();
+            if (gen.depth) gen.depth.start();
+        }
+    }
+}
+
 // Starts compiling, all at once, the programs of the material shader that this render's draws
-// will take (as get_pipeline picks them): rather than one after the other as they come to
-// them, a second or more each the first time (the driver keeps them after that).
+// will take (as get_pipeline picks them), when they draw with it (classic_materials,
+// Renderer.shaders): rather than one after the other as they come to them, a second or more
+// each the first time (the driver keeps them after that).
 fn void start_material_shaders(Renderer* r, Scene* scene, bool prepass) @local {
+    // (only the classic path draws with them: engine materials have generated programs, and
+    // node materials their own)
+    if (!classic_materials && !r.shaders.main) return;
     RenderTarget* rt = r.render_target;
     // the background (draw_background: drawn as a cut-out)
     Material* bg = scene.background_material;
@@ -1521,9 +1559,14 @@ fn SgPipelineDesc shadow_pipeline_desc() @local {
 }
 
 // A caster's generated program's shadow pipeline (MaterialKey.shadow).
-fn SgPipeline gen_shadow_pipeline(MaterialProgram* gen) @local {
+fn SgPipeline gen_shadow_pipeline(MaterialProgram* gen) @private {
     if (try found = gen.pipelines[0]) return found;
     SgPipelineDesc desc = shadow_pipeline_desc();
+    record_pipeline({ .generated = true, .key = gen.key, .shadow = true });
+    if (pipeline_warmup) {
+        pipeline_warmup.start_generated(gen.program, &desc);
+        return { };
+    }
     desc.shader = gen.program.make();
     SgPipeline pip = sg::make_pipeline(&desc);
     gen.pipelines[0] = pip;
@@ -4450,6 +4493,9 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera) {
         );
     }
     profile::stop("render: volumetric fog", pt);
+    pt = profile::start();
+    start_material_programs(self, &fs, self.depth_prepass && !self.cull_box);
+    profile::stop("render: start programs", pt);
     pt = profile::start();
     // what the transmission materials refract: the opaque scene behind them, without them
     // (theirs, opaque or transparent)
