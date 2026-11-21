@@ -115,7 +115,7 @@ bitstruct MaterialKey : char[32] {
     bool shadow : 82;
     bool bake : 83;              // a light map's sample (lightmap.c3): drawn at uv1, its light blended in
     // a node material's (its *_node graphs plugged in where the material shader's hooks run
-    // them): kept with its NodeBuild (NodeBuild.programs), which the key alone doesn't name
+    // them): found through its NodeBuild (NodeBuild.programs), which the key alone doesn't name
     bool nodes : 84;
 }
 
@@ -172,25 +172,61 @@ fn void MaterialKey.set_slot(&self, int role, int slot) {
 }
 
 // A generated program and its pipelines (by get_pipeline's key); with MaterialKey.prepassed,
-// the depth prepass's too, which shares its vertex stage.
+// the depth prepass's too, which shares its vertex stage. A node material's (MaterialKey.nodes)
+// is shared by the materials whose graphs print the same programs, reading the same rows of
+// their uniforms and the same of their textures: what it draws with comes from the material
+// drawn (user_block, user_views).
 struct MaterialProgram {
     // what it was built from (for the pipeline cache)
     MaterialKey key;
-    NodeBuild* build;        // a node material's graphs (MaterialKey.nodes), or null
     ShaderProgram* program;
     ShaderProgram* depth;
     HashMap{ulong, SgPipeline} pipelines;
+    // a node material's: its place in node_material_programs, and how many builds have it
+    ulong shared_as;
+    int users;
 }
 
 HashMap{KeyWords, MaterialProgram*} material_programs @local;
+// The node materials' programs, by a hash of what they print and read (program_signature).
+HashMap{ulong, MaterialProgram*} node_material_programs @local;
+
+// What makes two printings of a program the same program: its sources, and the rows of the
+// blocks, the views and the samplers they read (two node materials can print the same text
+// reading a uniform at different rows of their USER blocks, or a texture at a different k).
+fn void program_signature(DString* out, ShaderProgram* p) @local {
+    out.appendf("%s\n--\n%s\n--\n", p.vs, p.fs);
+    for (int st = 0; st < 2; st++) {
+        foreach (r : p.rows[st]) out.appendf("r%d %d %d %d %d;", st, r.source.ordinal, r.row, r.count, r.at);
+    }
+    foreach (v : p.views) out.appendf("v%d %d %d %d %d;", v.stage.ordinal, v.source, v.storage, v.kind.ordinal, v.elem.ordinal);
+    foreach (sm : p.samplers) out.appendf("s%d %d %d;", sm.stage.ordinal, sm.source, sm.compare);
+}
+
+// The signature of `mp`'s programs, in the temporary memory.
+fn String material_signature(MaterialProgram* mp) @local {
+    DString sig = dstring::temp();
+    program_signature(&sig, mp.program);
+    if (mp.depth) program_signature(&sig, mp.depth);
+    return sig.str_view();
+}
+
+// FNV-1a, 64 bits.
+fn ulong hash64(String s) @local {
+    ulong h = 0xcbf29ce484222325;
+    foreach (c : s) h = (h ^ c) * 0x100000001b3;
+    return h;
+}
 
 // Whether every material draws with the application's material shader (Renderer.shaders)
 // rather than generated programs.
 macro bool classic_materials() @private => state.renderer && state.renderer.shaders.main;
 
 // The program for `key`, built the first time it is asked for; with MaterialKey.nodes, the one
-// of node material `build`'s graphs, kept with it.
+// node material `build`'s graphs print, found through the build (NodeBuild.programs) and shared
+// with the builds that print the same.
 fn MaterialProgram* material_program(MaterialKey key, NodeBuild* build = null) @private {
+    // (a node material's: printed for each build, made once for the builds that print the same)
     KeyWords words = bitcast(key, KeyWords);
     HashMap{KeyWords, MaterialProgram*}* cache = &material_programs;
     if (key.nodes) {
@@ -212,7 +248,6 @@ fn MaterialProgram* material_program(MaterialKey key, NodeBuild* build = null) @
     }
     MaterialProgram* mp = mem::new(MaterialProgram);
     mp.key = key;
-    mp.build = build;
     // (DRIE_PROGRAM_SALT: a term the output depends on, at a pixel no target reaches, so the
     // compiled code differs from any earlier run's and the driver has none of it cached; for
     // timing a cold start)
@@ -233,8 +268,32 @@ fn MaterialProgram* material_program(MaterialKey key, NodeBuild* build = null) @
     }
     mp.program = build_program(backend_lang(), &graph, build, vbind, fbind);
     if (key.prepassed) mp.depth.take_vertex(mp.program);
-    mp.pipelines.init(mem);
     node_release(mark);
+    if (build) {
+        @pool() {
+            // (not by its key: keys that differ in what the program doesn't print share it)
+            String sig = material_signature(mp);
+            ulong h = hash64(sig);
+            if (!node_material_programs.is_initialized()) node_material_programs.init(mem);
+            MaterialProgram*? shared = node_material_programs[h];
+            if (try shared && material_signature(shared) == sig) {
+                free_program(mp.program);
+                if (mp.depth) free_program(mp.depth);
+                mem::free(mp);
+                shared.users++;
+                cache.set(words, shared);
+                return shared;
+            }
+            // (one whose hash another has, which is no likelier than a collision of 64-bit hashes:
+            // kept out of the table, shared with none)
+            mp.users = 1;
+            if (catch shared) {
+                mp.shared_as = h;
+                node_material_programs[h] = mp;
+            }
+        };
+    }
+    mp.pipelines.init(mem);
     cache.set(words, mp);
     // (DRIE_TRACE_PROGRAMS: each program printed as it is built)
     if (try env::tget_var("DRIE_TRACE_PROGRAMS")) {
@@ -289,19 +348,25 @@ fn void apply_program_uniforms(ShaderProgram* p, ProgramStage st, VsParams* vs, 
     };
 }
 
-// Lets go of a node material's generated programs (when node_build_of replaces its build).
+// Lets go of a node material's generated programs (when node_build_of replaces its build): those
+// no other build has.
 fn void free_build_programs(NodeBuild* b) @private {
     if (!b.programs.is_initialized()) return;
     b.programs.@each(; KeyWords words, MaterialProgram* mp) {
-        mp.pipelines.@each(; ulong key, SgPipeline pip) {
-            sg::destroy_pipeline(pip);
-        };
-        mp.pipelines.free();
-        free_program(mp.program);
-        if (mp.depth) free_program(mp.depth);
-        mem::free(mp);
+        if (--mp.users == 0) free_material_program(mp);
     };
     b.programs.free();
+}
+
+fn void free_material_program(MaterialProgram* mp) @local {
+    if (try in = node_material_programs[mp.shared_as] && in == mp) node_material_programs.remove(mp.shared_as);
+    mp.pipelines.@each(; ulong key, SgPipeline pip) {
+        sg::destroy_pipeline(pip);
+    };
+    mp.pipelines.free();
+    free_program(mp.program);
+    if (mp.depth) free_program(mp.depth);
+    mem::free(mp);
 }
 
 fn void free_program(ShaderProgram* p) @local {
