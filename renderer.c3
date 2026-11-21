@@ -3141,13 +3141,9 @@ fn bool material_key_of(DrawItem* item, DrawKind kind, FsParams* fs, Vec4[6]* ma
     int fog = mat.fog ? (int)fs.fog_params.w : 0;
     if (fog && (fs.fog_grid.w > 0 || fs.fog_color.w > 0)) return false;
     if (fog == 3 && fs.fog_sun_dir.w > 0 && fs.fog_sun_color.w > 0 && fs.dir_shadow_params.x > 0.5f) return false;
-    // (and for the lit materials: irradiance volumes and radiance cascades)
     Texture* env_map = mat.env_map;
     Scene* scene = state.scene;
     if (!env_map && scene && scene.environment && standard) env_map = scene.environment;
-    if (lit) {
-        if (state.gi_count > 0 || fs.rc_size.w > 0) return false;
-    }
     // the scene's reflection probes in place of the environment (on the lit materials but
     // lambert)
     bool probes = lit && type != LAMBERT && !mat.env_map && mat.env_probes && state.probes_view.id;
@@ -3200,6 +3196,8 @@ fn bool material_key_of(DrawItem* item, DrawKind kind, FsParams* fs, Vec4[6]* ma
         .env_light = standard && env_map && env_map.has_env_sh,
         .env_reflect = (standard && env_map) || probes,
         .probes = probes,
+        .gi = lit && state.gi_count > 0,
+        .rc = lit && fs.rc_size.w > 0,
         .env_box = standard && env_map && mat.env_box_min != mat.env_box_max,
         .toon_nearest = type == TOON && mat.gradient_map && mat.gradient_map.nearest,
         .shadows = shadows,

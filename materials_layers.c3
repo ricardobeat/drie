@@ -267,3 +267,89 @@ fn Node Refraction.light(&self, Node n, Node v, Node world, Node rough, Node dif
     Node pick = nodes::if_then(spread.greater_than(nodes::num(0)), spread_out, one);
     return nodes::seq(nodes::block(light, through, pick), (nodes::vec3(1) - environment_brdf(n, v, f0, f90, rough)) * through * light);
 }
+
+// ---- the scene's baked and dynamic indirect light
+
+// Light from the scene's irradiance volumes for a surface at `world` facing `n`, already times
+// how much of the point they cover (1 inside a volume, 0 outside them all), and that cover
+// (shader_core.glsl's gi_irradiance). Each volume covers its box and fades out over half a
+// cell outside it, in front of the ones before it. Each probe holds the light arriving from
+// the six axis directions, side by side along x in the volume's part of tex_gi.
+fn Node[2] gi_irradiance(Node n, Node world) @private {
+    Node cover = nodes::variable(nodes::num(0));
+    Node e = nodes::variable(nodes::vec3(0));
+    Node slab = nodes::vec3(nodes::select(n.x().greater_than_equal(nodes::num(0)), 0.0f, 1.0f),
+                            nodes::select(n.y().greater_than_equal(nodes::num(0)), 2.0f, 3.0f),
+                            nodes::select(n.z().greater_than_equal(nodes::num(0)), 4.0f, 5.0f)) / 6.0f;
+    Node w = n * n;
+    Node i = nodes::loop_index(INT);
+    Node lo = fs_at("gi_min", VEC4, i);
+    Node dims = fs_at("gi_dims", VEC4, i);
+    Node inv = fs_at("gi_inv_size", VEC4, i);
+    Node atlas = fs_at("gi_atlas", VEC4, i);
+    Node res = dims.xyz();
+    Node p = (world + n * dims.w() - lo.xyz()) * inv.xyz();
+    Node edge = nodes::min(p, nodes::vec3(1) - p) * res;
+    Node fade = nodes::clamp(nodes::min(edge.x(), nodes::min(edge.y(), edge.z())) * 2.0f + 1.0f, 0, 1);
+    // stay inside the volume and a direction's slab
+    Node margin = nodes::vec3(0.5f) / res;
+    p = nodes::clamp(p, margin, nodes::vec3(1) - margin);
+    Node u = (slab + p.x() / 6.0f) * atlas.y() + atlas.x();
+    Node yz = p.swizzle("yz") * atlas.swizzle("zw");
+    Node l = gi_texel(nodes::vec3(u.x(), yz)) * w.x() + gi_texel(nodes::vec3(u.y(), yz)) * w.y() + gi_texel(nodes::vec3(u.z(), yz)) * w.z();
+    Node body = nodes::block(nodes::if_then(lo.w().less_than(nodes::num(0.5f)), nodes::block(nodes::break_())),
+                             nodes::if_then(fade.less_than_equal(nodes::num(0)), nodes::block(nodes::continue_())),
+                             e.assign(nodes::mix(e, l * inv.w(), fade)),
+                             cover.assign(nodes::mix(cover, nodes::num(1), fade)));
+    Node volumes = nodes::block(cover, e, nodes::loop(i, nodes::int_(0), nodes::int_(4), body));
+    return { nodes::seq(volumes, e), cover };
+}
+
+fn Node gi_texel(Node uvw) @local => node_sample(LEVEL, shaders::VIEW_TEX_GI, shaders::SMP_GI_SMP, TEX_3D, uvw, nodes::num(0)).xyz();
+
+// Light from the scene's radiance cascades for a surface at `world` facing `n`, and how much
+// it counts: 1 inside their box, 0 outside it, between the two over its outermost half cell
+// (shader_core.glsl's rc_irradiance). Blended between the 8 probes around, leaving out those
+// inside things and those behind the surface's own plane: a wall takes none of the light of
+// the room behind it.
+fn Node[2] rc_irradiance(Node n, Node world) @private {
+    Node corner = fs_in("rc_min");
+    Node size = fs_in("rc_size");
+    Node spacing = corner.w();
+    Node g = (world + n * (spacing * 0.25f) - corner.xyz()) / spacing;
+    Node edge = nodes::min(g, size.xyz() - g);
+    Node fade = nodes::clamp(nodes::min(edge.x(), nodes::min(edge.y(), edge.z())) * 2.0f, 0, 1);
+    Node gc = g - 0.5f;
+    Node base = nodes::floor(gc);
+    Node f = gc - base;
+    Node b = nodes::convert(base, IVEC3);
+    Node dims = nodes::convert(size.xyz(), IVEC3);
+    Node side = nodes::vec3(nodes::select(n.x().greater_than_equal(nodes::num(0)), 0.0f, 1.0f),
+                            nodes::select(n.y().greater_than_equal(nodes::num(0)), 2.0f, 3.0f),
+                            nodes::select(n.z().greater_than_equal(nodes::num(0)), 4.0f, 5.0f));
+    side = nodes::convert(side, IVEC3);
+    Node nn = n * n;
+    Node sum = nodes::variable(nodes::vec3(0));
+    Node wsum = nodes::variable(nodes::num(0));
+    Node sum_any = nodes::variable(nodes::vec3(0));
+    Node wsum_any = nodes::variable(nodes::num(0));
+    Node k = nodes::loop_index(INT);
+    Node o = nodes::vec3(nodes::convert(nodes::bit_and(k, nodes::int_(1)), FLOAT),
+                         nodes::convert(nodes::bit_and(nodes::shift_right(k, nodes::int_(1)), nodes::int_(1)), FLOAT),
+                         nodes::convert(nodes::bit_and(nodes::shift_right(k, nodes::int_(2)), nodes::int_(1)), FLOAT));
+    Node c = nodes::clamp(b + nodes::convert(o, IVEC3), nodes::convert(nodes::int_(0), IVEC3), dims - nodes::int_(1));
+    Node at = ((c.z() * dims.y() + c.y()) * dims.x() + c.x()) * nodes::int_(6);
+    Node ex = node_storage(shaders::VIEW_RC_PROBES, VEC4, at + side.x());
+    Node e = ex.xyz() * nn.x() + node_storage(shaders::VIEW_RC_PROBES, VEC4, at + side.y()).xyz() * nn.y()
+        + node_storage(shaders::VIEW_RC_PROBES, VEC4, at + side.z()).xyz() * nn.z();
+    Node w3 = nodes::mix(nodes::vec3(1) - f, f, o);
+    Node w = (w3.x() * w3.y() * w3.z() + 0.002f) * ex.w();
+    Node probe_pos = corner.xyz() + (nodes::convert(c, VEC3) + 0.5f) * spacing;
+    Node front = nodes::clamp((nodes::dot(probe_pos - world, n) + 0.04f) / 0.06f, 0, 1);
+    Node body = nodes::block(sum.assign(sum + e * (w * front)), wsum.assign(wsum + w * front),
+                             sum_any.assign(sum_any + e * w), wsum_any.assign(wsum_any + w));
+    Node probes = nodes::if_then(fade.greater_than(nodes::num(0)), nodes::block(nodes::loop(k, nodes::int_(0), nodes::int_(8), body)));
+    Node fallback = nodes::select(wsum_any.greater_than(nodes::num(1e-5f)), sum_any / wsum_any * size.w(), nodes::vec3(0));
+    Node light = nodes::select(wsum.greater_than(nodes::num(1e-4f)), sum / wsum * size.w(), fallback);
+    return { nodes::seq(nodes::block(sum, wsum, sum_any, wsum_any, probes), light), fade };
+}
