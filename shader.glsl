@@ -1,10 +1,13 @@
-// Uber-shader for three's built-in materials, plus the depth-only shadow pass: shader_core.glsl,
-// with hooks that do nothing. Regenerate generated/shader.c3 with: just shaders
+// The uber shader, shader_core.glsl, with hooks that do nothing. drie's materials draw with
+// generated programs (materials_nodes.c3); of this build drie uses the structs and binding
+// slots, and the depth and shadow programs (Renderer.render_back_faces, the shadow passes).
+// Regenerate generated/shader.c3 with: just shaders
 //
 // An application with surfaces of its own compiles its own copy of the shader: a .glsl file
 // with its own @header (its module) and the two blocks below, then `@include` of
 // tonemapping.glsl and shader_core.glsl, in that order (sokol-shdc finds an include from the
-// file it compiles, so shader_core.glsl can't include it itself). It hands the result to the renderer as Renderer.shaders. The hooks run
+// file it compiles, so shader_core.glsl can't include it itself). It hands the result to the
+// renderer as Renderer.shaders, and every material draws with it. The hooks run
 // inside the engine's shaders and read Material.custom (`material_custom[2]`), its
 // custom_map (`custom_map_texel(uv, dx, dy)`) and Renderer.custom (`frame_custom[2]`):
 //
