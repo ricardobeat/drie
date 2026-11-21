@@ -101,6 +101,9 @@ bitstruct MaterialKey : char[32] {
     bool glass : 73;             // Material.glass: its reflections stay however clear it is
     bool hex : 74;               // Material.hex_tiling
     bool defocus : 75;           // Material.defocus: the maps blurred by the lens's
+    bool fog_volume : 76;        // the fog's froxel volume (in place of its analytic fog),
+    bool fog_glow : 77;          //   its lights' glow,
+    bool fog_shafts : 78;        //   its light shafts (the sun's shadow in it)
 }
 
 // The map roles (shader_core.glsl's MAP_*) a key holds a slot for.
@@ -693,7 +696,16 @@ fn void build_material_graph(MaterialKey key, ProgramGraph* graph) @private {
 
     Node fog_color = fs_in("fog_color");
     Node display_fog_t;
-    if (key.fog) {
+    if (key.fog_volume) {
+        // volumetric fog: what it scatters towards the camera in front of the point, and how
+        // much of the point gets through
+        Node fv = fog_volume_at(world);
+        outc = outc * fv.w() + fv.xyz();
+        if (ind_d.id) {
+            ind_d = ind_d * fv.w();
+            ind_s = ind_s * fv.w();
+        }
+    } else if (key.fog) {
         Node fd = shading::fog_distance(key, camera.xyz(), world);
         Node fog_own = fog_color.xyz();
         Node fh = fs_in("fog_height");
@@ -712,6 +724,13 @@ fn void build_material_graph(MaterialKey key, ProgramGraph* graph) @private {
             Node side = nodes::dot(nodes::normalize(look.xz() + nodes::vec2(1e-5f)), nodes::normalize(sun.xz() + nodes::vec2(1e-5f)));
             fd = fd * nodes::mix(fh.w(), 1, nodes::smoothstep(-0.3f, 0.7f, side));
             Node sunlit = nodes::pow(nodes::max(nodes::dot(look, sun.xyz()), 0), sun.w());
+            if (key.fog_shafts) {
+                // light shafts: the sun's part of the fog only where the sun gets to it
+                ShadowFns shadow = shadow_fns(key);
+                Node len = nodes::length(world - camera.xyz());
+                Node in_sun = sun_in_fog(&shadow, camera.xyz(), world, fs_in("fog_params", FLOAT, 2) * fd / nodes::max(len, 1e-4f), fc.xy());
+                sunlit = sunlit * nodes::mix(nodes::num(1), in_sun, fs_in("fog_sun_color", FLOAT, 3));
+            }
             fog_own = nodes::mix(fog_own, fs_in("fog_sun_color", VEC3), sunlit);
         }
         Node t = shading::fog_transmittance(key, fd);
@@ -719,7 +738,13 @@ fn void build_material_graph(MaterialKey key, ProgramGraph* graph) @private {
         if (key.display_fog) {
             display_fog_t = t;
         } else {
-            outc = outc * t + fog_own * t.one_minus();
+            Node fog_lit = fog_own * t.one_minus();
+            if (key.fog_glow) {
+                // the lights' glow in the fog along the view ray
+                Node glow = fog_lights_glow(key, v.negate(), depth) * fog_color.w() * (fd / nodes::max(depth, 1e-4f));
+                fog_lit = fog_lit + nodes::select(fd.greater_than(nodes::num(0)), glow, nodes::vec3(0));
+            }
+            outc = outc * t + fog_lit;
         }
         if (ind_d.id) {
             ind_d = ind_d * t;
@@ -742,13 +767,13 @@ fn void build_material_graph(MaterialKey key, ProgramGraph* graph) @private {
     Node shown;
     if (key.linear) {
         shown = nodes::min(outc, nodes::vec3(60000));
-        if (key.display_fog) shown = nodes::mix(fog_color.xyz(), shown, display_fog_t);
+        if (display_fog_t.id) shown = nodes::mix(fog_color.xyz(), shown, display_fog_t);
     } else {
         // (three mixes the fog in the colors as they are shown)
         shown = shading::tone_map_gamut(outc, key.tone, camera.w(), key.display != shading::DISPLAY_SRGB);
         bool hdr = key.display == shading::DISPLAY_HDR;
         if (!hdr) shown = shading::linear_to_srgb(shown);
-        if (key.display_fog) shown = nodes::mix(hdr ? fog_color.xyz() : shading::linear_to_srgb(fog_color.xyz()), shown, display_fog_t);
+        if (display_fog_t.id) shown = nodes::mix(hdr ? fog_color.xyz() : shading::linear_to_srgb(fog_color.xyz()), shown, display_fog_t);
     }
     Node color = nodes::vec4(shown, alpha);
     // Material.premultiplied_alpha: the color as it is shown, times its opacity

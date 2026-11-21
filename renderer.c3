@@ -3132,10 +3132,10 @@ fn bool material_key_of(DrawItem* item, DrawKind kind, FsParams* fs, Vec4[6]* ma
     bool lit = type != BASIC;
     bool standard = type == STANDARD;
     float alpha_test = alpha_test_of(mat);
-    // (drawn by the material shader: the fog's volume, its lights' glow and its light shafts)
     int fog = mat.fog ? (int)fs.fog_params.w : 0;
-    if (fog && (fs.fog_grid.w > 0 || fs.fog_color.w > 0)) return false;
-    if (fog == 3 && fs.fog_sun_dir.w > 0 && fs.fog_sun_color.w > 0 && fs.dir_shadow_params.x > 0.5f) return false;
+    bool fog_volume = fog && fs.fog_grid.w > 0;
+    // light shafts: the sun's shadow in the exponential fog
+    bool shafts = !fog_volume && fog == 3 && fs.fog_sun_dir.w > 0 && fs.fog_sun_color.w > 0 && fs.dir_shadow_params.x > 0.5f;
     Texture* env_map = mat.env_map;
     Scene* scene = state.scene;
     if (!env_map && scene && scene.environment && standard) env_map = scene.environment;
@@ -3177,7 +3177,10 @@ fn bool material_key_of(DrawItem* item, DrawKind kind, FsParams* fs, Vec4[6]* ma
         .fog_box = fog && fs.fog_box_min.w >= 0.5f,
         .fog_height = fog && fs.fog_height.y > 0,
         .fog_sun = fog && fs.fog_sun_dir.w > 0,
-        .display_fog = fog && fs.fog_height.z > 0.5f,
+        .display_fog = fog && !fog_volume && fs.fog_height.z > 0.5f,
+        .fog_volume = fog_volume,
+        .fog_glow = fog && !fog_volume && fs.fog_color.w > 0,
+        .fog_shafts = shafts,
         .linear = linear,
         .tone = linear || !mat.tone_mapped ? 0 : (char)fs.output_params.z,
         .display = linear ? 0 : (char)fs.output_params.w,
@@ -3208,7 +3211,7 @@ fn bool material_key_of(DrawItem* item, DrawKind kind, FsParams* fs, Vec4[6]* ma
         .env_box = env_reflect && env_map && mat.env_box_min != mat.env_box_max,
         .toon_nearest = type == TOON && mat.gradient_map && mat.gradient_map.nearest,
         .shadows = shadows,
-        .vsm = shadows && vsm_on(),
+        .vsm = (shadows || shafts) && vsm_on(),
         .soft_shadows = shadows && lights_gpu.soft_shadows,
         .sun_shadow = shadows && fs.dir_shadow_params.x > 0.5f,
         .dir_tiles = shadows && lights_gpu.dir_tiles,
