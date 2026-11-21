@@ -19,7 +19,9 @@
 //
 // Values are printed once where they can be read again: a variable's readers again after it is
 // assigned (each variable has its own count of assignments), and inside a loop that assigns
-// what they read. Names number the nodes in the order they are printed, so the same graphs
+// what they read. Two nodes that print the same expression are one value (the second reads the
+// first's name), and what both blocks of an if read is printed before it (hoist_shared), where
+// the blocks and what follows them all read it. Names number the nodes in the order they are printed, so the same graphs
 // print the same text whatever else was made before, and the driver's cache knows them.
 module drie;
 import std::collections::list, std::collections::map, std::io, std::thread, sokol;
@@ -293,7 +295,12 @@ struct GenBody @local {
     uint[] memo_stamp;    //   the assignment count then
     uint[] serial;        //   how many times (its name's suffix)
     uint[] local;         //   its number in this body
+    String[] same_as;     //   the name it reads instead, printed for another node of the same value
+                          //   (see ProgramGen.emit; null: its own)
     uint locals;
+    // what has been printed, by its type and expression: the node whose name it is, and that
+    // name's suffix then
+    HashMap{String, uint[2]} exprs;
     List{bool} scope_open;
     uint scope;
     int indent;
@@ -339,6 +346,8 @@ fn GenBody* ProgramGen.new_body(&self, int func) {
     b.memo_stamp = mem::temp_array(uint, count);
     b.serial = mem::temp_array(uint, count);
     b.local = mem::temp_array(uint, count);
+    b.same_as = mem::temp_array(String, count);
+    b.exprs.tinit();
     b.scope_open.tinit();
     b.scope_open.push(true);
     b.scope = 1;
@@ -418,6 +427,7 @@ fn String const_component(NodeType t, float[16]* v, int i) @local {
 
 fn String ProgramGen.name(&self, Node n) {
     GenBody* b = self.body;
+    if (b.same_as[n.id].ptr) return b.same_as[n.id];
     uint id = b.local[n.id];
     uint k = b.serial[n.id];
     if (k <= 1) return string::tformat("n%d", id);
@@ -555,6 +565,7 @@ fn bool ProgramGen.printed(&self, Node n) {
 fn String ProgramGen.mark(&self, Node n) {
     GenBody* b = self.body;
     if (!b.local[n.id]) b.local[n.id] = ++b.locals;
+    b.same_as[n.id] = { };
     b.memo[n.id] = b.scope;
     b.memo_stamp[n.id] = self.stamp;
     b.serial[n.id]++;
@@ -650,6 +661,7 @@ fn void ProgramGen.statement(&self, Node s) {
             self.assigned(t.op == VAR ? target.id : t.args[0]);
         case IF:
             String cond = self.value_as({ d.args[0] }, BOOL);
+            self.hoist_shared(d.args[1], d.args[2]);
             self.line("if (%s) {", cond);
             self.block(d.args[1]);
             if (d.args[2]) {
@@ -698,6 +710,8 @@ fn void ProgramGen.statement(&self, Node s) {
             }
         case BIND:
             if (self.body.func >= 0) abort("drie: nodes: bind() in a function");
+            // (bound again to what it is bound to: what reads it reads the same)
+            if (self.binding[d.kind].id == d.args[0]) break;
             self.binding[d.kind] = { d.args[0] };
             // (what reads the builtin, or what it was bound to, reads it again)
             for (sz i = 0; i < self.var_set_done.len; i++) self.var_set_done[i] = false;
@@ -705,6 +719,114 @@ fn void ProgramGen.statement(&self, Node s) {
         default:
             self.emit(s);
     }
+}
+
+// What the blocks `a` and `b` (an if's two) both read and can be worked out before the if:
+// printed here, once, rather than in each of them (and again in any other block after them).
+// That is a value of the graph (no statement, variable or function call in it) reading no
+// variable or builtin either block assigns.
+fn void ProgramGen.hoist_shared(&self, uint a, uint b) {
+    if (!a || !b) return;
+    // (in the temporary memory the printing is in: emit grows the body's text and lists)
+    sz count = (sz)self.nodes + 1;
+    char[] in = mem::temp_array(char, count);
+    bool[] assigned = mem::temp_array(bool, count + NodeBuiltin::len);
+    self.reads_in(a, in, 1, assigned);
+    self.reads_in(b, in, 2, assigned);
+    char[] can = mem::temp_array(char, count);
+    for (uint i = 1; i < count; i++) {
+        if (in[i] == 3 && self.hoistable({ i }, can, assigned) && !self.printed({ i })) self.emit({ i });
+    }
+}
+
+// Marks with `bit` in `in` the nodes the statements from `first` read that aren't printed (and
+// in `assigned` the variables and builtins they assign).
+fn void ProgramGen.reads_in(&self, uint first, char[] in, char bit, bool[] assigned) {
+    for (uint s = first; s; s = node_data({ s }).next) self.reads_of({ s }, in, bit, assigned);
+}
+
+fn void ProgramGen.reads_of(&self, Node n, char[] in, char bit, bool[] assigned) {
+    if (!n.id || n.id >= in.len || (in[n.id] & bit)) return;
+    NodeData* d = node_data(n);
+    bool statement = d.op == ASSIGN || d.op == IF || d.op == LOOP || d.op == JUMP || d.op == EVAL || d.op == BIND;
+    if (!statement && self.printed(n)) return;
+    in[n.id] |= bit;
+    switch (d.op) {
+        case ASSIGN:
+            NodeData* t = node_data({ d.args[0] });
+            assigned[t.op == VAR ? d.args[0] : t.args[0]] = true;
+            self.reads_of({ d.args[0] }, in, bit, assigned);
+            self.reads_of({ d.args[1] }, in, bit, assigned);
+        case IF:
+            self.reads_of({ d.args[0] }, in, bit, assigned);
+            self.reads_in(d.args[1], in, bit, assigned);
+            self.reads_in(d.args[2], in, bit, assigned);
+        case LOOP:
+            assigned[d.args[0]] = true;
+            self.reads_of({ d.args[1] }, in, bit, assigned);
+            self.reads_of({ d.args[2] }, in, bit, assigned);
+            self.reads_in(d.args[3], in, bit, assigned);
+        case SEQ:
+            self.reads_in(d.args[0], in, bit, assigned);
+            self.reads_of({ d.args[1] }, in, bit, assigned);
+        case BIND:
+            assigned[self.builtin_var((NodeBuiltin)d.kind)] = true;
+            self.reads_of({ d.args[0] }, in, bit, assigned);
+        case BUILTIN:
+            self.reads_of(self.binding[d.kind], in, bit, assigned);
+        case VARYING:
+            if (self.stage == VERTEX) self.reads_of({ d.args[0] }, in, bit, assigned);
+        case CALL_FN:
+            for (int i = 0; i < d.count; i++) self.reads_of({ call_arg(d, i) }, in, bit, assigned);
+        default:
+            for (int i = 0; i < 4; i++) self.reads_of({ d.args[i] }, in, bit, assigned);
+    }
+}
+
+// Whether `n` can be printed before the blocks that assign `assigned` (`can`: per node, 0 not
+// known, 1 yes, 2 no).
+fn bool ProgramGen.hoistable(&self, Node n, char[] can, bool[] assigned) {
+    if (!n.id) return true;
+    if (can[n.id]) return can[n.id] == 1;
+    bool ok = true;
+    NodeData* d = node_data(n);
+    if (self.printed(n)) {
+        ok = true;
+    } else {
+        switch (d.op) {
+            case CONST:
+            case UNIFORM:
+            case INPUT:
+            case ATTRIBUTE:
+            case SYSTEM:
+                ok = d.op != INPUT || self.hoistable({ d.args[0] }, can, assigned);
+            case BUILTIN:
+                Node bound = self.binding[d.kind];
+                ok = bound.id && !assigned[self.builtin_var((NodeBuiltin)d.kind)] && self.hoistable(bound, can, assigned);
+            case VARYING:
+                ok = self.stage == FRAGMENT || self.hoistable({ d.args[0] }, can, assigned);
+            case TEXTURE:
+            case STORAGE:
+            case SAMPLE:
+            case BINARY:
+            case CALL:
+            case SELECT:
+            case SWIZZLE:
+            case JOIN:
+            case CONVERT:
+            case NOT:
+                for (int i = 0; i < 4 && ok; i++) ok = self.hoistable({ d.args[i] }, can, assigned);
+            default:
+                ok = false;
+        }
+    }
+    if (ok) {
+        foreach (v : self.vars_of(n)) {
+            if (assigned[v]) ok = false;
+        }
+    }
+    can[n.id] = ok ? 1 : 2;
+    return ok;
 }
 
 fn void ProgramGen.ret(&self, Node value) {
@@ -1269,8 +1391,24 @@ fn String ProgramGen.emit(&self, Node n) {
                 e = string::tformat("(!%s)", self.value_as({ d.args[0] }, BOOL));
             }
     }
+    // (a value printed already for another node, where it can still be read: its name; what
+    // reads a variable has the same variables as that node, and the same assignments since)
+    String key = string::tformat("%s %s", self.type_name(d.type), e);
+    GenBody* b = self.body;
+    uint[2]? had = d.op == CALL_FN ? NOT_FOUND~ : b.exprs[key];
+    if (try had) {
+        Node m = { had[0] };
+        if (b.serial[m.id] == had[1] && self.printed(m)) {
+            String same = self.name(m);
+            b.memo[n.id] = b.memo[m.id];
+            b.memo_stamp[n.id] = self.stamp;
+            b.same_as[n.id] = same;
+            return same;
+        }
+    }
     String name = self.mark(n);
     self.line("%s %s = %s;", self.type_name(d.type), name, e);
+    b.exprs[key] = { n.id, b.serial[n.id] };
     return name;
 }
 
