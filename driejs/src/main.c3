@@ -55,6 +55,9 @@ String base_dir;
 // the working directory, where js/ and vendor/ are
 String root;
 String png_path;
+// --png-dir: renders each script in turn into <dir>/<stem>.png (one process, three.js and the
+// headless GPU set up once)
+String png_dir;
 // --png-width: the picture shrunk to this many pixels across (deflated, with the pipeline cache:
 // `just thumbs`)
 int png_width;
@@ -198,10 +201,15 @@ fn void h_renderer(JsCtx ctx, void* udata)
         r.tone_mapping_exposure = 1;
         r.transmission_resolution_scale = 1;
         r.shadow_type = PCF;
+        r.auto_clear = true;
+        r.viewport = { 0, 0, 0, 0 };
+        r.scissor = { 0, 0, 0, 0 };
+        r.scissor_test = false;
         ctx.ret_number(first_renderer_id);
         return;
     }
-    Renderer* r = drie::renderer(antialias: bool_arg(ctx, 0, true), width: (int)num_arg(ctx, 1, 1280),
+    bool aa = png_dir.len ? true : bool_arg(ctx, 0, true);
+    Renderer* r = drie::renderer(antialias: aa, width: (int)num_arg(ctx, 1, 1280),
                                         height: (int)num_arg(ctx, 2, 720), title: title);
     r.display_fog = true;
     // (three's apps keep their cameras' aspect themselves)
@@ -2207,6 +2215,39 @@ fn void window_frame(double time_ms)
     if (!js_frame(time_ms)) sapp::request_quit();
 }
 
+// Reads `target`'s image back and saves it to `path` (shrunk to `png_width` with the pipeline
+// cache in a drPc chunk when `png_width` is set). Reuses `pixels_buf` across calls.
+fn bool save_capture(Renderer* r, RenderTarget* target, String path, char[]* pixels_buf)
+{
+    sz need = (sz)r.width * (sz)r.height * 4;
+    if (pixels_buf.len < need)
+    {
+        if (pixels_buf.len) free(*pixels_buf);
+        *pixels_buf = mem::alloc_array(char, need);
+    }
+    char[] pixels = (*pixels_buf)[:need];
+    if (!readback::read_image(target.texture_image, r.width, r.height, pixels.ptr))
+    {
+        return false;
+    }
+    if (png_width > 0 && png_width < r.width)
+    {
+        // a thumbnail: shrunk, deflated, the pipelines it drew with in a drPc chunk (for
+        // loadPipelineCache)
+        int h = (int)((long)r.height * png_width / r.width);
+        char[] small = shrink(pixels, r.width, r.height, png_width, h);
+        defer free(small);
+        @pool()
+        {
+            // (deflated: a node program's text can run to hundreds of KB)
+            char[] cache = deflate::compress(mem, r.pipeline_cache(tmem)) ?? { };
+            defer if (cache.len) mem::free(cache);
+            return drie::png::write(path, small, png_width, h, extra: { { "drPc", cache } }, compress: false);
+        };
+    }
+    return write_png(path, pixels, r.width, r.height);
+}
+
 // Renders `frames` frames offscreen and prints the time per frame: all of it, and the
 // part outside drie's render (three.js, the renderer's JS and the sync).
 fn void run_offscreen(Renderer* r)
@@ -2217,7 +2258,7 @@ fn void run_offscreen(Renderer* r)
     r.set_render_target(target);
     // (what it draws with is listed as the window's, for the pipeline cache in --png-width's PNG)
     r.screen_stand_in = target;
-    int warmup = frames > 20 ? 10 : 0;
+    int warmup = (frames > 20 && (!png_path.len || profile)) ? 10 : 0;
     for (int i = 0; i < warmup; i++)
     {
         if (!js_frame((double)i * 1000.0 / 60)) return;
@@ -2246,30 +2287,92 @@ fn void run_offscreen(Renderer* r)
         io::printfn("  %-28s %8.3f ms", "sg commit (native)", (double)commit_ns / 1e6 / frames);
     }
     if (!png_path.len) return;
-    char[] pixels = mem::new_array(char, (usz)r.width * (usz)r.height * 4);
-    defer free(pixels);
-    if (!readback::read_image(target.texture_image, r.width, r.height, pixels.ptr))
+    char[] pixels;
+    defer if (pixels.len) free(pixels);
+    io::printfn(save_capture(r, target, png_path, &pixels) ? "saved %s" : "could not save %s", png_path);
+}
+
+fn String script_stem(String path) @local
+{
+    String name = path;
+    if (try slash = name.rindex_of_char('/')) name = name[slash + 1..];
+    if (name.ends_with(".js")) name = name[:name.len - 3];
+    return name;
+}
+
+// Renders each script in `scripts` offscreen into `<png_dir>/<stem>.png`, reusing the JS
+// runtime (three.js already loaded and JIT'd) and the headless GPU context across scripts.
+fn void run_offscreen_batch(String[] scripts, JsValue natives)
+{
+    RenderTarget* target = null;
+    bool headless_ready = false;
+    char[] pixels;
+    defer if (pixels.len) free(pixels);
+
+    foreach (idx, path : scripts)
     {
-        io::printn("readback failed");
-        return;
-    }
-    if (png_width > 0 && png_width < r.width)
-    {
-        // a thumbnail: shrunk, deflated, the pipelines it drew with in a drPc chunk (for
-        // loadPipelineCache)
-        int h = (int)((long)r.height * png_width / r.width);
-        char[] small = shrink(pixels, r.width, r.height, png_width, h);
-        defer free(small);
+        String name = script_stem(path);
+        String dir = "";
+        if (try slash = path.rindex_of_char('/')) dir = path[:slash + 1];
+        if (dir != base_dir)
+        {
+            base_dir = dir;
+            JsValue base = js.string(base_dir)!!;
+            js.set(natives, "baseDir", base)!!;
+            js.release(base);
+        }
+        fixed_clock = profile ? -1 : 0;
+
+        bool loaded;
+        if (idx == 0)
+        {
+            script_path = path;
+            loaded = load_script(path) && !js_loop.is_empty() && loop_renderer != null;
+        }
+        else
+        {
+            if (first_renderer) first_renderer.clear_pipeline_cache();
+            loaded = switch_script(path);
+        }
+        if (!loaded)
+        {
+            io::printfn("%s: failed", name);
+            (void)io::stdout().flush();
+            continue;
+        }
+        Renderer* r = loop_renderer;
+        if (!headless_ready)
+        {
+            r.init_headless();
+            headless_ready = true;
+        }
+        if (!target || target.width != r.width || target.height != r.height)
+        {
+            target = drie::render_target(r.width, r.height, samples: r.sample_count);
+        }
+        r.set_render_target(target);
+        r.screen_stand_in = target;
+
+        bool ok = true;
+        for (int i = 0; i < frames; i++)
+        {
+            if (!js_frame((double)i * 1000.0 / 60)) { ok = false; break; }
+            drie::commit();
+        }
         @pool()
         {
-            // (deflated: a node program's text can run to hundreds of KB)
-            char[] cache = deflate::compress(tmem, r.pipeline_cache(tmem)) ?? { };
-            bool saved = drie::png::write(png_path, small, png_width, h, extra: { { "drPc", cache } }, compress: true);
-            io::printfn(saved ? "saved %s" : "could not save %s", png_path);
+            String out_path = string::tformat("%s/%s.png", png_dir, name);
+            if (ok && save_capture(r, target, out_path, &pixels))
+            {
+                io::printfn("%s", name);
+            }
+            else
+            {
+                io::printfn("%s: failed", name);
+            }
         };
-        return;
+        (void)io::stdout().flush();
     }
-    io::printfn(write_png(png_path, pixels, r.width, r.height) ? "saved %s" : "could not save %s", png_path);
 }
 
 // RGBA pixels, w × h, shrunk to sw × sh: each the mean of the pixels it covers.
@@ -2526,12 +2629,15 @@ fn void reg(JsValue obj, String name, JsHostFn handler, int arity)
 
 fn int usage()
 {
-    io::printn("usage: driejs [--no-jit] [--frames N] [--profile] [--png out.png [--png-width N]] script.js");
+    io::printn("usage: driejs [--no-jit] [--frames N] [--profile] [--png out.png | --png-dir dir] [--png-width N] script.js...");
     return 2;
 }
 
 fn int main(String[] args)
 {
+    List{String} scripts;
+    scripts.init(mem);
+    defer scripts.free();
     for (sz i = 1; i < args.len; i++)
     {
         switch (args[i])
@@ -2548,16 +2654,20 @@ fn int main(String[] args)
             case "--png":
                 if (++i >= args.len) return usage();
                 png_path = args[i];
+            case "--png-dir":
+                if (++i >= args.len) return usage();
+                png_dir = args[i];
             case "--png-width":
                 if (++i >= args.len) return usage();
                 int? n = args[i].to_int();
                 if (catch n) return usage();
                 png_width = n;
             default:
-                script_path = args[i];
+                scripts.push(args[i]);
         }
     }
-    if (!script_path.len) return usage();
+    if (!scripts.len()) return usage();
+    script_path = scripts[0];
     if (try slash = script_path.rindex_of_char('/')) base_dir = script_path[:slash + 1];
 
     objects.init(mem);
@@ -2570,7 +2680,7 @@ fn int main(String[] args)
     dracos.init(mem);
 
     start_clock = time::clock::now();
-    if (png_path.len && !profile) fixed_clock = 0;
+    if ((png_path.len || png_dir.len) && !profile) fixed_clock = 0;
     js.create()!!;
     defer js.destroy();
     track_rejections();
@@ -2705,6 +2815,13 @@ fn int main(String[] args)
     reg(natives, "nodeAppend", &h_node_append, 2);
     reg(natives, "nodeSeq", &h_node_seq, 2);
     reg(natives, "nodeType", &h_node_type, 1);
+    reg(natives, "mxPerlinFloat", &h_mx_perlin_float, 1);
+    reg(natives, "mxPerlinVec3", &h_mx_perlin_vec3, 1);
+    reg(natives, "mxCellFloat", &h_mx_cell_float, 1);
+    reg(natives, "mxWorley2d", &h_mx_worley_2d, 3);
+    reg(natives, "mxWorley3d", &h_mx_worley_3d, 3);
+    reg(natives, "mxFractalFloat", &h_mx_fractal_float, 4);
+    reg(natives, "mxFractalVec3", &h_mx_fractal_vec3, 4);
     reg(natives, "materialNodes", &h_material_nodes, 13);
     reg(natives, "floatTexture", &h_float_texture, 6);
     reg(natives, "imageDecode", &h_image_decode, 1);
@@ -2799,6 +2916,12 @@ fn int main(String[] args)
     js.set(global, "__drie", natives)!!;
     register_timers(global);
 
+    if (png_dir.len)
+    {
+        if (frames <= 0) frames = 1;
+        run_offscreen_batch(scripts.array_view(), natives);
+        return 0;
+    }
     if (!load_script(script_path)) return 1;
     if (js_loop.is_empty() || loop_renderer == null) return 0;
     if (frames > 0)

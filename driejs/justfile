@@ -29,20 +29,37 @@ run +args: build
 # pipelines the demo drew with (a pipeline cache: the page compiles them all in the background
 # while it is up, so the demos open without compiling). `just thumbs 30 webgl_geometries`
 # renders that one only. It uses out/driejs as it is (`just build` first after a change)
-thumbs frames="30" *names:
+thumbs frames="5" *names:
     #!/bin/sh
     # (the driejs there is: built only if there is none)
     [ -x out/driejs ] || just build || exit 1
     mkdir -p demos/thumbs
     names="{{names}}"
     [ -n "$names" ] || names=$(ls demos/*.js | sed 's|demos/||; s|\.js$||' | grep -v '^index$')
-    for n in $names; do
-        if out/driejs --frames {{frames}} --png demos/thumbs/$n.png --png-width 640 demos/$n.js > /dev/null 2>&1; then
-            echo "$n"
-        else
-            echo "$n: failed"
-        fi
+    set -- $names
+    count=$#
+    [ "$count" -eq 0 ] && exit 0
+    jobs=$(sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 4)
+    [ "$count" -lt "$jobs" ] && jobs=$count
+    # round-robin shard across $jobs workers, each reusing its JS runtime and headless GPU
+    i=0
+    while [ "$i" -lt "$jobs" ]; do
+        eval "shard_$i=''"
+        i=$((i + 1))
     done
+    i=0
+    for n in "$@"; do
+        b=$((i % jobs))
+        eval "shard_$b=\"\$shard_$b demos/$n.js\""
+        i=$((i + 1))
+    done
+    i=0
+    while [ "$i" -lt "$jobs" ]; do
+        eval "scripts=\$shard_$i"
+        out/driejs --frames {{frames}} --png-dir demos/thumbs --png-width 640 $scripts 2>/dev/null &
+        i=$((i + 1))
+    done
+    wait
 
 # BOOMKAT=path overrides ../../boomkat/out/boomkat (the -jit and -opt runs pass --jit and --opt:
 # point it at a build of the jit branch).

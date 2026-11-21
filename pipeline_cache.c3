@@ -237,6 +237,12 @@ fn bool Renderer.save_pipeline_cache(&self, String path) {
     return true;
 }
 
+// Clears the recorded pipelines (for a process that renders several scenes in turn and saves
+// each one's pipeline cache).
+fn void Renderer.clear_pipeline_cache(&self) {
+    if (pipeline_records.is_initialized()) pipeline_records.clear();
+}
+
 // Starts compiling the pipelines `text` lists (pipeline_cache, from another run) in the
 // background, a few at a time from here on (each render starts more as those finish): see
 // compiling. Returns how many it lists that no cache loaded before has (the text up to

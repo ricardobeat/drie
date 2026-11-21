@@ -44,8 +44,8 @@ fn void push_be32(List{char}* out, uint v) @local {
 fn void chunk(List{char}* out, String type, char[] data) @local {
     push_be32(out, (uint)data.len);
     sz start = (sz)out.len();
-    foreach (c : type) out.push(c);
-    foreach (c : data) out.push(c);
+    out.push_all(type);
+    out.push_all(data);
     char[] typed = out.entries[start:(sz)out.len() - start];
     push_be32(out, crc32(typed) ^ 0xffffffff);
 }
@@ -72,15 +72,28 @@ struct Chunk {
 fn bool write(String path, char[] pixels, int width, int height, bool p3 = false, bool bgra = false, int channels = 4,
                Chunk[] extra = {}, bool compress = false) {
     // raw scanlines: filter byte + RGB
-    List{char} raw;
-    defer raw.free();
+    sz row_bytes = (sz)width * 3 + 1;
+    sz total = (sz)height * row_bytes;
+    char[] raw = mem::alloc_array(char, total);
+    defer mem::free(raw);
+    sz dst = 0;
     for (int y = 0; y < height; y++) {
-        raw.push(0);
-        for (int x = 0; x < width; x++) {
-            sz o = ((sz)y * width + x) * channels;
-            raw.push(bgra ? pixels[o + 2] : pixels[o]);
-            raw.push(pixels[o + 1]);
-            raw.push(bgra ? pixels[o] : pixels[o + 2]);
+        raw[dst++] = 0;
+        sz row_src = (sz)y * width * channels;
+        if (bgra) {
+            for (int x = 0; x < width; x++) {
+                sz o = row_src + (sz)x * channels;
+                raw[dst++] = pixels[o + 2];
+                raw[dst++] = pixels[o + 1];
+                raw[dst++] = pixels[o];
+            }
+        } else {
+            for (int x = 0; x < width; x++) {
+                sz o = row_src + (sz)x * channels;
+                raw[dst++] = pixels[o];
+                raw[dst++] = pixels[o + 1];
+                raw[dst++] = pixels[o + 2];
+            }
         }
     }
     // zlib stream with stored blocks, or deflate's
@@ -88,15 +101,16 @@ fn bool write(String path, char[] pixels, int width, int height, bool p3 = false
     defer z.free();
     z.push(0x78);
     z.push(compress ? 0x9c : 0x01);
-    sz total = (sz)raw.len();
-    sz pos   = 0;
-    if (compress) @pool() {
-        char[]? packed = deflate::compress(tmem, raw.entries[:total]);
+    sz pos = 0;
+    if (compress) {
+        char[]? packed = deflate::compress(mem, raw);
         if (catch packed) return false;
-        foreach (c : packed) z.push(c);
+        defer mem::free(packed);
+        z.reserve((usz)packed.len + 6);
+        z.push_all(packed);
         // (the stored blocks' loop skipped)
         pos = total;
-    };
+    }
     while (pos < total || (total == 0 && !compress)) {
         sz n = total - pos;
         if (n > 65535) n = 65535;
@@ -106,22 +120,30 @@ fn bool write(String path, char[] pixels, int width, int height, bool p3 = false
         z.push((char)(n >> 8));
         z.push((char)(~n & 0xff));
         z.push((char)((~n >> 8) & 0xff));
-        for (sz i = 0; i < n; i++) z.push(raw[pos + i]);
+        z.push_all(raw[pos:n]);
         pos += n;
         if (total == 0) break;
     }
     uint a = 1;
     uint b = 0;
-    for (sz i = 0; i < total; i++) {
-        a = (a + raw[i]) % 65521;
-        b = (b + a) % 65521;
+    sz ai = 0;
+    while (ai < total) {
+        sz end = ai + 5552;
+        if (end > total) end = total;
+        for (; ai < end; ai++) {
+            a += raw[ai];
+            b += a;
+        }
+        a %= 65521;
+        b %= 65521;
     }
     push_be32(&z, (b << 16) | a);
 
     List{char} png;
+    png.init(mem, z.len() + 256);
     defer png.free();
     char[8] sig = { 0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n' };
-    foreach (c : sig) png.push(c);
+    png.push_all(&sig);
     char[13] ihdr;
     ihdr[0] = (char)(width >> 24);
     ihdr[1] = (char)(width >> 16);
