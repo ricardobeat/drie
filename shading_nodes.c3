@@ -28,15 +28,21 @@ struct FragUv {
     Node dy;
     Node dx1;
     Node dy1;
+    // hex tiling (Material.hex_tiling, hex_setup): the three patches nearest the pixel, as
+    // offsets of uv where each reads the textures, and how much of each it takes (hex_w: none
+    // without hex tiling)
+    Node[3] hex_off;
+    Node hex_w;
 }
 
 // The uv of slot `u` of uv_rel (0: the normal map, 1: the arm map, 2..7: the shared slots) at
 // the material's uv, and how it changes from one pixel to the next (shader_core.glsl's
 // slot_uv, slot_dx, slot_dy).
-fn Node slot_uv(FragUv* f, int u) {
+fn Node slot_uv(FragUv* f, int u, Node shift = { }) {
     Node r0 = drie::fs_in("uv_rel", k: u * 2);
     Node r1 = drie::fs_in("uv_rel", k: u * 2 + 1);
-    Node p = nodes::vec3(nodes::select(r0.w().greater_than(nodes::num(0.5f)), f.uv1, f.uv), 1);
+    Node own = shift.id ? f.uv + shift : f.uv;
+    Node p = nodes::vec3(nodes::select(r0.w().greater_than(nodes::num(0.5f)), f.uv1, own), 1);
     return nodes::vec2(nodes::dot(r0.xyz(), p), nodes::dot(r1.xyz(), p));
 }
 
@@ -48,9 +54,67 @@ fn Node slot_d(FragUv* f, int u, bool y) {
     return nodes::vec2(nodes::dot(r0.xy(), d), nodes::dot(r1.xy(), d));
 }
 
-// Slot `u` of uv_rel's texture (`view`) at the material's uv (slot_texel, without hex tiling):
+// Slot `u` of uv_rel's texture (`view`) at the material's uv (slot_texel); hex tiled, the
+// three patches' with the color map's weights (a map in the second uv set, a light map's, say,
+// which is laid out once over the surface, reads the same place in all three):
 // its own uv, wrapped as its texture wraps.
-fn Node slot_texel(FragUv* f, int u, int view) => slot_grad_at(u, view, slot_uv(f, u), slot_d(f, u, false), slot_d(f, u, true));
+fn Node slot_texel(FragUv* f, int u, int view) {
+    Node dx = slot_d(f, u, false);
+    Node dy = slot_d(f, u, true);
+    if (!f.hex_w.id) return slot_grad_at(u, view, slot_uv(f, u), dx, dy);
+    Node w = f.hex_w;
+    return slot_grad_at(u, view, slot_uv(f, u, f.hex_off[0]), dx, dy) * w.x() + slot_grad_at(u, view, slot_uv(f, u, f.hex_off[1]), dx, dy) * w.y()
+        + slot_grad_at(u, view, slot_uv(f, u, f.hex_off[2]), dx, dy) * w.z();
+}
+
+// Hex tiling (Material.hex_tiling; Mikkelsen, "Practical Real-Time Hex-Tiling", JCGT 11(2),
+// 2022): the uv plane cut into hexagons `size` across, each reading the texture from its own
+// random place, so that a texture repeated over a wall doesn't show its repeats. The hexagons'
+// middles make a grid of triangles; a pixel takes the three corners of the one it is in,
+// weighted by how near it is to each, sharpened (the 7th power) so that a patch is mostly
+// itself and only blends into the next near their seam. Moved, not turned: what runs down the
+// texture still runs down, and the normal map's directions stay as they are.
+fn void FragUv.hex_setup(&self, Node size) {
+    Node st = self.uv / size;
+    // the grid skewed so that its triangles are halves of unit squares
+    Node skewed = nodes::vec2(st.x() - st.y() * 0.57735027f, st.y() * 1.15470054f);
+    Node cell = nodes::floor(skewed);
+    Node fr = nodes::fract(skewed);
+    Node fz = (fr.x() + fr.y()).one_minus();
+    // the square's upper triangle (1) or lower (0), and the barycentric weights in it
+    Node s = nodes::step(0.0f, fz.negate());
+    Node s2 = s * 2.0f - 1.0f;
+    Node w = nodes::vec3(fz.negate() * s2, s - fr.y() * s2, s - fr.x() * s2);
+    self.hex_off[0] = hex_hash(cell + nodes::vec2(s, s));
+    self.hex_off[1] = hex_hash(cell + nodes::vec2(s, s.one_minus()));
+    self.hex_off[2] = hex_hash(cell + nodes::vec2(s.one_minus(), s));
+    Node w3 = w * w * w;
+    w = w3 * w3 * w;
+    self.hex_w = w / (w.x() + w.y() + w.z());
+}
+
+// (Dave Hoskins' hash22: no sin, whose precision goes far from 0, as a uv in world meters does)
+fn Node hex_hash(Node v) @local {
+    Node p = nodes::fract(v.swizzle("xyx") * nodes::vec3(0.1031f, 0.1030f, 0.0973f));
+    p = p + nodes::dot(p, p.swizzle("yzx") + 33.33f);
+    return nodes::fract((p.swizzle("xx") + p.swizzle("yz")) * p.swizzle("zy"));
+}
+
+// The color map, hex tiled: where two patches meet, the brighter of them shows more (the
+// paper's luminance weighting, 0.6 of it), so the seam follows the texture's own dark marks
+// instead of fading one into the other; the other maps take the same weights.
+fn Node FragUv.hex_color(&self) {
+    Node[3] c;
+    for (int i = 0; i < 3; i++) {
+        c[i] = drie::node_sample(GRAD, shaders::VIEW_TEX_MAP, shaders::SMP_TEX_SMP, TEX_2D, self.uv + self.hex_off[i], self.dx, self.dy);
+    }
+    Node luma = nodes::vec3(0.2126f, 0.7152f, 0.0722f);
+    Node bright = nodes::vec3(nodes::dot(c[0].xyz(), luma), nodes::dot(c[1].xyz(), luma), nodes::dot(c[2].xyz(), luma));
+    Node w = self.hex_w * nodes::mix(nodes::vec3(1), bright, 0.6f);
+    self.hex_w = w / nodes::max(w.x() + w.y() + w.z(), 1e-6f);
+    return c[0] * self.hex_w.x() + c[1] * self.hex_w.y() + c[2] * self.hex_w.z();
+}
+
 
 // Slot `u` of uv_rel's texture (`view`) at its uv `suv` with derivatives dx and dy, wrapped as
 // its texture wraps (slot_grad_at).

@@ -3132,9 +3132,8 @@ fn bool material_key_of(DrawItem* item, DrawKind kind, FsParams* fs, Vec4[6]* ma
     bool lit = type != BASIC;
     bool standard = type == STANDARD;
     float alpha_test = alpha_test_of(mat);
-    // (drawn by the material shader: hex tiling, defocus, the fog's volume, its lights' glow
-    // and its light shafts)
-    if (mat.hex_tiling > 0 && alpha_test <= 0) return false;
+    // (drawn by the material shader: defocus, the fog's volume, its lights' glow and its light
+    // shafts)
     if (mat.defocus && r.focus_map && r.focus_aperture > 0) return false;
     int fog = mat.fog ? (int)fs.fog_params.w : 0;
     if (fog && (fs.fog_grid.w > 0 || fs.fog_color.w > 0)) return false;
@@ -3200,6 +3199,8 @@ fn bool material_key_of(DrawItem* item, DrawKind kind, FsParams* fs, Vec4[6]* ma
         .env_light = standard && env_map && env_map.has_env_sh,
         .env_reflect = env_reflect,
         .glass = mat.glass,
+        // (not with a parallax map or an alpha test, as parallax_params has it)
+        .hex = mat.hex_tiling > 0 && !(standard && mat.parallax_map) && mat.alpha_test <= 0,
         .probes = probes,
         .gi = lit && state.gi_count > 0,
         .ssr = !mat.glass && r.ssr_color.id && r.ssr_depth.id && mat.ssr > 0,
