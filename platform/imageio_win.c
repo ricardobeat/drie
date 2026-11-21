@@ -1,4 +1,6 @@
 // Decodes images with the Windows Imaging Component into straight (non-premultiplied) RGBA8.
+// (Built on every platform from the same list of C files: empty where it is not Windows.)
+#if defined(_WIN32)
 #define COBJMACROS
 #include <windows.h>
 #include <wincodec.h>
@@ -55,3 +57,4 @@ void imageio_text_metrics(const char* text, const char* family, float size, int 
 void imageio_text(const char* text, const char* family, float size, int bold, int italic, unsigned char* mask, int w,
                   int h, float x, float y) {
 }
+#endif // _WIN32

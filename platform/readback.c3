@@ -1,4 +1,4 @@
-module drie::readback;
+module drie::readback @link(env::DARWIN, "Metal.framework", "Foundation.framework");
 import sokol;
 
 // Reads `img` into `out` (width * height * bytes_per_pixel bytes): 4 for a BGRA8/RGBA8 sokol
@@ -30,9 +30,9 @@ fn SgEnvironment headless_environment()
 
 // Copies a native texture (MTLTexture* / ID3D11Texture2D*) through `queue` (an MTLCommandQueue* /
 // ID3D11DeviceContext*) into `out`.
-extern fn bool read_texture(void* tex, void* queue, CInt width, CInt height, CInt bytes_per_pixel, char* out) @cname("rb_read_texture");
-extern fn void* create_device() @cname("rb_create_device");
-extern fn void* device_context() @cname("rb_device_context"); // Windows only
+extern fn bool read_texture(void* tex, void* queue, CInt width, CInt height, CInt bytes_per_pixel, char* out) @cname("rb_read_texture") @link(env::WIN32, "d3d11");
+extern fn void* create_device() @cname("rb_create_device") @link(env::WIN32, "d3d11");
+extern fn void* device_context() @cname("rb_device_context") @link(env::WIN32, "d3d11"); // Windows only
 
 // Readback of a storage buffer without waiting for the GPU (see compute.c3). Call track()
 // after the work that writes `buf` is encoded: it queues a copy of the buffer after it. Then
@@ -48,5 +48,5 @@ fn bool track(SgBuffer buf, CInt slot)
     $endif
 }
 
-extern fn bool track_native(void* buf, CInt slot, void* queue_or_context) @cname("rb_track");
-extern fn bool fetch(CInt slot, void* out, CInt bytes, bool wait) @cname("rb_fetch");
+extern fn bool track_native(void* buf, CInt slot, void* queue_or_context) @cname("rb_track") @link(env::WIN32, "d3d11");
+extern fn bool fetch(CInt slot, void* out, CInt bytes, bool wait) @cname("rb_fetch") @link(env::WIN32, "d3d11");
