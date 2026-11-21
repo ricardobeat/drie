@@ -1,4 +1,6 @@
 // Decodes images with ImageIO into straight (non-premultiplied) RGBA8.
+// (Built on every platform from the same list of C files: empty where it is not Apple.)
+#if defined(__APPLE__)
 #include <ImageIO/ImageIO.h>
 #include <CoreGraphics/CoreGraphics.h>
 #include <CoreText/CoreText.h>
@@ -138,3 +140,4 @@ void imageio_text(const char* text, const char* family, float size, int bold, in
     }
     CFRelease(line);
 }
+#endif // __APPLE__

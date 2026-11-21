@@ -1,4 +1,6 @@
 // Reads the first connected XInput controller (Xbox and compatible pads).
+// (Built on every platform from the same list of C files: empty where it is not Windows.)
+#if defined(_WIN32)
 #include <windows.h>
 #include <xinput.h>
 #include <stdbool.h>
@@ -83,3 +85,4 @@ bool gc_poll(GcState* s) {
     strcpy(s->name, "XInput controller");
     return true;
 }
+#endif // _WIN32

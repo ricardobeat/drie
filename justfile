@@ -8,6 +8,9 @@ mod driejs
 # Another: `just libdir=path test radiance`.
 libdir := "lib"
 libs := "--libdir " + libdir + " --lib sokol"
+# project.json's target for this OS: drie's sources and C files with one program of tests/ or
+# examples/ added (--sources), the way the manifest builds them for a game
+target := "drie-" + os()
 # where bindgen.c3l is (the folder holding bindgen.c3l/), for `just bindings`
 bindgen := "../bindgen.c3l"
 # the macOS c3c builds for: the one it runs on, as clang does for C without a target (and as
@@ -31,14 +34,11 @@ check:
 # (`just test radiance out.png --p3`: elsewhere, and in Display P3's colors)
 test name *args:
     mkdir -p tests/build
-    c3c compile {{macos}} {{libs}} --lib drie tests/{{name}}.c3 -o tests/build/{{name}}
-    tests/build/{{name}} {{args}}
+    c3c run {{target}} {{macos}} --libdir {{libdir}} --sources tests/{{name}}.c3 -- {{args}}
 
 # build and run an example program (examples/): `just example nodes`
 example name *args:
-    mkdir -p examples/build
-    c3c compile {{macos}} {{libs}} --lib drie examples/{{name}}.c3 -o examples/build/{{name}}
-    examples/build/{{name}} {{args}}
+    c3c run {{target}} {{macos}} --libdir {{libdir}} --sources examples/{{name}}.c3 -- {{args}}
 
 # regenerate generated/cgltf.c3, the binding of cgltf (third_party/cgltf/cgltf.h), with
 # bindgen.c3l: `just bindgen=path bindings` for another checkout of it

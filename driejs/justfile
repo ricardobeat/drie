@@ -1,7 +1,6 @@
 # driejs: three.js code running on drie, in boomkat (see README.md). `just` lists the recipes.
 # boomkat comes from its jit branch, fetched from c3.ricar.do into lib/boomkat.c3l (project.json).
 
-libs := "--libdir lib --libdir ../lib --lib sokol --lib drie"
 # the macOS c3c builds for: the one it runs on, as clang does for C without a target (and as
 # Homebrew's libdraco and boomkat's C are built), so that the linker finds nothing newer
 macos := if os() == "macos" { "--macos-min-version " + `sw_vers -productVersion 2>/dev/null || true` } else { "" }
@@ -19,7 +18,7 @@ default:
 
 # build out/driejs
 build: deps
-    c3c build driejs {{macos}}
+    c3c build driejs-{{os()}} {{macos}}
 
 # build, then run: `just run demos/webgl_geometries.js`, `just run --frames 3 --png shot.png demos/x.js`
 run +args: build
@@ -55,9 +54,7 @@ bench which="all":
         echo "== $1"
         case $1 in
         drie)
-            mkdir -p build
-            c3c compile -O3 {{macos}} {{libs}} bench/drie_bench.c3 -o build/drie_bench > /dev/null
-            build/drie_bench ;;
+            (cd .. && c3c build drie-{{os()}} -O3 {{macos}} --sources driejs/bench/drie_bench.c3 > /dev/null && build/drie-{{os()}}) ;;
         drie-js) (cd ../../drie-js && out/drie_js --script ../drie/driejs/bench/driejs_bench.js) ;;
         node) node bench/three_bench.js ;;
         node-jitless) node --jitless bench/three_bench.js ;;
