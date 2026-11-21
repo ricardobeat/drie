@@ -2486,6 +2486,7 @@ fn FsParams build_light_params(Scene* scene, Camera* camera, SpotLight* caster) 
                     };
                     gd.shadow = { (float)g.shadows.len(), clamp(d.shadow.intensity, 0, 1), (float)l.channels, 0 };
                     g.shadows.push(sh);
+                    g.dir_tiles = true;
                 }
                 g.dirs.push(gd);
             case POINT:
@@ -2509,6 +2510,8 @@ fn FsParams build_light_params(Scene* scene, Camera* camera, SpotLight* caster) 
                 int tile = pl.cast_shadow ? atlas_tile_of(pl) : -1;
                 if (tile >= 0 && (sz)tile + 6 <= state.atlas_lights.len()) {
                     gp.shadow = { (float)g.shadows.len(), clamp(pl.shadow.intensity, 0, 1), (float)l.channels, 0 };
+                    g.point_shadows = true;
+                    if (pl.shadow.softness > 0) g.soft_shadows = true;
                     float width = 2 * math::tan(POINT_SHADOW_FOV * DEG2RAD * 0.5f);
                     bool zo     = depth_zero_to_one();
                     float cols  = (float)state.atlas_columns;
@@ -2524,6 +2527,8 @@ fn FsParams build_light_params(Scene* scene, Camera* camera, SpotLight* caster) 
                     }
                 }
                 g.points.push(gp);
+                if (pl.radius > 0 || pl.length > 0) g.sized = true;
+                if (half != (Vector3) { 0, 0, 0 }) g.tubes = true;
                 // a light that adds nothing needs no place in the clusters
                 LightBounds b = point_light_bounds(pl);
                 if (l.intensity <= 0) b = { { }, 0 };
@@ -2601,9 +2606,12 @@ fn FsParams build_light_params(Scene* scene, Camera* camera, SpotLight* caster) 
                         };
                     }
                     gs.shadow = { (float)g.shadows.len(), clamp(sl.shadow.intensity, 0, 1), (float)l.channels, 0 };
+                    g.spot_shadows = true;
+                    if (sl.shadow.softness > 0) g.soft_shadows = true;
                     g.shadows.push(sh);
                 }
                 g.spots.push(gs);
+                if (gs.params.z > 0) g.sized = true;
                 LightBounds b = spot_light_bounds(sl);
                 if (l.intensity <= 0) b = { { }, 0 };
                 g.spot_bounds.push(b);
@@ -3118,27 +3126,41 @@ fn bool material_key_of(DrawItem* item, DrawKind kind, FsParams* fs, Vec4[6]* ma
     Material* mat = m.material;
     Renderer* r = state.renderer;
     if (classic_materials || state.bake.on || r.shaders.main || node_build_of(mat)) return false;
-    if (mat.type != BASIC || (kind != CUT && kind != SOLID)) return false;
+    if (kind != CUT && kind != SOLID) return false;
+    MaterialType type = mat.type;
+    if (type != BASIC && type != LAMBERT && type != PHONG && type != STANDARD && type != TOON) return false;
+    bool lit = type != BASIC;
+    bool standard = type == STANDARD;
     float alpha_test = alpha_test_of(mat);
-    // (drawn by the material shader: glass, hex tiling, the roughness and metalness maps,
-    // defocus, screen-space and planar reflections, reflection probes, the fog's volume and
-    // its lights' glow)
+    // (drawn by the material shader: glass, hex tiling, defocus, screen-space and planar
+    // reflections, reflection probes, the fog's volume, its lights' glow and its light shafts)
     if (mat.glass || (mat.hex_tiling > 0 && alpha_test <= 0)) return false;
-    if (mat.arm_map || mat.roughness_map || mat.metalness_map) return false;
     if (mat.defocus && r.focus_map && r.focus_aperture > 0) return false;
     if (r.ssr_color.id && r.ssr_depth.id && mat.ssr > 0) return false;
     if (mat.reflector && mat.reflector.rendered && mat.reflector.target) return false;
     if (!mat.env_map && mat.env_probes && state.probes_view.id) return false;
     int fog = mat.fog ? (int)fs.fog_params.w : 0;
     if (fog && (fs.fog_grid.w > 0 || fs.fog_color.w > 0)) return false;
+    if (fog == 3 && fs.fog_sun_dir.w > 0 && fs.fog_sun_color.w > 0 && fs.dir_shadow_params.x > 0.5f) return false;
+    // (and for the lit materials: an environment map with distances, transmission, irradiance
+    // volumes and radiance cascades)
+    Texture* env_map = mat.env_map;
+    Scene* scene = state.scene;
+    if (!env_map && scene && scene.environment && standard) env_map = scene.environment;
+    if (lit) {
+        if (standard && env_map && env_map.env_distance_range > 0) return false;
+        if (standard && mat.transmission > 0) return false;
+        if (state.gi_count > 0 || fs.rc_size.w > 0) return false;
+    }
 
     RenderTarget* rt = r.render_target;
     bool cut = kind == CUT;
     bool vc = mat.vertex_colors;
     bool backdrop = m == state.background;
+    bool shadows = lit && m.receive_shadow && (lights_gpu.shadows.len() > 0 || fs.dir_shadow_params.x > 0.5f);
     bool linear = fs.output_params.x > 0.5f;
     *key = {
-        .type = (char)mat.type,
+        .type = (char)type,
         .mrt = rt && rt.mrt,
         .cut = cut,
         .cull_box = cut && r.cull_box,
@@ -3151,7 +3173,7 @@ fn bool material_key_of(DrawItem* item, DrawKind kind, FsParams* fs, Vec4[6]* ma
         .map = mat.map != null,
         .alpha_test = cut && alpha_test > 0,
         .background = backdrop,
-        .env_combine = mat.env_map && !backdrop,
+        .env_combine = mat.env_map && !backdrop && !standard,
         .vertex_occlusion = mat.vertex_occlusion && vc,
         .premultiplied = mat.premultiplied_alpha,
         .fog = (char)fog,
@@ -3167,14 +3189,46 @@ fn bool material_key_of(DrawItem* item, DrawKind kind, FsParams* fs, Vec4[6]* ma
         .sway = mat.sway > 0,
         .outline = mat.outline > 0,
         .motion = rt && rt.mrt && state.motion,
+        .dir_lights = lit && fs.counts.x > 0,
+        .point_lights = lit && fs.counts.y > 0,
+        .spot_lights = lit && fs.counts.z > 0,
+        .channels = lit && mat.light_channels != 0,
+        .map_emissive = lit && mat.map_emissive,
+        .baked = lit && vc && mat.vertex_light > 0,
+        .normal_map = lit && mat.normal_map != null,
+        .tangents = lit && uses_tangents(item),
+        .env_light = standard && env_map && env_map.has_env_sh,
+        .env_reflect = standard && env_map,
+        .env_box = standard && env_map && mat.env_box_min != mat.env_box_max,
+        .toon_nearest = type == TOON && mat.gradient_map && mat.gradient_map.nearest,
+        .shadows = shadows,
+        .vsm = shadows && vsm_on(),
+        .soft_shadows = shadows && lights_gpu.soft_shadows,
+        .sun_shadow = shadows && fs.dir_shadow_params.x > 0.5f,
+        .dir_tiles = shadows && lights_gpu.dir_tiles,
+        .point_shadows = shadows && lights_gpu.point_shadows,
+        .spot_shadows = shadows && lights_gpu.spot_shadows,
+        .debug_cascades = lit && fs.dir_cascade_params.z > 0.5f && fs.dir_shadow_params.x > 0.5f,
+        // roughness and metalness: three's maps a channel each, in the arm map's place (see draw_item)
+        .sized = standard && lights_gpu.sized,
+        .tubes = lit && lights_gpu.tubes,
+        .rect_lights = standard && fs.counts.w > 0,
+        .parallax = standard && mat.parallax_map && mat.parallax_scale > 0,
+        .clearcoat = standard && mat.clearcoat > 0,
+        .sheen = standard && mat.sheen > 0 && (mat.sheen_color.x > 0 || mat.sheen_color.y > 0 || mat.sheen_color.z > 0),
+        .iridescence = standard && mat.iridescence > 0,
+        .anisotropy = standard && mat.anisotropy > 0,
+        .arm_ao = (bool)mat.arm_map,
+        .arm_rough = mat.arm_map || mat.roughness_map,
+        .arm_metal = mat.arm_map || (mat.metalness_map && (mat.roughness_map ?: mat.metalness_map) == mat.metalness_map),
     };
     // the shared slots' maps it reads, by role (see material_slots)
-    float alpha_slot = (*map_slots)[3][0];
-    float light_slot = (*map_slots)[3][2];
-    float specular_slot = (*map_slots)[4][2];
-    key.alpha_slot = (char)(alpha_slot + 1);
-    key.light_slot = (char)(light_slot + 1);
-    if (key.env_combine) key.specular_slot = (char)(specular_slot + 1);
+    for (int role = 0; role < MAP_ROLES; role++) {
+        float slot = (*map_slots)[role / 4][role % 4];
+        if (slot >= 0) key.set_slot(role, (int)slot + 1);
+    }
+    // (the specular map: for the env map's strength, and a phong material's highlights)
+    if (!key.env_combine && type != PHONG) key.set_slot(MAP_SPECULAR, 0);
     return true;
 }
 
@@ -3198,7 +3252,7 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     // the material's own generated program, where it has one (materials_nodes.c3)
     MaterialKey key;
     MaterialProgram* gen = material_key_of(item, kind, fs, &map_slots, &key) ? material_program(key) : null;
-    bool tangents = !state.bake.on && !nodes && !gen && uses_tangents(item);
+    bool tangents = !state.bake.on && !nodes && (gen ? key.tangents : uses_tangents(item));
     SgPipeline pip = (
         state.bake.on ? state.bake.pipeline
             : get_pipeline(

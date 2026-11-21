@@ -1228,7 +1228,8 @@ vec3 direct(int mode, vec3 n, vec3 v, vec3 l, float dist, vec3 radiance, vec3 di
     if (mode == 2) {
         float noh = clamp(dot(n, h), 0.0, 1.0);
         float voh = clamp(dot(v, h), 0.0, 1.0);
-        float shininess = g_shininess;
+        // (at least 1e-4 as three's: pow(0, 0) is undefined)
+        float shininess = max(g_shininess, 1e-4);
         float d = RECIPROCAL_PI * (shininess * 0.5 + 1.0) * pow(noh, shininess);
         spec += irradiance * f_schlick(g_phong_specular, voh) * 0.25 * d;
     } else {

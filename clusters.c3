@@ -327,6 +327,15 @@ struct LightData @private {
     List{LightBounds} spot_bounds;
     List{GpuLightCluster} clusters;
     List{GpuLightIndex} indices;
+    // a point or spot light with a size (a radius, or a tube's length), and a tube among them
+    bool sized;
+    bool tubes;
+    // the shadows among them: point lights', spot lights', directional lights' in the atlas,
+    // and from sources with a size (PCSS)
+    bool point_shadows;
+    bool spot_shadows;
+    bool dir_tiles;
+    bool soft_shadows;
     // the sets of buffers, one per render() in a frame; `used` of them this frame
     List{LightBufferSet*} sets;
     int used;
@@ -361,6 +370,12 @@ fn void LightData.clear(&self) {
     self.shadows.clear();
     self.point_bounds.clear();
     self.spot_bounds.clear();
+    self.sized = false;
+    self.tubes = false;
+    self.point_shadows = false;
+    self.spot_shadows = false;
+    self.dir_tiles = false;
+    self.soft_shadows = false;
 }
 
 // Sorts the lights into clusters and writes them all to a set of buffers of their own.
