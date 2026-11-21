@@ -112,6 +112,7 @@ bitstruct MaterialKey : char[32] {
     // the shadow maps' program (build_shadow_graph), which reads only gpu_cull, displacement,
     // sway, and for the alpha test's cut-out alpha_test, map and MAP_ALPHA's slot (1: one)
     bool shadow : 82;
+    bool bake : 83;              // a light map's sample (lightmap.c3): drawn at uv1, its light blended in
 }
 
 // The map roles (shader_core.glsl's MAP_*) a key holds a slot for.
@@ -339,6 +340,12 @@ fn VertexValues vertex_stage(MaterialKey key) @local {
         Node inward = world - (model * nodes::vec4(dir, 0)).xyz();
         Node p2 = view_proj * nodes::vec4(inward - origin, 1);
         pos = pos + nodes::normalize(pos - p2) * (vs_in("surface_vs", FLOAT) * pos.w());
+    }
+    if (key.bake) {
+        // (the light map's texel at uv1; the map's first row on top but in GL)
+        Node uv1 = node_attribute(shaders::ATTR_THREE_UV1, VEC2);
+        Node y = nodes::select(vs_in("bake", FLOAT, 1).greater_than(nodes::num(0.5f)), uv1.y() * -2.0f + 1.0f, uv1.y() * 2.0f - 1.0f);
+        pos = nodes::vec4(uv1.x() * 2.0f - 1.0f, y, 0, 1);
     }
     o.position = statements.id ? nodes::seq(statements, pos) : pos;
     o.world = world;
@@ -654,7 +661,8 @@ fn void build_material_graph(MaterialKey key, ProgramGraph* graph, ProgramGraph*
     }
 
     Node n = nodes::normalize(v_normal);
-    if (!key.foliage) n = nodes::select(front, n, n.negate());
+    // (baking: the faces as the uv unwrap turned them, all front)
+    if (!key.foliage && !key.bake) n = nodes::select(front, n, n.negate());
     Node geo_n = n;
     if (key.normal_map) {
         // tangent-space normal mapping (perturb_normal), in the frame of the map's uv or of the
@@ -861,6 +869,14 @@ fn void build_material_graph(MaterialKey key, ProgramGraph* graph, ProgramGraph*
     }
 
     outc = nodes::max(outc, nodes::vec3(0));
+    if (key.bake) {
+        // the light map: the new sample blended into the last map's texel, in linear light
+        Node uv1 = nodes::varying(vtx.uv1);
+        Node prev = node_sample(SAMPLE, shaders::VIEW_SSR_COLOR, shaders::SMP_SSR_SMP, TEX_2D, uv1).xyz();
+        graph.colors[0] = nodes::vec4(nodes::mix(prev, nodes::min(outc, nodes::vec3(60000)), fs_in("bake_params", FLOAT, 1)), 1);
+        if (ncuts) graph.fragment = drie::node_block(cuts[:ncuts]);
+        return;
+    }
     Node indirect = nodes::vec4(0, 0, rough, metal);
     if (key.mrt && ind_d.id) {
         Node lw = nodes::vec3(0.2126f, 0.7152f, 0.0722f);
@@ -1106,13 +1122,24 @@ fn void Lit.shade(&self, FragUv* f, Node rgb, Node map_rgb, Node v_color) {
     Node mirror_r = nodes::reflect(self.v.negate(), n);
     if (key.point_lights || key.spot_lights) {
         // the point and spot lights that reach the fragment's cluster
-        Node range = node_storage(shaders::VIEW_LIGHT_CLUSTERS, UVEC4, nodes::convert(cluster_of(self.world), UINT));
-        Node first = range.x();
-        Node npoint = range.y();
-        stmts[ns++] = drie::node_eval(range);
+        // (baking: all of them, a light map's texel having no cluster)
+        Node range;
+        Node first;
+        Node npoint;
+        Node nspot;
+        if (key.bake) {
+            npoint = nodes::convert(fs_in("counts", FLOAT, 1), UINT);
+            nspot = nodes::convert(fs_in("counts", FLOAT, 2), UINT);
+        } else {
+            range = node_storage(shaders::VIEW_LIGHT_CLUSTERS, UVEC4, nodes::convert(cluster_of(self.world), UINT));
+            first = range.x();
+            npoint = range.y();
+            nspot = range.z();
+            stmts[ns++] = drie::node_eval(range);
+        }
         if (key.point_lights) {
             Node k = nodes::loop_index(UINT);
-            Node at = node_storage(shaders::VIEW_LIGHT_INDICES, UINT, first + k) * nodes::uint_(4);
+            Node at = (key.bake ? k : node_storage(shaders::VIEW_LIGHT_INDICES, UINT, first + k)) * nodes::uint_(4);
             Node pos = node_storage(shaders::VIEW_POINT_LIGHTS, VEC4, at);
             Node color = node_storage(shaders::VIEW_POINT_LIGHTS, VEC4, at + nodes::uint_(1));
             Node shadow = node_storage(shaders::VIEW_POINT_LIGHTS, VEC4, at + nodes::uint_(2));
@@ -1164,7 +1191,7 @@ fn void Lit.shade(&self, FragUv* f, Node rgb, Node map_rgb, Node v_color) {
         }
         if (key.spot_lights) {
             Node k = nodes::loop_index(UINT);
-            Node at = node_storage(shaders::VIEW_LIGHT_INDICES, UINT, first + npoint + k) * nodes::uint_(5);
+            Node at = (key.bake ? k : node_storage(shaders::VIEW_LIGHT_INDICES, UINT, first + npoint + k)) * nodes::uint_(5);
             Node pos = node_storage(shaders::VIEW_SPOT_LIGHTS, VEC4, at);
             Node dir = node_storage(shaders::VIEW_SPOT_LIGHTS, VEC4, at + nodes::uint_(1));
             Node color = node_storage(shaders::VIEW_SPOT_LIGHTS, VEC4, at + nodes::uint_(2));
@@ -1197,7 +1224,7 @@ fn void Lit.shade(&self, FragUv* f, Node rgb, Node map_rgb, Node v_color) {
                 radiance = radiance * shade;
             }
             Node body = self.light_body(shadow, self.direct(l, radiance, &size), outc, spec, away, pre[:np]);
-            stmts[ns++] = nodes::loop(k, nodes::uint_(0), range.z(), body);
+            stmts[ns++] = nodes::loop(k, nodes::uint_(0), nspot, body);
         }
     }
     if (key.rect_lights) stmts[ns++] = self.rect_lights(outc, spec);

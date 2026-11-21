@@ -592,10 +592,12 @@ struct VsmMaps @local {
 }
 
 // A light map being baked (Renderer.render_bake): the objects are drawn into it at their uv1,
-// with `pipeline`, and read the last map from `prev`.
+// with `pipeline` (or gen_bake_pipeline's), and read the last map from `prev`.
 struct BakeState @local {
     bool on;
     SgPipeline pipeline;
+    // the map's format (a generated program's pipeline: gen_bake_pipeline)
+    SgPixelFormat format;
     SgView prev;
     int width;
     int height;
@@ -3159,7 +3161,7 @@ fn bool material_key_of(DrawItem* item, DrawKind kind, FsParams* fs, Vec4[6]* ma
     Mesh* m = item.mesh;
     Material* mat = m.material;
     Renderer* r = state.renderer;
-    if (classic_materials || state.bake.on || r.shaders.main || node_build_of(mat)) return false;
+    if (classic_materials || r.shaders.main || node_build_of(mat)) return false;
     MaterialType type = mat.type;
     bool lit = type == LAMBERT || type == PHONG || type == STANDARD || type == TOON;
     bool standard = type == STANDARD;
@@ -3233,7 +3235,8 @@ fn bool material_key_of(DrawItem* item, DrawKind kind, FsParams* fs, Vec4[6]* ma
         .baked = lit && vc && mat.vertex_light > 0,
         // (the normal map on every type but basic: the normal and matcap materials show it)
         .normal_map = type != BASIC && mat.normal_map != null,
-        .tangents = type != BASIC && uses_tangents(item),
+        // (not baking: bake_pipeline's layout has none)
+        .tangents = type != BASIC && !state.bake.on && uses_tangents(item),
         .depth_packing = type == DEPTH ? (char)mat.depth_packing.ordinal : 0,
         .env_light = standard && env_map && env_map.has_env_sh,
         .env_reflect = env_reflect,
@@ -3243,11 +3246,13 @@ fn bool material_key_of(DrawItem* item, DrawKind kind, FsParams* fs, Vec4[6]* ma
         .hex = mat.hex_tiling > 0 && !(standard && mat.parallax_map) && mat.alpha_test <= 0,
         .probes = probes,
         .gi = lit && state.gi_count > 0,
-        .ssr = !mat.glass && r.ssr_color.id && r.ssr_depth.id && mat.ssr > 0,
+        // (baking: the last light map in ssr_color's place)
+        .ssr = !state.bake.on && !mat.glass && r.ssr_color.id && r.ssr_depth.id && mat.ssr > 0,
         .reflector = !mat.glass && mat.reflector && mat.reflector.rendered && mat.reflector.target,
         .rc = lit && fs.rc_size.w > 0,
         .env_box = env_reflect && env_map && mat.env_box_min != mat.env_box_max,
         .toon_nearest = type == TOON && mat.gradient_map && mat.gradient_map.nearest,
+        .bake = state.bake.on,
         .shadows = shadows,
         .vsm = (shadows || shafts) && vsm_on(),
         .soft_shadows = shadows && lights_gpu.soft_shadows,
@@ -3309,7 +3314,7 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     ShaderProgram* own = gen ? (kind == DEPTH ? gen.depth : gen.program) : null;
     bool tangents = !state.bake.on && !nodes && (gen ? key.tangents : uses_tangents(item));
     SgPipeline pip = (
-        state.bake.on ? state.bake.pipeline
+        state.bake.on ? (gen ? gen_bake_pipeline(gen, state.bake.format) : state.bake.pipeline)
             : get_pipeline(
                 mat.side,
                 mat.transparent,
@@ -4588,6 +4593,42 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera) {
 
 // A light map's pipeline for the bake's objects (render_bake): the material shader into
 // `format`, no depth, no culling (the uv unwrap decides which way a face turns), no blending.
+// bake_pipeline's, for a material's generated program (one with MaterialKey.bake)
+fn SgPipeline gen_bake_pipeline(MaterialProgram* gen, SgPixelFormat format) @local {
+    // (a key get_pipeline's never take: bit 63)
+    ulong key = 1ul << 63 | (ulong)(uint)format;
+    SgPipeline? found = gen.pipelines[key];
+    if (try found) return found;
+    SgPipeline pip = sg::make_pipeline(
+        &&{
+            .shader = gen.program.make(),
+            .index_type = UINT32,
+            .cull_mode = NONE,
+            .layout = vertex_layout(
+                {
+                    shaders::ATTR_THREE_POSITION,
+                    shaders::ATTR_THREE_NORMAL,
+                    shaders::ATTR_THREE_UV,
+                    shaders::ATTR_THREE_COLOR0,
+                    shaders::ATTR_THREE_UV1,
+                    -1,
+                    shaders::ATTR_THREE_INST0,
+                    shaders::ATTR_THREE_INST1,
+                    shaders::ATTR_THREE_INST2,
+                    shaders::ATTR_THREE_HEIGHT,
+                    shaders::ATTR_THREE_INSTANCE_COLOR
+                }
+            ),
+            .depth.pixel_format = NONE,
+            .colors[0].pixel_format = format,
+            .sample_count = 1,
+            .label = "drie-bake",
+        }
+    );
+    gen.pipelines[key] = pip;
+    return pip;
+}
+
 fn SgPipeline bake_pipeline(SgPixelFormat format) @local {
     bool vsm        = vsm_on();
     SgPipeline* pip = &state.bake_pipelines[vsm ? 1 : 0][format == RGBA32F ? 1 : 0];
@@ -4696,6 +4737,7 @@ fn void Renderer.render_bake(
     collect_lights(lights);
     state.bake = { .on = true, .prev = prev, .width = target.width, .height = target.height };
     state.bake.pipeline = bake_pipeline(target.pixel_format());
+    state.bake.format = target.pixel_format();
     state.caster_roots = objects;
     state.sun_caster = null;
     cull_begin(false, false);
