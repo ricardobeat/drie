@@ -94,6 +94,8 @@ bitstruct MaterialKey : char[32] {
     bool anisotropy : 66;        //   highlights drawn out along a direction,
     bool transmission : 67;      //   the picture behind it refracted through its volume
     bool probes : 68;            // it mirrors the scene's reflection probes (Material.env_probes)
+    bool gi : 69;                // the scene's irradiance volumes (lit materials),
+    bool rc : 70;                //   its radiance cascades
 }
 
 // The map roles (shader_core.glsl's MAP_*) a key holds a slot for.
@@ -833,6 +835,18 @@ fn void Lit.shade(&self, FragUv* f, Node rgb, Node map_rgb, Node v_color) {
         } else {
             irradiance = irradiance + env_params.y() * sun;
         }
+    }
+    if (key.gi) {
+        // the scene's irradiance volumes: added to the light from all around, or in its place
+        // where they cover the point (the first's gi_min.w 2)
+        Node[2] gi = gi_irradiance(n, self.world);
+        irradiance = nodes::select(fs_in("gi_min", FLOAT, 3).greater_than(nodes::num(1.5f)),
+                                   irradiance * gi[1].one_minus() + gi[0], irradiance + gi[0]);
+    }
+    if (key.rc) {
+        // radiance cascades: all the indirect light inside their box
+        Node[2] rc = rc_irradiance(n, self.world);
+        irradiance = nodes::mix(irradiance, rc[0], rc[1]);
     }
     if (key.slot(MAP_LIGHT)) irradiance = irradiance + role_texel(key, f, MAP_LIGHT).xyz() * fs_in("light_map_params", FLOAT);
     Node outc0 = irradiance * diffuse * shading::RECIPROCAL_PI * ao;
