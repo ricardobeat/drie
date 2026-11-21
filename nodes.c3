@@ -110,6 +110,7 @@ enum NodeSampling : char {
     SIZE,     // the size of level args[0] (an int): an ivec2, or an ivec3 for 3D textures and arrays
     COMPARE,  // a depth texture's comparison sampler: how much of the 2x2 footprint at args[0]
               //   is nearer than args[1]
+    LEVELS,   // how many mip levels the texture has (an int)
 }
 
 enum NodeTextureKind : char {

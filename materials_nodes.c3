@@ -91,7 +91,8 @@ bitstruct MaterialKey : uint128 {
     bool clearcoat : 63;         // the physical material's layers: a clear coat,
     bool sheen : 64;             //   a sheen,
     bool iridescence : 65;       //   a thin film's rainbow,
-    bool anisotropy : 66;        //   highlights drawn out along a direction
+    bool anisotropy : 66;        //   highlights drawn out along a direction,
+    bool transmission : 67;      //   the picture behind it refracted through its volume
 }
 
 // The map roles (shader_core.glsl's MAP_*) a key holds a slot for.
@@ -603,7 +604,8 @@ fn void build_material_graph(MaterialKey key, ProgramGraph* graph) @private {
         }
     } else {
         Lit lit = { .key = key, .n = n, .geo_n = geo_n, .v = v, .world = world, .rough = rough, .metal = metal,
-                    .ao = ao, .parallax = px, .f = &f, .v_normal = v_normal, .tangent = vtx.tangent, .irid_fn = -1, .frag = fc.xy(), .shadow = shadow_fns(key), .ltc_fn = -1 };
+                    .ao = ao, .parallax = px, .f = &f, .v_normal = v_normal, .tangent = vtx.tangent, .irid_fn = -1, .frag = fc.xy(), .shadow = shadow_fns(key), .ltc_fn = -1,
+                    .refraction = { -1, -1, -1 } };
         lit.shade(&f, rgb, map_rgb, v_color.xyz());
         outc = lit.outc;
         ind_d = lit.ind_d;
@@ -752,6 +754,7 @@ struct Lit @local {
     Node irid_fresnel;
     Node irid_f0;
     int irid_fn;
+    Refraction refraction;
     Node aniso;
     Node aniso_t;
     Node aniso_b;
@@ -1030,6 +1033,18 @@ fn void Lit.shade(&self, FragUv* f, Node rgb, Node map_rgb, Node v_color) {
     if (env_term.id) result = result + env_term;
     bool shiny = key.type != (char)MaterialType.LAMBERT && key.type != (char)MaterialType.TOON;
     self.outc = shiny ? result + highlights : result;
+    if (key.transmission) {
+        // what is behind the surface, refracted through the volume, takes the place of its
+        // diffuse light; highlights, reflections and the light it gives off stay
+        Node amount = fs_in("transmission_color", FLOAT, 3);
+        if (key.slot(MAP_TRANSMISSION)) amount = amount * role_texel(key, f, MAP_TRANSMISSION).x();
+        Node thickness = nodes::max(fs_in("transmission_params", FLOAT, 1), 0);
+        if (key.slot(MAP_THICKNESS)) thickness = thickness * role_texel(key, f, MAP_THICKNESS).y();
+        Node refracted = self.refraction.light(n, self.v, self.world, self.rough, self.diffuse, thickness, self.f0, self.f90);
+        Node kept = highlights + glow;
+        if (env_term.id) kept = kept + env_term;
+        self.outc = nodes::mix(nodes::max(self.outc - kept, nodes::vec3(0)), refracted, amount) + kept;
+    }
     // the physical material's layers over it all: the sheen, then the clear coat, which lets
     // through what it does not reflect (three's)
     if (key.sheen) {

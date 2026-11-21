@@ -132,3 +132,138 @@ fn Node eval_sensitivity(Node opd, Node shift) @local {
     };
     return node_matrix(&cols, MAT3) * xyz;
 }
+
+// ---- transmission (three's getIBLVolumeRefraction)
+
+// The picture behind the transmission materials (Renderer's transmission_mips), read at uv on
+// level lod with three's bicubic filter (transmission_pars_fragment): four bilinear taps.
+fn Node transmission_bicubic(int* fn_id, Node uv, Node lod) @private {
+    if (*fn_id < 0) {
+        NodeType[2] types = { VEC2, FLOAT };
+        int f = node_func("transmission_bicubic", VEC4, &types);
+        Node p = node_param(f, 0);
+        Node l = node_param(f, 1);
+        Node size = nodes::convert(transmission_texture(SIZE, nodes::convert(l, INT)), VEC2);
+        Node texel = nodes::vec2(1) / size;
+        Node q = p * size + 0.5f;
+        Node iuv = nodes::floor(q);
+        Node fr = nodes::fract(q);
+        Node fx = fr.x();
+        Node fy = fr.y();
+        Node g0x = bicubic_w0(fx) + bicubic_w1(fx);
+        Node g1x = bicubic_w2(fx) + bicubic_w3(fx);
+        Node h0x = bicubic_w1(fx) / g0x - 1.0f;
+        Node h1x = bicubic_w3(fx) / g1x + 1.0f;
+        Node g0y = bicubic_w0(fy) + bicubic_w1(fy);
+        Node g1y = bicubic_w2(fy) + bicubic_w3(fy);
+        Node h0y = bicubic_w1(fy) / g0y - 1.0f;
+        Node h1y = bicubic_w3(fy) / g1y + 1.0f;
+        Node t0 = transmission_texture(LEVEL, (nodes::vec2(iuv.x() + h0x, iuv.y() + h0y) - 0.5f) * texel, l);
+        Node t1 = transmission_texture(LEVEL, (nodes::vec2(iuv.x() + h1x, iuv.y() + h0y) - 0.5f) * texel, l);
+        Node t2 = transmission_texture(LEVEL, (nodes::vec2(iuv.x() + h0x, iuv.y() + h1y) - 0.5f) * texel, l);
+        Node t3 = transmission_texture(LEVEL, (nodes::vec2(iuv.x() + h1x, iuv.y() + h1y) - 0.5f) * texel, l);
+        node_func_body(f, (t0 * g0x + t1 * g1x) * g0y + (t2 * g0x + t3 * g1x) * g1y);
+        *fn_id = f;
+    }
+    Node[2] args = { uv, lod };
+    return node_call_fn(*fn_id, &args);
+}
+
+fn Node transmission_texture(NodeSampling how, Node coords = { }, Node a = { }) @local
+    => node_sample(how, shaders::VIEW_TEX_TRANSMISSION, shaders::SMP_TRANSMISSION_SMP, TEX_2D, coords, a);
+
+fn Node bicubic_w0(Node a) @local => (a * (a * (3.0f - a) - 3.0f) + 1.0f) * (1.0f / 6.0f);
+fn Node bicubic_w1(Node a) @local => (a * a * (a * 3.0f - 6.0f) + 4.0f) * (1.0f / 6.0f);
+fn Node bicubic_w2(Node a) @local => (a * (a * (a * -3.0f + 3.0f) + 3.0f) + 1.0f) * (1.0f / 6.0f);
+fn Node bicubic_w3(Node a) @local => a * a * a * (1.0f / 6.0f);
+
+// What is behind the surface where a ray leaves it at `exit`: the transmission picture there,
+// blurrier the rougher the surface (and the stronger it bends light: none at an IOR of 1).
+fn Node transmission_sample(int* fn_id, int* bicubic_fn, Node exit, Node rough, Node ior) @private {
+    if (*fn_id < 0) {
+        NodeType[3] types = { VEC3, FLOAT, FLOAT };
+        int f = node_func("transmission_sample", VEC3, &types);
+        Node e = node_param(f, 0);
+        Node r = node_param(f, 1);
+        Node i = node_param(f, 2);
+        Node clip = fs_in("cluster_view_proj", MAT4) * nodes::vec4(e, 1);
+        Node uv = clip.xy() / nodes::max(nodes::abs(clip.w()), 1e-5f) * 0.5f + 0.5f;
+        // (the picture's row 0 is its top where the target's is, as for the reflection source)
+        uv = nodes::select(fs_in("ssr_params", FLOAT, 3).greater_than(nodes::num(0.5f)), nodes::vec2(uv.x(), uv.y().one_minus()), uv);
+        Node top = nodes::convert(transmission_texture(LEVELS), FLOAT) - 1.0f;
+        Node lod = nodes::clamp(nodes::log2(nodes::max(fs_in("ext_params", FLOAT, 3), 1.0f)) * r * nodes::clamp(i * 2.0f - 2.0f, 0, 1),
+                                nodes::num(0), top);
+        Node light = nodes::variable(transmission_bicubic(bicubic_fn, uv, nodes::floor(lod)).xyz());
+        Node coarse = transmission_bicubic(bicubic_fn, uv, nodes::min(nodes::ceil(lod), top)).xyz();
+        Node between = nodes::if_then(nodes::fract(lod).greater_than(nodes::num(0)),
+                                      nodes::block(light.assign(nodes::mix(light, coarse, nodes::fract(lod)))));
+        node_func_body(f, nodes::seq(nodes::block(light, between), light));
+        *fn_id = f;
+    }
+    Node[3] args = { exit, rough, ior };
+    return node_call_fn(*fn_id, &args);
+}
+
+// The way through the volume from the surface: refracted at `ior`, `thickness` long in the
+// model's meters (ext_params.z: the model's scale), longer at a slant through a wall
+// (RefractionModel.PLANE, ext_params.x's bit 64); none on total internal reflection.
+fn Node transmission_ray(int* fn_id, Node n, Node v, Node thickness, Node ior) @private {
+    if (*fn_id < 0) {
+        NodeType[4] types = { VEC3, VEC3, FLOAT, FLOAT };
+        int f = node_func("transmission_ray", VEC3, &types);
+        Node pn = node_param(f, 0);
+        Node pv = node_param(f, 1);
+        Node thick = node_param(f, 2);
+        Node i = node_param(f, 3);
+        Node ray = nodes::refract(pv.negate(), pn, 1.0f / i);
+        Node dir = nodes::normalize(ray);
+        Node across = thick * fs_in("ext_params", FLOAT, 2);
+        Node bits = nodes::convert(fs_in("ext_params", FLOAT) + 0.5f, INT);
+        Node plane = nodes::bit_and(bits, nodes::int_(64)).not_equal(nodes::int_(0));
+        across = nodes::select(plane, across / nodes::max(nodes::dot(dir, pn.negate()), 1.0f / 12.0f), across);
+        node_func_body(f, nodes::select(nodes::dot(ray, ray).less_than(nodes::num(1e-8f)), nodes::vec3(0), dir * across));
+        *fn_id = f;
+    }
+    Node[4] args = { n, v, thickness, ior };
+    return node_call_fn(*fn_id, &args);
+}
+
+// Beer's law over `distance` meters (transmission_params.w: the attenuation distance; 0: none).
+fn Node volume_attenuation(Node distance) @private {
+    Node tp = fs_in("transmission_params");
+    Node coefficient = nodes::log(nodes::max(fs_in("transmission_color", VEC3), nodes::vec3(1e-4f))).negate() / tp.w();
+    return nodes::select(tp.w().less_than_equal(nodes::num(0)), nodes::vec3(1), nodes::exp(coefficient.negate() * distance));
+}
+
+// The functions of the program transmission takes (made once each: -1 makes them).
+struct Refraction @private {
+    int ray_fn;
+    int sample_fn;
+    int bicubic_fn;
+}
+
+// The light that comes through a transmission material from behind: through `n` seen from `v`,
+// tinted by `diffuse` and by the volume over its way through, less what the surface reflects
+// (f0, f90). With dispersion (transmission_params.z) each channel takes its own IOR.
+fn Node Refraction.light(&self, Node n, Node v, Node world, Node rough, Node diffuse, Node thickness, Node f0, Node f90) {
+    Node tp = fs_in("transmission_params");
+    Node ior = nodes::select(tp.x().greater_than(nodes::num(0)), tp.x(), 1.5f);
+    Node spread = (ior - 1.0f) * 0.025f * tp.z();
+    Node light = nodes::variable(nodes::vec3(0));
+    Node through = nodes::variable(nodes::vec3(0));
+    Node[3] s;
+    Node[3] a;
+    for (int i = 0; i < 3; i++) {
+        Node ior_i = i == 1 ? ior : ior + spread * (float)(i - 1);
+        Node ray = transmission_ray(&self.ray_fn, n, v, thickness, ior_i);
+        s[i] = transmission_sample(&self.sample_fn, &self.bicubic_fn, world + ray, rough, ior_i);
+        a[i] = volume_attenuation(nodes::length(ray));
+    }
+    Node ray = transmission_ray(&self.ray_fn, n, v, thickness, ior);
+    Node spread_out = nodes::block(light.assign(nodes::vec3(s[0].x(), s[1].y(), s[2].z())),
+                                   through.assign(diffuse * nodes::vec3(a[0].x(), a[1].y(), a[2].z())));
+    Node one = nodes::block(light.assign(transmission_sample(&self.sample_fn, &self.bicubic_fn, world + ray, rough, ior)),
+                            through.assign(diffuse * volume_attenuation(nodes::length(ray))));
+    Node pick = nodes::if_then(spread.greater_than(nodes::num(0)), spread_out, one);
+    return nodes::seq(nodes::block(light, through, pick), (nodes::vec3(1) - environment_brdf(n, v, f0, f90, rough)) * through * light);
+}
