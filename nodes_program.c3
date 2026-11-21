@@ -39,6 +39,10 @@ enum NodeSource : char {
 // its NodeBuild lists them; the engine's are its slots (shaders::VIEW_*).
 const int NODE_USER_VIEW = 64;
 
+// The rows of a node material's USER block before its uniforms: 0-3 the view matrix, 4-7 the
+// projection, 8-11 the mesh's matrix_world, 12 the camera's position and the time (w).
+const int NODE_USER_HEADER = 13;
+
 enum ProgramStage : char {
     VERTEX,
     FRAGMENT,
@@ -190,7 +194,7 @@ fn Node node_return(Node value = { }) {
 struct ProgramGraph {
     Node position;          // vertex: the clip position (a vec4; a SEQ for statements before it)
     Node[4] colors;         // fragment: its outputs (vec4s; 0 past the last); none: depth only
-    Node fragment;          // fragment: a statement worked out before the outputs (0: none)
+    Node fragment;          // fragment: a block worked out before the outputs (0: none)
     // Two programs that place vertices exactly alike (the depth prepass and the main pass
     // that tests against its depth with EQUAL) share one vertex stage: the one whose fragment
     // stage reads less is built first with `fragment_only` (no vertex stage yet), the other
@@ -823,7 +827,8 @@ fn String ProgramGen.input(&self, NodeData* d) {
     }
 }
 
-// A node material's uniform (nodes::uniform): a row of its USER block, in its NodeBuild's order.
+// A node material's uniform (nodes::uniform): a row of its USER block, in its NodeBuild's order
+// after the block's header (NODE_USER_HEADER).
 fn String ProgramGen.user_uniform(&self, Node n) {
     NodeBuild* b = self.build;
     if (!b) abort("drie: nodes: a uniform in a program without a material's build");
@@ -838,7 +843,8 @@ fn String ProgramGen.user_uniform(&self, Node n) {
         b.uniforms.push(n);
     }
     NodeType t = n.type();
-    NodeData d = { .op = INPUT, .type = t == MAT4 ? MAT4 : type_of(FLOAT, components(t)), .res = { NodeSource.USER.ordinal, at, 0 } };
+    NodeData d = { .op = INPUT, .type = t == MAT4 ? MAT4 : type_of(FLOAT, components(t)),
+                   .res = { NodeSource.USER.ordinal, NODE_USER_HEADER + at, 0 } };
     String x = self.input(&d);
     // (integers and bools as floats: Node.set)
     return t == MAT4 ? x : self.convert(x, d.type, t);
@@ -1387,7 +1393,7 @@ fn ShaderProgram* build_program(NodeLang lang, ProgramGraph* graph, NodeBuild* b
         if (graph.varyings_from) {
             foreach (v : graph.varyings_from.varyings) p.varyings.push(v);
         }
-        if (graph.fragment.id) f.statement(graph.fragment);
+        if (graph.fragment.id) f.statements(graph.fragment.id);
         String[4] colors;
         foreach (i, c : graph.colors) {
             if (!c.id) break;

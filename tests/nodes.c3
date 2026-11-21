@@ -62,6 +62,29 @@ fn float[3] rgb_at(char[] px, int[2] p) {
     return sum;
 }
 
+// The material's generated programs (materials_nodes.c3), and of what kind: the main pass's
+// with the depth prepass's, the shadow maps', for a target with MRT. None with the material
+// shader (DRIE_CLASSIC_MATERIALS=1), whose node programs NodeProgram holds.
+struct Generated {
+    int count;
+    bool depth;
+    bool shadow;
+    bool mrt;
+}
+
+fn Generated generated(Material* mat) {
+    Generated g;
+    NodeBuild* b = mat.node_build;
+    if (!b || !b.programs.is_initialized()) return g;
+    foreach (mp : b.programs.tvalues()) {
+        g.count++;
+        if (mp.depth && mp.depth.shader.id) g.depth = true;
+        if (mp.key.shadow && mp.program.shader.id) g.shadow = true;
+        if (mp.key.mrt && mp.program.shader.id) g.mrt = true;
+    }
+    return g;
+}
+
 fn bool save(String path, char[] px) {
     if (png::write(path, px, W, H)) return true;
     io::printfn("could not write %s", path);
@@ -186,8 +209,10 @@ fn int main(String[] args) {
     if (!save(out_path, px)) return 1;
 
     NodeProgram* rings = mats[2].node_build.program;
-    expect(rings.shaders[NodeVariant.DEPTH.ordinal].id != 0, "the third ball through the depth prepass, with its own program");
-    expect(rings.shadow_pipeline.id != 0, "the third ball's shadow, with its own program");
+    Generated gen = generated(mats[2]);
+    expect(gen.count ? gen.depth : rings.shaders[NodeVariant.DEPTH.ordinal].id != 0,
+           "the third ball through the depth prepass, with its own program");
+    expect(gen.count ? gen.shadow : rings.shadow_pipeline.id != 0, "the third ball's shadow, with its own program");
     NodeBuild* build = mats[0].node_build;
     tint.set_color(0x40ff40);
     renderer.render(scene, camera);
@@ -225,7 +250,8 @@ fn int main(String[] args) {
         if (k == 2) {
             // (solid: the opaque program; the third, cut out after the prepass, too)
             SgShader[8] built = mats[0].node_build.program.shaders;
-            expect(built[NodeVariant.OPAQUE_MRT.ordinal].id != 0, "MRT: the node materials' programs for it");
+            Generated g = generated(mats[0]);
+            expect(g.count ? g.mrt : built[NodeVariant.OPAQUE_MRT.ordinal].id != 0, "MRT: the node materials' programs for it");
             continue;
         }
         readback::read_image(target.texture_image, W, H, px2.ptr);
