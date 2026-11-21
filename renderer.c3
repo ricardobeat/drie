@@ -3142,14 +3142,13 @@ fn bool material_key_of(DrawItem* item, DrawKind kind, FsParams* fs, Vec4[6]* ma
     int fog = mat.fog ? (int)fs.fog_params.w : 0;
     if (fog && (fs.fog_grid.w > 0 || fs.fog_color.w > 0)) return false;
     if (fog == 3 && fs.fog_sun_dir.w > 0 && fs.fog_sun_color.w > 0 && fs.dir_shadow_params.x > 0.5f) return false;
-    // (and for the lit materials: an environment map with distances, transmission, irradiance
-    // volumes and radiance cascades)
+    // (and for the lit materials: an environment map with distances, irradiance volumes and
+    // radiance cascades)
     Texture* env_map = mat.env_map;
     Scene* scene = state.scene;
     if (!env_map && scene && scene.environment && standard) env_map = scene.environment;
     if (lit) {
         if (standard && env_map && env_map.env_distance_range > 0) return false;
-        if (standard && mat.transmission > 0) return false;
         if (state.gi_count > 0 || fs.rc_size.w > 0) return false;
     }
 
@@ -3218,6 +3217,7 @@ fn bool material_key_of(DrawItem* item, DrawKind kind, FsParams* fs, Vec4[6]* ma
         .sheen = standard && mat.sheen > 0 && (mat.sheen_color.x > 0 || mat.sheen_color.y > 0 || mat.sheen_color.z > 0),
         .iridescence = standard && mat.iridescence > 0,
         .anisotropy = standard && mat.anisotropy > 0,
+        .transmission = standard && mat.transmission > 0 && state.transmission_mips.id != 0,
         .arm_ao = (bool)mat.arm_map,
         .arm_rough = mat.arm_map || mat.roughness_map,
         .arm_metal = mat.arm_map || (mat.metalness_map && (mat.roughness_map ?: mat.metalness_map) == mat.metalness_map),

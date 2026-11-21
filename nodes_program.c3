@@ -131,6 +131,7 @@ fn Node node_sample(NodeSampling how, int view, int sampler, NodeTextureKind kin
     NodeType t = VEC4;
     switch (how) {
         case SIZE: t = kind == TEX_3D || kind == TEX_ARRAY ? IVEC3 : IVEC2;
+        case LEVELS: t = INT;
         case COMPARE:
             if (kind != TEX_DEPTH) abort("drie: nodes: compare() reads depth textures");
             t = FLOAT;
@@ -910,6 +911,16 @@ fn String ProgramGen.sample(&self, Node n, NodeData* d) {
                     }
                     self.line("%s.GetDimensions(uint(%s), %s_w, %s_h, %s_l);", t, l, z, z, z);
                     return string::tformat("int2(%s_w, %s_h)", z, z);
+            }
+        case LEVELS:
+            switch (self.lang) {
+                case GLSL: return string::tformat("textureQueryLevels(%s)", ts);
+                case MSL: return string::tformat("int(%s.get_num_mip_levels())", t);
+                case HLSL:
+                    String z = string::tformat("tl%d", self.body.locals + 1);
+                    self.line("uint %s_w, %s_h, %s_l;", z, z, z);
+                    self.line("%s.GetDimensions(0u, %s_w, %s_h, %s_l);", t, z, z, z);
+                    return string::tformat("int(%s_l)", z);
             }
         case COMPARE:
             String c = self.value_as({ d.args[0] }, VEC2);
