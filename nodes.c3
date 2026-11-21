@@ -51,6 +51,7 @@ enum NodeType : char {
     UVEC3,
     UVEC4,
     VOID,     // a statement's
+    MAT3,
 }
 
 // What a type's components are.
@@ -84,6 +85,46 @@ enum NodeOp : char {
     EVAL,     // args[0] worked out here (a VAR's declaration, a SEQ that returns nothing)
     // and the one that gives a value
     SEQ,      // the block args[0], then args[1] (0: nothing, a VOID)
+    // what a whole program reads (nodes_program.c3):
+    INPUT,    // rows of an engine uniform block: res[0] = its NodeSource, res[1] = the first row,
+              //   res[2] = the component of the row a vector starts at; args[0] an index into an
+              //   array (0: none) of value[0] rows a step, value[1] steps long (as bits)
+    STORAGE,  // element args[0] of a storage buffer (res[0]: the view slot) of vec4s, uvec4s or uints
+    SAMPLE,   // an engine texture: kind = a NodeSampling; res[0] = the view slot, res[1] = the
+              //   sampler slot, res[2] = a NodeTextureKind; args = coordinates, then the level, the
+              //   gradients or the depth compared against
+    ATTRIBUTE, // vertex attribute kind (its location)
+    SYSTEM,   // kind = a NodeSystem
+    PARAM,    // a function's parameter kind
+    CALL_FN,  // the function value[0] (as bits, in node_funcs) of the count arguments in node_args
+              //   from value[1] (as bits)
+    BIND,     // a statement: the builtin kind is args[0] from here on
+}
+
+// What SAMPLE does with its texture.
+enum NodeSampling : char {
+    SAMPLE,   // filtered, the level from the derivatives
+    LEVEL,    // at level args[1]
+    GRAD,     // with the derivatives args[1] and args[2]
+    FETCH,    // texel args[0] (integers) of level args[1] (an int)
+    SIZE,     // the size of level args[0] (an int): an ivec2, or an ivec3 for 3D textures and arrays
+    COMPARE,  // a depth texture's comparison sampler: how much of the 2x2 footprint at args[0]
+              //   is nearer than args[1]
+}
+
+enum NodeTextureKind : char {
+    TEX_2D,
+    TEX_3D,
+    TEX_ARRAY,  // 2D layers: coordinates (u, v, layer)
+    TEX_DEPTH,  // 2D depths, read with COMPARE
+}
+
+// The stage's own inputs.
+enum NodeSystem : char {
+    INSTANCE_ID,   // uint (vertex)
+    VERTEX_ID,     // uint (vertex)
+    FRAG_COORD,    // vec4 (fragment): the backend's own, as sokol-shdc hands it on
+    FRONT_FACING,  // bool (fragment)
 }
 
 // How a LOOP goes: its index from args[1] while below (LT, LE) or above (GT, GE) args[2], by 1;
@@ -185,6 +226,9 @@ enum NodeFn : char {
     SMOOTHSTEP,
     REFRACT,
     FACEFORWARD,
+    // matrices
+    TRANSPOSE,
+    DETERMINANT,
 }
 
 struct NodeData {
@@ -196,6 +240,7 @@ struct NodeData {
     char[4] swizzle;
     float[16] value;    // (an int's or a uint's: its bits)
     Texture* texture;
+    int[3] res;         // INPUT, STORAGE, SAMPLE: where they read
     uint next;          // a statement's: the one after it in its block (0: the last)
 }
 
@@ -214,6 +259,17 @@ fn Node add_node(NodeData d) {
 
 fn NodeType Node.type(self) => node_data(self).type;
 
+// How many nodes there are: a mark node_release goes back to.
+fn uint node_count() => (uint)node_graph.len();
+
+// Drops the nodes made after `mark` (node_count), with the functions (node_func) made since:
+// what building a program needed and nothing else holds. The nodes before it never read the
+// ones after.
+fn void node_release(uint mark) {
+    while (node_graph.len() > mark) node_graph.remove_last();
+    release_funcs(mark);
+}
+
 fn int components(NodeType t) {
     switch (t) {
         case FLOAT:
@@ -230,6 +286,7 @@ fn int components(NodeType t) {
         case IVEC4:
         case UVEC4: return 4;
         case MAT4: return 16;
+        case MAT3: return 9;
         case VOID: return 0;
     }
 }
@@ -264,11 +321,13 @@ fn NodeType type_of(NodeScalar s, int n) {
 
 fn NodeType vector_type(int n) @local => type_of(FLOAT, n);
 
+fn bool is_matrix(NodeType t) => t == MAT4 || t == MAT3;
+
 // The type two types combine into component by component (a number goes with any vector; a
 // float with an integer gives floats; bools count as floats).
 fn NodeType wider(NodeType a, NodeType b) {
     if (a == VOID || b == VOID) abort("drie: nodes: a statement has no value");
-    if (a == MAT4 || b == MAT4) {
+    if (is_matrix(a) || is_matrix(b)) {
         if (a == b) return a;
         abort("drie: nodes: a %s and a %s don't combine", a, b);
     }
@@ -298,7 +357,7 @@ fn Node node_binary(NodeBinary op, Node a, Node b) {
         case SUB:
         case DIV:
         case REM:
-            if (ta == MAT4 || tb == MAT4) abort("drie: nodes: matrices only multiply");
+            if (is_matrix(ta) || is_matrix(tb)) abort("drie: nodes: matrices only multiply");
             t = wider(ta, tb);
         case BIT_AND:
         case BIT_OR:
@@ -314,7 +373,17 @@ fn Node node_binary(NodeBinary op, Node a, Node b) {
         case MUL:
             // (as TSL: a matrix times a number is a matrix; times a vector, a vec4, the vector
             // made one first, a vec3 with w = 1)
-            if (ta == MAT4 && tb == MAT4) {
+            if (ta == MAT3 || tb == MAT3) {
+                // (a 3x3 matrix times a 3x3 one, a number or a vec3)
+                NodeType o = ta == MAT3 ? tb : ta;
+                if (o == MAT3 || components(o) == 1) {
+                    t = MAT3;
+                } else if (o == VEC3) {
+                    t = VEC3;
+                } else {
+                    abort("drie: nodes: a 3x3 matrix multiplies numbers, vec3s and 3x3 matrices, not a %s", o);
+                }
+            } else if (ta == MAT4 && tb == MAT4) {
                 t = MAT4;
             } else if (ta == MAT4 || tb == MAT4) {
                 NodeType v = ta == MAT4 ? tb : ta;
@@ -340,6 +409,10 @@ fn Node node_binary(NodeBinary op, Node a, Node b) {
 
 fn Node node_call(NodeFn f, Node a, Node b = { }, Node c = { }) {
     NodeType ta = a.type();
+    if (f == TRANSPOSE || f == DETERMINANT) {
+        if (!is_matrix(ta)) abort("drie: nodes: %s takes a matrix", f);
+        return add_node({ .op = CALL, .type = f == TRANSPOSE ? ta : FLOAT, .kind = (char)f.ordinal, .count = 1, .args = { a.id, 0, 0, 0 } });
+    }
     NodeType t;
     int count = 1;
     switch (f) {
@@ -384,7 +457,7 @@ fn Node node_call(NodeFn f, Node a, Node b = { }, Node c = { }) {
         default:
             t = ta;
     }
-    if (t == MAT4 || t == VOID) abort("drie: nodes: %s takes numbers or vectors", f);
+    if (is_matrix(t) || t == VOID) abort("drie: nodes: %s takes numbers or vectors", f);
     // (but for abs, min, max, mod and clamp, functions of floats: integers converted)
     switch (f) {
         case ABS:
@@ -443,7 +516,7 @@ fn Node node_join(Node[] parts, NodeType t) {
     NodeData d = { .op = JOIN, .type = t, .count = (char)parts.len };
     foreach (i, p : parts) {
         NodeType pt = p.type();
-        if (pt == MAT4 || pt == VOID) abort("drie: nodes: a %s can't be part of a vector", pt);
+        if (is_matrix(pt) || pt == VOID) abort("drie: nodes: a %s can't be part of a vector", pt);
         n += components(pt);
         d.args[i] = p.id;
     }
@@ -592,7 +665,7 @@ fn float[4] Node.value(self) {
 // ---- building: a material's graphs printed into its shaders
 
 // The shading languages the graphs are printed in, one per sokol backend.
-enum NodeLang : char @local {
+enum NodeLang : char {
     GLSL,
     MSL,
     HLSL,
@@ -976,6 +1049,7 @@ fn String NodeGen.type_name(&self, NodeType t) {
         case UVEC3: return glsl ? "uvec3" : "uint3";
         case UVEC4: return glsl ? "uvec4" : "uint4";
         case MAT4: return glsl ? "mat4" : "float4x4";
+        case MAT3: return glsl ? "mat3" : "float3x3";
     }
 }
 
@@ -1503,6 +1577,15 @@ fn String NodeGen.emit(&self, Node n) {
             } else {
                 e = string::tformat("(!%s)", self.value_as({ d.args[0] }, BOOL));
             }
+        case INPUT:
+        case STORAGE:
+        case SAMPLE:
+        case ATTRIBUTE:
+        case SYSTEM:
+        case PARAM:
+        case CALL_FN:
+        case BIND:
+            abort("drie: nodes: a %s node is for whole programs (nodes_program.c3), not a material's hooks", d.op);
     }
     String name = self.mark(n);
     self.line("%s %s = %s;", self.type_name(d.type), name, e);
