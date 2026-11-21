@@ -99,6 +99,7 @@ bitstruct MaterialKey : char[32] {
     bool ssr : 71;               // screen-space reflections (Material.ssr)
     bool reflector : 72;         // a planar Reflector's picture (Material.reflector)
     bool glass : 73;             // Material.glass: its reflections stay however clear it is
+    bool hex : 74;               // Material.hex_tiling
 }
 
 // The map roles (shader_core.glsl's MAP_*) a key holds a slot for.
@@ -525,9 +526,11 @@ fn void build_material_graph(MaterialKey key, ProgramGraph* graph) @private {
         f.dx1 = nodes::dfdx(f.uv1);
         f.dy1 = nodes::dfdy(f.uv1);
     }
+    // Material.hex_tiling
+    if (key.hex) f.hex_setup(fs_in("parallax_params", FLOAT, 3));
     Node map_rgb;
     if (key.map) {
-        Node texel = node_sample(GRAD, shaders::VIEW_TEX_MAP, shaders::SMP_TEX_SMP, TEX_2D, f.uv, f.dx, f.dy);
+        Node texel = key.hex ? f.hex_color() : node_sample(GRAD, shaders::VIEW_TEX_MAP, shaders::SMP_TEX_SMP, TEX_2D, f.uv, f.dx, f.dy);
         rgb = rgb * texel.xyz();
         a = a * texel.w();
         map_rgb = texel.xyz();
