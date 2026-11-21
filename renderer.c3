@@ -1290,7 +1290,7 @@ fn SgPipeline get_pipeline(
     }
     desc.colors[0].blend = blend_state(blend);
     if (gen) {
-        desc.shader = gen.program.make();
+        desc.shader = (kind == DEPTH ? gen.depth : gen.program).make();
     } else if (nodes) {
         // (compiled in the background first: none till then, see NodeProgram.busy)
         if (!nodes.pipeline_ready(key, variant, node_base_desc(nodes, variant), &desc, background())) return { };
@@ -3119,15 +3119,14 @@ fn void material_slots(Material* mat, NodeBuild* nodes, Texture*[6]* slots, Vec4
 }
 
 // Whether `item` draws with a generated program (materials_nodes.c3), and its key: every
-// built-in material in the main pass (SOLID and CUT draws), but not node materials, nor in a
-// light map's bake, nor with the application's programs (Renderer.shaders), which then draw
-// every material.
+// built-in material in the main pass and its depth prepass (the same key for both: see
+// MaterialKey.prepassed), but not node materials, nor in a light map's bake, nor with the
+// application's programs (Renderer.shaders), which then draw every material.
 fn bool material_key_of(DrawItem* item, DrawKind kind, FsParams* fs, Vec4[6]* map_slots, MaterialKey* key) @local {
     Mesh* m = item.mesh;
     Material* mat = m.material;
     Renderer* r = state.renderer;
     if (classic_materials || state.bake.on || r.shaders.main || node_build_of(mat)) return false;
-    if (kind != CUT && kind != SOLID) return false;
     MaterialType type = mat.type;
     bool lit = type == LAMBERT || type == PHONG || type == STANDARD || type == TOON;
     bool standard = type == STANDARD;
@@ -3153,6 +3152,9 @@ fn bool material_key_of(DrawItem* item, DrawKind kind, FsParams* fs, Vec4[6]* ma
 
     RenderTarget* rt = r.render_target;
     bool cut = kind == CUT;
+    // (drawn where the depth prepass drew it, or that prepass: the same program's two halves)
+    bool prepassed = kind == PRETESTED || kind == DEPTH;
+    bool holes = cut || prepassed;
     bool vc = mat.vertex_colors;
     bool shadows = lit && m.receive_shadow && (lights_gpu.shadows.len() > 0 || fs.dir_shadow_params.x > 0.5f);
     bool linear = fs.output_params.x > 0.5f;
@@ -3162,13 +3164,14 @@ fn bool material_key_of(DrawItem* item, DrawKind kind, FsParams* fs, Vec4[6]* ma
         .cut = cut,
         .cull_box = cut && r.cull_box,
         .dash = cut && m.is_line() && mat.dash_size > 0 && mat.gap_size > 0,
-        .dither = cut && item.fade_dir != 0,
+        .dither = holes && item.fade_dir != 0,
         .screen = mat.screen_target != null,
         .tint = vc && mat.vertex_light <= 0,
         .vertex_alpha = vc,
         .foliage = mat.foliage,
         .map = mat.map != null,
-        .alpha_test = cut && alpha_test > 0,
+        .alpha_test = holes && alpha_test > 0,
+        .prepassed = prepassed,
         .background = backdrop,
         .env_combine = env_combine,
         .vertex_occlusion = mat.vertex_occlusion && vc,
@@ -3264,6 +3267,13 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     // the material's own generated program, where it has one (materials_nodes.c3)
     MaterialKey key;
     MaterialProgram* gen = material_key_of(item, kind, fs, &map_slots, &key) ? material_program(key) : null;
+    // (the depth prepass of what the material shader draws: its own program)
+    if (kind == DEPTH && !gen) {
+        draw_depth_item(item, view_proj);
+        return;
+    }
+    // the program of this pass: the main pass's, or the depth prepass's
+    ShaderProgram* own = gen ? (kind == DEPTH ? gen.depth : gen.program) : null;
     bool tangents = !state.bake.on && !nodes && (gen ? key.tangents : uses_tangents(item));
     SgPipeline pip = (
         state.bake.on ? state.bake.pipeline
@@ -3411,8 +3421,8 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     if (vsm) bind.samplers[shaders::SMP_VSM_SMP] = state.vsm_sampler;
     lights_gpu.bind(&bind);
     if (gen) {
-        SgBindings own = program_bindings(gen.program, &bind);
-        sg::apply_bindings(&own);
+        SgBindings own_bind = program_bindings(own, &bind);
+        sg::apply_bindings(&own_bind);
     } else {
         sg::apply_bindings(&bind);
     }
@@ -3421,7 +3431,7 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     vs.inst_cull = inst_cull;
     vs.bake[2] = nodes ? 1 : 0;
     if (gen) {
-        apply_program_uniforms(gen.program, VERTEX, &vs, fs);
+        apply_program_uniforms(own, VERTEX, &vs, fs);
     } else {
         sg::apply_uniforms(shaders::UB_VS_PARAMS, &&{ .ptr = &vs, .size = VsParams::size });
     }
@@ -3537,7 +3547,7 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     float fog_mode = fs.fog_params.w;
     if (!mat.fog) fs.fog_params.w = 0;
     if (gen) {
-        apply_program_uniforms(gen.program, FRAGMENT, &vs, fs);
+        apply_program_uniforms(own, FRAGMENT, &vs, fs);
     } else {
         sg::apply_uniforms(shaders::UB_FS_PARAMS, &&{ .ptr = fs, .size = FsParams::size });
     }
@@ -4432,7 +4442,7 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera) {
     }
     if (prepass) {
         foreach (&item : state.opaque) {
-            if (prepassed(item)) draw_depth_item(item, view_proj_rel);
+            if (prepassed(item)) draw_item(item, view_proj_rel, &fs, DEPTH);
         }
     }
     profile::stop("render: depth prepass", pt);

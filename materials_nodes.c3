@@ -105,6 +105,10 @@ bitstruct MaterialKey : char[32] {
     bool fog_glow : 77;          //   its lights' glow,
     bool fog_shafts : 78;        //   its light shafts (the sun's shadow in it)
     char depth_packing : 79..80; // a depth material's Material.depth_packing
+    // DrawKind.PRETESTED: drawn where the depth prepass has drawn it, which cuts its holes
+    // (the alpha test's, the LOD cross-fade's: those bits say which); its program comes with
+    // the prepass's (MaterialProgram.depth)
+    bool prepassed : 81;
 }
 
 // The map roles (shader_core.glsl's MAP_*) a key holds a slot for.
@@ -159,9 +163,11 @@ fn void MaterialKey.set_slot(&self, int role, int slot) {
     *self = bitcast(w, MaterialKey);
 }
 
-// A generated program and its pipelines (by get_pipeline's key).
+// A generated program and its pipelines (by get_pipeline's key); with MaterialKey.prepassed,
+// the depth prepass's too, which shares its vertex stage.
 struct MaterialProgram {
     ShaderProgram* program;
+    ShaderProgram* depth;
     HashMap{ulong, SgPipeline} pipelines;
 }
 
@@ -178,7 +184,8 @@ fn MaterialProgram* material_program(MaterialKey key) @private {
     if (try found = material_programs.get(words)) return found;
     uint mark = node_count();
     ProgramGraph graph;
-    build_material_graph(key, &graph);
+    ProgramGraph prepass;
+    build_material_graph(key, &graph, &prepass);
     MaterialProgram* mp = mem::new(MaterialProgram);
     // (DRIE_PROGRAM_SALT: a term the output depends on, at a pixel no target reaches, so the
     // compiled code differs from any earlier run's and the driver has none of it cached; for
@@ -187,13 +194,25 @@ fn MaterialProgram* material_program(MaterialKey key) @private {
         float far = 1e7f + (float)(salt.hash() & 0xffff);
         Node off = nodes::select(node_system(FRAG_COORD).x().greater_than(nodes::num(far)), nodes::num(1e-20f), nodes::num(0));
         graph.colors[0] = graph.colors[0] + nodes::vec4(off, 0, 0, 0);
+        if (key.prepassed) prepass.colors[0] = prepass.colors[0] + nodes::vec4(off, 0, 0, 0);
+    }
+    // (the prepass's fragment stage first: its varyings are the first of the main program's,
+    // whose vertex stage it then takes)
+    if (key.prepassed) {
+        prepass.fragment_only = true;
+        mp.depth = build_program(backend_lang(), &prepass);
+        graph.varyings_from = mp.depth;
     }
     mp.program = build_program(backend_lang(), &graph);
+    if (key.prepassed) mp.depth.take_vertex(mp.program);
     mp.pipelines.init(mem);
     node_release(mark);
     material_programs.set(words, mp);
     // (DRIE_TRACE_PROGRAMS: each program printed as it is built)
-    if (try env::tget_var("DRIE_TRACE_PROGRAMS")) io::eprintfn("drie: program %x%032x: vs %d B, fs %d B\n%s\n%s", words.hi, words.lo, mp.program.vs.len, mp.program.fs.len, mp.program.vs, mp.program.fs);
+    if (try env::tget_var("DRIE_TRACE_PROGRAMS")) {
+        io::eprintfn("drie: program %x%032x: vs %d B, fs %d B\n%s\n%s", words.hi, words.lo, mp.program.vs.len, mp.program.fs.len, mp.program.vs, mp.program.fs);
+        if (mp.depth) io::eprintfn("drie: its depth prepass: fs %d B\n%s", mp.depth.fs.len, mp.depth.fs);
+    }
     return mp;
 }
 
@@ -435,7 +454,9 @@ fn Node parallax_shadow(Parallax* px, FragUv* f, Node n, Node l) @local {
         shade.assign(strength.negate() * nodes::clamp(block, 0, 1) + 1.0f)))), shade);
 }
 
-fn void build_material_graph(MaterialKey key, ProgramGraph* graph) @private {
+// The graphs of `key`'s program, and with MaterialKey.prepassed of its depth prepass's
+// (`prepass`: the holes it cuts, and the alpha it leaves for alpha-to-coverage).
+fn void build_material_graph(MaterialKey key, ProgramGraph* graph, ProgramGraph* prepass) @private {
     VertexValues vtx = vertex_stage(key);
     graph.position = vtx.position;
 
@@ -446,6 +467,8 @@ fn void build_material_graph(MaterialKey key, ProgramGraph* graph) @private {
     Node front = node_system(FRONT_FACING);
     Node[8] cuts;
     int ncuts;
+    Node[4] holes;
+    int nholes;
 
     // the MRT targets' normal, motion and indirect light (from the start: the screen-space
     // map's early out keeps them)
@@ -491,7 +514,12 @@ fn void build_material_graph(MaterialKey key, ProgramGraph* graph) @private {
         Node sp = fs_in("screen_params");
         Node dither = nodes::fract(nodes::fract(nodes::dot(fc.xy(), nodes::vec2(0.06711056f, 0.00583715f))) * 52.9829189f);
         Node out = nodes::select(sp.w().greater_than(nodes::num(0)), dither.greater_than_equal(sp.z()), dither.less_than(sp.z()));
-        cuts[ncuts++] = nodes::if_then(nodes::logical_and(sp.w().not_equal(nodes::num(0)), out), nodes::block(nodes::discard()));
+        Node cut = nodes::if_then(nodes::logical_and(sp.w().not_equal(nodes::num(0)), out), nodes::block(nodes::discard()));
+        if (key.prepassed) {
+            holes[nholes++] = cut;
+        } else {
+            cuts[ncuts++] = cut;
+        }
     }
 
     if (key.screen) {
@@ -576,8 +604,21 @@ fn void build_material_graph(MaterialKey key, ProgramGraph* graph) @private {
         }
         // the cutout edge sharpened to about a pixel, for alpha-to-coverage
         alpha = (alpha - threshold) / nodes::max(nodes::fwidth(alpha), 1e-4f) + 0.5f;
-        cuts[ncuts++] = nodes::if_then(alpha.less_than_equal(nodes::num(0)), nodes::block(nodes::discard()));
+        Node cut = nodes::if_then(alpha.less_than_equal(nodes::num(0)), nodes::block(nodes::discard()));
+        if (key.prepassed) {
+            holes[nholes++] = cut;
+        } else {
+            cuts[ncuts++] = cut;
+        }
         alpha = nodes::min(alpha, 1);
+    }
+    if (key.prepassed) {
+        // the depth prepass: its holes, and the alpha the cut-out's edge leaves for
+        // alpha-to-coverage (it writes no color); the main pass draws only where it has drawn,
+        // whatever covered (an alpha test's cut-out whole)
+        prepass.fragment = drie::node_block(holes[:nholes]);
+        prepass.colors[0] = nodes::vec4(0, 0, 0, key.alpha_test ? alpha : nodes::num(1));
+        if (key.alpha_test) alpha = nodes::num(1);
     }
 
     Node n = nodes::normalize(v_normal);
