@@ -7,19 +7,22 @@
 //   mat.position_node = nodes::position_local() + nodes::normal_local() * (wave * 0.05f);
 //
 // The renderer prints a material's graphs in the backend's own shading language (Metal, HLSL
-// or GLSL) and swaps them into its shaders (node_vertex, node_color, node_normal, node_surface
-// and node_output, see node_common in shader_core.glsl), the way three hands TSL to the browser
-// as WGSL or GLSL: drie carries no shader compiler. A material's shaders are built the first
-// time it is drawn, and again when one of its *_node fields changes; materials whose graphs
-// print the same share them. A uniform (nodes::uniform) changes with Node.set, without a
-// rebuild.
+// or GLSL), the way three hands TSL to the browser as WGSL or GLSL: drie carries no shader
+// compiler. They go into the material's generated programs (materials_nodes.c3), where the
+// material's own steps would work out what they replace; with the material shader
+// (DRIE_CLASSIC_MATERIALS, Renderer.shaders) they are swapped into its hooks instead
+// (node_vertex, node_color, node_normal, node_surface and node_output, see node_common in
+// shader_core.glsl). A material's programs are built the first time it is drawn, and again
+// when one of its *_node fields changes. A uniform (nodes::uniform) changes with Node.set,
+// without a rebuild.
 //
 // The material's own settings still apply where no node replaces them (its maps, clear coat,
 // transmission...). Node materials work in every pass: the main one, the depth prepass and
 // the shadow maps, which see position_node, and the holes color_node and opacity_node cut (a
-// discard, or alpha under the material's alpha_test). Textures are read in the fragment
-// stage, at most six with the material's other maps (see Material.ao_map...), and the graphs
-// can use 32 vec4s of uniforms and four vec4s of varyings.
+// discard, or alpha under the material's alpha_test). With the material shader, textures are
+// read in the fragment stage, at most six with the material's other maps (see
+// Material.ao_map...), and the graphs can use 32 vec4s of uniforms and four vec4s of
+// varyings.
 //
 // Graphs hold floats, ints, uints, bools and their vectors, and 4x4 matrices. They can also
 // hold statements, for TSL's Fn bodies: variables, assignments, ifs, loops, break, continue
@@ -797,8 +800,16 @@ struct NodeBuild {
     Node[12] slots;          // the material's *_node fields it was built from
     NodeProgram* program;
     List{Node} uniforms;     // in their order in node_params (a matrix takes four)
-    Texture*[NODE_TEXTURES] textures; // node texture k is tex_ext(5 - k)
+    Texture*[NODE_TEXTURES] textures; // node texture k: tex_ext(5 - k), or a generated program's
+                                      // view NODE_USER_VIEW + k
     int texture_count;
+    // its generated programs (materials_nodes.c3), by their MaterialKey (with `nodes`): only
+    // its own graphs print them
+    HashMap{KeyWords, MaterialProgram*} programs;
+    // whether one of them is still compiling in the background (in render busy_epoch, see
+    // node_epoch): then none of it is drawn, in any pass (see material_busy)
+    uint busy_epoch;
+    bool busy_now;
 }
 
 HashMap{String, NodeProgram*} node_programs @local;
@@ -864,6 +875,7 @@ fn NodeBuild* node_build_of(Material* mat) {
     // (its program stays: other materials may share it, and the same graphs may come back)
     if (b) {
         b.uniforms.free();
+        free_build_programs(b);
         mem::free(b);
     }
     b = mem::new(NodeBuild);

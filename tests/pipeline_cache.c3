@@ -1,5 +1,7 @@
 // The pipeline cache (pipeline_cache.c3): what a render made is listed, and a list loaded is
-// compiled in the background till Renderer.compiling says none are left. `just test pipeline_cache`
+// compiled in the background till Renderer.compiling says none are left. A node material's
+// pipelines are listed with the material shader's hooks only (DRIE_CLASSIC_MATERIALS=1): its
+// generated programs are not, its key alone can't build them again. `just test pipeline_cache`
 module pipeline_cache_test;
 import drie, drie::nodes, sokol;
 import std::io, std::time, std::math, std::thread;
@@ -55,10 +57,16 @@ fn int main(String[] args) {
     drie::commit();
 
     String text = renderer.pipeline_cache(tmem);
+    // (the node material drawn with the material shader's hooks)
+    bool classic = m.node_build.programs.len() == 0;
     expect(text.starts_with("drie-pipelines 3\n"), "the list has its header");
-    expect(count_lines(text, "N ") == 1, "it has the node material's program");
-    expect(count_lines(text, "G ") >= 1, "and the engine material's pipeline, with its generated program");
-    expect(count_lines(text, "P 0 ") >= 1, "and the node material's");
+    expect(count_lines(text, classic ? "P -1 " : "G ") >= 1, "it has the engine material's pipeline (with its generated program)");
+    if (classic) {
+        expect(count_lines(text, "N ") == 1, "and the node material's program");
+        expect(count_lines(text, "P 0 ") >= 1, "and the node material's pipeline");
+    } else {
+        expect(count_lines(text, "N ") == 0 && count_lines(text, "P ") == 0, "and not the node material's generated ones");
+    }
 
     // what the render made: listed, nothing to compile
     int listed = renderer.load_pipeline_cache(text);
@@ -69,13 +77,15 @@ fn int main(String[] args) {
     expect(renderer.compiling()[0] == 0, "the pipelines this run made need no compiling");
 
     // a program no graph here prints: compiled in the background
-    String other = with_comment(text);
-    int more = renderer.load_pipeline_cache(other);
-    int[2] n = renderer.compiling();
-    expect(more > 0 && n[0] > 0, "a program not made yet compiles in the background");
-    for (int i = 0; i < 1000 && renderer.compiling()[0] > 0; i++) (void)thread::sleep_ms(10);
-    n = renderer.compiling();
-    expect(n[0] == 0 && n[1] == listed + more, "till none are left");
+    if (classic) {
+        String other = with_comment(text);
+        int more = renderer.load_pipeline_cache(other);
+        int[2] n = renderer.compiling();
+        expect(more > 0 && n[0] > 0, "a program not made yet compiles in the background");
+        for (int i = 0; i < 1000 && renderer.compiling()[0] > 0; i++) (void)thread::sleep_ms(10);
+        n = renderer.compiling();
+        expect(n[0] == 0 && n[1] == listed + more, "till none are left");
+    }
 
     // a frame after: the meshes draw as before
     renderer.render(scene, camera);
