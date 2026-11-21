@@ -838,7 +838,6 @@ fn Renderer* renderer(bool antialias = true, int width = 800, int height = 600, 
     state.opaque.allocator = mem;
     state.transparent.allocator = mem;
     if (!state.pipelines.is_initialized()) state.pipelines.init(mem);
-    classic_materials = (env::tget_var("DRIE_CLASSIC_MATERIALS") ?? "") != "";
     state.casters.allocator = mem;
     state.spot_casters.allocator = mem;
     foreach (&l : state.sun_casters) l.allocator = mem;
@@ -1395,7 +1394,7 @@ fn int material_shaders_compiling() @private {
 // second or more each, the first time: the driver keeps them after that). `fs` is the
 // render's light parameters (build_light_params), which the programs' keys read.
 fn void start_material_programs(Renderer* r, Scene* scene, Camera* camera, FsParams* fs, bool prepass) @local {
-    if (classic_materials || r.shaders.main) return;
+    if (classic_materials()) return;
     start_background_program(scene, camera, fs);
     for (int list = 0; list < 2; list++) {
         foreach (&item : list == 0 ? state.opaque : state.transparent) {
@@ -1428,14 +1427,14 @@ fn void start_background_program(Scene* scene, Camera* camera, FsParams* fs) @lo
     if (backdrop_item(scene, camera, &item)) start_item_program(&item, has_holes(&item) ? CUT : SOLID, fs);
 }
 
-// Starts compiling, all at once, the programs of the material shader that this render's draws
-// will take (as get_pipeline picks them), when they draw with it (classic_materials,
-// Renderer.shaders): rather than one after the other as they come to them, a second or more
-// each the first time (the driver keeps them after that).
+// Starts compiling, all at once, the programs of the application's material shader
+// (Renderer.shaders) that this render's draws will take, as get_pipeline picks them: rather
+// than one after the other as they come to them, a second or more each the first time (the
+// driver keeps them after that).
 fn void start_material_shaders(Renderer* r, Scene* scene, bool prepass) @local {
     // (only the classic path draws with them: engine materials have generated programs, and
     // node materials their own)
-    if (!classic_materials && !r.shaders.main) return;
+    if (!classic_materials()) return;
     RenderTarget* rt = r.render_target;
     // the background (draw_background: drawn as a cut-out)
     Material* bg = scene.background_material;
@@ -1472,53 +1471,53 @@ fn bool has_tangent_programs() @private {
 // (a pipeline cache being loaded compiles in the background whatever the renderer's setting)
 fn bool background() @local => (state.renderer && state.renderer.compile_in_background) || pipeline_warmup != null;
 
-// The engine's (or the application's) description of the program that variant `v` of a node
-// program is made from.
+// The application's description of the program that variant `v` of a node program is made
+// from.
 fn SgShaderDesc node_base_desc(NodeProgram* p, NodeVariant v) @local => material_shader_desc(v, false, p.cuts);
 
-// The description of a program of the material shader: the engine's, or the application's
-// (Renderer.shaders); `tangents`: the one for geometries with tangents (no OPAQUE ones: the
-// MAIN ones stand for them, as get_pipeline has it); `cuts`: for SHADOW, the node materials'
-// that cut holes.
+// The description of a program of the application's material shader (Renderer.shaders);
+// `tangents`: the one for geometries with tangents (no OPAQUE ones: the MAIN ones stand for
+// them, as get_pipeline has it); `cuts`: for SHADOW, the node materials' that cut holes. A
+// program it doesn't give is a fault of the application's, except OPAQUE and OPAQUE_MRT (MAIN
+// and MRT draw them), DEPTH and the shadow programs: drie's own, whose vertex hook does
+// nothing. render_back_faces draws with the DEPTH one, and the shadow passes start with the
+// SHADOW pipeline, with generated programs too.
 fn SgShaderDesc material_shader_desc(NodeVariant v, bool tangents, bool cuts) @private {
     MaterialShaders a = state.renderer ? state.renderer.shaders : { };
     SgBackend backend = sg::query_backend();
-    SgShaderDesc desc;
+    if (v == SHADOW && cuts) return a.shadow_nodes ? a.shadow_nodes(backend) : shaders::shadow_nodes_shader_desc(backend);
+    if (v == SHADOW) return a.shadow ? a.shadow(backend) : shaders::shadow_shader_desc(backend);
+    ShaderDescFn f;
     if (tangents) {
-        // (as setup_gfx: the application's all, or the engine's)
-        bool own = a.main != null;
         switch (v) {
             case MAIN:
-            case OPAQUE: return own ? a.main_tangent(backend) : shaders::three_tangent_shader_desc(backend);
+            case OPAQUE: f = a.main_tangent;
             case MRT:
-            case OPAQUE_MRT: return own ? a.main_mrt_tangent(backend) : shaders::three_mrt_tangent_shader_desc(backend);
-            case VSM: return own ? a.main_vsm_tangent(backend) : shaders::three_vsm_tangent_shader_desc(backend);
-            case MRT_VSM: return own ? a.main_mrt_vsm_tangent(backend) : shaders::three_mrt_vsm_tangent_shader_desc(backend);
-            case DEPTH: return own ? a.depth_tangent(backend) : shaders::depth_tangent_shader_desc(backend);
+            case OPAQUE_MRT: f = a.main_mrt_tangent;
+            case VSM: f = a.main_vsm_tangent;
+            case MRT_VSM: f = a.main_mrt_vsm_tangent;
+            case DEPTH: f = a.depth_tangent;
+            case SHADOW: break;
+        }
+    } else {
+        switch (v) {
+            case MAIN: f = a.main;
+            case OPAQUE: f = a.opaque ? a.opaque : a.main;
+            case MRT: f = a.main_mrt;
+            case OPAQUE_MRT: f = a.opaque_mrt ? a.opaque_mrt : a.main_mrt;
+            case VSM: f = a.main_vsm;
+            case MRT_VSM: f = a.main_mrt_vsm;
+            case DEPTH: return a.depth ? a.depth(backend) : shaders::depth_shader_desc(backend);
             case SHADOW: break;
         }
     }
-    switch (v) {
-        case MAIN: desc = a.main ? a.main(backend) : shaders::three_shader_desc(backend);
-        case OPAQUE: desc = a.opaque ? a.opaque(backend) : shaders::three_opaque_shader_desc(backend);
-        case MRT: desc = a.main_mrt ? a.main_mrt(backend) : shaders::three_mrt_shader_desc(backend);
-        case OPAQUE_MRT: desc = a.opaque_mrt ? a.opaque_mrt(backend) : shaders::three_opaque_mrt_shader_desc(backend);
-        case VSM: desc = a.main_vsm ? a.main_vsm(backend) : shaders::three_vsm_shader_desc(backend);
-        case MRT_VSM: desc = a.main_mrt_vsm ? a.main_mrt_vsm(backend) : shaders::three_mrt_vsm_shader_desc(backend);
-        case DEPTH: desc = a.depth ? a.depth(backend) : shaders::depth_shader_desc(backend);
-        case SHADOW:
-            if (cuts) {
-                desc = a.shadow_nodes ? a.shadow_nodes(backend) : shaders::shadow_nodes_shader_desc(backend);
-            } else {
-                desc = a.shadow ? a.shadow(backend) : shaders::shadow_shader_desc(backend);
-            }
-    }
-    return desc;
+    if (!f) abort("drie: Renderer.shaders gives no program for %s%s", v, tangents ? " (tangents)" : "");
+    return f(backend);
 }
 
 // Whether the built-in materials, node materials too, draw with generated programs
-// (materials_nodes.c3) rather than the material shader (classic_materials, Renderer.shaders).
-fn bool generated_materials() @local => !classic_materials && !(state.renderer && state.renderer.shaders.main);
+// (materials_nodes.c3) rather than the application's material shader (Renderer.shaders).
+fn bool generated_materials() @local => !classic_materials();
 
 // The node material build whose graphs a draw of `mat` takes (none in a light map's bake,
 // which draws the material without them).
@@ -3754,7 +3753,7 @@ fn void draw_shadow_item(DrawItem* item, Mat4 light_vp, Vector3 origin = { 0, 0,
         SgPipeline pip = get_shadow_pipeline(nodes.program);
         if (!pip.id || nodes.program.busy()) return;
         sg::apply_pipeline(pip);
-    } else if (!classic_materials) {
+    } else if (!classic_materials()) {
         // (the shared one again after a generated program's)
         sg::apply_pipeline(get_shadow_pipeline());
     }
@@ -4318,7 +4317,7 @@ fn void render_transmission(Renderer* r, Scene* scene, Camera* camera, Mat4 view
     Color background = scene.background ? scene.background : r.clear_color;
     Vector3 clear    = color_to_linear(background);
     // (this pass's programs, all at once: start_material_programs started the main pass's)
-    if (!classic_materials && !r.shaders.main) {
+    if (!classic_materials()) {
         start_background_program(scene, camera, &tfs);
         for (int list = 0; list < 2; list++) {
             foreach (&item : list == 0 ? state.opaque : state.transparent) {
@@ -4902,7 +4901,8 @@ fn void Renderer.render_bake(
     state.lights.clear();
     collect_lights(lights);
     state.bake = { .on = true, .prev = prev, .width = target.width, .height = target.height };
-    state.bake.pipeline = bake_pipeline(target.pixel_format());
+    // (the material shader's, with Renderer.shaders; generated programs have their own)
+    if (classic_materials()) state.bake.pipeline = bake_pipeline(target.pixel_format());
     state.bake.format = target.pixel_format();
     state.caster_roots = objects;
     state.sun_caster = null;

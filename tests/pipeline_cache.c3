@@ -1,6 +1,6 @@
 // The pipeline cache (pipeline_cache.c3): what a render made is listed, and a list loaded is
 // compiled in the background till Renderer.compiling says none are left. A node material's
-// pipelines are listed with the material shader's hooks only (DRIE_CLASSIC_MATERIALS=1): its
+// pipelines are listed with the material shader's hooks only (Renderer.shaders): its
 // generated programs are not, its key alone can't build them again. `just test pipeline_cache`
 module pipeline_cache_test;
 import drie, drie::nodes, sokol;

@@ -63,8 +63,8 @@ fn float[3] rgb_at(char[] px, int[2] p) {
 }
 
 // The material's generated programs (materials_nodes.c3), and of what kind: the main pass's
-// with the depth prepass's, the shadow maps', for a target with MRT. None with the material
-// shader (DRIE_CLASSIC_MATERIALS=1), whose node programs NodeProgram holds.
+// with the depth prepass's, the shadow maps', for a target with MRT. None with an application's
+// material shader (Renderer.shaders), whose node programs NodeProgram holds.
 struct Generated {
     int count;
     bool depth;

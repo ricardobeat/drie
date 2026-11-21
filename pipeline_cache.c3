@@ -22,8 +22,8 @@
 // nothing), so the frames go on: a pipeline still compiling when something wants it is
 // made then, after its compile in the background (or left out of the frame till its
 // pipelines are ready, for a node material with Renderer.compile_in_background). The
-// materials' generated programs are listed by their MaterialKey; with the material shader
-// (DRIE_CLASSIC_MATERIALS, Renderer.shaders) node materials' programs are in the list too, as
+// materials' generated programs are listed by their MaterialKey; with an application's
+// material shader (Renderer.shaders) node materials' programs are in the list too, as
 // their hooks' text: when a graph that prints the same text is drawn, it gets the program
 // already made. The list is text, one line a pipeline (see
 // Renderer.pipeline_cache); it holds no compiled code, so it doesn't go stale when the

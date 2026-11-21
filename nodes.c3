@@ -9,8 +9,8 @@
 // The renderer prints a material's graphs in the backend's own shading language (Metal, HLSL
 // or GLSL), the way three hands TSL to the browser as WGSL or GLSL: drie carries no shader
 // compiler. They go into the material's generated programs (materials_nodes.c3), where the
-// material's own steps would work out what they replace; with the material shader
-// (DRIE_CLASSIC_MATERIALS, Renderer.shaders) they are swapped into its hooks instead
+// material's own steps would work out what they replace; with an application's material
+// shader (Renderer.shaders) they are swapped into its hooks instead
 // (node_vertex, node_color, node_normal, node_surface and node_output, see node_common in
 // shader_core.glsl). A material's programs are built the first time it is drawn, and again
 // when one of its *_node fields changes. A uniform (nodes::uniform) changes with Node.set,
