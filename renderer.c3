@@ -3132,9 +3132,9 @@ fn bool material_key_of(DrawItem* item, DrawKind kind, FsParams* fs, Vec4[6]* ma
     bool lit = type != BASIC;
     bool standard = type == STANDARD;
     float alpha_test = alpha_test_of(mat);
-    // (drawn by the material shader: glass, hex tiling, defocus, the fog's volume, its lights'
-    // glow and its light shafts)
-    if (mat.glass || (mat.hex_tiling > 0 && alpha_test <= 0)) return false;
+    // (drawn by the material shader: hex tiling, defocus, the fog's volume, its lights' glow
+    // and its light shafts)
+    if (mat.hex_tiling > 0 && alpha_test <= 0) return false;
     if (mat.defocus && r.focus_map && r.focus_aperture > 0) return false;
     int fog = mat.fog ? (int)fs.fog_params.w : 0;
     if (fog && (fs.fog_grid.w > 0 || fs.fog_color.w > 0)) return false;
@@ -3142,15 +3142,21 @@ fn bool material_key_of(DrawItem* item, DrawKind kind, FsParams* fs, Vec4[6]* ma
     Texture* env_map = mat.env_map;
     Scene* scene = state.scene;
     if (!env_map && scene && scene.environment && standard) env_map = scene.environment;
-    // the scene's reflection probes in place of the environment (on the lit materials but
-    // lambert)
-    bool probes = lit && type != LAMBERT && !mat.env_map && mat.env_probes && state.probes_view.id;
+    // (its light from all around, env_light, is worked out when it goes to the GPU)
+    if (env_map) (void)ready(env_map);
+    // the scene's reflection probes in place of the environment
+    bool probes = !mat.env_map && mat.env_probes && state.probes_view.id;
     if (probes) env_map = null;
+    bool backdrop = m == state.background;
+    // three's envMap on a basic, lambert or phong material
+    bool env_combine = mat.env_map && !backdrop && !standard;
+    // what it mirrors of the environment (its map or the probes): glass on any material, or
+    // the reflections over the light but on lambert materials and the background
+    bool env_reflect = (env_map || probes) && (mat.glass || (type != LAMBERT && !backdrop && !env_combine));
 
     RenderTarget* rt = r.render_target;
     bool cut = kind == CUT;
     bool vc = mat.vertex_colors;
-    bool backdrop = m == state.background;
     bool shadows = lit && m.receive_shadow && (lights_gpu.shadows.len() > 0 || fs.dir_shadow_params.x > 0.5f);
     bool linear = fs.output_params.x > 0.5f;
     *key = {
@@ -3167,7 +3173,7 @@ fn bool material_key_of(DrawItem* item, DrawKind kind, FsParams* fs, Vec4[6]* ma
         .map = mat.map != null,
         .alpha_test = cut && alpha_test > 0,
         .background = backdrop,
-        .env_combine = mat.env_map && !backdrop && !standard,
+        .env_combine = env_combine,
         .vertex_occlusion = mat.vertex_occlusion && vc,
         .premultiplied = mat.premultiplied_alpha,
         .fog = (char)fog,
@@ -3192,13 +3198,14 @@ fn bool material_key_of(DrawItem* item, DrawKind kind, FsParams* fs, Vec4[6]* ma
         .normal_map = lit && mat.normal_map != null,
         .tangents = lit && uses_tangents(item),
         .env_light = standard && env_map && env_map.has_env_sh,
-        .env_reflect = (standard && env_map) || probes,
+        .env_reflect = env_reflect,
+        .glass = mat.glass,
         .probes = probes,
         .gi = lit && state.gi_count > 0,
-        .ssr = lit && r.ssr_color.id && r.ssr_depth.id && mat.ssr > 0,
-        .reflector = lit && mat.reflector && mat.reflector.rendered && mat.reflector.target,
+        .ssr = !mat.glass && r.ssr_color.id && r.ssr_depth.id && mat.ssr > 0,
+        .reflector = !mat.glass && mat.reflector && mat.reflector.rendered && mat.reflector.target,
         .rc = lit && fs.rc_size.w > 0,
-        .env_box = standard && env_map && mat.env_box_min != mat.env_box_max,
+        .env_box = env_reflect && env_map && mat.env_box_min != mat.env_box_max,
         .toon_nearest = type == TOON && mat.gradient_map && mat.gradient_map.nearest,
         .shadows = shadows,
         .vsm = shadows && vsm_on(),
@@ -3217,7 +3224,7 @@ fn bool material_key_of(DrawItem* item, DrawKind kind, FsParams* fs, Vec4[6]* ma
         .sheen = standard && mat.sheen > 0 && (mat.sheen_color.x > 0 || mat.sheen_color.y > 0 || mat.sheen_color.z > 0),
         .iridescence = standard && mat.iridescence > 0,
         .anisotropy = standard && mat.anisotropy > 0,
-        .transmission = standard && mat.transmission > 0 && state.transmission_mips.id != 0,
+        .transmission = standard && !mat.glass && mat.transmission > 0 && state.transmission_mips.id != 0,
         .arm_ao = (bool)mat.arm_map,
         .arm_rough = mat.arm_map || mat.roughness_map,
         .arm_metal = mat.arm_map || (mat.metalness_map && (mat.roughness_map ?: mat.metalness_map) == mat.metalness_map),

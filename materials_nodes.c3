@@ -69,8 +69,8 @@ bitstruct MaterialKey : char[32] {
     bool baked : 41;             // the vertex colors are baked light (Material.vertex_light)
     bool normal_map : 42;
     bool tangents : 43;          // the tangent frame from the vertex tangents
-    bool env_light : 44;         // a standard material's environment: its light from all around,
-    bool env_reflect : 45;       //   its reflections,
+    bool env_light : 44;         // a standard material's environment: its light from all around;
+    bool env_reflect : 45;       // the reflection of its environment (its map or the probes),
     bool env_box : 46;           //   box projected
     bool toon_nearest : 47;      // the toon material's gradient map read nearest
     bool shadows : 48;           // it receives the render's shadows:
@@ -96,8 +96,9 @@ bitstruct MaterialKey : char[32] {
     bool probes : 68;            // it mirrors the scene's reflection probes (Material.env_probes)
     bool gi : 69;                // the scene's irradiance volumes (lit materials),
     bool rc : 70;                //   its radiance cascades
-    bool ssr : 71;               // screen-space reflections (Material.ssr, lit materials)
-    bool reflector : 72;         // a planar Reflector's picture (Material.reflector, lit materials)
+    bool ssr : 71;               // screen-space reflections (Material.ssr)
+    bool reflector : 72;         // a planar Reflector's picture (Material.reflector)
+    bool glass : 73;             // Material.glass: its reflections stay however clear it is
 }
 
 // The map roles (shader_core.glsl's MAP_*) a key holds a slot for.
@@ -604,6 +605,11 @@ fn void build_material_graph(MaterialKey key, ProgramGraph* graph) @private {
         if (key.arm_rough) rough = rough * arm.y();
         if (key.arm_metal) metal = metal * arm.z();
     }
+    // three's aoMap and aoMapIntensity
+    if (key.slot(MAP_AO)) ao = ao * ((role_texel(key, &f, MAP_AO).x() - 1.0f) * fs_in("ext_params", FLOAT, 1) + 1.0f);
+    Lit lit = { .key = key, .n = n, .geo_n = geo_n, .v = v, .world = world, .rough = rough, .metal = metal, .alpha = alpha,
+                .ao = ao, .parallax = px, .f = &f, .v_normal = v_normal, .tangent = vtx.tangent, .irid_fn = -1, .frag = fc.xy(),
+                .shadow = shadow_fns(key), .ltc_fn = -1, .refraction = { -1, -1, -1 }, .probe_fn = -1, .ssr_fn = -1 };
     if (key.type == (char)MaterialType.BASIC) {
         outc = rgb;
         // three's lightMap: the indirect light is the map's instead of 1
@@ -618,14 +624,24 @@ fn void build_material_graph(MaterialKey key, ProgramGraph* graph) @private {
             Node seen = nodes::select(lod.greater_than(nodes::num(0)), shading::env_level(uv, lod), shading::env_texel_smooth(uv));
             outc = seen.xyz() * env_params.y();
         }
+        if (key.glass || key.env_reflect || key.ssr || key.reflector) {
+            // glass, the reflection probes' and the mirror images on an unlit material too
+            lit.f0 = nodes::mix(nodes::vec3(0.04f), rgb, metal);
+            lit.f90 = nodes::num(1);
+            lit.lights = outc;
+            lit.ind_d = nodes::vec3(0);
+            lit.finish();
+            outc = lit.outc;
+            ind_d = lit.ind_d;
+            ind_s = lit.ind_s;
+            alpha = lit.alpha;
+        }
     } else {
-        Lit lit = { .key = key, .n = n, .geo_n = geo_n, .v = v, .world = world, .rough = rough, .metal = metal,
-                    .ao = ao, .parallax = px, .f = &f, .v_normal = v_normal, .tangent = vtx.tangent, .irid_fn = -1, .frag = fc.xy(), .shadow = shadow_fns(key), .ltc_fn = -1,
-                    .refraction = { -1, -1, -1 }, .probe_fn = -1, .ssr_fn = -1 };
         lit.shade(&f, rgb, map_rgb, v_color.xyz());
         outc = lit.outc;
         ind_d = lit.ind_d;
         ind_s = lit.ind_s;
+        alpha = lit.alpha;
     }
 
     if (key.env_combine) {
@@ -779,6 +795,13 @@ struct Lit @local {
     // direct()'s light on the coat and on the sheen, for light_body
     Node coat_d;
     Node sheen_d;
+    // the light on the surface: from the lights and all around and given off (all but its
+    // highlights), its highlights (none: lambert, toon, basic) and what it gives off itself
+    Node lights;
+    Node highlights;
+    Node glow;
+    // its opacity, for glass
+    Node alpha;
     // what it comes to: all of the light, and the indirect diffuse part of it
     Node outc;
     Node ind_d;
@@ -793,8 +816,6 @@ fn void Lit.shade(&self, FragUv* f, Node rgb, Node map_rgb, Node v_color) {
     self.dpdx = nodes::dfdx(self.world);
     self.dpdy = nodes::dfdy(self.world);
     Node ao = self.ao;
-    // three's aoMap and aoMapIntensity
-    if (key.slot(MAP_AO)) ao = ao * ((role_texel(key, f, MAP_AO).x() - 1.0f) * fs_in("ext_params", FLOAT, 1) + 1.0f);
     self.diffuse = rgb;
     if (key.type == (char)MaterialType.STANDARD) {
         // what it reflects head on: 4% for glass's IOR of 1.5, tinted and scaled by the specular
@@ -1025,6 +1046,56 @@ fn void Lit.shade(&self, FragUv* f, Node rgb, Node map_rgb, Node v_color) {
     }
     if (key.rect_lights) stmts[ns++] = self.rect_lights(outc, spec);
     Node lit = nodes::seq(drie::node_block(stmts[:ns]), outc);
+    Node highlights = spec;
+    // three's specularMap: the highlights' strength
+    if (key.type == (char)MaterialType.PHONG && key.slot(MAP_SPECULAR)) highlights = highlights * role_texel(key, f, MAP_SPECULAR).x();
+    bool shiny = key.type != (char)MaterialType.LAMBERT && key.type != (char)MaterialType.TOON;
+    if (shiny) self.highlights = highlights * ao;
+    // what it gives off itself: Material.map_emissive (the color map glows too), three's emissiveMap
+    Node glow = fs_in("emissive", VEC3);
+    if (key.map_emissive && map_rgb.id) glow = glow * map_rgb;
+    if (key.slot(MAP_EMISSIVE)) glow = glow * role_texel(key, f, MAP_EMISSIVE).xyz();
+    self.glow = glow;
+    Node result = lit + glow;
+    // light baked into the vertex colors, as if from fixed lamps
+    if (key.baked) {
+        Node b = diffuse * v_color * fs_in("emissive", FLOAT, 3) * ao;
+        result = result + b;
+        self.ind_d = self.ind_d + b;
+    }
+    self.lights = result;
+    self.finish();
+}
+
+// What comes over the light on the surface (self.lights, its highlights and the light it
+// gives off), for every material type: glass's reflections; or the environment's reflection,
+// the mirror images over it, the light through a transmission material and the physical
+// material's sheen and clear coat.
+fn void Lit.finish(&self) {
+    MaterialKey key = self.key;
+    Node n = self.n;
+    Node ao = self.ao;
+    FragUv* f = self.f;
+    if (key.glass) {
+        // glass: reflections stay visible however clear the pane is
+        Node v = self.v;
+        Node fresnel = nodes::pow(nodes::clamp(nodes::dot(n, v), 0, 1).one_minus(), 5) * 0.96f + 0.04f;
+        Node r = nodes::reflect(v.negate(), n);
+        Node sky;
+        if (key.env_reflect) {
+            sky = env_sample(key, &self.probe_fn, r, self.rough, self.world, self.frag, n);
+        } else {
+            sky = nodes::mix(fs_in("hemi_ground", VEC3), fs_in("hemi_sky", VEC3), r.y() * 0.5f + 0.5f) + fs_in("ambient", VEC3);
+        }
+        Node spec = sky * fresnel;
+        if (self.highlights.id) spec = self.highlights + spec;
+        Node a = nodes::clamp(self.alpha + fresnel + max3(spec), 0, 1);
+        // blended with src-alpha: pre-divided so that outc * alpha + spec comes out
+        self.outc = (self.lights * self.alpha + spec) / nodes::max(a, 1e-4f);
+        self.alpha = a;
+        self.ind_s = nodes::vec3(0);
+        return;
+    }
     self.ind_s = nodes::vec3(0);
     Node env_term;
     if (key.env_reflect) {
@@ -1087,25 +1158,10 @@ fn void Lit.shade(&self, FragUv* f, Node rgb, Node map_rgb, Node v_color) {
         if (env_term.id) env_term = env_term * nodes::clamp(found * strength, 0, 1).one_minus();
         self.ind_s = env_term.id ? env_term + mirror_term : mirror_term;
     }
-    Node highlights = spec;
-    // three's specularMap: the highlights' strength
-    if (key.type == (char)MaterialType.PHONG && key.slot(MAP_SPECULAR)) highlights = highlights * role_texel(key, f, MAP_SPECULAR).x();
-    highlights = highlights * ao;
-    // what it gives off itself: Material.map_emissive (the color map glows too), three's emissiveMap
-    Node glow = fs_in("emissive", VEC3);
-    if (key.map_emissive && map_rgb.id) glow = glow * map_rgb;
-    if (key.slot(MAP_EMISSIVE)) glow = glow * role_texel(key, f, MAP_EMISSIVE).xyz();
-    Node result = lit + glow;
-    // light baked into the vertex colors, as if from fixed lamps
-    if (key.baked) {
-        Node b = diffuse * v_color * fs_in("emissive", FLOAT, 3) * ao;
-        result = result + b;
-        self.ind_d = self.ind_d + b;
-    }
+    Node result = self.lights;
     if (env_term.id) result = result + env_term;
     if (mirror_term.id) result = result + mirror_term;
-    bool shiny = key.type != (char)MaterialType.LAMBERT && key.type != (char)MaterialType.TOON;
-    self.outc = shiny ? result + highlights : result;
+    self.outc = self.highlights.id ? result + self.highlights : result;
     if (key.transmission) {
         // what is behind the surface, refracted through the volume, takes the place of its
         // diffuse light; highlights, reflections and the light it gives off stay
@@ -1114,7 +1170,7 @@ fn void Lit.shade(&self, FragUv* f, Node rgb, Node map_rgb, Node v_color) {
         Node thickness = nodes::max(fs_in("transmission_params", FLOAT, 1), 0);
         if (key.slot(MAP_THICKNESS)) thickness = thickness * role_texel(key, f, MAP_THICKNESS).y();
         Node refracted = self.refraction.light(n, self.v, self.world, self.rough, self.diffuse, thickness, self.f0, self.f90);
-        Node kept = highlights + glow;
+        Node kept = self.highlights + self.glow;
         if (env_term.id) kept = kept + env_term;
         if (mirror_term.id) kept = kept + mirror_term;
         self.outc = nodes::mix(nodes::max(self.outc - kept, nodes::vec3(0)), refracted, amount) + kept;
