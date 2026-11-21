@@ -1011,7 +1011,7 @@ fn void Lit.shade(&self, FragUv* f, Node rgb, Node map_rgb, Node v_color) {
             rn = nodes::select(self.aniso.greater_than(nodes::num(0)), nodes::normalize(nodes::mix(bent, n, k * k)), n);
         }
         Node r = dominant_reflection(nodes::reflect(v.negate(), rn), rn, rough);
-        env_term = env_sample(key, r, rough, self.world) * fr;
+        env_term = env_sample(key, r, rough, self.world, self.frag) * fr;
         if (key.sheen) env_term = env_term * (max3(self.sheen_color) * sheen_albedo(n, v, self.sheen_rough)).one_minus();
         self.ind_s = env_term;
     }
@@ -1057,7 +1057,7 @@ fn void Lit.shade(&self, FragUv* f, Node rgb, Node map_rgb, Node v_color) {
         Node coat = self.cc_light;
         if (key.env_reflect) {
             Node r = dominant_reflection(nodes::reflect(v.negate(), cn), cn, self.cc_rough);
-            Node reflected = env_sample(key, r, self.cc_rough, self.world) * environment_brdf(cn, v, nodes::vec3(0.04f), nodes::num(1), self.cc_rough);
+            Node reflected = env_sample(key, r, self.cc_rough, self.world, self.frag) * environment_brdf(cn, v, nodes::vec3(0.04f), nodes::num(1), self.cc_rough);
             coat = coat + reflected;
             self.ind_s = self.ind_s + reflected * self.cc;
         }
@@ -1417,18 +1417,63 @@ fn Node env_blur(Node rough) @local {
 }
 
 // The material's map in direction d, blurred for `rough` (env_sample, the material's own map):
-// box projected, the ray met with the room's walls first.
-fn Node env_sample(MaterialKey key, Node d, Node rough, Node world) @local {
+// box projected, the ray met with the room's walls first, or with what a map with distances
+// (env_params.w, their range) saw in the room. `frag` is the pixel's position in the target.
+fn Node env_sample(MaterialKey key, Node d, Node rough, Node world, Node frag) @local {
     if (key.env_box) {
         Node inv = 1.0f / d;
         Node t_far = nodes::max((fs_in("env_box_max", VEC3) - world) * inv, (fs_in("env_box_min", VEC3) - world) * inv);
         Node t = nodes::max(nodes::min(nodes::min(t_far.x(), t_far.y()), t_far.z()), 0);
         Node o = world - fs_in("env_pos", VEC3);
-        d = nodes::normalize(o + d * t);
+        d = nodes::normalize(o + d * env_march(o, d, t, rough, frag));
     }
     Node width = nodes::convert(shading::env_size().x(), FLOAT);
     return shading::env_level(shading::env_uv(d), shading::env_lod(env_blur(rough), width)).xyz() * fs_in("env_params", FLOAT, 1);
 }
+
+// How far the ray from `o` (relative to where the map was captured) in direction d goes, `t`
+// to the room's walls, before it goes behind something the map saw: a map with distances walks
+// it through the room in 72 steps and stops there (not far behind: then it only passes at the
+// back of it, out of the map's sight). Only for sharp reflections (rough < 0.3); t otherwise.
+fn Node env_march(Node o, Node d, Node t, Node rough, Node frag) @local {
+    const int STEPS = 72;
+    Node range = fs_in("env_params", FLOAT, 3);
+    Node dt = t / (float)STEPS;
+    // the distances come in steps of 1/255 of their range: nearer than that to a surface, a
+    // ray is not yet behind it (or a wall seen at a glancing angle breaks up into rings, one
+    // per step)
+    Node slack = range * (1.5f / 255.0f);
+    Node noise = shading_noise(frag + nodes::vec2(47.0f, 17.0f) * fs_in("ssr_params", FLOAT, 2));
+    Node far = nodes::variable(t);
+    Node prev = nodes::variable(nodes::num(0));
+    Node at = nodes::variable(dt * (noise * 0.7f + 0.3f));
+    Node lo = nodes::variable(prev);
+    Node hi = nodes::variable(at);
+    Node mid = (lo + hi) * 0.5f;
+    Node k = nodes::loop_index(UINT);
+    Node halve = nodes::loop(k, nodes::uint_(0), nodes::uint_(4),
+                             nodes::block(nodes::if_then(env_behind(o + d * mid, range).greater_than(slack),
+                                                         nodes::block(hi.assign(mid)), nodes::block(lo.assign(mid)))));
+    Node behind = env_behind(o + d * at, range);
+    Node hit = nodes::logical_and(behind.greater_than(slack), behind.less_than(dt + 0.12f + slack));
+    Node i = nodes::loop_index(UINT);
+    Node step = nodes::loop(i, nodes::uint_(0), nodes::uint_(STEPS),
+                            nodes::block(nodes::if_then(hit, nodes::block(lo, hi, halve, far.assign(hi), nodes::break_())),
+                                         prev.assign(at), at.assign(at + dt)));
+    Node on = nodes::logical_and(range.greater_than(nodes::num(0)), rough.less_than(nodes::num(0.3f)));
+    return nodes::seq(nodes::block(far, nodes::if_then(on, nodes::block(prev, at, step))), far);
+}
+
+// How far the point `q` (relative to where the map was captured) lies behind what the map saw
+// in its direction (its alpha: the distance over `range`).
+fn Node env_behind(Node q, Node range) @local {
+    Node len = nodes::length(q);
+    return len - shading::env_level(shading::env_uv(q / len), nodes::num(0)).w() * range;
+}
+
+// Interleaved gradient noise (Jimenez's), as shader_core.glsl's ssr_noise.
+fn Node shading_noise(Node p) @local
+    => nodes::fract(nodes::fract(nodes::dot(p, nodes::vec2(0.06711056f, 0.00583715f))) * 52.9829189f);
 
 // The frame of a normal map at `n`: the vertex tangents', or the cotangent frame of the map's
 // uv, `duv1` and `duv2` its change from one pixel to the next (tangent_frame, three's
