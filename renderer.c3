@@ -375,6 +375,10 @@ struct Renderer {
     // frames. Off by default: a frame waits for the programs its draws take, which start
     // compiling all at once when the render begins.
     bool compile_in_background;
+    // Extension: how many programs (sokol shaders) can exist at once: the materials' generated
+    // programs, one per material key and graphs drawn (shared by the materials that print the
+    // same), the passes' and the application's. Read when the renderer starts; 0: DEFAULT_PROGRAMS.
+    int max_programs;
     // Extension: a render target that stands for the window in what the pipeline cache records
     // (save_pipeline_cache): for a program that renders headless on behalf of one with a window,
     // as driejs makes its demos' thumbnails. Null: none.
@@ -933,6 +937,9 @@ struct MaterialShaders {
     ShaderDescFn shadow_nodes;
 }
 
+// Renderer.max_programs unset.
+const int DEFAULT_PROGRAMS = 1024;
+
 fn void setup_gfx(SgEnvironment environment) @local {
     sg::setup(
         &&{
@@ -941,14 +948,15 @@ fn void setup_gfx(SgEnvironment environment) @local {
             // often: a farm of scattered plants has tens of thousands. sokol's maximum.
             .buffer_pool_size = 65535, // room for the uniforms of some thousands of draws a frame (sokol's default, 4 MB,
             // is too little for a scene of many scattered plants seen from afar)
-            .uniform_buffer_size = 16 * 1024 * 1024,
-            .image_pool_size = 1024,
+            .uniform_buffer_size = 16 * 1024 * 1024, // an image, a view and a sampler per texture: a world of many
+            // materials has hundreds (house's test views about 840 images and 790 samplers at once)
+            .image_pool_size = 4096,
             .view_pool_size = 4096,
-            .sampler_pool_size = 1024, // a pipeline per variant of the material shader that is drawn (get_pipeline: kind,
+            .sampler_pool_size = 4096, // a pipeline per variant of the material shader that is drawn (get_pipeline: kind,
             // side, blending, wireframe, target, alpha to coverage, VSM; up to 2016), and the
             // passes'. sokol's default (64) runs out once a scene is drawn into a few kinds of target
             .pipeline_pool_size = 4096,
-            .shader_pool_size = 256,
+            .shader_pool_size = state.renderer && state.renderer.max_programs > 0 ? state.renderer.max_programs : DEFAULT_PROGRAMS,
         }
     );
     stm::setup();
