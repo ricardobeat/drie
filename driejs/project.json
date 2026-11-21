@@ -7,25 +7,67 @@
 	"dependencies": [
 		"https://c3.ricar.do/github.com:ricardobeat/boomkat@jit",
 		"sokol",
-		"drie",
 		"draco",
 		"wamr"
 	],
+	"sources": [
+		"src",
+		"../*",
+		"../generated/*",
+		"../platform/*"
+	],
+	"c-sources": [
+		"../display.c",
+		"../platform/cgltf.c"
+	],
+	"opt": "O3",
+	"single-module": true,
+	"fp-math": "relaxed",
+	"debug-info": "none",
+	"features": [
+		"THREADED_DISPATCH",
+		"PRINT",
+		"CONSOLE",
+		"SLJIT"
+	],
 	"targets": {
-		"driejs": {
+		"driejs-macos": {
 			"type": "executable",
-			"sources": [
-				"src"
+			"name": "driejs",
+			"cflags": "-O2 -DNDEBUG -x objective-c -fobjc-arc",
+			"c-sources": [
+				"../platform/readback.c",
+				"../platform/imageio.c",
+				"../platform/gamectl.c"
 			],
-			"opt": "O3",
-			"single-module": true,
-			"fp-math": "relaxed",
-			"debug-info": "none",
-			"features": [
-				"THREADED_DISPATCH",
-				"PRINT",
-				"CONSOLE",
-				"SLJIT"
+			"linked-libraries": [
+				"AppKit.framework",
+				"QuartzCore.framework",
+				"CoreGraphics.framework",
+				"Metal.framework",
+				"Foundation.framework",
+				"ImageIO.framework",
+				"CoreText.framework",
+				"CoreFoundation.framework",
+				"GameController.framework"
+			]
+		},
+		"driejs-linux": {
+			"type": "executable",
+			"name": "driejs"
+		},
+		"driejs-windows": {
+			"type": "executable",
+			"name": "driejs",
+			"c-sources": [
+				"../platform/readback_win.c",
+				"../platform/imageio_win.c",
+				"../platform/gamectl_win.c"
+			],
+			"linked-libraries": [
+				"d3d11",
+				"ole32",
+				"windowscodecs"
 			]
 		}
 	}
