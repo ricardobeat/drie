@@ -29,8 +29,24 @@ const TYPES = ["float", "vec2", "vec3", "vec4", "bool", "mat4", "int", "ivec2", 
 const T = Object.fromEntries(TYPES.map((t, i) => [t, i]));
 T.color = T.vec3;
 const COMPONENTS = [1, 2, 3, 4, 1, 16, 1, 2, 3, 4, 1, 2, 3, 4, 0];
+const SCALAR_BASE = { float: 0, int: 6, uint: 10 };
 const scalarOf = (t) => (t <= 3 ? "float" : t === 4 ? "bool" : t === 5 ? "mat" : t <= 9 ? "int" : t <= 13 ? "uint" : "void");
-const typeOf = (scalar, n) => (scalar === "bool" ? T.bool : { float: 0, int: 6, uint: 10 }[scalar] + n - 1);
+const typeOf = (scalar, n) => (scalar === "bool" ? T.bool : SCALAR_BASE[scalar] + n - 1);
+const isWeakConst = (n) => n !== null && n !== undefined && n.isConstNode === true && n.isWeak === true && typeof n.value === "number";
+
+// Mirrors wider() in drie's nodes.c3 so we track node types in JS without N.nodeType() FFI calls.
+function widerType(a, b) {
+	if (a === b) return a;
+	if (a === T.mat4 || b === T.mat4) return T.mat4;
+	let sa = scalarOf(a);
+	let sb = scalarOf(b);
+	if (sa === "bool") sa = sb === "bool" ? "float" : sb;
+	if (sb === "bool") sb = sa;
+	const s = sa === "float" || sb === "float" ? "float" : sa;
+	const na = COMPONENTS[a];
+	const nb = COMPONENTS[b];
+	return typeOf(s, na > nb ? na : nb);
+}
 
 // NodeBuiltin, NodeBinary, NodeFn, NodeLoop
 const B = {
@@ -117,6 +133,86 @@ const fn = (name, make) => {
 // (the model's normal matrix as its rotation: for uniform scales)
 fn("transformNormalToView", (t, [n]) => t.toView(t.call("normalize", t.swizzle(t.bin("*", t.builtin(B.MODEL_MATRIX), t.join(T.vec4, t.node(n), t.num(0))), "xyz"))));
 
+// Native MaterialX noise builders (src/mx_noise.c3): hook both plain Fn and overloadingFn
+// entries so three.tsl.js's deeply nested Fn graphs don't run or lower in JS.
+const hookOverload = (expr, make) => {
+	if (expr?.functionNodes) {
+		for (const f of expr.functionNodes) if (f?.shaderNode) FUNCTIONS.set(f.shaderNode, make);
+	} else if (expr?.shaderNode) {
+		FUNCTIONS.set(expr.shaderNode, make);
+	}
+};
+const withType = (t, id, type) => {
+	t.types.set(id, type);
+	return id;
+};
+if (N.mxPerlinFloat) {
+	if (TSL.mx_noise_float) hookOverload(TSL.mx_noise_float(TSL.vec2()).aNode?.aNode, (t, [p]) => withType(t, N.mxPerlinFloat(t.node(p)), T.float));
+	if (TSL.mx_noise_vec3) hookOverload(TSL.mx_noise_vec3(TSL.vec2()).aNode?.aNode, (t, [p]) => withType(t, N.mxPerlinVec3(t.node(p)), T.vec3));
+	if (TSL.mx_cell_noise_float) hookOverload(TSL.mx_cell_noise_float(TSL.vec2()), (t, [p]) => withType(t, N.mxCellFloat(t.node(p)), T.float));
+	if (TSL.mx_worley_noise_float_2d) hookOverload(TSL.mx_worley_noise_float_2d(), (t, [p, j, s]) => withType(t, N.mxWorley2d(t.node(p), t.node(j), t.node(s)), T.float));
+	if (TSL.mx_worley_noise_float_3d) hookOverload(TSL.mx_worley_noise_float_3d(), (t, [p, j, s]) => withType(t, N.mxWorley3d(t.node(p), t.node(j), t.node(s)), T.float));
+	if (TSL.mx_fractal_noise_float_2d) hookOverload(TSL.mx_fractal_noise_float_2d().aNode, (t, [p, o, l, d]) => withType(t, N.mxFractalFloat(t.node(p), t.node(o), t.node(l), t.node(d)), T.float));
+	if (TSL.mx_fractal_noise_float) hookOverload(TSL.mx_fractal_noise_float().aNode, (t, [p, o, l, d]) => withType(t, N.mxFractalFloat(t.node(p), t.node(o), t.node(l), t.node(d)), T.float));
+	if (TSL.mx_fractal_noise_vec3) hookOverload(TSL.mx_fractal_noise_vec3().aNode, (t, [p, o, l, d]) => withType(t, N.mxFractalVec3(t.node(p), t.node(o), t.node(l), t.node(d)), T.vec3));
+}
+
+// MaterialX unifiednoise2d / unifiednoise3d evaluate all four noise algorithms (Perlin, Cell,
+// Worley, Fractal) in three.tsl.js even when noiseType is a constant. When it is, lower only
+// the selected branch.
+function constInt(n) {
+	if (typeof n === "number" && Number.isInteger(n)) return n;
+	if (n && n.isConstNode && typeof n.value === "number" && Number.isInteger(n.value)) return n.value;
+	if (n && n.isConvertNode && n.node) return constInt(n.node);
+	return null;
+}
+function constBool(n) {
+	if (typeof n === "boolean") return n;
+	if (typeof n === "number") return n !== 0;
+	if (n && n.isConstNode) return Boolean(n.value);
+	return null;
+}
+if (TSL.mx_unifiednoise2d && TSL.mx_unifiednoise3d) {
+	const u2 = TSL.mx_unifiednoise2d(0).shaderNode;
+	const u3 = TSL.mx_unifiednoise3d(0).shaderNode;
+	const unified = (is3d) => (t, raw) => {
+		const nt = constInt(raw[0]);
+		if (nt === null || nt < 0 || nt > 3) return null; // fall back to generic fnCall
+		const [_, coordIn, freqIn, offIn, jitterIn, outminIn, outmaxIn, clampIn, octIn, lacIn, dimIn, styleIn] = raw;
+		const coord = is3d ? TSL.vec3(coordIn) : TSL.vec2(coordIn);
+		const freq = is3d ? TSL.vec3(freqIn) : TSL.vec2(freqIn);
+		const off = is3d ? TSL.vec3(offIn) : TSL.vec2(offIn);
+		const applyOffset = coord.mul(freq).add(off);
+		const jitter = TSL.float(jitterIn);
+		const jitterVal = typeof jitterIn === "number" ? jitterIn : (jitterIn?.isConstNode ? jitterIn.value : null);
+		const cellJitterMult = jitter.sub(1).mul(90000);
+		let sampleCoord = applyOffset;
+		if (jitterVal !== 1) {
+			sampleCoord = is3d
+				? TSL.mx_rotate3d(applyOffset, cellJitterMult, TSL.vec3(0.1, 1, 0))
+				: TSL.mx_rotate2d(applyOffset, cellJitterMult);
+		}
+		let result;
+		if (nt === 0) result = TSL.mx_noise_float(sampleCoord, 0.5, 0.5);
+		else if (nt === 1) result = TSL.mx_cell_noise_float(sampleCoord);
+		else if (nt === 2) result = is3d ? TSL.mx_worley_noise_float_3d(applyOffset, jitter, styleIn) : TSL.mx_worley_noise_float_2d(applyOffset, jitter, styleIn);
+		else {
+			const fIn = is3d ? sampleCoord : TSL.vec3(applyOffset.x, applyOffset.y, cellJitterMult);
+			result = TSL.mx_fractal_noise_float(fIn, octIn, lacIn, dimIn);
+		}
+		const outmin = TSL.float(outminIn);
+		const outmax = TSL.float(outmaxIn);
+		const ranged = outmin.add(result.mul(outmax.sub(outmin)));
+		const cl = constBool(clampIn);
+		const out = cl === true ? TSL.clamp(ranged, outmin, outmax)
+			: cl === false ? ranged
+			: TSL.select(TSL.float(clampIn).equal(1), TSL.clamp(ranged, outmin, outmax), ranged);
+		return t.convert(t.node(out), T.float);
+	};
+	if (u2) FUNCTIONS.set(u2, unified(false));
+	if (u3) FUNCTIONS.set(u3, unified(true));
+}
+
 // What a three type string is in drie's.
 const isMat3 = (v) => typeof v === "object" && v !== null && v.mat3 !== undefined;
 
@@ -195,18 +291,25 @@ class Translator {
 	// ---- making drie's nodes
 
 	num(x, type = T.float) {
-		return N.nodeConst(type, x, 0, 0, 0);
+		const id = N.nodeConst(type, x, 0, 0, 0);
+		this.types.set(id, type);
+		return id;
 	}
 
 	builtin(b) {
 		if (b === B.TIME) this.usesTime = true;
-		return N.nodeBuiltin(b, BUILTIN_TYPES[b]);
+		const type = BUILTIN_TYPES[b];
+		const id = N.nodeBuiltin(b, type);
+		this.types.set(id, type);
+		return id;
 	}
 
 	// the geometry's normal in the world, not turned toward the camera
 	geometryNormal() {
 		const n = this.builtin(B.NORMAL_GEOMETRY);
-		return N.nodeSelect(this.builtin(B.FRONT_FACING), n, this.mul(n, this.num(-1)));
+		const id = N.nodeSelect(this.builtin(B.FRONT_FACING), n, this.mul(n, this.num(-1)));
+		this.types.set(id, T.vec3);
+		return id;
 	}
 
 	// the view mirrored by the normal, in the world (three's reflectVector)
@@ -216,7 +319,24 @@ class Translator {
 	}
 
 	bin(op, a, b) {
-		return N.nodeBinary(OPS[op], a, b);
+		const opId = OPS[op];
+		const id = N.nodeBinary(opId, a, b);
+		let t;
+		if (opId >= 4 && opId <= 11 || opId === 18) {
+			t = T.bool;
+		} else {
+			const ta = this.type(a);
+			const tb = this.type(b);
+			if (opId === 2 && (ta === T.mat4 || tb === T.mat4)) {
+				t = ta === tb ? T.mat4 : (ta === T.mat4 ? (COMPONENTS[tb] === 1 ? T.mat4 : T.vec4) : (COMPONENTS[ta] === 1 ? T.mat4 : T.vec4));
+			} else if (opId === 16 || opId === 17) {
+				t = COMPONENTS[ta] >= COMPONENTS[tb] ? ta : typeOf(scalarOf(ta), COMPONENTS[tb]);
+			} else {
+				t = widerType(ta, tb);
+			}
+		}
+		this.types.set(id, t);
+		return id;
 	}
 
 	add(a, b) { return this.bin("+", a, b); }
@@ -224,19 +344,41 @@ class Translator {
 	mul(a, b) { return this.bin("*", a, b); }
 
 	call(f, a, b = 0, c = 0) {
-		return N.nodeCall(FN[f], a, b, c);
+		const fnId = FN[f];
+		const id = N.nodeCall(fnId, a, b, c);
+		let t;
+		if (f === "length" || f === "dot" || f === "distance") {
+			t = T.float;
+		} else if (f === "cross") {
+			t = T.vec3;
+		} else if (f === "min" || f === "max" || f === "mod" || f === "pow" || f === "step" || f === "atan2") {
+			t = widerType(this.type(a), this.type(b));
+		} else if (f === "mix" || f === "clamp" || f === "smoothstep") {
+			t = widerType(widerType(this.type(a), this.type(b)), this.type(c));
+		} else {
+			t = this.type(a);
+		}
+		this.types.set(id, t);
+		return id;
 	}
 
 	swizzle(a, components) {
-		return N.nodeSwizzle(a, components);
+		const id = N.nodeSwizzle(a, components);
+		this.types.set(id, typeOf(scalarOf(this.type(a)), components.length));
+		return id;
 	}
 
 	join(type, ...parts) {
-		return N.nodeJoin(type, ...parts);
+		const id = N.nodeJoin(type, ...parts);
+		this.types.set(id, type);
+		return id;
 	}
 
 	convert(a, type) {
-		return N.nodeConvert(a, type);
+		if (this.type(a) === type) return a;
+		const id = N.nodeConvert(a, type);
+		this.types.set(id, type);
+		return id;
 	}
 
 	// A direction in the world into the camera's frame (and back, fromView).
@@ -597,39 +739,48 @@ class Translator {
 	// A number made weak by TSL (`x.add(1)`) takes the kind of the other operands' (an
 	// integer's, or a float's).
 	weak(nodes) {
-		const isWeak = (n) => n && n.isConstNode && n.isWeak && typeof n.value === "number";
-		const ids = nodes.map((n) => (n === null || n === undefined || isWeak(n) ? 0 : this.node(n)));
+		const len = nodes.length;
+		const ids = new Array(len);
 		let kind = "float";
-		for (const id of ids) {
-			if (id) {
+		for (let i = 0; i < len; i++) {
+			const n = nodes[i];
+			const id = n === null || n === undefined || isWeakConst(n) ? 0 : this.node(n);
+			ids[i] = id;
+			if (id && kind === "float") {
 				const s = scalarOf(this.type(id));
 				if (s === "int" || s === "uint") kind = s;
-				break;
 			}
 		}
-		return nodes.map((n, i) => {
-			if (ids[i] || n === null || n === undefined) return ids[i];
+		for (let i = 0; i < len; i++) {
+			if (ids[i]) continue;
+			const n = nodes[i];
+			if (n === null || n === undefined) continue;
 			const k = kind !== "float" && Number.isInteger(n.value) ? kind : "float";
-			return this.num(n.value, typeOf(k, 1));
-		});
+			ids[i] = this.num(n.value, typeOf(k, 1));
+		}
+		return ids;
 	}
 
 	// TSL's vectors of different sizes in one operation: all as the widest (three's
 	// OperatorNode and MathNode build their inputs so: a vec3 gets a w of 1, a vec4 loses it).
 	widest(ids) {
 		let n = 1;
-		for (const id of ids) {
+		for (let i = 0; i < ids.length; i++) {
+			const id = ids[i];
 			if (!id) continue;
 			const t = this.type(id);
 			if (t !== T.mat4 && COMPONENTS[t] > n) n = COMPONENTS[t];
 		}
-		return ids.map((id) => {
-			if (!id) return id;
+		if (n === 1) return ids;
+		for (let i = 0; i < ids.length; i++) {
+			const id = ids[i];
+			if (!id) continue;
 			const t = this.type(id);
-			if (t === T.mat4 || COMPONENTS[t] === 1 || COMPONENTS[t] === n) return id;
+			if (t === T.mat4 || COMPONENTS[t] === 1 || COMPONENTS[t] === n) continue;
 			const s = scalarOf(t);
-			return this.convert(id, typeOf(s === "bool" ? "float" : s, n));
-		});
+			ids[i] = this.convert(id, typeOf(s === "bool" ? "float" : s, n));
+		}
+		return ids;
 	}
 
 	operator(n) {
@@ -910,7 +1061,10 @@ class Translator {
 	fnCall(n) {
 		const shader = n.shaderNode;
 		const own = FUNCTIONS.get(shader);
-		if (own) return own(this, n.rawInputs ?? []);
+		if (own) {
+			const res = own(this, n.rawInputs ?? []);
+			if (res !== null && res !== undefined) return res;
+		}
 		if (shader.once) {
 			const done = this.once.get(shader);
 			if (done !== undefined) return done;

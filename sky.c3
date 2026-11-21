@@ -8,11 +8,11 @@
 //     // before each render, and before capturing the scene into an environment map:
 //     sky.follow(camera.world_position(), camera.far);
 //
-// three's shader runs per pixel; here the same equations fill an equirectangular HDR texture
-// (update(), whenever a parameter changed) that the dome shows with a MeshBasicMaterial. three
-// draws its dome on the far plane whatever its size; follow() puts this one just inside it.
+// Runs per pixel on the GPU via a drie::nodes graph on the dome's MeshBasicMaterial; update()
+// only updates the uniforms when a parameter changed. three draws its dome on the far plane
+// whatever its size; follow() puts this one just inside it.
 module drie::objects;
-import std::math, drie;
+import std::math, drie, drie::nodes;
 
 struct Sky {
     inline Mesh mesh;
@@ -29,10 +29,15 @@ struct Sky {
     float cloud_elevation;
     bool show_sun_disc;
     float time;
-    // the texture's size: width by width / 2
+    // kept for API compatibility
     int resolution;
     SkyParams drawn;
     bool has_drawn;
+    Node u_sun;
+    Node u_beta_r;
+    Node u_beta_m;
+    Node u_cloud0;
+    Node u_cloud1;
 }
 
 struct SkyParams @local {
@@ -44,6 +49,123 @@ struct SkyParams @local {
     int resolution;
 }
 
+fn Node sky_gradient_node(Node i) @local {
+    Node p = nodes::variable(nodes::fract(nodes::vec3(i.x(), i.y(), i.x()) * nodes::vec3(0.1031f, 0.1030f, 0.0973f)));
+    Node pyzx = nodes::vec3(p.y(), p.z(), p.x()) + 33.33f;
+    Node body = nodes::block(p, p.assign(p + nodes::dot(p, pyzx)));
+    Node res = nodes::fract(
+        (nodes::vec2(p.x(), p.x()) + nodes::vec2(p.y(), p.z())) * nodes::vec2(p.z(), p.y())
+    ) * 2.0f - 1.0f;
+    return nodes::seq(body, res);
+}
+
+fn Node sky_noise_node(Node p_in) @local {
+    Node p = nodes::variable(p_in);
+    Node i = nodes::variable(nodes::floor(p));
+    Node f = nodes::variable(p - i);
+    Node u = nodes::variable(f * f * f * (f * (f * 6.0f - 15.0f) + 10.0f));
+    Node a = nodes::dot(sky_gradient_node(i), f);
+    Node b = nodes::dot(sky_gradient_node(i + nodes::vec2(1.0f, 0.0f)), f - nodes::vec2(1.0f, 0.0f));
+    Node c = nodes::dot(sky_gradient_node(i + nodes::vec2(0.0f, 1.0f)), f - nodes::vec2(0.0f, 1.0f));
+    Node d = nodes::dot(sky_gradient_node(i + nodes::vec2(1.0f, 1.0f)), f - nodes::vec2(1.0f, 1.0f));
+    Node res = nodes::mix(nodes::mix(a, b, u.x()), nodes::mix(c, d, u.x()), u.y()) * 1.6f;
+    return nodes::seq(nodes::block(p, i, f, u), res);
+}
+
+fn Node sky_fbm_node(Node pos_in, Node drift_in) @local {
+    Node p = nodes::variable(pos_in);
+    Node drift = nodes::variable(drift_in);
+    Node result = nodes::variable(nodes::num(0.0f));
+    Node amp = nodes::variable(nodes::num(1.0f));
+    Node idx = nodes::loop_index();
+    Node body = nodes::block(
+        p, drift, result, amp,
+        nodes::loop(idx, nodes::int_(0), nodes::int_(4), nodes::block(
+            result.assign(result + amp * sky_noise_node(p)),
+            amp.assign(amp * 0.5f),
+            p.assign(p * 2.0f + drift)
+        ))
+    );
+    return nodes::seq(body, result);
+}
+
+fn Node sky_graph(Sky* s) @local {
+    Node sun = s.u_sun.xyz();
+    Node sun_e = s.u_sun.w();
+    Node beta_r = s.u_beta_r.xyz();
+    Node g = s.u_beta_r.w();
+    Node beta_m = s.u_beta_m.xyz();
+    Node show_disc = s.u_beta_m.w();
+    Node cloud_scale = s.u_cloud0.x();
+    Node cloud_speed = s.u_cloud0.y();
+    Node cloud_coverage = s.u_cloud0.z();
+    Node cloud_density = s.u_cloud0.w();
+    Node cloud_elevation = s.u_cloud1.x();
+    Node t = s.u_cloud1.y();
+
+    Node dir = nodes::variable(nodes::normalize(nodes::position_world() - nodes::camera_position()));
+    Node zenith = nodes::variable(nodes::acos(nodes::max(nodes::num(0.0f), dir.y())));
+    Node inv = nodes::variable(
+        1.0f / (nodes::cos(zenith) + 0.15f * nodes::pow(93.885f - zenith * (180.0f / (float)drie::PI), -1.253f))
+    );
+    Node fex = nodes::variable(nodes::exp((beta_r * (8.4E3f * inv) + beta_m * (1.25E3f * inv)).negate()));
+
+    Node cos_theta = nodes::variable(nodes::dot(dir, sun));
+    Node rc = cos_theta * 0.5f + 0.5f;
+    Node beta_r_theta = beta_r * (0.05968310365946075f * (1.0f + rc * rc));
+    Node g2 = g * g;
+    Node m_phase = 0.07957747154594767f * ((1.0f - g2) / nodes::pow(1.0f - 2.0f * g * cos_theta + g2, 1.5f));
+    Node beta_m_theta = beta_m * m_phase;
+    Node ratio = nodes::variable((beta_r_theta + beta_m_theta) / (beta_r + beta_m));
+
+    Node lin_base = nodes::pow(nodes::max(ratio * sun_e * (1.0f - fex), nodes::vec3(0.0f)), nodes::vec3(1.5f));
+    Node lin_sun = nodes::pow(nodes::max(ratio * sun_e * fex, nodes::vec3(0.0f)), nodes::vec3(0.5f));
+    Node sun_blend = nodes::clamp(nodes::pow(nodes::max(1.0f - sun.y(), 0.0f), 5.0f), 0.0f, 1.0f);
+    Node lin = nodes::variable(lin_base * nodes::mix(nodes::vec3(1.0f), lin_sun, sun_blend));
+
+    Node l0 = nodes::variable(fex * 0.1f);
+    Node sundisc = nodes::clamp((cos_theta - 0.9999566769464484f) * 50000.0f, 0.0f, 1.0f) * show_disc;
+    Node sun_e_fex = nodes::variable(sun_e * fex);
+    Node sundisc_color = nodes::min(sun_e_fex, nodes::vec3(80.0f)) * (760.0f * sundisc);
+    Node tex = nodes::variable((lin + l0) * 0.04f + sundisc_color + nodes::vec3(0.0f, 0.0003f, 0.00075f));
+
+    // Clouds (only when looking above the horizon and coverage > 0)
+    Node elev = nodes::mix(nodes::num(1.0f), nodes::num(0.1f), cloud_elevation);
+    Node cloud_uv = nodes::variable(
+        nodes::vec2(dir.x(), dir.z()) / (dir.y() * elev) * cloud_scale + nodes::vec2(t * cloud_speed, t * cloud_speed)
+    );
+    Node evolve = t * cloud_speed * 300.0f;
+    Node cloud_noise = nodes::variable(nodes::clamp(sky_fbm_node(cloud_uv * 1000.0f, nodes::vec2(evolve, evolve)) * 0.7f + 0.5f, 0.0f, 1.0f));
+    Node region = sky_noise_node(cloud_uv * 300.0f) * 0.37f + 0.5f;
+    Node cov = nodes::clamp(cloud_coverage + (region - 0.5f) * 0.6f, 0.0f, 1.0f);
+    Node threshold = nodes::variable(1.0f - cov);
+    Node cloud_mask = nodes::variable(nodes::smoothstep(threshold, threshold + 0.3f, cloud_noise));
+    Node horizon_fade = nodes::variable(nodes::smoothstep(0.0f, 0.03f + 0.06f * cloud_elevation, dir.y()));
+    Node day = nodes::smoothstep(-0.08f, 0.3f, sun.y());
+    Node sun_color = nodes::variable(sun_e_fex * (0.22f * 0.04f));
+    Node sky_ambient = lin * 0.04f + nodes::vec3(0.0f, 0.0003f, 0.00075f);
+    Node depth = nodes::variable(nodes::max(0.0f, cloud_noise - threshold));
+    Node beer = nodes::variable(nodes::exp(depth * -4.0f));
+    Node powder = 1.0f - beer * beer;
+    Node shade = nodes::mix(nodes::num(0.45f), nodes::num(1.0f), nodes::clamp(beer * powder * 2.6f, 0.0f, 1.0f));
+    Node silver = nodes::clamp(0.51f / nodes::pow(1.49f - cos_theta * 1.4f, 1.5f), 0.0f, 3.0f);
+    Node mask_faded = nodes::variable(cloud_mask * horizon_fade);
+    Node edge = mask_faded * (1.0f - mask_faded) * 4.0f;
+    Node cloud_color = (sky_ambient + sun_color * shade + sun_color * (silver * edge * 0.6f)) * nodes::max(day, 0.03f);
+    Node alpha = nodes::variable((1.0f - nodes::exp(depth * cloud_density * -12.0f)) * horizon_fade);
+    Node cloud_block = nodes::block(
+        cloud_uv, cloud_noise, threshold, cloud_mask, horizon_fade, sun_color, depth, beer, mask_faded, alpha,
+        tex.assign(tex - l0 * (0.04f * alpha)),
+        tex.assign(nodes::mix(tex, nodes::mix(tex, cloud_color, fex), alpha))
+    );
+
+    Node body = nodes::block(
+        dir, zenith, inv, fex, cos_theta, ratio, lin, l0, sun_e_fex, tex,
+        nodes::if_then(nodes::logical_and(dir.y().greater_than(nodes::num(0.0f)), cloud_coverage.greater_than(nodes::num(0.0f))), cloud_block)
+    );
+    return nodes::seq(body, tex);
+}
+
 fn Sky* sky(int resolution = 1024) {
     Sky* s = mem::new(Sky);
     s.init(MESH);
@@ -51,6 +173,12 @@ fn Sky* sky(int resolution = 1024) {
     s.geometry = drie::sphere_geometry(1, 64, 32);
     MeshBasicMaterial* m = drie::mesh_basic_material(side: BACK_SIDE, fog: false);
     m.depth_write = false;
+    s.u_sun = nodes::uniform_vec4(0, 1, 0, 1000);
+    s.u_beta_r = nodes::uniform_vec4(0, 0, 0, 0.8f);
+    s.u_beta_m = nodes::uniform_vec4(0, 0, 0, 1);
+    s.u_cloud0 = nodes::uniform_vec4(0.0002f, 0.00002f, 0.4f, 0.4f);
+    s.u_cloud1 = nodes::uniform_vec4(0.5f, 0, 0, 0);
+    m.color_node = sky_graph(s);
     s.material = m;
     s.frustum_culled = false;
     s.turbidity = 2;
@@ -99,7 +227,7 @@ fn bool sky_params_equal(SkyParams* a, SkyParams* b) @local {
         && a.resolution == b.resolution;
 }
 
-// Centers the dome on `eye`, just inside a camera's far plane, and fills its texture again if a
+// Centers the dome on `eye`, just inside a camera's far plane, and updates its uniforms if a
 // parameter changed.
 fn void Sky.follow(&self, Vector3 eye, float far) {
     self.position = eye;
@@ -111,41 +239,22 @@ fn void Sky.follow(&self, Vector3 eye, float far) {
     self.update();
 }
 
-// Fills the texture again if a parameter changed since it was last filled.
+// Updates the sky shader's uniforms if a parameter changed since last time.
 fn void Sky.update(&self) {
     SkyParams p = sky_params(self);
     if (self.has_drawn && sky_params_equal(&p, &self.drawn)) return;
     self.drawn = p;
     self.has_drawn = true;
-    int w          = math::max(self.resolution, 8);
-    int h          = w / 2;
-    float[] pixels = mem::new_array(float, (sz)w * h * 4);
-    defer free(pixels);
     SkyLight light = sky_light(&p);
-    for (int y = 0; y < h; y++) {
-        // the sphere's uv.y is 1 at the top (y up), which samples the last row
-        float theta = (1 - ((float)y + 0.5f) / h) * (float)drie::PI;
-        for (int x = 0; x < w; x++) {
-            float phi = ((float)x + 0.5f) / w * 2 * (float)drie::PI;
-            Vector3 d = { -math::cos(phi) * math::sin(theta), math::cos(theta), math::sin(phi) * math::sin(theta) };
-            Vector3 c = sky_color(&p, &light, d);
-            sz o      = ((sz)y * w + x) * 4;
-            pixels[o] = c.x;
-            pixels[o + 1] = c.y;
-            pixels[o + 2] = c.z;
-            pixels[o + 3] = 1;
-        }
-    }
-    Texture* t = drie::float_texture(pixels, w, h);
-    t.wrap_t = CLAMP_TO_EDGE_WRAPPING;
-    Material* m = self.material;
-    if (m.map) m.map.dispose();
-    m.map = t;
+    self.u_sun.set(light.sun.x, light.sun.y, light.sun.z, light.sun_e);
+    self.u_beta_r.set(light.beta_r.x, light.beta_r.y, light.beta_r.z, p.mie_directional_g);
+    self.u_beta_m.set(light.beta_m.x, light.beta_m.y, light.beta_m.z, p.show_sun_disc ? 1.0f : 0.0f);
+    self.u_cloud0.set(p.cloud_scale, p.cloud_speed, p.cloud_coverage, p.cloud_density);
+    self.u_cloud1.set(p.cloud_elevation, p.time, 0, 0);
 }
 
 // ----------------------------------------------------------------------------
-// three's SkyShader, its vertex shader's part (the same for every direction) and then its
-// fragment shader's.
+// three's SkyShader, its vertex shader's part (the same for every direction).
 
 struct SkyLight @local {
     Vector3 sun;
@@ -171,123 +280,4 @@ fn SkyLight sky_light(SkyParams* p) @local {
     float c = (0.2f * p.turbidity) * 10E-18f;
     l.beta_m = SKY_MIE_CONST * (0.434f * c) * p.mie_coefficient;
     return l;
-}
-
-fn Vector3 sky_pow(Vector3 v, float e) @local => (Vector3) { math::pow(v.x, e), math::pow(v.y, e), math::pow(v.z, e) };
-fn Vector3 sky_exp(Vector3 v) @local => (Vector3) { math::exp(v.x), math::exp(v.y), math::exp(v.z) };
-fn float sky_fract(float x) @local => x - math::floor(x);
-fn float sky_mix(float a, float b, float t) @local => a + (b - a) * t;
-fn Vector3 sky_mix3(Vector3 a, Vector3 b, float t) @local => a + (b - a) * t;
-fn Vector3 sky_mixv(Vector3 a, Vector3 b, Vector3 t) @local => a + (b - a) * t;
-
-fn float sky_smoothstep(float e0, float e1, float x) @local {
-    float t = math::clamp((x - e0) / (e1 - e0), 0.0f, 1.0f);
-    return t * t * (3 - 2 * t);
-}
-
-// gradient at a lattice corner (three's sinless hash)
-fn float[<2>] sky_gradient(float[<2>] i) @local {
-    float[<3>] p = { sky_fract(i.x * 0.1031f), sky_fract(i.y * 0.1030f), sky_fract(i.x * 0.0973f) };
-    float k      = p.x * (p.y + 33.33f) + p.y * (p.z + 33.33f) + p.z * (p.x + 33.33f);
-    p += (float[<3>]) { k, k, k };
-    return (float[<2>]) { sky_fract((p.x + p.y) * p.z) * 2 - 1, sky_fract((p.x + p.z) * p.y) * 2 - 1 };
-}
-
-fn float sky_dot2(float[<2>] a, float[<2>] b) @local => a.x * b.x + a.y * b.y;
-
-fn float sky_noise(float[<2>] p) @local {
-    float[<2>] i = { math::floor(p.x), math::floor(p.y) };
-    float[<2>] f = p - i;
-    float[<2>] u = f * f * f * (f * (f * 6 - 15) + 10);
-    float a      = sky_dot2(sky_gradient(i), f);
-    float b      = sky_dot2(sky_gradient(i + (float[<2>]) { 1, 0 }), f - (float[<2>]) { 1, 0 });
-    float c      = sky_dot2(sky_gradient(i + (float[<2>]) { 0, 1 }), f - (float[<2>]) { 0, 1 });
-    float d      = sky_dot2(sky_gradient(i + (float[<2>]) { 1, 1 }), f - (float[<2>]) { 1, 1 });
-    return sky_mix(sky_mix(a, b, u.x), sky_mix(c, d, u.x), u.y) * 1.6f;
-}
-
-fn float sky_fbm(float[<2>] p, float drift) @local {
-    float result    = 0;
-    float amplitude = 1;
-    for (int i = 0; i < 4; i++) {
-        result += amplitude * sky_noise(p);
-        amplitude *= 0.5f;
-        p = p * 2 + (float[<2>]) { drift, drift };
-    }
-    return result;
-}
-
-fn Vector3 sky_color(SkyParams* p, SkyLight* l, Vector3 dir) @local {
-    const float PI_F   = (float)drie::PI;
-    // optical length, cut off at 90 degrees to avoid the formula's singularity
-    float zenith_angle = math::acos(math::max(0.0f, dir.y));
-    float inverse      = 1 / (math::cos(
-        zenith_angle
-    ) + 0.15f * math::pow(93.885f - zenith_angle * 180 / PI_F, -1.253f));
-    float s_r          = 8.4E3f * inverse;
-    float s_m          = 1.25E3f * inverse;
-    Vector3 fex        = sky_exp(-(l.beta_r * s_r + l.beta_m * s_m));
-
-    // in-scattering
-    float cos_theta      = dir.dot(l.sun);
-    float rc             = cos_theta * 0.5f + 0.5f;
-    float r_phase        = 0.05968310365946075f * (1 + rc * rc);
-    Vector3 beta_r_theta = l.beta_r * r_phase;
-    float g              = p.mie_directional_g;
-    float g2             = g * g;
-    float m_phase        = 0.07957747154594767f * ((1 - g2) / math::pow(1 - 2 * g * cos_theta + g2, 1.5f));
-    Vector3 beta_m_theta = l.beta_m * m_phase;
-    Vector3 ratio        = (beta_r_theta + beta_m_theta) / (l.beta_r + l.beta_m);
-    Vector3 lin          = sky_pow(ratio * l.sun_e * ((Vector3) { 1, 1, 1 } - fex), 1.5f);
-    Vector3 lin_sun      = sky_pow(ratio * l.sun_e * fex, 0.5f);
-    lin *= sky_mix3({ 1, 1, 1 }, lin_sun, math::clamp(math::pow(1 - l.sun.y, 5.0f), 0.0f, 1.0f));
-
-    Vector3 l0            = fex * 0.1f;
-    // the sun's disc
-    float sundisc         = math::clamp(
-        (cos_theta - 0.999956676946448443553574619906976478926848692873900859324f) * 50000,
-        0.0f,
-        1.0f
-    ) * (p.show_sun_disc ? 1 : 0);
-    Vector3 sun_e_fex     = l.sun_e * fex;
-    Vector3 sundisc_color = (Vector3) {
-        math::min(sun_e_fex.x, 80.0f),
-        math::min(sun_e_fex.y, 80.0f),
-        math::min(sun_e_fex.z, 80.0f)
-    } * (760 * sundisc);
-    Vector3 tex           = (lin + l0) * 0.04f + sundisc_color + (Vector3) { 0, 0.0003f, 0.00075f };
-
-    if (dir.y > 0 && p.cloud_coverage > 0) {
-        // onto the cloud plane (higher elevation brings the clouds lower and closer)
-        float elevation     = sky_mix(1, 0.1f, p.cloud_elevation);
-        float[<2>] cloud_uv = (float[<2>]) { dir.x, dir.z } / (dir.y * elevation);
-        cloud_uv *= p.cloud_scale;
-        cloud_uv += (float[<2>]) { p.time * p.cloud_speed, p.time * p.cloud_speed };
-        float evolve       = p.time * p.cloud_speed * 300;
-        float cloud_noise  = math::clamp(sky_fbm(cloud_uv * 1000, evolve) * 0.7f + 0.5f, 0.0f, 1.0f);
-        float region       = sky_noise(cloud_uv * 300) * 0.37f + 0.5f;
-        float cov          = math::clamp(p.cloud_coverage + (region - 0.5f) * 0.6f, 0.0f, 1.0f);
-        float threshold    = 1 - cov;
-        float cloud_mask   = sky_smoothstep(threshold, threshold + 0.3f, cloud_noise);
-        float horizon_fade = sky_smoothstep(0, 0.03f + 0.06f * p.cloud_elevation, dir.y);
-        cloud_mask *= horizon_fade;
-
-        float day           = sky_smoothstep(-0.08f, 0.3f, l.sun.y);
-        Vector3 sun_color   = sun_e_fex * (0.22f * 0.04f);
-        Vector3 sky_ambient = lin * 0.04f + (Vector3) { 0, 0.0003f, 0.00075f };
-        float depth         = math::max(0.0f, cloud_noise - threshold);
-        float beer          = math::exp(depth * -4);
-        float powder        = 1 - beer * beer;
-        float shade         = sky_mix(0.45f, 1, math::clamp(beer * powder * 2.6f, 0.0f, 1.0f));
-        float silver        = math::clamp(0.51f / math::pow(1.49f - cos_theta * 1.4f, 1.5f), 0.0f, 3.0f);
-        float edge          = cloud_mask * (1 - cloud_mask) * 4;
-        Vector3 cloud_color = sky_ambient + sun_color * shade;
-        cloud_color += sun_color * (silver * edge * 0.6f);
-        cloud_color *= math::max(day, 0.03f);
-        float alpha = (1 - math::exp(depth * p.cloud_density * -12)) * horizon_fade;
-        tex -= l0 * (0.04f * alpha);
-        Vector3 aerial = sky_mixv(tex, cloud_color, fex);
-        tex = sky_mix3(tex, aerial, alpha);
-    }
-    return tex;
 }
