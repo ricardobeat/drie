@@ -184,9 +184,9 @@ struct MaterialProgram {
 
 HashMap{KeyWords, MaterialProgram*} material_programs @local;
 
-// Set: every material draws with the material shader (the DRIE_CLASSIC_MATERIALS environment
-// variable, for comparing the two).
-bool classic_materials @private;
+// Whether every material draws with the application's material shader (Renderer.shaders)
+// rather than generated programs.
+macro bool classic_materials() @private => state.renderer && state.renderer.shaders.main;
 
 // The program for `key`, built the first time it is asked for; with MaterialKey.nodes, the one
 // of node material `build`'s graphs, kept with it.
