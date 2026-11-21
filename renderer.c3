@@ -1219,7 +1219,7 @@ fn SgPipeline get_pipeline(
     // (for the pipeline cache: a new pipeline, the target Renderer.screen_stand_in as the window;
     // not a node material's generated one, which its key alone can't build again)
     bool window = !rt || (state.renderer && rt == state.renderer.screen_stand_in);
-    if (!gen || !gen.build) record_pipeline({
+    if (!gen || !gen.key.nodes) record_pipeline({
         .generated = gen != null,
         .key = gen ? gen.key : { },
         .program = nodes,
@@ -1292,7 +1292,7 @@ fn SgPipeline get_pipeline(
     desc.colors[0].blend = blend_state(blend);
     if (gen) {
         ShaderProgram* own = kind == DEPTH ? gen.depth : gen.program;
-        if (pipeline_warmup && !gen.build) {
+        if (pipeline_warmup && !gen.key.nodes) {
             // (a pipeline cache being loaded: compiled in the background, made when first drawn)
             pipeline_warmup.start_generated(own, &desc);
             return { };
@@ -1626,8 +1626,8 @@ fn SgPipeline gen_shadow_pipeline(MaterialProgram* gen) @private {
     if (try found = gen.pipelines[0]) return found;
     SgPipelineDesc desc = shadow_pipeline_desc();
     // (not a node material's: see get_pipeline)
-    if (!gen.build) record_pipeline({ .generated = true, .key = gen.key, .shadow = true });
-    if (pipeline_warmup && !gen.build) {
+    if (!gen.key.nodes) record_pipeline({ .generated = true, .key = gen.key, .shadow = true });
+    if (pipeline_warmup && !gen.key.nodes) {
         pipeline_warmup.start_generated(gen.program, &desc);
         return { };
     }
@@ -3423,13 +3423,15 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     // the material's own generated program, where it has one (materials_nodes.c3)
     MaterialKey key;
     MaterialProgram* gen = material_key_of(item, kind, fs, &map_slots, &key) ? material_program(key, build) : null;
+    // (a node material's: the uniforms and textures its program reads are this material's)
+    NodeBuild* gen_build = gen && gen.key.nodes ? build : null;
     // (the depth prepass of what the material shader draws: its own program)
     if (kind == DEPTH && !gen) {
         draw_depth_item(item, view_proj);
         return;
     }
     // (a node material's programs still compiling: not drawn yet)
-    if (gen && gen.build && material_busy(gen.build, gen)) return;
+    if (gen_build && material_busy(gen_build, gen)) return;
     // the program of this pass: the main pass's, or the depth prepass's
     ShaderProgram* own = gen ? (kind == DEPTH ? gen.depth : gen.program) : null;
     bool tangents = !state.bake.on && !nodes && (gen ? key.tangents : uses_tangents(item));
@@ -3452,7 +3454,7 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     );
     // (a node material's program still compiling: not drawn yet)
     if (nodes && (!pip.id || nodes.program.busy())) return;
-    if (gen && gen.build && !pip.id) return;
+    if (gen_build && !pip.id) return;
     sg::apply_pipeline(pip);
     // the prepass has cut it out already (the shader takes a negative threshold as "covered")
     if (kind == PRETESTED && alpha_test > 0) alpha_test = -1;
@@ -3587,7 +3589,7 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     if (vsm) bind.samplers[shaders::SMP_VSM_SMP] = state.vsm_sampler;
     lights_gpu.bind(&bind);
     if (gen) {
-        SgBindings own_bind = program_bindings(own, &bind, user_views(gen.build)[..]);
+        SgBindings own_bind = program_bindings(own, &bind, user_views(gen_build)[..]);
         sg::apply_bindings(&own_bind);
     } else {
         sg::apply_bindings(&bind);
@@ -3598,7 +3600,7 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     vs.bake[2] = nodes ? 1 : 0;
     if (gen) {
         @pool() {
-            apply_program_uniforms(own, VERTEX, &vs, fs, user: gen.build ? user_block(gen.build, m) : { });
+            apply_program_uniforms(own, VERTEX, &vs, fs, user: gen_build ? user_block(gen_build, m) : { });
         };
     } else {
         sg::apply_uniforms(shaders::UB_VS_PARAMS, &&{ .ptr = &vs, .size = VsParams::size });
@@ -3716,7 +3718,7 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     if (!mat.fog) fs.fog_params.w = 0;
     if (gen) {
         @pool() {
-            apply_program_uniforms(own, FRAGMENT, &vs, fs, user: gen.build ? user_block(gen.build, m) : { });
+            apply_program_uniforms(own, FRAGMENT, &vs, fs, user: gen_build ? user_block(gen_build, m) : { });
         };
     } else {
         sg::apply_uniforms(shaders::UB_FS_PARAMS, &&{ .ptr = fs, .size = FsParams::size });
@@ -3745,9 +3747,10 @@ fn void draw_shadow_item(DrawItem* item, Mat4 light_vp, Vector3 origin = { 0, 0,
     // with the material shader, a node material's own program (position_node, and
     // shadow_nodes when it cuts holes), then the shared one again
     NodeBuild* nodes = gen ? null : build;
+    NodeBuild* gen_build = gen && gen.key.nodes ? build : null;
     if (gen) {
         // (still compiling: not drawn yet)
-        if (gen.build && material_busy(gen.build, gen)) return;
+        if (gen_build && material_busy(gen_build, gen)) return;
         SgPipeline pip = gen_shadow_pipeline(gen);
         if (!pip.id) return;
         sg::apply_pipeline(pip);
@@ -3781,7 +3784,7 @@ fn void draw_shadow_item(DrawItem* item, Mat4 light_vp, Vector3 origin = { 0, 0,
         }
     }
     if (gen) {
-        SgBindings own = program_bindings(gen.program, &bind, user_views(gen.build)[..]);
+        SgBindings own = program_bindings(gen.program, &bind, user_views(gen_build)[..]);
         sg::apply_bindings(&own);
         Vec4 d = displacement_params(mat);
         VsParams pv = {
@@ -3789,7 +3792,7 @@ fn void draw_shadow_item(DrawItem* item, Mat4 light_vp, Vector3 origin = { 0, 0,
             .view_origin = { ...origin, 0 },
             .model = m.matrix_world,
             // (the normal a node material's graphs read; the others read none)
-            .normal_mat = gen.build ? m.matrix_world.invert().transpose() : m.matrix_world,
+            .normal_mat = gen_build ? m.matrix_world.invert().transpose() : m.matrix_world,
             .uv_transform = uv_transform(mat),
             .sway = sway_params(mat),
             .inst_cull = inst_cull,
@@ -3800,7 +3803,7 @@ fn void draw_shadow_item(DrawItem* item, Mat4 light_vp, Vector3 origin = { 0, 0,
             .s_alpha_uv = uv_relative(uv_base(mat), mat.alpha_map),
         };
         @pool() {
-            Vec4[] user = gen.build ? user_block(gen.build, m) : { };
+            Vec4[] user = gen_build ? user_block(gen_build, m) : { };
             apply_program_uniforms(gen.program, VERTEX, &pv, null, user: user);
             apply_program_uniforms(gen.program, FRAGMENT, &pv, null, &sfs, user);
         };
