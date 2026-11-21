@@ -109,6 +109,9 @@ bitstruct MaterialKey : char[32] {
     // (the alpha test's, the LOD cross-fade's: those bits say which); its program comes with
     // the prepass's (MaterialProgram.depth)
     bool prepassed : 81;
+    // the shadow maps' program (build_shadow_graph), which reads only gpu_cull, displacement,
+    // sway, and for the alpha test's cut-out alpha_test, map and MAP_ALPHA's slot (1: one)
+    bool shadow : 82;
 }
 
 // The map roles (shader_core.glsl's MAP_*) a key holds a slot for.
@@ -185,7 +188,11 @@ fn MaterialProgram* material_program(MaterialKey key) @private {
     uint mark = node_count();
     ProgramGraph graph;
     ProgramGraph prepass;
-    build_material_graph(key, &graph, &prepass);
+    if (key.shadow) {
+        build_shadow_graph(key, &graph);
+    } else {
+        build_material_graph(key, &graph, &prepass);
+    }
     MaterialProgram* mp = mem::new(MaterialProgram);
     // (DRIE_PROGRAM_SALT: a term the output depends on, at a pixel no target reaches, so the
     // compiled code differs from any earlier run's and the driver has none of it cached; for
@@ -229,8 +236,9 @@ fn SgBindings program_bindings(ShaderProgram* p, SgBindings* classic) @private {
     return b;
 }
 
-// Applies `p`'s uniform block for stage `st`, gathered from the engine's.
-fn void apply_program_uniforms(ShaderProgram* p, ProgramStage st, VsParams* vs, FsParams* fs) @private {
+// Applies `p`'s uniform block for stage `st`, gathered from the engine's (a shadow program's
+// fragment stage: from `sfs`).
+fn void apply_program_uniforms(ShaderProgram* p, ProgramStage st, VsParams* vs, FsParams* fs, ShadowFsParams* sfs = null) @private {
     int rows = p.block_rows[st.ordinal];
     if (!rows) return;
     void*[NodeSource::len] src;
@@ -239,6 +247,8 @@ fn void apply_program_uniforms(ShaderProgram* p, ProgramStage st, VsParams* vs, 
     sizes[NodeSource.VS.ordinal] = VsParams::size;
     src[NodeSource.FS.ordinal] = fs;
     sizes[NodeSource.FS.ordinal] = FsParams::size;
+    src[NodeSource.SHADOW_FS.ordinal] = sfs;
+    sizes[NodeSource.SHADOW_FS.ordinal] = sfs ? ShadowFsParams::size : 0;
     @pool() {
         Vec4[] block = mem::temp_array(Vec4, rows);
         p.gather(st, src, sizes, block);
@@ -452,6 +462,28 @@ fn Node parallax_shadow(Parallax* px, FragUv* f, Node n, Node l) @local {
         block,
         nodes::loop(i, 1, 9, nodes::block(block.assign(nodes::max(block, above * fi.one_minus() * 8.0f)))),
         shade.assign(strength.negate() * nodes::clamp(block, 0, 1) + 1.0f)))), shade);
+}
+
+// The shadow maps' program: the material's vertex stage placed by the light (VsParams filled
+// for it: see draw_shadow_item), and the alpha test's cut-out as shader_core.glsl's shadow_fs
+// (the color map's alpha, the opacity and the alpha map's green, ShadowFsParams).
+fn void build_shadow_graph(MaterialKey key, ProgramGraph* graph) @local {
+    VertexValues vtx = vertex_stage(key);
+    graph.position = vtx.position;
+    if (!key.alpha_test) return;
+    ShadowFsParams* sp = null;
+    int params = (int)((usz)&sp.s_params / 16);
+    int alpha_uv = (int)((usz)&sp.s_alpha_uv / 16);
+    Node p = node_input(SHADOW_FS, params, VEC4);
+    Node v_uv = nodes::varying(vtx.uv);
+    Node a = p.y();
+    if (key.map) a = a * node_sample(SAMPLE, shaders::VIEW_S_MAP, shaders::SMP_S_SMP, TEX_2D, v_uv).w();
+    if (key.slot(MAP_ALPHA)) {
+        Node uvh = nodes::vec3(v_uv, 1);
+        Node at = nodes::vec2(nodes::dot(node_input(SHADOW_FS, alpha_uv, VEC3), uvh), nodes::dot(node_input(SHADOW_FS, alpha_uv + 1, VEC3), uvh));
+        a = a * node_sample(SAMPLE, shaders::VIEW_S_ALPHA, shaders::SMP_S_ALPHA_SMP, TEX_2D, at).y();
+    }
+    graph.fragment = nodes::if_then(a.less_than(p.x()), nodes::block(nodes::discard()));
 }
 
 // The graphs of `key`'s program, and with MaterialKey.prepassed of its depth prepass's

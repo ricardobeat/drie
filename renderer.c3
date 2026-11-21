@@ -1485,10 +1485,9 @@ fn void apply_node_params(NodeBuild* b, Mesh* m, bool fragment) @local {
 }
 
 // (a node program's: none while it is compiled in the background, see NodeProgram.busy)
-fn SgPipeline get_shadow_pipeline(NodeProgram* nodes = null) @private {
-    SgPipeline* pip = nodes ? &nodes.shadow_pipeline : &state.shadow_pipeline;
-    if (pip.id) return *pip;
-    SgPipelineDesc desc = {
+// The shadow maps' pipelines' description (no shader yet).
+fn SgPipelineDesc shadow_pipeline_desc() @local {
+    return {
         .shader = { },
         .index_type = UINT32,
         .cull_mode = NONE,
@@ -1517,6 +1516,22 @@ fn SgPipeline get_shadow_pipeline(NodeProgram* nodes = null) @private {
         .sample_count = 1,
         .label = "drie-shadow-pipeline",
     };
+}
+
+// A caster's generated program's shadow pipeline (MaterialKey.shadow).
+fn SgPipeline gen_shadow_pipeline(MaterialProgram* gen) @local {
+    if (try found = gen.pipelines[0]) return found;
+    SgPipelineDesc desc = shadow_pipeline_desc();
+    desc.shader = gen.program.make();
+    SgPipeline pip = sg::make_pipeline(&desc);
+    gen.pipelines[0] = pip;
+    return pip;
+}
+
+fn SgPipeline get_shadow_pipeline(NodeProgram* nodes = null) @private {
+    SgPipeline* pip = nodes ? &nodes.shadow_pipeline : &state.shadow_pipeline;
+    if (pip.id) return *pip;
+    SgPipelineDesc desc = shadow_pipeline_desc();
     record_pipeline({ .program = nodes, .shadow = true });
     if (nodes) {
         if (!nodes.pipeline_ready(NODE_SHADOW_KEY, SHADOW, node_base_desc(nodes, SHADOW), &desc, background())) return { };
@@ -3118,6 +3133,24 @@ fn void material_slots(Material* mat, NodeBuild* nodes, Texture*[6]* slots, Vec4
     }
 }
 
+// Whether `item` casts its shadow with a generated program, and its key (MaterialKey.shadow):
+// a built-in material's, without the application's programs (Renderer.shaders).
+fn bool shadow_key_of(DrawItem* item, MaterialKey* key) @local {
+    Material* mat = item.mesh.material;
+    if (classic_materials || state.renderer.shaders.main || node_build_of(mat)) return false;
+    bool cut = (mat.map || mat.alpha_map) && mat.alpha_test > 0 && !state.renderer.prof_no_alpha_test;
+    *key = {
+        .shadow = true,
+        .gpu_cull = item.job > 0 && cull.active,
+        .displacement = displacement_params(mat).z > 0.5f,
+        .sway = mat.sway > 0,
+        .alpha_test = cut,
+        .map = cut && mat.map,
+    };
+    if (cut && mat.alpha_map) key.set_slot(MAP_ALPHA, 1);
+    return true;
+}
+
 // Whether `item` draws with a generated program (materials_nodes.c3), and its key: every
 // built-in material in the main pass and its depth prepass (the same key for both: see
 // MaterialKey.prepassed), but not node materials, nor in a light map's bake, nor with the
@@ -3570,11 +3603,19 @@ fn void draw_shadow_item(DrawItem* item, Mat4 light_vp, Vector3 origin = { 0, 0,
     // a node material's own program (position_node, and shadow_nodes when it cuts holes), then
     // the shared one again
     NodeBuild* nodes = node_build_of(mat);
-    if (nodes) {
+    // a built-in material's generated program (MaterialKey.shadow)
+    MaterialKey key;
+    MaterialProgram* gen = !nodes && shadow_key_of(item, &key) ? material_program(key) : null;
+    if (gen) {
+        sg::apply_pipeline(gen_shadow_pipeline(gen));
+    } else if (nodes) {
         // (still compiling: not drawn yet)
         SgPipeline pip = get_shadow_pipeline(nodes.program);
         if (!pip.id || nodes.program.busy()) return;
         sg::apply_pipeline(pip);
+    } else if (!classic_materials) {
+        // (the shared one again after a generated program's)
+        sg::apply_pipeline(get_shadow_pipeline());
     }
     defer if (nodes) sg::apply_pipeline(get_shadow_pipeline());
     SgBindings bind = {
@@ -3595,6 +3636,29 @@ fn void draw_shadow_item(DrawItem* item, Mat4 light_vp, Vector3 origin = { 0, 0,
             Texture* t = k < nodes.texture_count ? nodes.textures[k] : null;
             bind.views[shaders::VIEW_TEX_EXT5 - k] = ready(t).view;
         }
+    }
+    if (gen) {
+        SgBindings own = program_bindings(gen.program, &bind);
+        sg::apply_bindings(&own);
+        Vec4 d = displacement_params(mat);
+        VsParams pv = {
+            .view_proj = light_vp,
+            .view_origin = { ...origin, 0 },
+            .model = m.matrix_world,
+            .uv_transform = uv_transform(mat),
+            .sway = sway_params(mat),
+            .inst_cull = inst_cull,
+            .surface_vs = { 0, d.x, d.y, d.z },
+        };
+        ShadowFsParams sfs = {
+            .s_params = { key.alpha_test ? mat.alpha_test : 0, mat.opacity, 0, 0 },
+            .s_alpha_uv = uv_relative(uv_base(mat), mat.alpha_map),
+        };
+        apply_program_uniforms(gen.program, VERTEX, &pv, null);
+        apply_program_uniforms(gen.program, FRAGMENT, &pv, null, &sfs);
+        state.renderer.info.shadow_calls++;
+        state.renderer.info.shadow_triangles += draw_geometry(item, false);
+        return;
     }
     sg::apply_bindings(&bind);
     ShadowVsParams vs = {
