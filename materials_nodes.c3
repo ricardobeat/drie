@@ -31,7 +31,7 @@ macro Node vs_in($name, NodeType t = VEC4, int comp = 0, int k = 0) => node_inpu
 
 // What a material's program holds; for each map role (shader_core.glsl's MAP_*) the shared
 // map slot (tex_ext0..5) its map is in, + 1 (0: the material has none).
-bitstruct MaterialKey : uint128 {
+bitstruct MaterialKey : char[32] {
     char type : 0..3;            // MaterialType's ordinal
     bool mrt : 4;                // a target with MRT: normal, motion and indirect light too
     bool cut : 5;                // DrawKind.CUT: the program may cut holes
@@ -118,21 +118,31 @@ const int MAP_GRADIENT = 20;
 const int MAP_BUMP = 21;
 const int MAP_ROLES = 22;
 
-// Where role `role`'s slot is in the key: three bits each from bit 68 (MAP_CUSTOM and
-// MAP_FOCUS, 16 and 17, are the material shader's only).
-fn int map_role_bit(int role) @local => 68 + 3 * (role < 16 ? role : role - 2);
+// The key as two words: bits 0..127, and 128..255.
+struct KeyWords @private {
+    uint128 lo;
+    uint128 hi;
+}
+
+fn uint KeyWords.hash(self) => (uint)(self.lo.hash() ^ self.hi.hash() * 31);
+fn bool KeyWords.equals(self, KeyWords other) @operator(==) => self.lo == other.lo && self.hi == other.hi;
+
+// Where role `role`'s slot is in the key's high word: three bits each from its bit 64 (the
+// key's bit 192; MAP_CUSTOM and MAP_FOCUS, 16 and 17, are the material shader's only).
+fn int map_role_bit(int role) @local => 64 + 3 * (role < 16 ? role : role - 2);
 
 // The shared slot role `role`'s map is in, + 1 (0: none).
 fn int MaterialKey.slot(self, int role) {
     if (role == 16 || role == 17) return 0;
-    return (int)(((uint128)self >> map_role_bit(role)) & 7);
+    return (int)((bitcast(self, KeyWords).hi >> map_role_bit(role)) & 7);
 }
 
 fn void MaterialKey.set_slot(&self, int role, int slot) {
     if (role == 16 || role == 17) return;
     int at = map_role_bit(role);
-    uint128 bits = (uint128)*self & ~((uint128)7 << at);
-    *self = (MaterialKey)(bits | ((uint128)(slot & 7) << at));
+    KeyWords w = bitcast(*self, KeyWords);
+    w.hi = (w.hi & ~((uint128)7 << at)) | ((uint128)(slot & 7) << at);
+    *self = bitcast(w, MaterialKey);
 }
 
 // A generated program and its pipelines (by get_pipeline's key).
@@ -141,7 +151,7 @@ struct MaterialProgram {
     HashMap{ulong, SgPipeline} pipelines;
 }
 
-HashMap{uint128, MaterialProgram*} material_programs @local;
+HashMap{KeyWords, MaterialProgram*} material_programs @local;
 
 // Set: every material draws with the material shader (the DRIE_CLASSIC_MATERIALS environment
 // variable, for comparing the two).
@@ -150,7 +160,8 @@ bool classic_materials @private;
 // The program for `key`, built the first time it is asked for.
 fn MaterialProgram* material_program(MaterialKey key) @private {
     if (!material_programs.is_initialized()) material_programs.init(mem);
-    if (try found = material_programs.get((uint128)key)) return found;
+    KeyWords words = bitcast(key, KeyWords);
+    if (try found = material_programs.get(words)) return found;
     uint mark = node_count();
     ProgramGraph graph;
     build_material_graph(key, &graph);
@@ -166,9 +177,9 @@ fn MaterialProgram* material_program(MaterialKey key) @private {
     mp.program = build_program(backend_lang(), &graph);
     mp.pipelines.init(mem);
     node_release(mark);
-    material_programs.set((uint128)key, mp);
+    material_programs.set(words, mp);
     // (DRIE_TRACE_PROGRAMS: each program printed as it is built)
-    if (try env::tget_var("DRIE_TRACE_PROGRAMS")) io::eprintfn("drie: program %x: vs %d B, fs %d B\n%s\n%s", (uint128)key, mp.program.vs.len, mp.program.fs.len, mp.program.vs, mp.program.fs);
+    if (try env::tget_var("DRIE_TRACE_PROGRAMS")) io::eprintfn("drie: program %x%032x: vs %d B, fs %d B\n%s\n%s", words.hi, words.lo, mp.program.vs.len, mp.program.fs.len, mp.program.vs, mp.program.fs);
     return mp;
 }
 
@@ -708,7 +719,7 @@ fn void build_material_graph(MaterialKey key, ProgramGraph* graph) @private {
 }
 
 // Whether the key holds a slot for any map role.
-fn bool MaterialKey.has_maps(self) => ((uint128)self >> 68) != 0;
+fn bool MaterialKey.has_maps(self) => (bitcast(self, KeyWords).hi >> 64) != 0;
 
 // Role `role`'s map at the material's uv (shader_core.glsl's material_map).
 fn Node role_texel(MaterialKey key, FragUv* f, int role) @local => shading::ext_texel(f, key.slot(role) - 1);
