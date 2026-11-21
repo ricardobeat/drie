@@ -550,3 +550,135 @@ fn Node ssr_march(Node n, Node geo_n, Node v, Node rough, Node world, Node frag)
     Node march = nodes::loop(i, nodes::int_(0), nodes::int_(SSR_MAX_STEPS), body);
     return nodes::seq(nodes::block(away, step_len, t, t_prev, march), nodes::vec4(0));
 }
+
+// ---- the fog's volume, its lights' glow and its light shafts
+
+// Volumetric fog in front of world position `p`: rgb = the light it scatters towards the
+// camera, a = how much of p gets through (shader_core.glsl's fog_volume_at). Read from the
+// froxel grid between the far ends of the two slices around p (the first's near end is the
+// camera: nothing yet).
+fn Node fog_volume_at(Node p) @private {
+    Node clip = fs_in("cluster_view_proj", MAT4) * nodes::vec4(p, 1);
+    Node uv = nodes::clamp(clip.xy() / nodes::max(nodes::abs(clip.w()), 1e-6f) * 0.5f + 0.5f, nodes::vec2(0), nodes::vec2(1));
+    Node depth = sun_depth(p);
+    Node grid = fs_in("fog_grid");
+    Node sl = fs_in("fog_slices");
+    Node slices = grid.z();
+    Node s = nodes::select(depth.less_than_equal(sl.x()), -1.0f,
+                           nodes::clamp(nodes::log(depth / sl.x()) * sl.y() - 1.0f, nodes::num(-1), slices - 1.0f));
+    Node k = nodes::floor(s);
+    Node f = s - k;
+    Node size = nodes::convert(node_sample(SIZE, shaders::VIEW_FOG_VOLUME, shaders::SMP_SSR_SMP, TEX_2D, nodes::int_(0)), VEC2);
+    Node cell = nodes::clamp(uv * grid.xy(), nodes::vec2(0.5f), grid.xy() - 0.5f);
+    Node a = nodes::select(k.greater_than_equal(nodes::num(0)), fog_slice(k, grid, cell, size), nodes::vec4(0, 0, 0, 1));
+    Node b = fog_slice(nodes::min(k + 1.0f, slices - 1.0f), grid, cell, size);
+    return nodes::mix(a, b, f);
+}
+
+// Slice `k` of the froxel grid at `cell`: the slices are laid out grid.w to a row.
+fn Node fog_slice(Node k, Node grid, Node cell, Node size) @local {
+    Node per_row = grid.w();
+    Node at = nodes::vec2(nodes::mod(k, per_row), nodes::floor(k / per_row)) * grid.xy() + cell;
+    return node_sample(LEVEL, shaders::VIEW_FOG_VOLUME, shaders::SMP_SSR_SMP, TEX_2D, at / size, nodes::num(0));
+}
+
+// Light scattered towards the camera by the fog along the view ray `ray` (`depth` long), for a
+// light at `lp`: the integral of cone * transmittance / distance^2 along the ray. Substituting
+// s = b + h tan(a) turns the 1 / distance^2 kernel into a constant, so a few samples in `a`
+// are enough. `cone` is (spot direction, cos outer), `cos_inner` < -1 for a point light. (The
+// function fog_glow of the program, made once: `fn_id` -1 makes it.)
+fn Node fog_glow(int* fn_id, MaterialKey key, Node lp, Node radius, Node ray, Node depth, Node cone, Node cos_inner) @private {
+    if (*fn_id < 0) {
+        NodeType[6] types = { VEC3, FLOAT, VEC3, FLOAT, VEC4, FLOAT };
+        int fid = node_func("fog_glow", FLOAT, &types);
+        Node pl = node_param(fid, 0);
+        Node pr = node_param(fid, 1);
+        Node pray = node_param(fid, 2);
+        Node pd = node_param(fid, 3);
+        Node pc = node_param(fid, 4);
+        Node pi = node_param(fid, 5);
+        Node to_light = pl - fs_in("camera_pos", VEC3);
+        Node b = nodes::dot(to_light, pray);
+        Node h = nodes::max(nodes::sqrt(nodes::max(nodes::dot(to_light, to_light) - b * b, 0)), nodes::max(pr, 0.05f));
+        Node a0 = nodes::atan(b.negate() / h);
+        Node a1 = nodes::atan((pd - b) / h);
+        Node sum = nodes::variable(nodes::num(0));
+        Node i = nodes::loop_index(INT);
+        Node a = nodes::mix(a0, a1, (nodes::convert(i, FLOAT) + 0.5f) / 6.0f);
+        Node s = b + h * nodes::tan(a);
+        Node from_light = pray * s - to_light;
+        Node d = nodes::max(nodes::length(from_light), 1e-4f);
+        Node w = shading::fog_transmittance(key, s + d);
+        w = nodes::select(pi.greater_than_equal(nodes::num(-1)), w * nodes::smoothstep(pc.w(), pi, nodes::dot(from_light / d, pc.xyz())), w);
+        Node samples = nodes::loop(i, nodes::int_(0), nodes::int_(6), nodes::block(sum.assign(sum + w)));
+        node_func_body(fid, nodes::seq(nodes::block(sum, samples), sum / 6.0f * (a1 - a0) / h));
+        *fn_id = fid;
+    }
+    Node[6] args = { lp, radius, ray, depth, cone, cos_inner };
+    return node_call_fn(*fn_id, &args);
+}
+
+// The glow in the fog of all of the render's point and spot lights along the view ray `ray`
+// (`depth` long): all of them, not the fragment's cluster's, the glow being along the whole
+// ray.
+fn Node fog_lights_glow(MaterialKey key, Node ray, Node depth) @private {
+    int fn_id = -1;
+    Node counts = fs_in("counts");
+    Node glow = nodes::variable(nodes::vec3(0));
+    Node i = nodes::loop_index(UINT);
+    Node at = i * nodes::uint_(4);
+    Node pos = node_storage(shaders::VIEW_POINT_LIGHTS, VEC4, at);
+    Node color = node_storage(shaders::VIEW_POINT_LIGHTS, VEC4, at + nodes::uint_(1));
+    Node params = node_storage(shaders::VIEW_POINT_LIGHTS, VEC4, at + nodes::uint_(3));
+    Node point = color.xyz() * fog_glow(&fn_id, key, pos.xyz(), params.x(), ray, depth, nodes::vec4(0), nodes::num(-2));
+    Node points = nodes::loop(i, nodes::uint_(0), nodes::convert(counts.y(), UINT), nodes::block(glow.assign(glow + point)));
+    Node j = nodes::loop_index(UINT);
+    Node sat = j * nodes::uint_(5);
+    Node spos = node_storage(shaders::VIEW_SPOT_LIGHTS, VEC4, sat);
+    Node dir = node_storage(shaders::VIEW_SPOT_LIGHTS, VEC4, sat + nodes::uint_(1));
+    Node scolor = node_storage(shaders::VIEW_SPOT_LIGHTS, VEC4, sat + nodes::uint_(2));
+    Node sparams = node_storage(shaders::VIEW_SPOT_LIGHTS, VEC4, sat + nodes::uint_(3));
+    Node spot = scolor.xyz() * sparams.w() * fog_glow(&fn_id, key, spos.xyz(), sparams.y(), ray, depth, dir, sparams.x());
+    Node spots = nodes::loop(j, nodes::uint_(0), nodes::convert(counts.z(), UINT), nodes::block(
+        nodes::if_then(sparams.w().less_than_equal(nodes::num(0)), nodes::block(nodes::continue_())), glow.assign(glow + spot)));
+    return nodes::seq(nodes::block(glow, points, spots), glow);
+}
+
+// How much of the fog between `from` (the camera) and `to` the directional light reaches, 0..1
+// (shader_core.glsl's sun_in_fog): marched through its shadow map, each step weighted by how
+// much of the fog's light it gives (`sigma`: the fog's density along this ray). Beyond the
+// map's reach the fog counts as lit.
+fn Node sun_in_fog(ShadowFns* shadow, Node from, Node to, Node sigma, Node frag) @private {
+    const int STEPS = 14;
+    Node ray = to - from;
+    Node len = nodes::length(ray);
+    Node span = nodes::min(len, 70.0f);
+    Node noise = nodes::fract(nodes::fract(nodes::dot(frag, nodes::vec2(0.06711056f, 0.00583715f))) * 52.9829189f);
+    Node jitter = nodes::fract(noise + fs_in("ssr_params", FLOAT, 2) * 0.618f);
+    Node lit = nodes::variable(nodes::num(0));
+    Node last = nodes::variable(nodes::num(1));
+    Node i = nodes::loop_index(INT);
+    Node fi = nodes::convert(i, FLOAT);
+    Node s1 = span * (fi + 1.0f) / (float)STEPS;
+    Node s = span * (fi + jitter) / (float)STEPS;
+    Node next = nodes::exp((sigma * s1).negate());
+    Node at = from + ray * (s / nodes::max(len, 1e-4f));
+    Node k = nodes::variable(sun_cascade(sun_depth(at)));
+    Node c = (fs_at("dir_shadow_mat", MAT4, nodes::max(k, nodes::int_(0))) * nodes::vec4(at, 1)).xyz();
+    Node seen = nodes::variable(nodes::num(1));
+    Node tap = shadow.sun_tap(k, c.xy(), c.z());
+    // (a hard test against the mean, as the PCF map's one tap)
+    if (shadow.key.vsm) tap = nodes::select(tap.less_than(nodes::num(1)), 0.0f, 1.0f);
+    Node edge = nodes::min(c.xy(), nodes::vec2(1) - c.xy());
+    Node inside = nodes::logical_and(nodes::logical_and(k.greater_than_equal(nodes::int_(0)), nodes::logical_and(c.x().greater_than(nodes::num(0)), c.x().less_than(nodes::num(1)))),
+                                     nodes::logical_and(nodes::logical_and(c.y().greater_than(nodes::num(0)), c.y().less_than(nodes::num(1))),
+                                                        nodes::logical_and(c.z().less_than(nodes::num(1)), c.z().greater_than(nodes::num(0)))));
+    Node look = nodes::if_then(inside, nodes::block(seen.assign(nodes::mix(nodes::num(1), tap, nodes::clamp(nodes::min(edge.x(), edge.y()) * 10.0f, 0, 1)))));
+    Node body = nodes::block(k, seen, look, lit.assign(lit + (last - next) * seen), last.assign(next));
+    Node march = nodes::loop(i, nodes::int_(0), nodes::int_(STEPS), body);
+    Node all_fog = nodes::exp((sigma * len).negate()).one_minus();
+    Node through = lit + last - all_fog.one_minus();
+    Node shafts = nodes::select(all_fog.greater_than(nodes::num(1e-5f)),
+                                nodes::mix(nodes::num(1), nodes::clamp(through / all_fog, 0, 1), fs_in("dir_cascade_fwd", FLOAT, 3)), 1.0f);
+    return nodes::seq(nodes::block(lit, last, march), shafts);
+}
