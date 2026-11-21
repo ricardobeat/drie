@@ -3132,12 +3132,10 @@ fn bool material_key_of(DrawItem* item, DrawKind kind, FsParams* fs, Vec4[6]* ma
     bool lit = type != BASIC;
     bool standard = type == STANDARD;
     float alpha_test = alpha_test_of(mat);
-    // (drawn by the material shader: glass, hex tiling, defocus, screen-space and planar
-    // reflections, the fog's volume, its lights' glow and its light shafts)
+    // (drawn by the material shader: glass, hex tiling, defocus, the fog's volume, its lights'
+    // glow and its light shafts)
     if (mat.glass || (mat.hex_tiling > 0 && alpha_test <= 0)) return false;
     if (mat.defocus && r.focus_map && r.focus_aperture > 0) return false;
-    if (r.ssr_color.id && r.ssr_depth.id && mat.ssr > 0) return false;
-    if (mat.reflector && mat.reflector.rendered && mat.reflector.target) return false;
     int fog = mat.fog ? (int)fs.fog_params.w : 0;
     if (fog && (fs.fog_grid.w > 0 || fs.fog_color.w > 0)) return false;
     if (fog == 3 && fs.fog_sun_dir.w > 0 && fs.fog_sun_color.w > 0 && fs.dir_shadow_params.x > 0.5f) return false;
@@ -3197,6 +3195,8 @@ fn bool material_key_of(DrawItem* item, DrawKind kind, FsParams* fs, Vec4[6]* ma
         .env_reflect = (standard && env_map) || probes,
         .probes = probes,
         .gi = lit && state.gi_count > 0,
+        .ssr = lit && r.ssr_color.id && r.ssr_depth.id && mat.ssr > 0,
+        .reflector = lit && mat.reflector && mat.reflector.rendered && mat.reflector.target,
         .rc = lit && fs.rc_size.w > 0,
         .env_box = standard && env_map && mat.env_box_min != mat.env_box_max,
         .toon_nearest = type == TOON && mat.gradient_map && mat.gradient_map.nearest,
