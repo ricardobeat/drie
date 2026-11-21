@@ -1,4 +1,6 @@
 // Copies a Metal texture (BGRA8/RGBA8) into CPU memory. Compiled as Objective-C.
+// (Built on every platform from the same list of C files: empty where it is not Apple.)
+#if defined(__APPLE__)
 #import <Metal/Metal.h>
 #include <stdbool.h>
 #include <string.h>
@@ -70,3 +72,4 @@ bool rb_fetch(int slot, void* out, int bytes, bool wait) {
     memcpy(out, rb_slots[slot].staging.contents, (size_t)bytes);
     return true;
 }
+#endif // __APPLE__

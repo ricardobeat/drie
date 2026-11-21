@@ -1,6 +1,6 @@
 // The current game controller, through Apple's GameController framework (see gamepad.c3
 // for the friendlier side).
-module drie::gamectl;
+module drie::gamectl @link(env::DARWIN, "GameController.framework", "Foundation.framework");
 
 struct GcState
 {
