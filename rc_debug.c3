@@ -40,7 +40,8 @@ struct State @local {
     uint[] rad_cpu;     // 2 uints (uvec2 fp16) per cascade ray
     bool irr_ready;
     bool rad_ready;
-    bool tracked;
+    bool irr_inflight;
+    bool rad_inflight;
 
     // sgl + sdtx contexts (window + offscreen RGBA8 capture)
     SglContext win_gl;
@@ -272,17 +273,29 @@ fn void track(RadianceCascades* rc, bool wait_now = false) {
         st.last_rc = rc;
         st.irr_ready = false;
         st.rad_ready = false;
-        st.tracked = false;
+        st.irr_inflight = false;
+        st.rad_inflight = false;
     }
-    if (st.tracked) {
-        CInt irr_bytes = (CInt)(st.irr_cpu.len * drie::Vec4::size);
-        CInt rad_bytes = (CInt)(st.rad_cpu.len * uint::size);
-        if (readback::fetch(IRR_SLOT, st.irr_cpu.ptr, irr_bytes, wait_now)) st.irr_ready = true;
-        if (readback::fetch(RAD_SLOT, st.rad_cpu.ptr, rad_bytes, wait_now)) st.rad_ready = true;
+    CInt irr_bytes = (CInt)(st.irr_cpu.len * drie::Vec4::size);
+    CInt rad_bytes = (CInt)(st.rad_cpu.len * uint::size);
+    if (st.irr_inflight) {
+        if (readback::fetch(IRR_SLOT, st.irr_cpu.ptr, irr_bytes, wait_now)) {
+            st.irr_ready = true;
+            st.irr_inflight = false;
+        }
     }
-    readback::track(rc.irradiance_buf.buffer, IRR_SLOT);
-    readback::track(rc.cascade_buf.buffer, RAD_SLOT);
-    st.tracked = true;
+    if (!st.irr_inflight) {
+        if (readback::track(rc.irradiance_buf.buffer, IRR_SLOT)) st.irr_inflight = true;
+    }
+    if (st.rad_inflight) {
+        if (readback::fetch(RAD_SLOT, st.rad_cpu.ptr, rad_bytes, wait_now)) {
+            st.rad_ready = true;
+            st.rad_inflight = false;
+        }
+    }
+    if (!st.rad_inflight) {
+        if (readback::track(rc.cascade_buf.buffer, RAD_SLOT)) st.rad_inflight = true;
+    }
 }
 
 fn float half_to_float(ushort h) @local {
