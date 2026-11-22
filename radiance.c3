@@ -801,6 +801,11 @@ fn void RadianceCascades.update_sparse(
 fn void RadianceCascades.flush_pending_sparse(&self) {
     if (!self.pending_sparse) return;
     self.pending_sparse = false;
+    // the render target the last call drew into may be gone by now (a target made for one
+    // render and destroyed before commit(), or the G-Buffer made anew at another size):
+    // skip this frame's update rather than read a dead view
+    if (sg::query_view_state(self.pending_depth_tex) != SgResourceState.VALID
+        || sg::query_view_state(self.pending_normal_tex) != SgResourceState.VALID) return;
     self.run_sparse_update(
         self.pending_scene,
         self.pending_depth_tex,
@@ -904,6 +909,8 @@ fn void RadianceCascades.reset(&self) {
 }
 
 fn void RadianceCascades.dispose(&self) {
+    if (self.pending_sparse) unqueue_sparse_flush(self);
+    self.pending_sparse = false;
     free(self.voxels);
     if (self.voxel_buf) self.voxel_buf.dispose();
     if (self.brick_buf) self.brick_buf.dispose();

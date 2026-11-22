@@ -6000,6 +6000,13 @@ fn void queue_sparse_flush(RadianceCascades* rc) {
     state.pending_sparse_flush.push(rc);
 }
 
+// Takes `rc` off the queue (RadianceCascades.dispose(): commit() mustn't flush it after).
+fn void unqueue_sparse_flush(RadianceCascades* rc) {
+    for (sz i = state.pending_sparse_flush.len(); i > 0; i--) {
+        if (state.pending_sparse_flush[i - 1] == rc) state.pending_sparse_flush.remove_at(i - 1);
+    }
+}
+
 fn void commit() {
     foreach (rc : state.pending_sparse_flush) rc.flush_pending_sparse();
     state.pending_sparse_flush.clear();
