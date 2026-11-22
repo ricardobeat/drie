@@ -3369,7 +3369,8 @@ fn bool material_key_of(DrawItem* item, DrawKind kind, FsParams* fs, Vec4[6]* ma
         .spot_lights = lit && fs.counts.z > 0,
         .channels = lit && mat.light_channels != 0,
         .map_emissive = lit && mat.map_emissive,
-        .baked = lit && vc && mat.vertex_light > 0,
+        // (Material.vertex_light reads the vertex colors whether or not vertex_colors is set)
+        .baked = lit && mat.vertex_light > 0,
         // (the normal map on every type but basic: the normal and matcap materials show it)
         .normal_map = type != BASIC && mat.normal_map != null,
         // (not baking: bake_pipeline's layout has none)

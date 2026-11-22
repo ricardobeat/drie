@@ -1,9 +1,10 @@
 // An application's material shader (Renderer.shaders), as house hands the renderer its own
 // build of shader_core.glsl: here drie's own build (drie::shaders), whose hooks do nothing.
 // The scene is drawn first with the generated programs, then with Renderer.shaders set: an
-// opaque box casting a shadow onto the floor, a transparent sphere and a node material (its
-// graph spliced into the shader's hooks). The two pictures are close (the material shader is
-// not the generated programs to the pixel), and the shadow shows in both.
+// opaque box casting a shadow onto the floor, a transparent sphere, a node material (its
+// graph spliced into the shader's hooks) and a panel lit by light baked into its vertex
+// colors. The two pictures are close (the material shader is not the generated programs to
+// the pixel), and the shadow shows in both.
 //
 //   just test classic_shaders [out.png]   (tests/build/classic_shaders.png: the second picture)
 module classic_shaders_test;
@@ -63,6 +64,16 @@ fn int main(String[] args) {
     cone.position = { 1, 0.3f, -1 };
     cone.cast_shadow = true;
     scene.add(cone);
+    // light baked into the vertex colors (Material.vertex_light) without vertex_colors set,
+    // as house's backrooms have it: both paths add it
+    BufferGeometry* lit_g = drie::plane_geometry(1.2f, 1.2f);
+    for (uint i = 0; i < lit_g.vertex_count(); i++) lit_g.set_vertex_color(i, { 0.9f, 0.6f, 0.3f });
+    Material* baked = drie::mesh_standard_material(color: 0x808080);
+    baked.vertex_light = 1;
+    Mesh* panel = drie::mesh(lit_g, baked);
+    panel.rotation.x = -(float)math::PI / 2;
+    panel.position = { -1.6f, 0.01f, 1.4f };
+    scene.add(panel);
 
     PerspectiveCamera* camera = drie::perspective_camera(45, (float)W / H, 0.1f, 50);
     camera.position = { 0, 5, 5 };
