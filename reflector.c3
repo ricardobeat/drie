@@ -83,6 +83,32 @@ fn Mat4 Reflector.mirror(&self) {
     return m;
 }
 
+// Tilts `cam`'s near plane onto the plane dot(normal, p) == constant (Lengyel's oblique
+// projection), clipping everything on the side where dot(normal, p) < constant - clip_bias.
+// Call after cam.update_matrix_world() and cam.update_projection_matrix() (with
+// cam.custom_projection = true so render() keeps the modified matrix).
+fn void oblique_projection(Camera* cam, Vector3 normal, float constant, float clip_bias = 0) {
+    Vector3 n = normal.normalize();
+    Mat4 mw   = cam.matrix_world;
+    float[<4>] pw = { n.x, n.y, n.z, -constant + clip_bias };
+    float[<4>] cv;
+    for (int i = 0; i < 4; i++) cv[i] = mw[i][0] * pw[0] + mw[i][1] * pw[1] + mw[i][2] * pw[2] + mw[i][3] * pw[3];
+    Mat4 p            = cam.projection_matrix;
+    Mat4 pinv         = p.invert();
+    float[<4>] corner = { cv[0] > 0 ? 1 : (cv[0] < 0 ? -1 : 0), cv[1] > 0 ? 1 : (cv[1] < 0 ? -1 : 0), 1, 1 };
+    float[<4>] q;
+    for (int i = 0; i < 4; i++) {
+        q[i] = pinv[0][i] * corner[0] + pinv[1][i] * corner[1] + pinv[2][i] * corner[2] + pinv[3][i] * corner[3];
+    }
+    float dq = cv[0] * q[0] + cv[1] * q[1] + cv[2] * q[2] + cv[3] * q[3];
+    if (math::abs(dq) < 1e-6f) return;
+    bool z01     = depth_zero_to_one();
+    float[<4>] c = cv * ((z01 ? 1.0f : 2.0f) / dq);
+    // the third row: z' = c . p (0..1), or c . p - w (-1..1)
+    for (int i = 0; i < 4; i++) p[i][2] = z01 ? c[i] : c[i] - p[i][3];
+    cam.projection_matrix = p;
+}
+
 // Renders what `reflector`'s plane mirrors, as `camera` sees it. Call it before render() for
 // the frame, with the render target set as it will be for that (its picture is a part of that
 // size). Leaves the target and the reflection source as they were.
@@ -116,25 +142,9 @@ fn void Renderer.render_reflector(&self, Reflector* reflector, Scene* scene, Per
     mc.update_projection_matrix();
 
     // the near plane laid onto the mirror's plane (Lengyel's oblique projection): nothing
-    // behind it is drawn. The plane in the mirrored camera's view space: (M^T) (n, -c).
-    Mat4 mw       = mc.matrix_world;
-    float[<4>] pw = { r.normal.x, r.normal.y, r.normal.z, -r.constant + r.clip_bias };
-    float[<4>] cv;
-    for (int i = 0; i < 4; i++) cv[i] = mw[i][0] * pw[0] + mw[i][1] * pw[1] + mw[i][2] * pw[2] + mw[i][3] * pw[3];
-    Mat4 p            = mc.projection_matrix;
-    Mat4 pinv         = p.invert();
-    float[<4>] corner = { cv[0] > 0 ? 1 : (cv[0] < 0 ? -1 : 0), cv[1] > 0 ? 1 : (cv[1] < 0 ? -1 : 0), 1, 1 };
-    float[<4>] q;
-    for (int i = 0; i < 4; i++) {
-        q[i] = pinv[0][i] * corner[0] + pinv[1][i] * corner[1] + pinv[2][i] * corner[2] + pinv[3][i] * corner[3];
-    }
-    float dq     = cv[0] * q[0] + cv[1] * q[1] + cv[2] * q[2] + cv[3] * q[3];
-    bool z01     = depth_zero_to_one();
-    float[<4>] c = cv * ((z01 ? 1.0f : 2.0f) / dq);
-    // the third row: z' = c . p (0..1), or c . p - w (-1..1)
-    for (int i = 0; i < 4; i++) p[i][2] = z01 ? c[i] : c[i] - p[i][3];
-    mc.projection_matrix = p;
-    r.view_proj = p.mul(mc.matrix_world_inverse);
+    // behind it is drawn.
+    oblique_projection(mc, r.normal, r.constant, r.clip_bias);
+    r.view_proj = mc.projection_matrix.mul(mc.matrix_world_inverse);
 
 
     SgView ssr_color = self.ssr_color;
