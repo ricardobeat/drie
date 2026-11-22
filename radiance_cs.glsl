@@ -16,63 +16,27 @@
 
 @ctype vec4 Vec4
 
+@include radiance_common.glsl
+
 @block rc_common
+@include_block rc_key_common
+@include_block rc_pack_common
 layout(binding=0) uniform rc_params {
     vec4 rc_min;      // xyz = the box's corner, w = cascade 0's probe spacing (m)
     ivec4 rc_dims;    // xyz = cascade 0's probes, w = the cascade being traced
     vec4 rc_tune;     // x = cascade 0's reach (m), y = the new frame's share, z = frame, w = voxel size (m)
     ivec4 rc_info;    // x = directions across cascade 0's square, y = cascades, z = lights, w = rays of this cascade
     vec4 rc_sky;      // rgb = the sky's radiance overhead, w = the bounce's strength
-    vec4 rc_ground;   // rgb = the sky's radiance from below
+    vec4 rc_ground;   // rgb = the sky's radiance from below, w = shadow_rays
     ivec4 rc_vox;     // xyz = voxels, w = one ray in this many is traced each frame
     ivec4 rc_off0;    // where cascades 0..3 start in rc_rad
     ivec4 rc_off1;    // 4..7
 };
-struct rc_voxel {
-    uint albedo;      // rgb8, bit 24 = solid
-    uint emissive;    // rgb8 mantissas and a shared exponent (bits 24..31, 0 = none)
-};
 struct rc_texel {
     vec4 v;
 };
-struct rc_rad_texel {
-    uvec2 p;          // rgb packed as half2 + half2
-};
-vec3 rc_unpack_rad(uvec2 p) {
-    vec2 rg = unpackHalf2x16(p.x);
-    vec2 ba = unpackHalf2x16(p.y);
-    return vec3(rg, ba.x);
-}
-uvec2 rc_pack_rad(vec3 rgb) {
-    return uvec2(packHalf2x16(rgb.rg), packHalf2x16(vec2(rgb.b, 0.0)));
-}
-struct rc_brick {
-    uint solid;       // the solid voxels in a block of 4 x 4 x 4 (a cell of cascade 0)
-};
 layout(binding=0) readonly buffer rc_voxels { rc_voxel rc_vox_data[]; };
 layout(binding=4) readonly buffer rc_bricks { rc_brick rc_brick_data[]; };
-
-const float RC_PI = 3.14159265;
-
-bool rc_in_grid(ivec3 c) {
-    return all(greaterThanEqual(c, ivec3(0))) && all(lessThan(c, rc_vox.xyz));
-}
-
-int rc_voxel_index(ivec3 c) {
-    return (c.z * rc_vox.y + c.y) * rc_vox.x + c.x;
-}
-
-bool rc_solid(ivec3 c) {
-    return (rc_vox_data[rc_voxel_index(c)].albedo & 0x1000000u) != 0u;
-}
-
-// the direction a point of the octahedral square (-1..1) stands for
-vec3 rc_direction(vec2 e) {
-    vec3 n = vec3(e, 1.0 - abs(e.x) - abs(e.y));
-    float t = max(-n.z, 0.0);
-    n.xy += vec2(n.x >= 0.0 ? -t : t, n.y >= 0.0 ? -t : t);
-    return normalize(n);
-}
 
 ivec3 rc_level_dims(int level) {
     return max((rc_dims.xyz + ((1 << level) - 1)) >> level, ivec3(1));
@@ -85,76 +49,12 @@ int rc_level_offset(int level) {
 
 @cs rc_trace_cs
 @include_block rc_common
-struct rc_light {
-    vec4 pos;     // w = distance cutoff; a directional light: xyz = towards it
-    vec4 color;   // w = decay
-    vec4 dir;     // where a spot light points, w = cos(angle); w = -2: a point light, -3: directional
-    vec4 params;  // x = cos(inner angle)
-};
 layout(binding=1) buffer rc_cascades { rc_rad_texel rc_rad[]; };
 layout(binding=2) readonly buffer rc_irradiance { rc_texel rc_irr[]; };
 layout(binding=3) readonly buffer rc_lights { rc_light rc_light_data[]; };
+@include_block rc_trace_common
 
 layout(local_size_x=64) in;
-
-// Follows the ray through the voxels for up to `reach` meters. 0: nothing in the way, 1: hit
-// (t, the voxel and the face it came in through), 2: left the box, 3: started inside something.
-// Blocks of 4 x 4 x 4 voxels with nothing in them are crossed in one step.
-int rc_march(vec3 ro, vec3 rd, float reach, out float t_hit, out ivec3 cell, out vec3 face) {
-    float vs = rc_tune.w;
-    vec3 g = (ro - rc_min.xyz) / vs;
-    float reach_v = reach / vs;
-    ivec3 c = ivec3(floor(g));
-    t_hit = 0.0;
-    cell = c;
-    face = vec3(0.0);
-    if (!rc_in_grid(c)) return 2;
-    if (rc_solid(c)) return 3;
-    vec3 inv = 1.0 / max(abs(rd), vec3(1e-6));
-    ivec3 stp = ivec3(rd.x >= 0.0 ? 1 : -1, rd.y >= 0.0 ? 1 : -1, rd.z >= 0.0 ? 1 : -1);
-    vec3 ahead = vec3(greaterThan(stp, ivec3(0)));
-    // how far along the ray (in voxels) the next voxel starts, on each axis
-    vec3 next = abs(vec3(c) + ahead - g) * inv;
-    for (int i = 0; i < 400; i++) {
-        ivec3 bc = c >> 2;
-        int axis;
-        float t;
-        if (rc_brick_data[(bc.z * rc_dims.y + bc.y) * rc_dims.x + bc.x].solid == 0u) {
-            vec3 leave = abs(vec3(bc * 4) + ahead * 4.0 - g) * inv;
-            axis = leave.x < leave.y ? (leave.x < leave.z ? 0 : 2) : (leave.y < leave.z ? 1 : 2);
-            t = leave[axis];
-            if (t > reach_v) return 0;
-            c = clamp(ivec3(floor(g + rd * t)), bc * 4, bc * 4 + 3);
-            c[axis] = bc[axis] * 4 + (stp[axis] > 0 ? 4 : -1);
-            if (!rc_in_grid(c)) return 2;
-            next = abs(vec3(c) + ahead - g) * inv;
-        } else {
-            axis = next.x < next.y ? (next.x < next.z ? 0 : 2) : (next.y < next.z ? 1 : 2);
-            t = next[axis];
-            if (t > reach_v) return 0;
-            c[axis] += stp[axis];
-            if (!rc_in_grid(c)) return 2;
-            next[axis] += inv[axis];
-        }
-        if (rc_solid(c)) {
-            t_hit = t * vs;
-            cell = c;
-            face[axis] = -float(stp[axis]);
-            return 1;
-        }
-    }
-    return 0;
-}
-
-float rc_attenuation(float d, float cutoff, float decay) {
-    float a = 1.0 / max(pow(d, decay), 0.01);
-    if (cutoff > 0.0) {
-        float r = d / cutoff;
-        float f = clamp(1.0 - r * r * r * r, 0.0, 1.0);
-        a *= f * f;
-    }
-    return a;
-}
 
 // The light the last frame's probes put on a surface at p facing the axis `face`.
 vec3 rc_bounce(vec3 p, vec3 face) {
@@ -176,23 +76,11 @@ vec3 rc_bounce(vec3 p, vec3 face) {
     return wsum > 1e-4 ? sum / wsum : vec3(0.0);
 }
 
-vec3 rc_sky_at(vec3 rd) {
-    return mix(rc_ground.rgb, rc_sky.rgb, 0.5 * rd.y + 0.5);
-}
-
-uint rc_hash(uint x) {
-    x ^= x >> 16;
-    x *= 0x7feb352du;
-    x ^= x >> 15;
-    x *= 0x846ca68bu;
-    x ^= x >> 16;
-    return x;
-}
-
 void main() {
-    // a different ray of each run of rc_vox.w every frame
+    // a different ray of each run of rc_every() every frame
+    int every = rc_every();
     int turn = int(gl_GlobalInvocationID.x);
-    int i = turn * rc_vox.w + (turn + int(rc_tune.z)) % rc_vox.w;
+    int i = turn * every + (turn + int(rc_tune.z)) % every;
     if (i >= rc_info.w) return;
     int level = rc_dims.w;
     int d = rc_info.x << level;
@@ -207,7 +95,7 @@ void main() {
     // Low-discrepancy R2 quasi-random angular jitter per ray update (eliminates white-noise shimmer)
     uint cell_h = rc_hash(uint(i) * 2654435761u + uint(level) * 7919u);
     vec2 cell_seed = vec2(float(cell_h & 0xffffu), float(cell_h >> 16)) / 65536.0;
-    float r2_step = float(int(rc_tune.z) / max(rc_vox.w, 1));
+    float r2_step = float(int(rc_tune.z) / every);
     vec2 jitter = fract(cell_seed + r2_step * vec2(0.7548776662, 0.5698402909));
     uint h = rc_hash(cell_h ^ (uint(rc_tune.z) * 362437u));
     ivec2 uv = ivec2(k % d, k / d);
@@ -235,71 +123,11 @@ void main() {
     vec4 result = vec4(0.0);
     if (what == 1) {
         rc_voxel vx = rc_vox_data[rc_voxel_index(cell)];
-        vec3 albedo = vec3(float(vx.albedo & 0xffu), float((vx.albedo >> 8) & 0xffu), float((vx.albedo >> 16) & 0xffu)) / 255.0;
-        vec3 light = vec3(0.0);
-        uint e = vx.emissive >> 24;
-        if (e != 0u) {
-            light = vec3(float(vx.emissive & 0xffu), float((vx.emissive >> 8) & 0xffu), float((vx.emissive >> 16) & 0xffu))
-                  / 255.0 * exp2(float(e) - 128.0);
-        }
+        vec3 albedo = rc_voxel_albedo(vx);
+        vec3 light = rc_voxel_emissive(vx);
         // just outside the face the ray came in through
         vec3 hp = pos + rd * (t_start + t_hit) + face * (0.5 * rc_tune.w);
-        vec3 arriving = rc_bounce(hp, face) * rc_sky.w;
-        // Deterministically shadow-test the first 4 contributing lights (zero light-selection flicker);
-        // fall back to RIS only for any extra lights beyond 4.
-        int nl = rc_info.z;
-        int direct_tested = 0;
-        float total = 0.0;
-        vec3 picked = vec3(0.0);
-        float picked_w = 0.0;
-        vec3 picked_dir = vec3(0.0);
-        float picked_dist = 0.0;
-        uint seed = h;
-        for (int l = 0; l < nl; l++) {
-            rc_light lt = rc_light_data[l];
-            bool sun = lt.dir.w < -2.5;
-            vec3 lv = lt.pos.xyz - hp;
-            float dist = length(lv);
-            if (!sun && lt.pos.w > 0.0 && dist > lt.pos.w) continue;
-            vec3 ld = lv / max(dist, 1e-4);
-            // (a directional light: its shadow ray goes on out of the box)
-            if (sun) {
-                ld = lt.pos.xyz;
-                dist = 1e4;
-            }
-            float ndl = dot(face, ld);
-            if (ndl <= 0.0) continue;
-            float cone = 1.0;
-            if (lt.dir.w > -1.5) {
-                cone = smoothstep(lt.dir.w, lt.params.x, dot(-ld, lt.dir.xyz));
-                if (cone <= 0.0) continue;
-            }
-            vec3 gives = lt.color.rgb * (ndl * cone * (sun ? 1.0 : rc_attenuation(dist, lt.pos.w, lt.color.w)));
-            float w = max(gives.r, max(gives.g, gives.b));
-            if (w <= 0.0) continue;
-            if (direct_tested < 4) {
-                direct_tested++;
-                float st;
-                ivec3 sc;
-                vec3 sf;
-                if (rc_march(hp, ld, dist - rc_tune.w, st, sc, sf) != 1) arriving += gives;
-            } else {
-                total += w;
-                seed = rc_hash(seed + uint(l) * 747796405u + 1u);
-                if (float(seed >> 8) / 16777216.0 * total < w) {
-                    picked = gives;
-                    picked_w = w;
-                    picked_dir = ld;
-                    picked_dist = dist;
-                }
-            }
-        }
-        if (picked_w > 0.0) {
-            float st;
-            ivec3 sc;
-            vec3 sf;
-            if (rc_march(hp, picked_dir, picked_dist - rc_tune.w, st, sc, sf) != 1) arriving += picked * (total / picked_w);
-        }
+        vec3 arriving = rc_bounce(hp, face) * rc_sky.w + rc_direct_light(hp, face, h);
         light += albedo * arriving / RC_PI;
         result = vec4(light, 0.0);
     } else if (what == 2) {
@@ -361,6 +189,14 @@ layout(binding=1) readonly buffer rc_gather_cascades { rc_rad_texel rc_rad[]; };
 layout(binding=2) buffer rc_gather_irradiance { rc_texel rc_irr[]; };
 
 layout(local_size_x=64) in;
+
+bool rc_in_grid(ivec3 c) {
+    return all(greaterThanEqual(c, ivec3(0))) && all(lessThan(c, rc_vox.xyz));
+}
+
+bool rc_solid(ivec3 c) {
+    return (rc_vox_data[(c.z * rc_vox.y + c.y) * rc_vox.x + c.x].albedo & 0x1000000u) != 0u;
+}
 
 void main() {
     int probe = int(gl_GlobalInvocationID.x);

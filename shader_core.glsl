@@ -6,6 +6,8 @@
 // tex_ext textures with tex_smp), and write all their outputs. The stubs here do just that;
 // they run only when node_flags.x (the vertex shader's bake.z) is 1, which only a node
 // material's own build sets.
+@include radiance_common.glsl
+
 @block node_common
 #define NODE_PARAMS 32
 struct NodeIn {
@@ -1764,22 +1766,12 @@ vec3 gi_irradiance(vec3 n, out float cover) {
 // box, 0 outside it, between the two over its outermost half cell.
 // Blended between the 8 probes around, leaving out those inside things and those behind the
 // surface's own plane: a wall takes none of the light of the room behind it.
-uint rc_probe_hash(uint x) {
-    x ^= x >> 16;
-    x *= 0x7feb352du;
-    x ^= x >> 15;
-    x *= 0x846ca68bu;
-    x ^= x >> 16;
-    return x;
-}
+@include_block rc_key_common
 
 int rc_lookup_sparse_probe(ivec3 c, int hash_cap) {
-    uint key = (uint(c.x) & 0x1ffu)
-             | ((uint(c.y) & 0x1ffu) << 9)
-             | ((uint(c.z) & 0x1ffu) << 18)
-             | 0x80000000u;
+    uint key = rc_pack_key32(c, 0);
     uint mask = uint(hash_cap - 1);
-    uint idx = rc_probe_hash(key) & mask;
+    uint idx = rc_hash(key) & mask;
     for (int step = 0; step < 32; step++) {
         uvec4 e = floatBitsToUint(rc_probe_data[idx].e);
         if (e.y == 0u) return -1;
