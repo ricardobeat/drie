@@ -49,8 +49,6 @@ MeshStandardMaterial* mirror_mat;
 SpotLight* key_spot;
 SpotLight* rim_spot;
 SpotLight* apse_spot;
-RectAreaLight* cyan_rect;
-RectAreaLight* amber_rect;
 Mesh* crystal_orb;
 Mesh* gold_halo;
 Mesh* node_torus;
@@ -167,11 +165,11 @@ fn void build_scene()
     scene.fog = vol_fog;
 
     // ---- architectural materials
-    floor_mat = drie::mesh_standard_material(color: 0x20242c, roughness: 0.14f, metalness: 0.08f);
+    floor_mat = drie::mesh_standard_material(color: 0x20242c, roughness: 0.10f, metalness: 0.10f);
     floor_mat.ssr = 1;
 
     MeshStandardMaterial* concrete = drie::mesh_standard_material(color: 0x9c9890, roughness: 0.88f);
-    MeshStandardMaterial* dark_slate = drie::mesh_standard_material(color: 0x2a2d34, roughness: 0.36f, metalness: 0.15f);
+    MeshStandardMaterial* dark_slate = drie::mesh_standard_material(color: 0x2a2d34, roughness: 0.20f, metalness: 0.15f);
     dark_slate.ssr = 1;
     MeshStandardMaterial* brass = drie::mesh_standard_material(color: 0xd4a458, roughness: 0.24f, metalness: 1.0f);
     brass.anisotropy = 0.85f;
@@ -181,11 +179,11 @@ fn void build_scene()
     MeshStandardMaterial* saffron = drie::mesh_standard_material(color: 0xe8a428, roughness: 0.86f);
 
     MeshStandardMaterial* cyan_emissive = drie::mesh_standard_material(
-        color: 0x000000, roughness: 0.9f, emissive: 0x18e8ff, emissive_intensity: 11.0f);
+        color: 0x000000, roughness: 0.9f, emissive: 0x18e8ff, emissive_intensity: 14.0f);
     MeshStandardMaterial* amber_emissive = drie::mesh_standard_material(
-        color: 0x000000, roughness: 0.9f, emissive: 0xff881c, emissive_intensity: 11.0f);
+        color: 0x000000, roughness: 0.9f, emissive: 0xff881c, emissive_intensity: 14.0f);
     MeshStandardMaterial* magenta_emissive = drie::mesh_standard_material(
-        color: 0x000000, roughness: 0.9f, emissive: 0xff2888, emissive_intensity: 8.5f);
+        color: 0x000000, roughness: 0.9f, emissive: 0xff2888, emissive_intensity: 9.5f);
 
     // ---- brutalist gallery shell: X in [-5.0, 5.0], Y in [0.0, 4.4], Z in [-6.0, 5.0]
     Mesh* floor = drie::mesh(drie::plane_geometry(10.4f, 11.4f), floor_mat);
@@ -252,20 +250,9 @@ fn void build_scene()
     mirror_pane.rotation.y = -drie::PI / 2;
     scene.add(mirror_pane);
 
-    // ---- Glowing emissive monoliths + paired LTC RectAreaLights (sharp speculars + RC diffuse)
-    // Left icy cyan vertical light bar (framing archway left)
-    add_box({ -2.45f, 1.85f, -4.75f }, { 0.22f, 3.2f, 0.22f }, cyan_emissive, false, false);
-    cyan_rect = drie::rect_area_light(0x28ecff, intensity: 5.5f, width: 0.45f, height: 3.1f);
-    cyan_rect.position = { -2.35f, 1.85f, -4.55f };
-    cyan_rect.look_at_vec({ 0.0f, 1.3f, 0.0f });
-    scene.add(cyan_rect);
-
-    // Right warm amber vertical light bar (framing archway right)
-    add_box({ 2.45f, 1.85f, -4.75f }, { 0.22f, 3.2f, 0.22f }, amber_emissive, false, false);
-    amber_rect = drie::rect_area_light(0xff9228, intensity: 5.5f, width: 0.45f, height: 3.1f);
-    amber_rect.position = { 2.35f, 1.85f, -4.55f };
-    amber_rect.look_at_vec({ 0.0f, 1.3f, 0.0f });
-    scene.add(amber_rect);
+    // ---- Pure emissive light monoliths (100% shadowed diffuse bounce via Split RC + real SSR reflections)
+    add_box({ -2.45f, 1.85f, -4.75f }, { 0.24f, 3.2f, 0.24f }, cyan_emissive, false, false);
+    add_box({ 2.45f, 1.85f, -4.75f }, { 0.24f, 3.2f, 0.24f }, amber_emissive, false, false);
 
     // ---- THREE HERO SCULPTURES ----
 
