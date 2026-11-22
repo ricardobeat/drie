@@ -24,7 +24,7 @@ module main;
 
 import boomkat;
 import boomkat::builtins, boomkat::hobject;
-import drie, drie::ui;
+import drie, drie::ui, drie::postprocessing;
 import sokol;
 import std::io, std::time, std::math, std::collections::list, std::compression::deflate;
 import drie::readback, drie::imageio, libc, draco;
@@ -1721,6 +1721,56 @@ fn void h_render(JsCtx ctx, void* udata)
     render_ns += (long)t.to_now();
 }
 
+// Lazy post-processing state for RenderPipeline bloom (reused across frames).
+RenderTarget* bloom_rt;
+UnrealBloomPass* bloom_pass;
+OutputPass* bloom_out;
+
+// renderBloom(renderer, scene, camera, strength, radius, threshold): renders the scene into an
+// HDR RGBA16F target, applies drie's UnrealBloomPass, and tone-maps via OutputPass into the
+// renderer's current destination (screen or offscreen capture target).
+fn void h_render_bloom(JsCtx ctx, void* udata)
+{
+    Renderer* r = get_renderer(num_arg(ctx, 0, -1));
+    Object3D* so = get_object(num_arg(ctx, 1, -1));
+    Object3D* co = get_object(num_arg(ctx, 2, -1));
+    if (r == null || so == null || so.kind != SCENE || co == null || co.kind != CAMERA)
+    {
+        ctx.throw_error(TYPE, "renderBloom: invalid argument");
+        return;
+    }
+    if (!gpu_ready) return;
+    time::Clock t = time::clock::now();
+    if (captures.len()) run_captures(r);
+    if (bakes.len()) run_bakes(r);
+    Camera* cam = (Camera*)co;
+    follow_skies({ cam.matrix_world[3][0], cam.matrix_world[3][1], cam.matrix_world[3][2] }, cam.far);
+
+    RenderTarget* dest = r.render_target;
+    int w = dest ? dest.width : sapp::width();
+    int h = dest ? dest.height : sapp::height();
+    int samples = dest ? dest.samples : r.sample_count;
+    if (w <= 0) w = r.width;
+    if (h <= 0) h = r.height;
+    if (!bloom_rt)
+    {
+        bloom_rt = drie::render_target(w, h, samples, RGBA16F);
+        bloom_pass = postprocessing::unreal_bloom_pass(strength: 0.5f, radius: 0.4f, threshold: 0.85f);
+        bloom_out = postprocessing::output_pass(r);
+    }
+    bloom_rt.set_size(w, h, samples);
+    r.set_render_target(bloom_rt);
+    r.render((Scene*)so, cam);
+    bloom_pass.strength = (float)num_arg(ctx, 3, 1.0);
+    bloom_pass.radius = (float)num_arg(ctx, 4, 0.0);
+    bloom_pass.threshold = (float)num_arg(ctx, 5, 0.0);
+    bloom_pass.render(bloom_rt);
+    bloom_out.set_source(bloom_rt.texture);
+    bloom_out.render(dest);
+    r.set_render_target(dest);
+    render_ns += (long)t.to_now();
+}
+
 // renderEnvironment(renderer, material, into or -1, width, diffuse): `material` drawn into an
 // equirectangular environment map (drie's Renderer.render_environment: three's
 // scene.environmentNode), into the one given (a map this made before) or a new one; -1 before
@@ -2581,6 +2631,59 @@ fn void h_node_type(JsCtx ctx, void* udata) => ctx.ret_number(node_arg(ctx, 0).t
 
 // materialNodes(material, color, opacity, normal, roughness, metalness, emissive, position,
 // output, mask, env, specular, shininess): 0 for none
+// Wyman & McGuire (2017) hashed alpha testing (three's getAlphaHashThreshold), built on
+// drie::nodes and attached to Material.mask_node when material.alphaHash is enabled.
+fn Node alpha_hash_2d(Node v) @local
+{
+    Node a = nodes::sin(v.x() * 17.0f + v.y() * 0.1f) * 1.0e4f;
+    Node b = 0.1f + nodes::abs(nodes::sin(v.y() * 13.0f + v.x()));
+    return nodes::fract(a * b);
+}
+
+fn Node alpha_hash_3d(Node v) @local
+{
+    return alpha_hash_2d(nodes::vec2(alpha_hash_2d(v.xy()), v.z()));
+}
+
+fn Node alpha_hash_mask(Node opacity) @local
+{
+    Node pos = nodes::variable(nodes::position_world());
+    Node max_deriv = nodes::max(nodes::length(nodes::dfdx(pos)), nodes::length(nodes::dfdy(pos)));
+    Node pix_scale = nodes::variable(1.0f / (0.05f * nodes::max(max_deriv, nodes::num(1.0e-6f))));
+    Node log_scale = nodes::variable(nodes::log2(pix_scale));
+    Node s0 = nodes::exp2(nodes::floor(log_scale));
+    Node s1 = nodes::exp2(nodes::ceil(log_scale));
+    Node a0 = alpha_hash_3d(nodes::floor(pos * s0));
+    Node a1 = alpha_hash_3d(nodes::floor(pos * s1));
+    Node lf = nodes::variable(nodes::fract(log_scale));
+    Node x = nodes::variable((1.0f - lf) * a0 + lf * a1);
+    Node a = nodes::variable(nodes::min(lf, 1.0f - lf));
+    Node denom = nodes::max(2.0f * a * (1.0f - a), nodes::num(1.0e-6f));
+    Node c0 = (x * x) / denom;
+    Node c1 = (x - 0.5f * a) / nodes::max(1.0f - a, nodes::num(1.0e-6f));
+    Node c2 = 1.0f - ((1.0f - x) * (1.0f - x)) / denom;
+    Node thr = nodes::select(x.less_than(1.0f - a), nodes::select(x.less_than(a), c0, c1), c2);
+    Node clamped = nodes::clamp(thr, 1.0e-6f, 1.0f);
+    Node body = nodes::block(pos, pix_scale, log_scale, lf, x, a);
+    return nodes::seq(body, opacity.greater_than(clamped));
+}
+
+fn void h_material_alpha_hash(JsCtx ctx, void* udata)
+{
+    Material* m = get_material(num_arg(ctx, 0, -1));
+    if (m == null) { ctx.throw_error(TYPE, "materialAlphaHash: invalid material"); return; }
+    bool on = bool_arg(ctx, 1, false);
+    if (on)
+    {
+        float opacity = (float)num_arg(ctx, 2, (double)m.opacity);
+        m.mask_node = alpha_hash_mask(nodes::num(opacity));
+    }
+    else
+    {
+        m.mask_node = { };
+    }
+}
+
 fn void h_material_nodes(JsCtx ctx, void* udata)
 {
     Material* m = get_material(num_arg(ctx, 0, -1));
@@ -2710,9 +2813,10 @@ fn int main(String[] args)
         "import \"%s/js/drie_nodes.js\";\n"
         "export * from \"%s/vendor/three.webgpu.js\";\n"
         "export { DrieRenderer as WebGLRenderer, DrieRenderer as WebGPURenderer } from \"%s/js/drie_renderer.js\";\n"
+        "export { RenderPipeline } from \"%s/js/render_pipeline.js\";\n"
         "export { PMREMGenerator } from \"%s/js/pmrem.js\";\n"
         "export { ShaderChunk, ShaderLib, UniformsLib, UniformsUtils, WebGLRenderTarget, WebGLCubeRenderTarget, WebGLUtils }"
-        " from \"%s/vendor/three.module.js\";\n", root, root, root, root, root, root, root))!!;
+        " from \"%s/vendor/three.module.js\";\n", root, root, root, root, root, root, root, root))!!;
     js.define_module("three/webgpu", "export * from \"three\";\n")!!;
     js.define_module("three/tsl", string::tformat(
         "import \"%s/js/dom.js\";\n"
@@ -2823,6 +2927,7 @@ fn int main(String[] args)
     reg(natives, "mxFractalFloat", &h_mx_fractal_float, 4);
     reg(natives, "mxFractalVec3", &h_mx_fractal_vec3, 4);
     reg(natives, "materialNodes", &h_material_nodes, 13);
+    reg(natives, "materialAlphaHash", &h_material_alpha_hash, 3);
     reg(natives, "floatTexture", &h_float_texture, 6);
     reg(natives, "imageDecode", &h_image_decode, 1);
     reg(natives, "imageSize", &h_image_size, 2);
@@ -2848,6 +2953,7 @@ fn int main(String[] args)
     reg(natives, "sync", &h_sync, 2);
     reg(natives, "background", &h_background, 2);
     reg(natives, "render", &h_render, 3);
+    reg(natives, "renderBloom", &h_render_bloom, 6);
     reg(natives, "setClearColor", &h_set_clear_color, 3);
     reg(natives, "viewState", &h_view_state, 11);
     reg(natives, "clear", &h_clear, 1);

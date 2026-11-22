@@ -364,6 +364,20 @@ export class DrieRenderer {
 		if (profile) profileEnd = lap(4, t);
 	}
 
+	_renderBloom(scene, camera, strength, radius, threshold) {
+		if (!this._last && !this._loop) N.setAnimationLoop(this._id, () => this._redraw());
+		this._last = [scene, camera];
+		const sceneId = this._mirror(scene, camera);
+		this._viewState();
+		const t = profile ? N.now() : 0;
+		N.renderBloom(this._id, sceneId, camera.__drie, strength, radius, threshold);
+		this.info.render.frame++;
+		this.info.render.calls = N.info(this._id, 0);
+		this.info.render.triangles = N.info(this._id, 1);
+		this.info.render.lines = N.info(this._id, 2);
+		if (profile) profileEnd = lap(4, t);
+	}
+
 	// What drie keeps track of for a scene: its three objects that have a drie handle (to
 	// hide the ones that left the scene), how many render() came across this frame, its
 	// lights, and [light, drie handle of its target].
@@ -1254,6 +1268,7 @@ export class DrieRenderer {
 		this._surface(material);
 		this._blend(material);
 		this._depth(material);
+		if (material.alphaHash) N.materialAlphaHash(material.__drie, true, material.opacity ?? 1);
 		if (this._hasNodes(material)) globalThis.__drieNodes.sync(this, material, this._nodeFrame);
 		return material.__drie;
 	}
