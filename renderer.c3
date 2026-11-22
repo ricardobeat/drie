@@ -3264,8 +3264,11 @@ fn void material_slots(Material* mat, NodeBuild* nodes, Texture*[6]* slots, Vec4
 // Whether `item` casts its shadow with a generated program, and its key (MaterialKey.shadow):
 // a built-in material's, without the application's programs (Renderer.shaders).
 fn bool shadow_key_of(DrawItem* item, MaterialKey* key) @local {
-    Material* mat = item.mesh.material;
+    Mesh* m = item.mesh;
+    Material* mat = m.material;
     if (!generated_materials()) return false;
+    m.geometry.upload_morph();
+    m.upload_morph_weights();
     NodeBuild* build = node_build_of(mat);
     // (a node material's color step can cut holes without a map: shadow_nodes_fs's s_params.x)
     bool node_cuts = build && build.program.cuts;
@@ -3273,6 +3276,7 @@ fn bool shadow_key_of(DrawItem* item, MaterialKey* key) @local {
     *key = {
         .shadow = true,
         .nodes = build != null,
+        .morph = m.geometry.morph_view.id != 0 && m.morph_weights_view.id != 0,
         .foliage = build && mat.foliage,
         .gpu_cull = item.job > 0 && cull.active,
         .displacement = displacement_params(mat).z > 0.5f,
@@ -3293,6 +3297,8 @@ fn bool material_key_of(DrawItem* item, DrawKind kind, FsParams* fs, Vec4[6]* ma
     Material* mat = m.material;
     Renderer* r = state.renderer;
     if (!generated_materials()) return false;
+    m.geometry.upload_morph();
+    m.upload_morph_weights();
     MaterialType type = mat.type;
     bool lit = type == LAMBERT || type == PHONG || type == STANDARD || type == TOON;
     bool standard = type == STANDARD;
@@ -3385,6 +3391,8 @@ fn bool material_key_of(DrawItem* item, DrawKind kind, FsParams* fs, Vec4[6]* ma
         .toon_nearest = type == TOON && mat.gradient_map && mat.gradient_map.nearest,
         .bake = state.bake.on,
         .nodes = draw_build(mat) != null,
+        .morph = m.geometry.morph_view.id != 0 && m.morph_weights_view.id != 0,
+        .flat_shading = mat.flat_shading,
         .shadows = shadows,
         .vsm = (shadows || shafts) && vsm_on(),
         .soft_shadows = shadows && lights_gpu.soft_shadows,
@@ -3605,7 +3613,7 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     if (vsm) bind.samplers[shaders::SMP_VSM_SMP] = state.vsm_sampler;
     lights_gpu.bind(&bind);
     if (gen) {
-        SgBindings own_bind = program_bindings(own, &bind, user_views(gen_build)[..]);
+        SgBindings own_bind = program_bindings(own, &bind, user_views(gen_build)[..], m.geometry.morph_view, m.morph_weights_view);
         sg::apply_bindings(&own_bind);
     } else {
         sg::apply_bindings(&bind);
@@ -3800,7 +3808,7 @@ fn void draw_shadow_item(DrawItem* item, Mat4 light_vp, Vector3 origin = { 0, 0,
         }
     }
     if (gen) {
-        SgBindings own = program_bindings(gen.program, &bind, user_views(gen_build)[..]);
+        SgBindings own = program_bindings(gen.program, &bind, user_views(gen_build)[..], m.geometry.morph_view, m.morph_weights_view);
         sg::apply_bindings(&own);
         Vec4 d = displacement_params(mat);
         VsParams pv = {

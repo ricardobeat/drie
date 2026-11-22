@@ -1122,7 +1122,7 @@ fn BlendEquation equation_of(double e) => (BlendEquation)math::clamp((int)e - 10
 // (three's constant color factors, 211 and up, have no counterpart: one)
 fn BlendFactor factor_of(double f) => (int)f >= 200 && (int)f <= 210 ? (BlendFactor)((int)f - 200) : ONE_FACTOR;
 
-// materialDepth(material, depthTest, depthWrite)
+// materialDepth(material, depthTest, depthWrite, toneMapped, flatShading)
 fn void h_material_depth(JsCtx ctx, void* udata)
 {
     Material* m = get_material(num_arg(ctx, 0, -1));
@@ -1130,6 +1130,7 @@ fn void h_material_depth(JsCtx ctx, void* udata)
     m.depth_test = bool_arg(ctx, 1, true);
     m.depth_write = bool_arg(ctx, 2, true);
     m.tone_mapped = bool_arg(ctx, 3, true);
+    m.flat_shading = bool_arg(ctx, 4, false);
 }
 
 // fog(scene, kind, color, near, far, density): kind 0 none, 1 linear, 2 exponential
@@ -1329,6 +1330,30 @@ fn void h_mesh_draw_range(JsCtx ctx, void* udata)
     Mesh* m = (Mesh*)o;
     m.draw_start = (int)num_arg(ctx, 1, 0);
     m.draw_count = (int)num_arg(ctx, 2, 0);
+}
+
+// geometryMorph(geometry, deltasFloat32, targetCount, vertexCount)
+fn void h_geometry_morph(JsCtx ctx, void* udata)
+{
+    BufferGeometry* g = get_geometry(num_arg(ctx, 0, -1));
+    if (g == null) return;
+    float[] deltas = floats_arg(ctx, 1);
+    int targets = (int)num_arg(ctx, 2, 0);
+    int verts = (int)num_arg(ctx, 3, 0);
+    g.set_morph_positions(deltas, targets, verts);
+}
+
+// meshMorphWeights(mesh, weightsFloat32, targetCount, instanceCount, vertexCount)
+fn void h_mesh_morph_weights(JsCtx ctx, void* udata)
+{
+    Object3D* o = get_object(num_arg(ctx, 0, -1));
+    if (o == null || o.kind != MESH) return;
+    Mesh* m = (Mesh*)o;
+    float[] weights = floats_arg(ctx, 1);
+    int targets = (int)num_arg(ctx, 2, 0);
+    int instances = (int)num_arg(ctx, 3, 0);
+    int verts = (int)num_arg(ctx, 4, 0);
+    m.set_morph_weights(weights, targets, instances, verts);
 }
 
 // meshBillboard(mesh, kind, sizeAttenuation, rotation, centerX, centerY): Mesh.billboard (kind:
@@ -2884,6 +2909,8 @@ fn int main(String[] args)
     reg(natives, "light", &h_light, 8);
     reg(natives, "lightTarget", &h_light_target, 1);
     reg(natives, "geometry", &h_geometry, 9);
+    reg(natives, "geometryMorph", &h_geometry_morph, 4);
+    reg(natives, "meshMorphWeights", &h_mesh_morph_weights, 5);
     reg(natives, "instanceColors", &h_instance_colors, 3);
     reg(natives, "irradianceGrid", &h_irradiance_grid, 9);
     reg(natives, "bakeIrradiance", &h_bake_irradiance, 6);
@@ -2972,7 +2999,7 @@ fn int main(String[] args)
     reg(natives, "materialSurface", &h_material_surface, 9);
     reg(natives, "materialOutline", &h_material_outline, 2);
     reg(natives, "materialBlend", &h_material_blend, 9);
-    reg(natives, "materialDepth", &h_material_depth, 3);
+    reg(natives, "materialDepth", &h_material_depth, 5);
     reg(natives, "lightmap", &h_lightmap, 3);
     reg(natives, "lightmapObjects", &h_lightmap_objects, 3);
     reg(natives, "lightmapUpdate", &h_lightmap_update, 4);

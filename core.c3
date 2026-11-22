@@ -474,6 +474,68 @@ struct Mesh {
     // displacement_heights), and what they were read for
     SgBuffer displacement_buf;
     ulong displacement_key;
+    // GPU morph target weights (header vec4 + vec4-packed weights per instance, or 1 set for a plain mesh)
+    List{float} morph_weights;
+    int morph_targets;
+    SgBuffer morph_weights_buf;
+    SgView morph_weights_view;
+    int morph_weights_cap;
+    bool morph_weights_uploaded;
+}
+
+// Sets morph target weights: `target_count` floats per instance (`instance_count == 0` for a
+// non-instanced mesh). Packed on the GPU as a header vec4(targets, verts, stride, 0) followed
+// by vec4-aligned weight rows.
+fn void Mesh.set_morph_weights(&self, float[] weights, int target_count, int instance_count, int vertex_count) {
+    if (!self.morph_weights.allocator) self.morph_weights.allocator = mem;
+    self.morph_weights.clear();
+    if (target_count <= 0 || vertex_count <= 0) {
+        self.morph_targets = 0;
+        self.morph_weights_uploaded = false;
+        return;
+    }
+    int rows = instance_count > 0 ? instance_count : 1;
+    int stride_v4 = (target_count + 3) / 4;
+    int gpu_stride = instance_count > 0 ? stride_v4 : 0;
+    sz total = (sz)(1 + rows * stride_v4) * 4;
+    self.morph_weights.reserve(total);
+    self.morph_weights.push((float)target_count);
+    self.morph_weights.push((float)vertex_count);
+    self.morph_weights.push((float)gpu_stride);
+    self.morph_weights.push(0);
+    for (int r = 0; r < rows; r++) {
+        sz src = (sz)r * (sz)target_count;
+        for (int t = 0; t < stride_v4 * 4; t++) {
+            float w = (t < target_count && src + t < weights.len) ? weights[src + t] : 0;
+            self.morph_weights.push(w);
+        }
+    }
+    self.morph_targets = target_count;
+    self.morph_weights_uploaded = false;
+}
+
+fn void Mesh.upload_morph_weights(&self) {
+    if (self.morph_weights_uploaded || !self.morph_weights.len()) return;
+    int n = (int)self.morph_weights.len();
+    if (n > self.morph_weights_cap || !self.morph_weights_buf.id) {
+        if (self.morph_weights_view.id) sg::destroy_view(self.morph_weights_view);
+        if (self.morph_weights_buf.id) sg::destroy_buffer(self.morph_weights_buf);
+        self.morph_weights_buf = sg::make_buffer(
+            &&{
+                .usage = { .storage_buffer = true, .write_transient = true },
+                .size = (usz)n * float::size,
+            }
+        );
+        self.morph_weights_view = sg::make_view(&&{ .storage_buffer = { .buffer = self.morph_weights_buf } });
+        self.morph_weights_cap = n;
+    }
+    sg::write_buffer_transient(
+        &&{
+            .src.data = { .ptr = self.morph_weights.entries, .size = (usz)n * float::size },
+            .dst.buffer = self.morph_weights_buf,
+        }
+    );
+    self.morph_weights_uploaded = true;
 }
 
 // Draws the same geometry many times with one draw call, like THREE.InstancedMesh.

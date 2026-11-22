@@ -117,7 +117,13 @@ bitstruct MaterialKey : char[32] {
     // a node material's (its *_node graphs plugged in where the material shader's hooks run
     // them): found through its NodeBuild (NodeBuild.programs), which the key alone doesn't name
     bool nodes : 84;
+    bool morph : 85;             // GPU morph targets (BufferGeometry.morph_view + Mesh.morph_weights_view)
+    bool flat_shading : 86;      // flat face normals via screen-space derivatives (Material.flat_shading)
 }
+
+// Logical view IDs for GPU morph target storage buffers (between engine slots < 32 and NODE_USER_VIEW = 64).
+const int VIEW_MORPH_DELTAS = 32;
+const int VIEW_MORPH_WEIGHTS = 33;
 
 // The map roles (shader_core.glsl's MAP_*) a key holds a slot for.
 const int MAP_AO = 0;
@@ -305,7 +311,8 @@ fn MaterialProgram* material_program(MaterialKey key, NodeBuild* build = null) @
 
 // The bindings of the classic slots (shaders::VIEW_*, SMP_*) as `p` takes them; a node
 // material's textures (NODE_USER_VIEW + k) from `user` (its NodeBuild.textures' views).
-fn SgBindings program_bindings(ShaderProgram* p, SgBindings* classic, SgView[] user = { }) @private {
+fn SgBindings program_bindings(ShaderProgram* p, SgBindings* classic, SgView[] user = { },
+                               SgView morph_deltas = { }, SgView morph_weights = { }) @private {
     SgBindings b = {
         .vertex_buffers = classic.vertex_buffers,
         .vertex_buffer_offsets = classic.vertex_buffer_offsets,
@@ -317,6 +324,10 @@ fn SgBindings program_bindings(ShaderProgram* p, SgBindings* classic, SgView[] u
             int k = v.source - NODE_USER_VIEW;
             if (k >= user.len) abort("drie: a node material's texture %d without its view", k);
             b.views[i] = user[k];
+        } else if (v.source == VIEW_MORPH_DELTAS) {
+            b.views[i] = morph_deltas;
+        } else if (v.source == VIEW_MORPH_WEIGHTS) {
+            b.views[i] = morph_weights;
         } else {
             b.views[i] = classic.views[v.source];
         }
@@ -502,7 +513,7 @@ fn VertexValues vertex_stage(MaterialKey key, NodeBuild* build = null, UserBinds
     Node normal = node_attribute(shaders::ATTR_THREE_NORMAL, VEC3);
     Node uv = node_attribute(shaders::ATTR_THREE_UV, VEC2);
     Node color0 = node_attribute(shaders::ATTR_THREE_COLOR0, VEC4);
-    Node[5] statements;
+    Node[8] statements;
     int ns;
     Node instance_id;
     Instance inst;
@@ -530,6 +541,26 @@ fn VertexValues vertex_stage(MaterialKey key, NodeBuild* build = null, UserBinds
         instance_id = node_system(INSTANCE_ID);
     }
     Node local = position;
+    if (key.morph) {
+        Node hdr = node_storage(VIEW_MORPH_WEIGHTS, VEC4, nodes::uint_(0));
+        Node m_count = nodes::convert(hdr.x(), UINT);
+        Node v_count = nodes::convert(hdr.y(), UINT);
+        Node w_stride = nodes::convert(hdr.z(), UINT);
+        Node vid = node_system(VERTEX_ID);
+        Node w_base = nodes::uint_(1) + instance_id * w_stride;
+        Node mp = nodes::variable(local);
+        Node ti = node_var(UINT);
+        Node w4 = node_storage(VIEW_MORPH_WEIGHTS, VEC4, w_base + node_binary(SHR, ti, nodes::uint_(2)));
+        Node lane = node_binary(BIT_AND, ti, nodes::uint_(3));
+        Node w = nodes::select(lane.equal(nodes::uint_(0)), w4.x(),
+            nodes::select(lane.equal(nodes::uint_(1)), w4.y(),
+                nodes::select(lane.equal(nodes::uint_(2)), w4.z(), w4.w())));
+        Node delta = node_storage(VIEW_MORPH_DELTAS, VEC4, ti * v_count + vid).xyz();
+        Node body = nodes::block(mp.assign(mp + delta * w));
+        statements[ns++] = mp;
+        statements[ns++] = node_loop(LT, ti, nodes::uint_(0), m_count, body);
+        local = mp;
+    }
     if (key.displacement) {
         Node d = vs_in("surface_vs");
         Node height = node_attribute(shaders::ATTR_THREE_HEIGHT, FLOAT);
@@ -766,6 +797,12 @@ fn void build_material_graph(MaterialKey key, ProgramGraph* graph, ProgramGraph*
 
     Node world = nodes::varying(vtx.world);
     Node v_normal = nodes::varying(vtx.normal);
+    if (key.flat_shading) {
+        Node fn_ = nodes::cross(nodes::dfdx(world), nodes::dfdy(world));
+        Node view_dir = fs_in("camera_pos", VEC3) - world;
+        Node oriented = nodes::select(nodes::dot(fn_, view_dir).greater_than_equal(nodes::num(0)), fn_, fn_.negate());
+        v_normal = nodes::select(nodes::dot(fn_, fn_).greater_than(nodes::num(1e-12f)), oriented, v_normal);
+    }
     Node v_uv = nodes::varying(vtx.uv);
     Node fc = node_system(FRAG_COORD);
     Node front = node_system(FRONT_FACING);
@@ -780,7 +817,7 @@ fn void build_material_graph(MaterialKey key, ProgramGraph* graph, ProgramGraph*
     if (build) {
         user = build.slots;
         user_n = nodes::normalize(v_normal);
-        if (!key.foliage) user_n = nodes::select(front, user_n, user_n.negate());
+        if (!key.foliage && !key.flat_shading) user_n = nodes::select(front, user_n, user_n.negate());
         fragment_binds(&vtx, &binds.f, v_uv, world, user_n);
     }
 
@@ -946,7 +983,7 @@ fn void build_material_graph(MaterialKey key, ProgramGraph* graph, ProgramGraph*
 
     Node n = nodes::normalize(v_normal);
     // (baking: the faces as the uv unwrap turned them, all front)
-    if (!key.foliage && !key.bake) n = nodes::select(front, n, n.negate());
+    if (!key.foliage && !key.bake && !key.flat_shading) n = nodes::select(front, n, n.negate());
     // (the color step's NORMAL_GEOMETRY node itself, so that the later steps bind the same
     // node and what reads it isn't printed again)
     if (build && !key.bake) n = user_n;
