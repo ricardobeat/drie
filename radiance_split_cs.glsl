@@ -1,8 +1,14 @@
-// Sparse / Split Radiance Cascades compute kernels (arXiv:2607.20384 style):
+// Sparse probe-based radiance cascades: world-space probes live only near surfaces the camera
+// sees, in a GPU hash table, each cascade level's probes twice as far apart as the level
+// below with 4x the directions. (Not the paper's split / binned rays: each probe marches its
+// own rays over its level's interval and merges with the level above's probes.)
 //   rc_alloc_cs        reads G-Buffer depth + normal and allocates world-space probes near
 //                      visible surfaces across all cascade levels in a GPU hash table.
-//   rc_split_trace_cs  traces rays ONLY for active allocated probes, splits/bins hits into
-//                      cascade intervals, and merges sparsely via hash-table lookups of L+1.
+//   rc_propagate_cs    gives every probe the 8 probes of the level above around it.
+//   rc_evict_cs        frees probes not seen lately and rebuilds the hash table.
+//   rc_split_trace_cs  traces rays ONLY for allocated probes, each over its level's distance
+//                      interval, and merges a ray that hits nothing with the 2x2 rays of the
+//                      8 probes of the level above around it (hash-table lookups of L+1).
 //   rc_split_gather_cs gathers L0 allocated probes' angular radiance into 6-face irradiance
 //                      stored right after the hash table in `irradiance_buf` (so material
 //                      shaders need no extra buffer binding).
@@ -532,46 +538,62 @@ float rc_attenuation(float d, float cutoff, float decay) {
     return a;
 }
 
+// Whether the segment from `a` to the probe at `probe` crosses a wall, by the same two solid
+// voxel tests the cascade merge makes (at 35% and 65% of the way), plus the probe's own voxel.
+bool rc_probe_walled(vec3 a, vec3 probe) {
+    ivec3 pv = ivec3(floor((probe - rc_min.xyz) / rc_tune.w));
+    if (rc_in_grid(pv) && rc_solid(pv)) return true;
+    ivec3 m1 = ivec3(floor((mix(a, probe, 0.35) - rc_min.xyz) / rc_tune.w));
+    ivec3 m2 = ivec3(floor((mix(a, probe, 0.65) - rc_min.xyz) / rc_tune.w));
+    return (rc_in_grid(m1) && rc_solid(m1)) || (rc_in_grid(m2) && rc_solid(m2));
+}
+
+// The light arriving at `p` (just off a surface facing `face`) from the hemisphere around
+// `face`, from cascade `level`'s probes: each of the up to 8 probes around that exists, isn't
+// behind a wall from `p`, and has rays traced (rc_ray_traced) gives a cosine-weighted sum of
+// 16 of its rays, and those are blended by their trilinear weights. -1 when none of them does.
 vec3 rc_level_hemisphere(vec3 p, vec3 face, int level) {
-    if (level >= rc_info.y) return vec3(-1.0);
     float sp = rc_min.w * float(1 << level);
     int d = rc_info.x << level;
     int dd = d * d;
     int off = rc_level_off(level);
+    int pbase = rc_probe_base(level);
+    int step = max(d / 4, 1);
     vec3 g = p / sp - 0.5;
     ivec3 b = ivec3(floor(g));
     vec3 f = g - vec3(b);
-    int best_slot = -1;
-    float best_w = -1.0;
+    vec3 total = vec3(0.0);
+    float total_w = 0.0;
     for (int k = 0; k < 8; k++) {
         ivec3 o = ivec3(k & 1, (k >> 1) & 1, (k >> 2) & 1);
         int slot = rc_lookup_probe(b + o, level);
         if (slot < 0) continue;
-        vec3 w3 = mix(1.0 - f, f, vec3(o));
-        float w = w3.x * w3.y * w3.z;
-        if (w > best_w) { best_w = w; best_slot = slot; }
-    }
-    if (best_slot < 0) return vec3(-1.0);
-    int step = max(d / 4, 1);
-    vec3 sum = vec3(0.0);
-    float wsum = 0.0;
-    int base = off + best_slot * dd;
-    int mw = rc_meta[rc_probe_base(level) + best_slot].coord.w;
-    for (int ky = 0; ky < d; ky += step) {
-        for (int kx = 0; kx < d; kx += step) {
-            if (!rc_ray_traced(mw, best_slot * dd + ky * d + kx)) continue;
-            vec2 e = (vec2(kx, ky) + 0.5) / float(d) * 2.0 - 1.0;
-            vec3 rd = rc_direction(e);
-            float c = dot(rd, face);
-            if (c <= 0.0) continue;
-            vec3 flat_d = vec3(e, 1.0 - abs(e.x) - abs(e.y));
-            float len = length(flat_d);
-            float w = c / (len * len * len);
-            sum += rc_unpack_rad(rc_rad[base + ky * d + kx].p) * w;
-            wsum += w;
+        if (rc_probe_walled(p, (vec3(b + o) + 0.5) * sp)) continue;
+        int mw = rc_meta[pbase + slot].coord.w;
+        int base = slot * dd;
+        vec3 sum = vec3(0.0);
+        float wsum = 0.0;
+        for (int ky = 0; ky < d; ky += step) {
+            for (int kx = 0; kx < d; kx += step) {
+                if (!rc_ray_traced(mw, base + ky * d + kx)) continue;
+                vec2 e = (vec2(kx, ky) + 0.5) / float(d) * 2.0 - 1.0;
+                vec3 rd = rc_direction(e);
+                float c = dot(rd, face);
+                if (c <= 0.0) continue;
+                vec3 flat_d = vec3(e, 1.0 - abs(e.x) - abs(e.y));
+                float len = length(flat_d);
+                float w = c / (len * len * len);
+                sum += rc_unpack_rad(rc_rad[off + base + ky * d + kx].p) * w;
+                wsum += w;
+            }
         }
+        if (wsum <= 1e-4) continue;
+        vec3 w3 = mix(1.0 - f, f, vec3(o));
+        float tw = w3.x * w3.y * w3.z + 1e-4;
+        total += (sum / wsum) * tw;
+        total_w += tw;
     }
-    return wsum > 1e-4 ? RC_PI * sum / wsum : vec3(0.0);
+    return total_w > 0.0 ? RC_PI * total / total_w : vec3(-1.0);
 }
 
 vec3 rc_sparse_bounce(vec3 p, vec3 face) {
@@ -593,11 +615,13 @@ vec3 rc_sparse_bounce(vec3 p, vec3 face) {
         wsum += w;
     }
     if (wsum > 1e-4) return sum / wsum;
-    // Off-screen surface fallback: sample coarse L1 / L2 hemisphere so occluded walls still bounce light
-    vec3 fb = rc_level_hemisphere(p, face, 1);
-    if (fb.x >= 0.0) return fb;
-    fb = rc_level_hemisphere(p, face, 2);
-    if (fb.x >= 0.0) return fb;
+    // An off-screen surface (no L0 probes there): the coarse levels' rays, from the finest
+    // level that has probes around it. Levels 2 and up are seeded over the whole box when they
+    // fit in their pool (rc_alloc_cs), which a big box's level 2 may not: then level 3 is.
+    for (int l = 1; l < rc_info.y; l++) {
+        vec3 fb = rc_level_hemisphere(p, face, l);
+        if (fb.x >= 0.0) return fb;
+    }
     return vec3(0.0);
 }
 
