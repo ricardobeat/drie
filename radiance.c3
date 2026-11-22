@@ -107,6 +107,8 @@ struct RadianceCascades {
     // meta_buf/probe_base) holding the recycled slot ids.
     StorageBuffer* free_buf;
     int free_buf_len;                  // 8 + total probe slots across all levels
+    // rc_evict_cs's copy of the hash table's live entries while it rebuilds the table
+    StorageBuffer* rehash_buf;
     ComputePass* clear_pass;
     ComputePass* alloc_pass;
     ComputePass* propagate_pass;
@@ -232,6 +234,7 @@ fn void RadianceCascades.upload(&self) {
         self.count_buf = storage_buffer(8 * 4, label: "drie-rc-split-counts");
         self.free_buf_len = 8 + total_meta;
         self.free_buf = storage_buffer((sz)self.free_buf_len * 4, label: "drie-rc-split-free");
+        self.rehash_buf = storage_buffer((sz)self.hash_cap * 16, label: "drie-rc-split-rehash");
         self.light_buf = storage_buffer(RC_MAX_LIGHTS * shaders::RcLight::size, cpu_write: true, label: "drie-rc-lights");
         self.voxel_buf = storage_buffer(16, label: "drie-rc-voxels");
         self.brick_buf = storage_buffer(16, label: "drie-rc-bricks");
@@ -666,14 +669,21 @@ fn void RadianceCascades.run_sparse_update(
     // 0b. Evict stale probes every RC_EVICT_PERIOD frames: without this, once a level's
     // pool fills up (level_cap probes allocated) no newly seen surface gets a probe until
     // the next reset()/recenter() clears the table, so GI goes stale as the camera moves.
+    // The pass rebuilds the hash table (moves the live entries out, then back in), which
+    // also clears the tombstones that inserts racing for a level's last slots leave behind.
     if (self.frame % RC_EVICT_PERIOD == 0) {
         ComputePass* ep = self.evict_pass;
         ep.set_buffer(rc_split::VIEW_RC_HT_EVICT, self.irradiance_buf);
         ep.set_buffer(rc_split::VIEW_RC_FREE_EVICT, self.free_buf);
-        ep.set_uniforms(rc_split::UB_RC_SPLIT_PARAMS, &p, rc_split::RcSplitParams::size);
-        begin_compute("drie-rc-evict");
-        ep.dispatch((self.hash_cap + 63) / 64);
-        end_compute();
+        ep.set_buffer(rc_split::VIEW_RC_REHASH_EVICT, self.rehash_buf);
+        for (int phase = 0; phase < 2; phase++) {
+            p.rc_dims[3] = phase;
+            ep.set_uniforms(rc_split::UB_RC_SPLIT_PARAMS, &p, rc_split::RcSplitParams::size);
+            begin_compute("drie-rc-evict");
+            ep.dispatch((self.hash_cap + 63) / 64);
+            end_compute();
+        }
+        p.rc_dims[3] = 0;
     }
 
     // 1. Allocate/touch non-solid L0 probes around visible G-Buffer surfaces + seed coarse L >= 2
@@ -902,4 +912,5 @@ fn void RadianceCascades.dispose(&self) {
     if (self.meta_buf) self.meta_buf.dispose();
     if (self.count_buf) self.count_buf.dispose();
     if (self.free_buf) self.free_buf.dispose();
+    if (self.rehash_buf) self.rehash_buf.dispose();
 }
