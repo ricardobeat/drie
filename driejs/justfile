@@ -334,7 +334,8 @@ assets: \
     (asset "textures/cube/angus/cube_m08_c02.jpg" "c2321c39a6c14eb7e5ef05565e901ab02ae226e1def462e81eb0b80772004da0") \
     (asset "textures/cube/angus/cube_m08_c03.jpg" "c2321c39a6c14eb7e5ef05565e901ab02ae226e1def462e81eb0b80772004da0") \
     (asset "textures/cube/angus/cube_m08_c04.jpg" "c2321c39a6c14eb7e5ef05565e901ab02ae226e1def462e81eb0b80772004da0") \
-    (asset "textures/cube/angus/cube_m08_c05.jpg" "c2321c39a6c14eb7e5ef05565e901ab02ae226e1def462e81eb0b80772004da0")
+    (asset "textures/cube/angus/cube_m08_c05.jpg" "c2321c39a6c14eb7e5ef05565e901ab02ae226e1def462e81eb0b80772004da0") \
+    (asset "models/gltf/Horse.glb" "bebaa4a60ba373317e25bf20f049f26ad0f5c86d4731ab67d46eb8c93c920947")
 
 [private]
 asset path sha256: (fetch examples + "/" + path sha256 "demos/" + path)
