@@ -1460,7 +1460,7 @@ fn void start_material_shaders(Renderer* r, Scene* scene, bool prepass) @local {
     if ((bg && !node_build_of(bg)) || scene.background_texture) {
         start_material_shader(bg ? shader_family_of(bg) : UNLIT, variant_of(CUT, rt));
     }
-    bool defer_ok = can_defer(r, true);
+    bool defer_ok = can_defer(r, true, true);
     for (int list = 0; list < 2; list++) {
         foreach (&item : list == 0 ? state.opaque : state.transparent) {
             Material* mat = item.mesh.material;
@@ -2148,15 +2148,15 @@ fn void update_shadow_atlas(Scene* scene, Camera* camera, bool bake = false) @lo
     }
 }
 
-// Clip planes of a view-projection matrix (left, right, bottom, top, far), pointing inwards.
-fn Frustum frustum_from(Mat4 vp) @local {
+// Clip planes of a view-projection matrix for NDC sub-box [x0, x1] x [y0, y1], pointing inwards.
+fn Frustum frustum_from_ndc(Mat4 vp, float x0, float x1, float y0, float y1) @local {
     Vec4[4] rows;
     for (int r = 0; r < 4; r++) rows[r] = { vp[0][r], vp[1][r], vp[2][r], vp[3][r] };
     Frustum f;
-    f.planes[0] = rows[3] + rows[0];
-    f.planes[1] = rows[3] - rows[0];
-    f.planes[2] = rows[3] + rows[1];
-    f.planes[3] = rows[3] - rows[1];
+    f.planes[0] = rows[0] - rows[3] * x0;
+    f.planes[1] = rows[3] * x1 - rows[0];
+    f.planes[2] = rows[1] - rows[3] * y0;
+    f.planes[3] = rows[3] * y1 - rows[1];
     f.planes[4] = rows[3] - rows[2];
     foreach (&p : f.planes) {
         float len = ((Vector3) { (*p).x, (*p).y, (*p).z }).length();
@@ -2164,6 +2164,9 @@ fn Frustum frustum_from(Mat4 vp) @local {
     }
     return f;
 }
+
+// Clip planes of a view-projection matrix (left, right, bottom, top, far), pointing inwards.
+fn Frustum frustum_from(Mat4 vp) @local => frustum_from_ndc(vp, -1, 1, -1, 1);
 
 fn bool Frustum.contains_sphere(&self, Vector3 c, float radius) {
     foreach (p : self.planes) {
@@ -3583,10 +3586,10 @@ fn void ensure_gbuffer(int w, int h) @local {
     }
 }
 
-fn bool can_defer(Renderer* self, bool whole) @local {
+fn bool can_defer(Renderer* self, bool clears, bool first) @local {
     RenderTarget* rt = self.render_target;
-    return self.deferred && rt && rt.samples == 1 && rt.depth_buffer && whole
-        && !state.bake.on && !self.scissor_test && self.viewport[2] == 0 && self.viewport[3] == 0;
+    return self.deferred && rt && rt.samples == 1 && rt.depth_buffer && clears
+        && (!self.scissor_test || first) && !state.bake.on && self.viewport[2] == 0 && self.viewport[3] == 0;
 }
 
 fn bool is_deferred_item(DrawItem* item) @local {
@@ -4975,6 +4978,17 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera) {
     state.lights.clear();
     cull_begin(self.gpu_culling, self.check_compute);
     Frustum frustum = frustum_from(view_proj);
+    if (self.scissor_test && self.scissor[2] > 0 && self.scissor[3] > 0) {
+        float tw = self.render_target ? (float)self.render_target.width : sapp::widthf();
+        float th = self.render_target ? (float)self.render_target.height : sapp::heightf();
+        if (tw > 0 && th > 0) {
+            float nx0 = clamp(2.0f * (float)self.scissor[0] / tw - 1.0f, -1.0f, 1.0f);
+            float nx1 = clamp(2.0f * (float)(self.scissor[0] + self.scissor[2]) / tw - 1.0f, -1.0f, 1.0f);
+            float ny0 = clamp(2.0f * (float)self.scissor[1] / th - 1.0f, -1.0f, 1.0f);
+            float ny1 = clamp(2.0f * (float)(self.scissor[1] + self.scissor[3]) / th - 1.0f, -1.0f, 1.0f);
+            frustum = frustum_from_ndc(view_proj, nx0, nx1, ny0, ny1);
+        }
+    }
     collect(scene, camera.matrix_world_inverse, &frustum, camera_pos, false);
     profile::stop("render: collect", pt);
     pt = profile::start();
@@ -5087,7 +5101,7 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera) {
         RenderTarget* rt = self.render_target;
         state.prepass_focal = camera.projection_matrix[1][1] * 0.5f * (rt ? rt.height : sapp::heightf());
     }
-    bool use_deferred = can_defer(self, whole);
+    bool use_deferred = can_defer(self, clears, first);
     if (use_deferred) {
         bool has_deferred = false;
         foreach (&item : state.opaque) {
@@ -5119,6 +5133,7 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera) {
             .label = "drie-gbuffer",
         };
         profile::begin_pass(&gb_pass);
+        apply_view_rect(self);
         foreach (&item : state.opaque) {
             if (!is_deferred_item(item)) continue;
             DrawKind kind = has_holes(item) ? CUT : SOLID;
@@ -5128,20 +5143,22 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera) {
         profile::stop("render: gbuffer", pt);
         pt = profile::start();
 
+        SgLoadAction light_load = self.scissor_test ? SgLoadAction.CLEAR : SgLoadAction.DONTCARE;
         SgPass light_pass = {
             .action = {
-                .colors[0] = { .load_action = DONTCARE, .store_action = STORE },
+                .colors[0] = { .load_action = light_load, .store_action = STORE, .clear_value = { clear.x, clear.y, clear.z, scene.background ? 1.0f : self.clear_alpha } },
             },
             .attachments = { .colors[0] = rt.color_view },
             .label = "drie-deferred-light",
         };
         if (rt.mrt) {
             for (int i = 0; i < MRT_COUNT; i++) {
-                light_pass.action.colors[i + 1] = { .load_action = DONTCARE, .store_action = STORE };
+                light_pass.action.colors[i + 1] = { .load_action = light_load, .store_action = STORE };
                 light_pass.attachments.colors[i + 1] = rt.mrt_color_view[i];
             }
         }
         profile::begin_pass(&light_pass);
+        apply_view_rect(self);
         draw_deferred_lighting(self, scene, camera, view_proj_rel, &fs, clear, scene.background ? 1.0f : self.clear_alpha);
         sg::end_pass();
         profile::stop("render: deferred light", pt);
@@ -5157,7 +5174,7 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera) {
         }
     }
     profile::begin_pass(&pass);
-    if (!whole && clears) clear_rect(self, { clear.x, clear.y, clear.z, scene.background ? 1.0f : self.clear_alpha });
+    if (!use_deferred && !whole && clears) clear_rect(self, { clear.x, clear.y, clear.z, scene.background ? 1.0f : self.clear_alpha });
     apply_view_rect(self);
     if (prepass) {
         foreach (&item : state.opaque) {
