@@ -742,6 +742,7 @@ enum ShaderFamily : char {
     PBR,
     PHYSICAL,
     UNLIT,
+    GBUFFER,
 }
 
 struct NodeProgram {
@@ -759,8 +760,8 @@ struct NodeProgram {
     bool has_frag;           // at least one fragment hook body is non-empty
     bool has_vert;           // vertex hook body is non-empty
     String unsupported;      // what the graphs use that the hooks can't print ("": nothing)
-    SgShader[8][3] shaders;  // by ShaderFamily, NodeVariant
-    int[8][3] shader_jobs;   // background sg_warm_shader_begin jobs (+1; 0: none)
+    SgShader[8][4] shaders;  // by ShaderFamily, NodeVariant
+    int[8][4] shader_jobs;   // background sg_warm_shader_begin jobs (+1; 0: none)
     HashMap{ulong, SgPipeline} pipelines;
     SgPipeline shadow_pipeline;
     // its pipelines being compiled in the background (sg_warm_begin), by their pipelines' keys:
