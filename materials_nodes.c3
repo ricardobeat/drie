@@ -947,6 +947,9 @@ fn void build_material_graph(MaterialKey key, ProgramGraph* graph, ProgramGraph*
     Node n = nodes::normalize(v_normal);
     // (baking: the faces as the uv unwrap turned them, all front)
     if (!key.foliage && !key.bake) n = nodes::select(front, n, n.negate());
+    // (the color step's NORMAL_GEOMETRY node itself, so that the later steps bind the same
+    // node and what reads it isn't printed again)
+    if (build && !key.bake) n = user_n;
     Node geo_n = n;
     if (key.normal_map) {
         // tangent-space normal mapping (perturb_normal), in the frame of the map's uv or of the
