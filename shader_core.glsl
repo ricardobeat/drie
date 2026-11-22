@@ -755,6 +755,29 @@ struct rc_probe {
 };
 layout(binding=22) readonly buffer rc_probes { rc_probe rc_probe_data[]; };
 
+#ifdef DEFERRED_LIGHT
+layout(binding=0) uniform deferred_params {
+    mat4 d_inv_view_proj;
+    vec4 d_view_origin;   // xyz = camera_pos, w = depth_zero_to_one (1.0 or 0.0)
+    vec4 d_clear_color;   // rgb = clear color, a = clear alpha
+    vec4 d_screen_info;   // xy = 1/w, 1/h, z = flip_y (1.0 on Metal/D3D), w = unused
+};
+in vec2 v_uv;
+vec3 v_world_pos;
+vec3 v_normal;
+vec2 v_uv1;
+vec4 v_tangent;
+vec3 v_color;
+float v_alpha;
+vec4 v_clip;
+vec4 v_prev_clip;
+float v_line_distance;
+vec3 v_instance_color;
+vec4 v_node0;
+vec4 v_node1;
+vec4 v_node2;
+vec4 v_node3;
+#else
 in vec3 v_world_pos;
 in vec3 v_normal;
 in vec2 v_uv;
@@ -770,6 +793,7 @@ in vec4 v_node0;
 in vec4 v_node1;
 in vec4 v_node2;
 in vec4 v_node3;
+#endif
 
 // A node material's (see node_common): its uniforms, as node_vs_params
 layout(binding=3) uniform node_fs_params {
@@ -863,6 +887,26 @@ NodeIn node_in(vec3 n, vec3 geo_n) {
     return ni;
 }
 
+// A direction as a point of the square -1..1 (the octahedron around it unfolded; Cigolle et
+// al. 2014, three's packNormalToOctahedral): two numbers that keep their precision all around.
+vec2 pack_normal_octahedral(vec3 n) {
+    n /= abs(n.x) + abs(n.y) + abs(n.z);
+    if (n.z < 0.0) n.xy = (1.0 - abs(n.yx)) * vec2(n.x >= 0.0 ? 1.0 : -1.0, n.y >= 0.0 ? 1.0 : -1.0);
+    return n.xy;
+}
+
+vec3 unpack_normal_octahedral(vec2 e) {
+    vec3 n = vec3(e.x, e.y, 1.0 - abs(e.x) - abs(e.y));
+    if (n.z < 0.0) n.xy = (1.0 - abs(n.yx)) * vec2(n.x >= 0.0 ? 1.0 : -1.0, n.y >= 0.0 ? 1.0 : -1.0);
+    return normalize(n);
+}
+
+#ifdef GBUFFER
+layout(location=0) out vec4 gb_albedo;
+layout(location=1) out vec4 gb_normal;
+layout(location=2) out vec4 gb_emissive;
+layout(location=3) out vec4 gb_vel;
+#else
 layout(location=0) out vec4 frag_color;
 #ifdef MRT
 // Renderer.render into a target with MRT (RenderTarget.mrt): the surface's normal in world
@@ -872,14 +916,7 @@ layout(location=2) out vec4 frag_velocity;
 // the shares of the light that are indirect: r = diffuse, g = specular (what AO darkens);
 // b = roughness, a = metalness
 layout(location=3) out vec4 frag_indirect;
-
-// A direction as a point of the square -1..1 (the octahedron around it unfolded; Cigolle et
-// al. 2014, three's packNormalToOctahedral): two numbers that keep their precision all around.
-vec2 pack_normal_octahedral(vec3 n) {
-    n /= abs(n.x) + abs(n.y) + abs(n.z);
-    if (n.z < 0.0) n.xy = (1.0 - abs(n.yx)) * vec2(n.x >= 0.0 ? 1.0 : -1.0, n.y >= 0.0 ? 1.0 : -1.0);
-    return n.xy;
-}
+#endif
 #endif
 
 const float PI = 3.14159265359;
@@ -2511,6 +2548,70 @@ vec3 refracted_light(vec3 n, vec3 v, vec3 world_pos, float rough, vec3 diffuse_c
 }
 
 void main() {
+#ifdef DEFERRED_LIGHT
+    ivec2 tc = ivec2(gl_FragCoord.xy);
+    float raw_d = texelFetch(sampler2D(tex_transmission, tex_smp), tc, 0).r;
+    if (raw_d >= 1.0) {
+        frag_color = d_clear_color;
+#ifdef MRT
+        frag_normal = vec4(0.0);
+        frag_velocity = vec4(0.0);
+        frag_indirect = vec4(0.0);
+#endif
+        return;
+    }
+    vec2 su = gl_FragCoord.xy * d_screen_info.xy;
+    vec2 ndc_xy = su * 2.0 - 1.0;
+    if (d_screen_info.z > 0.5) ndc_xy.y = -ndc_xy.y;
+    float ndc_z = d_view_origin.w > 0.5 ? raw_d : raw_d * 2.0 - 1.0;
+    vec4 rel = d_inv_view_proj * vec4(ndc_xy, ndc_z, 1.0);
+    v_world_pos = rel.xyz / rel.w + d_view_origin.xyz;
+
+    vec4 g0 = texelFetch(sampler2D(tex_map, tex_smp), tc, 0);
+    vec4 g1 = texelFetch(sampler2D(tex_normal, tex_smp), tc, 0);
+    vec4 g2 = texelFetch(sampler2D(tex_arm, tex_smp), tc, 0);
+    vec4 g3 = texelFetch(sampler2D(tex_parallax, tex_smp), tc, 0);
+
+    int pf = int(g2.a + 0.5);
+    int mode = pf & 7;
+    bool foliage = (pf & 16) != 0;
+    int fl = ((pf & 8) != 0 ? 4 : 0) | (foliage ? 2 : 0);
+    bool df_ssr = (pf & 32) != 0;
+    bool df_env = (pf & 64) != 0;
+    bool df_fog = (pf & 128) != 0;
+    bool df_bright = (pf & 256) != 0;
+    bool baking = false;
+    bool baked = false;
+    bool nodes = false;
+    NodeIn ni;
+
+    g_base = vec4(g0.rgb, 1.0);
+    float ao = g0.a;
+    vec3 n = unpack_normal_octahedral(g1.xy);
+    vec3 geo_n = unpack_normal_octahedral(g3.zw);
+    g_rough = g1.z;
+    g_metal = g1.w;
+    g_f0 = mix(vec3(0.04), g_base.rgb, g_metal);
+    g_f90 = 1.0;
+    g_iridescence = 0.0;
+    g_clearcoat = 0.0;
+    g_clearcoat_rough = 0.045;
+    g_clearcoat_n = geo_n;
+    g_clearcoat_direct = vec3(0.0);
+    g_sheen_rough = 0.0;
+    g_sheen_light = vec3(0.0);
+    g_anisotropy = 0.0;
+    float alpha = 1.0;
+    int ext_bits = 0;
+    vec3 map_rgb = vec3(1.0);
+    vec4 node_glow = vec4(0.0);
+    vec3 deferred_own = g2.rgb;
+#ifdef MRT
+    frag_normal = vec4(g1.xy, 0.0, 1.0);
+    frag_velocity = vec4(g3.xy, 0.0, 1.0);
+    frag_indirect = vec4(0.0, 0.0, g_rough, g_metal);
+#endif
+#else
     int mode = int(mat_params.x);
     int fl = flags();
     bool foliage = (fl & 2) != 0;
@@ -2538,11 +2639,13 @@ void main() {
         if (screen_params.w > 0.0 ? dither >= screen_params.z : dither < screen_params.z) discard;
     }
 #endif
+#ifndef GBUFFER
     if ((fl & 32) != 0) {
         // a window onto another render: its pixels as they are, already tone mapped
         frag_color = vec4(texture(sampler2D(tex_map, tex_smp), gl_FragCoord.xy * screen_params.xy).rgb, 1.0);
         return;
     }
+#endif
 
     g_base = vec4(color.rgb, color.a);
     bool baked = (fl & 16) != 0;
@@ -2796,10 +2899,51 @@ void main() {
         }
 #endif
     }
+#ifdef GBUFFER
+    {
+        vec3 diffuse_color = g_base.rgb;
+        if (mode == 3) diffuse_color *= (1.0 - g_metal);
+        vec3 glow = (fl & 64) != 0 ? emissive.rgb * map_rgb : emissive.rgb;
+        if (has_map(MAP_EMISSIVE)) glow *= material_map(MAP_EMISSIVE).rgb;
+        if (node_glow.w > 0.5) glow = node_glow.rgb;
+        vec3 own_eb = glow;
+        if (baked) own_eb += diffuse_color * v_color * emissive.w * ao;
+        if (has_map(MAP_LIGHT)) {
+            if (mode == 0) {
+                g_base.rgb *= material_map(MAP_LIGHT).rgb * light_map_params.x * RECIPROCAL_PI;
+            } else {
+                own_eb += material_map(MAP_LIGHT).rgb * light_map_params.x * diffuse_color * RECIPROCAL_PI * ao;
+            }
+        }
+        if ((fl & 128) != 0) {
+            float k = dot(v_color, vec3(0.2126, 0.7152, 0.0722));
+            g_base.rgb *= k;
+            own_eb *= k;
+        }
+        vec2 now = v_clip.xy / v_clip.w;
+        vec2 was = v_prev_clip.xy / max(v_prev_clip.w, 1e-5);
+        vec2 vel = (now - was) * 0.5;
+        if (ssr_params.w > 0.5) vel.y = -vel.y;
+        int pf = (mode & 7)
+            | ((fl & 4) != 0 ? 8 : 0)
+            | (foliage ? 16 : 0)
+            | (ssr_params.x > 0.0 ? 32 : 0)
+            | (env_params.x > 0.5 && mode != 1 ? 64 : 0)
+            | (int(fog_params.w) != 0 ? 128 : 0)
+            | (max(emissive.r, max(emissive.g, emissive.b)) > 4.0 ? 256 : 0);
+        gb_albedo = vec4(g_base.rgb, ao);
+        gb_normal = vec4(pack_normal_octahedral(n), g_rough, g_metal);
+        gb_emissive = vec4(own_eb, float(pf));
+        gb_vel = vec4(vel, pack_normal_octahedral(geo_n));
+        return;
+    }
+#endif
 #ifdef MRT
     frag_indirect.ba = vec2(g_rough, g_metal);
 #endif
+#endif // !DEFERRED_LIGHT
 
+#ifndef GBUFFER
     vec3 outc;
     vec3 spec = vec3(0.0);
     // the light the surface gives off itself (emissive, baked), which transmission leaves alone
@@ -3021,6 +3165,11 @@ void main() {
             }
         }
         spec *= ao;
+#ifdef DEFERRED_LIGHT
+        outc += deferred_own;
+        own_light = deferred_own;
+        ind_d += deferred_own;
+#else
         // Material.map_emissive: the color map glows too
         vec3 glow = (fl & 64) != 0 ? emissive.rgb * map_rgb : emissive.rgb;
         // three's emissiveMap
@@ -3035,6 +3184,7 @@ void main() {
             outc += b;
             ind_d += b;
         }
+#endif
     }
 #else
     else {
@@ -3060,7 +3210,11 @@ void main() {
         vec3 env_term = vec3(0.0);
         vec3 mirror_term = vec3(0.0);
         // (not the background: it is the surroundings)
+#ifdef DEFERRED_LIGHT
+        if (df_env && env_params.x > 0.5 && mode != 1) {
+#else
         if (env_params.x > 0.5 && mode != 1 && (ext_bits & 32) == 0 && env_combine.w < 0.5) {
+#endif
             // reflections of the surroundings, fading as the surface gets rougher
             float nov = clamp(dot(n, v), 0.0, 1.0);
             vec3 f0 = g_f0;
@@ -3088,7 +3242,11 @@ void main() {
             if (g_sheen_rough > 0.0) env_term *= 1.0 - max(g_sheen_color.r, max(g_sheen_color.g, g_sheen_color.b)) * sheen_albedo(n, v, g_sheen_rough);
 #endif
         }
+#ifdef DEFERRED_LIGHT
+        if (df_ssr && ssr_params.x > 0.0) {
+#else
         if (ssr_params.x > 0.0 || reflector_params.x > 0.0) {
+#endif
             // the surface's sheen: a mirror image, strongest at a glancing angle
             // (far off, where a pixel covers many bumps of the normal map, each would throw
             // the image somewhere else: blotches. There the surface mirrors as if flat)
@@ -3190,7 +3348,11 @@ void main() {
         alpha = lit.a;
     }
 
+#ifdef DEFERRED_LIGHT
+    int fog_mode = df_fog ? int(fog_params.w) : 0;
+#else
     int fog_mode = int(fog_params.w);
+#endif
     float display_fog_t = 1.0;
     if (fog_mode != 0 && fog_grid.w > 0.0) {
         vec4 fv = fog_volume_at(v_world_pos);
@@ -3264,7 +3426,11 @@ void main() {
     float shown_alpha = alpha;
     // a light source (emissive far over white) leaves the target's alpha at 0, for
     // post-processing that has to tell a burnt-out lamp from a brightly lit wall
+#ifdef DEFERRED_LIGHT
+    if (df_bright) alpha = 0.0;
+#else
     alpha *= 1.0 - smoothstep(4.0, 16.0, max(emissive.r, max(emissive.g, emissive.b)));
+#endif
     // into a half-float target as it is (OutputPass tone maps it later), otherwise ready to show
     if (output_params.x > 0.5) frag_color = vec4(mix(fog_color.rgb, min(outc, vec3(60000.0)), display_fog_t), alpha);
     else {
@@ -3279,6 +3445,7 @@ void main() {
     }
     // Material.premultiplied_alpha: the color as it is shown, times its opacity (three's)
     if ((fl & 256) != 0) frag_color.rgb *= shown_alpha;
+#endif // !GBUFFER
 }
 @end
 
@@ -3302,6 +3469,29 @@ layout(binding=1) uniform depth_fs_params {
     vec4 d_alpha_uv[2];    // the alpha map's uv from v_uv, as uv_rel
 };
 
+#ifdef DEFERRED_LIGHT
+layout(binding=0) uniform deferred_params {
+    mat4 d_inv_view_proj;
+    vec4 d_view_origin;   // xyz = camera_pos, w = depth_zero_to_one (1.0 or 0.0)
+    vec4 d_clear_color;   // rgb = clear color, a = clear alpha
+    vec4 d_screen_info;   // xy = 1/w, 1/h, z = flip_y (1.0 on Metal/D3D), w = unused
+};
+in vec2 v_uv;
+vec3 v_world_pos;
+vec3 v_normal;
+vec2 v_uv1;
+vec4 v_tangent;
+vec3 v_color;
+float v_alpha;
+vec4 v_clip;
+vec4 v_prev_clip;
+float v_line_distance;
+vec3 v_instance_color;
+vec4 v_node0;
+vec4 v_node1;
+vec4 v_node2;
+vec4 v_node3;
+#else
 in vec3 v_world_pos;
 in vec3 v_normal;
 in vec2 v_uv;
@@ -3317,6 +3507,7 @@ in vec4 v_node0;
 in vec4 v_node1;
 in vec4 v_node2;
 in vec4 v_node3;
+#endif
 
 out vec4 frag_color;
 
