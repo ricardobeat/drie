@@ -56,7 +56,14 @@ struct rc_uint {
 };
 
 const float RC_PI = 3.14159265;
+// Probes untouched for this many frames are evicted (their hash slot freed and their data
+// slot returned to the level's free list for reuse by newly seen surfaces).
 const uint RC_STALE_FRAMES = 24u;
+// rc_ht[].v.y states: 0u = never used (a safe linear-probe chain terminator for lookups that
+// never walked through it), RC_TOMBSTONE = vacated (overflowed or evicted; still has to be
+// skipped, not treated as a chain end, since other keys may have probed past it), anything
+// else = an occupied key. Doesn't collide with rc_pack_key32's output (always has bit 31 set).
+const uint RC_TOMBSTONE = 0x7fffffffu;
 
 int rc_level_cap(int l) { return l < 4 ? rc_lcap0[l] : rc_lcap1[l - 4]; }
 int rc_level_off(int l) { return l < 4 ? rc_loff0[l] : rc_loff1[l - 4]; }
@@ -112,13 +119,22 @@ vec3 rc_unpack_oct_normal(vec2 e) {
 @include_block rc_split_common
 layout(binding=2) buffer rc_ht_clear { rc_uvec4 rc_ht[]; };
 layout(binding=4) buffer rc_cnt_clear { rc_uint rc_cnt[]; };
+layout(binding=5) buffer rc_free_clear { rc_uint rc_free[]; };
 
 layout(local_size_x=64) in;
+
+int rc_free_buf_len() {
+    int top = rc_info.y - 1;
+    int cap = top < 4 ? rc_lcap0[top] : rc_lcap1[top - 4];
+    int pbase = top < 4 ? rc_pbase0[top] : rc_pbase1[top - 4];
+    return 8 + pbase + cap;
+}
 
 void main() {
     uint i = gl_GlobalInvocationID.x;
     if (i < uint(rc_info.w)) rc_ht[i].v = uvec4(0u);
     if (i < 8u) rc_cnt[i].v = 0u;
+    if (int(i) < rc_free_buf_len()) rc_free[i].v = 0u;
 }
 @end
 
@@ -131,6 +147,7 @@ layout(binding=2) buffer rc_ht_alloc { rc_uvec4 rc_ht[]; };
 layout(binding=3) buffer rc_meta_alloc { rc_probe_meta rc_meta[]; };
 layout(binding=4) buffer rc_cnt_alloc { rc_uint rc_cnt[]; };
 layout(binding=5) readonly buffer rc_vox_alloc { rc_voxel rc_vox_data[]; };
+layout(binding=6) buffer rc_free_alloc { rc_uint rc_free[]; };
 
 layout(local_size_x=8, local_size_y=8) in;
 
@@ -139,6 +156,18 @@ bool rc_probe_is_solid(ivec3 c, float sp) {
     ivec3 vc = ivec3(floor((pos - rc_min.xyz) / rc_tune.w));
     if (any(lessThan(vc, ivec3(0))) || any(greaterThanEqual(vc, rc_vox.xyz))) return false;
     return (rc_vox_data[(vc.z * rc_vox.y + vc.y) * rc_vox.x + vc.x].albedo & 0x1000000u) != 0u;
+}
+
+// Pops a recycled data slot for `level` from its free list (pushed by rc_evict_cs), or -1 if
+// the list is empty. Lock-free stack: atomicAdd(-1) claims an entry by decrementing the top,
+// then reverts if it went to/past zero (someone else already took the last one).
+int rc_free_pop(int level) {
+    int cap = rc_level_cap(level);
+    int pbase = rc_probe_base(level);
+    int old = int(atomicAdd(rc_free[level].v, uint(-1)));
+    if (old > 0 && old <= cap) return int(rc_free[8 + pbase + (old - 1)].v);
+    atomicAdd(rc_free[level].v, 1u);
+    return -1;
 }
 
 void rc_touch_probe(ivec3 c, int level, uint frame) {
@@ -153,17 +182,24 @@ void rc_touch_probe(ivec3 c, int level, uint frame) {
             rc_ht[idx].v.w = frame;
             return;
         }
-        if (cur == 0u) {
-            uint prev = atomicCompSwap(rc_ht[idx].v.y, 0u, key);
-            if (prev == 0u) {
-                uint slot = atomicAdd(rc_cnt[level].v, 1u);
-                if (int(slot) < cap) {
+        if (cur == 0u || cur == RC_TOMBSTONE) {
+            uint prev = atomicCompSwap(rc_ht[idx].v.y, cur, key);
+            if (prev == cur) {
+                int slot = rc_free_pop(level);
+                if (slot < 0) {
+                    uint s = atomicAdd(rc_cnt[level].v, 1u);
+                    slot = int(s) < cap ? int(s) : -1;
+                }
+                if (slot >= 0) {
                     rc_ht[idx].v.x = rc_pack_xy(c);
-                    rc_ht[idx].v.z = slot;
+                    rc_ht[idx].v.z = uint(slot);
                     rc_ht[idx].v.w = frame;
-                    rc_meta[pbase + int(slot)].coord = ivec4(c, level);
+                    rc_meta[pbase + slot].coord = ivec4(c, level);
                 } else {
-                    rc_ht[idx].v.y = 0u;
+                    // no data slot left (pool saturated): vacate the hash slot with a
+                    // tombstone, not 0u, so a lookup for a key further along this chain still
+                    // walks past it instead of stopping here.
+                    rc_ht[idx].v.y = RC_TOMBSTONE;
                 }
                 return;
             }
@@ -233,6 +269,7 @@ layout(binding=2) buffer rc_ht_prop { rc_uvec4 rc_ht[]; };
 layout(binding=3) buffer rc_meta_prop { rc_probe_meta rc_meta[]; };
 layout(binding=4) buffer rc_cnt_prop { rc_uint rc_cnt[]; };
 layout(binding=5) readonly buffer rc_vox_prop { rc_voxel rc_vox_data[]; };
+layout(binding=6) buffer rc_free_prop { rc_uint rc_free[]; };
 
 layout(local_size_x=64) in;
 
@@ -241,6 +278,15 @@ bool rc_prop_is_solid(ivec3 c, float sp) {
     ivec3 vc = ivec3(floor((pos - rc_min.xyz) / rc_tune.w));
     if (any(lessThan(vc, ivec3(0))) || any(greaterThanEqual(vc, rc_vox.xyz))) return false;
     return (rc_vox_data[(vc.z * rc_vox.y + vc.y) * rc_vox.x + vc.x].albedo & 0x1000000u) != 0u;
+}
+
+int rc_free_pop(int level) {
+    int cap = rc_level_cap(level);
+    int pbase = rc_probe_base(level);
+    int old = int(atomicAdd(rc_free[level].v, uint(-1)));
+    if (old > 0 && old <= cap) return int(rc_free[8 + pbase + (old - 1)].v);
+    atomicAdd(rc_free[level].v, 1u);
+    return -1;
 }
 
 void rc_prop_touch(ivec3 c, int level, uint frame) {
@@ -255,17 +301,21 @@ void rc_prop_touch(ivec3 c, int level, uint frame) {
             rc_ht[idx].v.w = frame;
             return;
         }
-        if (cur == 0u) {
-            uint prev = atomicCompSwap(rc_ht[idx].v.y, 0u, key);
-            if (prev == 0u) {
-                uint slot = atomicAdd(rc_cnt[level].v, 1u);
-                if (int(slot) < cap) {
+        if (cur == 0u || cur == RC_TOMBSTONE) {
+            uint prev = atomicCompSwap(rc_ht[idx].v.y, cur, key);
+            if (prev == cur) {
+                int slot = rc_free_pop(level);
+                if (slot < 0) {
+                    uint s = atomicAdd(rc_cnt[level].v, 1u);
+                    slot = int(s) < cap ? int(s) : -1;
+                }
+                if (slot >= 0) {
                     rc_ht[idx].v.x = rc_pack_xy(c);
-                    rc_ht[idx].v.z = slot;
+                    rc_ht[idx].v.z = uint(slot);
                     rc_ht[idx].v.w = frame;
-                    rc_meta[pbase + int(slot)].coord = ivec4(c, level);
+                    rc_meta[pbase + slot].coord = ivec4(c, level);
                 } else {
-                    rc_ht[idx].v.y = 0u;
+                    rc_ht[idx].v.y = RC_TOMBSTONE;
                 }
                 return;
             }
@@ -297,6 +347,42 @@ void main() {
         ivec3 c = b + o;
         if (!rc_prop_is_solid(c, usp)) rc_prop_touch(c, up, frame);
     }
+}
+@end
+
+// Runs every RC_EVICT_PERIOD frames (driven from the c3 side) over the whole hash table:
+// probes not touched in RC_STALE_FRAMES frames (a surface the camera hasn't seen lately) are
+// vacated and their data slot handed back to the level's free list, so rc_touch_probe can
+// reuse it for a newly seen surface instead of a level's pool staying permanently full once
+// its level_cap is first reached.
+@cs rc_evict_cs
+@include_block rc_split_common
+layout(binding=0) buffer rc_ht_evict { rc_uvec4 rc_ht[]; };
+layout(binding=1) buffer rc_free_evict { rc_uint rc_free[]; };
+
+layout(local_size_x=64) in;
+
+void rc_free_push(int level, uint slot) {
+    int cap = rc_level_cap(level);
+    int pbase = rc_probe_base(level);
+    uint idx = atomicAdd(rc_free[level].v, 1u);
+    if (int(idx) < cap) rc_free[8 + pbase + int(idx)].v = slot;
+    else atomicAdd(rc_free[level].v, uint(-1));
+}
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= uint(rc_info.w)) return;
+    uint key = rc_ht[idx].v.y;
+    if (key == 0u || key == RC_TOMBSTONE) return;
+    int level = int((key >> 27) & 0x7u);
+    uint frame = uint(rc_tune.z) + 1u;
+    uint last = rc_ht[idx].v.w;
+    uint age = frame >= last ? (frame - last) : (frame + 4096u - last);
+    if (age <= RC_STALE_FRAMES) return;
+    uint slot = rc_ht[idx].v.z;
+    rc_ht[idx].v.y = RC_TOMBSTONE;
+    rc_free_push(level, slot);
 }
 @end
 
@@ -338,6 +424,8 @@ int rc_lookup_probe(ivec3 c, int level) {
         uint cur = rc_ht[idx].v.y;
         if (cur == 0u) return -1;
         if (cur == key) return int(rc_ht[idx].v.z);
+        // RC_TOMBSTONE: an overflowed or evicted slot — skip it, a later key in this chain
+        // may still have probed past it to an occupied slot further along.
         idx = (idx + 1u) & mask;
     }
     return -1;
@@ -682,5 +770,6 @@ void main() {
 @program rc_clear rc_clear_cs
 @program rc_alloc rc_alloc_cs
 @program rc_propagate rc_propagate_cs
+@program rc_evict rc_evict_cs
 @program rc_split_trace rc_split_trace_cs
 @program rc_split_gather rc_split_gather_cs
