@@ -6568,6 +6568,11 @@ SOKOL_GFX_API_DECL const void* sg_mtl_render_command_encoder(void);
 SOKOL_GFX_API_DECL const void* sg_mtl_compute_command_encoder(void);
 // Metal: return __bridge-casted MTLCommandQueue
 SOKOL_GFX_API_DECL const void* sg_mtl_command_queue(void);
+// drie patch (GPU timestamps): the frame's __bridge-casted MTLCommandBuffer once a pass has begun (otherwise zero)
+SOKOL_GFX_API_DECL const void* sg_mtl_command_buffer(void);
+// drie patch (GPU timestamps): the next sg_begin_pass samples a __bridge-casted MTLCounterSampleBuffer
+// at the start (start_index) and the end (end_index) of its encoder (stage boundaries), then forgets it
+SOKOL_GFX_API_DECL void sg_mtl_set_pass_timestamps(const void* sample_buffer, int start_index, int end_index);
 // Metal: get internal __bridge-casted buffer resource objects
 SOKOL_GFX_API_DECL sg_mtl_buffer_info sg_mtl_query_buffer_info(sg_buffer buf);
 // Metal: get internal __bridge-casted image resource objects
@@ -8095,6 +8100,8 @@ typedef struct {
     id<MTLDevice> device;
     id<MTLCommandQueue> cmd_queue;
     id<MTLCommandBuffer> cmd_buffer;
+    id<MTLCounterSampleBuffer> ts_buffer;   // drie patch (GPU timestamps): for the next pass only
+    int ts_start, ts_end;
     id<MTLRenderCommandEncoder> render_cmd_encoder;
     id<MTLComputeCommandEncoder> compute_cmd_encoder;
     id<MTLBlitCommandEncoder> blit_cmd_encoder;
@@ -18397,7 +18404,18 @@ _SOKOL_PRIVATE void _sg_mtl_begin_compute_pass(const sg_pass* pass) {
     SOKOL_ASSERT(nil == _sg.mtl.compute_cmd_encoder);
     SOKOL_ASSERT(nil == _sg.mtl.render_cmd_encoder);
 
-    _sg.mtl.compute_cmd_encoder = [_sg.mtl.cmd_buffer computeCommandEncoder];
+    if (nil != _sg.mtl.ts_buffer) {
+        // drie patch (GPU timestamps)
+        MTLComputePassDescriptor* cdesc = [MTLComputePassDescriptor computePassDescriptor];
+        cdesc.dispatchType = MTLDispatchTypeSerial;
+        cdesc.sampleBufferAttachments[0].sampleBuffer = _sg.mtl.ts_buffer;
+        cdesc.sampleBufferAttachments[0].startOfEncoderSampleIndex = (NSUInteger)_sg.mtl.ts_start;
+        cdesc.sampleBufferAttachments[0].endOfEncoderSampleIndex = (NSUInteger)_sg.mtl.ts_end;
+        _sg.mtl.ts_buffer = nil;
+        _sg.mtl.compute_cmd_encoder = [_sg.mtl.cmd_buffer computeCommandEncoderWithDescriptor:cdesc];
+    } else {
+        _sg.mtl.compute_cmd_encoder = [_sg.mtl.cmd_buffer computeCommandEncoder];
+    }
     if (nil == _sg.mtl.compute_cmd_encoder) {
         _sg.cur_pass.valid = false;
         return;
@@ -18557,6 +18575,15 @@ _SOKOL_PRIVATE void _sg_mtl_begin_render_pass(const sg_pass* pass, const _sg_att
     // render command encoder is also returned in a minimized window
     // ===
     // create a render command encoder, this might return nil if window is minimized
+    if (nil != _sg.mtl.ts_buffer) {
+        // drie patch (GPU timestamps): from the vertex stage's start to the fragment stage's end
+        pass_desc.sampleBufferAttachments[0].sampleBuffer = _sg.mtl.ts_buffer;
+        pass_desc.sampleBufferAttachments[0].startOfVertexSampleIndex = (NSUInteger)_sg.mtl.ts_start;
+        pass_desc.sampleBufferAttachments[0].endOfVertexSampleIndex = MTLCounterDontSample;
+        pass_desc.sampleBufferAttachments[0].startOfFragmentSampleIndex = MTLCounterDontSample;
+        pass_desc.sampleBufferAttachments[0].endOfFragmentSampleIndex = (NSUInteger)_sg.mtl.ts_end;
+        _sg.mtl.ts_buffer = nil;
+    }
     _sg.mtl.render_cmd_encoder = [_sg.mtl.cmd_buffer renderCommandEncoderWithDescriptor:pass_desc];
     if (nil == _sg.mtl.render_cmd_encoder) {
         _sg.cur_pass.valid = false;
@@ -30690,6 +30717,26 @@ SOKOL_API_IMPL const void* sg_mtl_compute_command_encoder(void) {
         }
     #else
         return 0;
+    #endif
+}
+
+// drie patch (GPU timestamps)
+SOKOL_API_IMPL const void* sg_mtl_command_buffer(void) {
+    #if defined(SOKOL_METAL)
+        return (nil != _sg.mtl.cmd_buffer) ? (__bridge const void*) _sg.mtl.cmd_buffer : 0;
+    #else
+        return 0;
+    #endif
+}
+
+// drie patch (GPU timestamps)
+SOKOL_API_IMPL void sg_mtl_set_pass_timestamps(const void* sample_buffer, int start_index, int end_index) {
+    #if defined(SOKOL_METAL)
+        _sg.mtl.ts_buffer = (__bridge id<MTLCounterSampleBuffer>) sample_buffer;
+        _sg.mtl.ts_start = start_index;
+        _sg.mtl.ts_end = end_index;
+    #else
+        (void)sample_buffer; (void)start_index; (void)end_index;
     #endif
 }
 

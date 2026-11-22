@@ -1,5 +1,5 @@
 module drie::profile;
-import sokol, std::io;
+import sokol, std::io, drie::gpu_timer;
 
 // CPU time per stage of a frame, for finding where it goes (`build/scene --bench --profile`).
 // Off unless `profile::enabled` is set: then start/stop cost a clock read each.
@@ -39,9 +39,10 @@ fn void stop(String name, ulong started) {
     prof_slots[prof_count++] = { name, dt };
 }
 
-// sg::begin_pass, timing the frame's first pass while profiling. drie calls this and commit()
-// in place of sokol's.
+// sg::begin_pass, timing the frame's first pass while profiling, and the pass on the GPU while
+// gpu_timer::enabled. drie calls this and commit() in place of sokol's.
 fn void begin_pass(SgPass* pass) @inline {
+    gpu_timer::before_pass(pass);
     if (!enabled || prof_frame_started) {
         sg::begin_pass(pass);
         return;
@@ -53,6 +54,7 @@ fn void begin_pass(SgPass* pass) @inline {
 }
 
 fn void commit() @inline {
+    gpu_timer::before_commit();
     sg::commit();
     prof_frame_started = false;
 }
