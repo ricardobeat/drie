@@ -37,6 +37,16 @@ const int RC_MAX_LIGHTS = 64;
 // run every frame.
 const int RC_EVICT_PERIOD = 8;
 
+// The kernels RadianceCascades.skip_kernels can leave out, for benches (tests/
+// radiance_split_bench.c3): each kernel's cost shows as the time saved without it. The sparse
+// path runs all six; the dense one TRACE and GATHER.
+const int RC_KERNEL_CLEAR = 1;
+const int RC_KERNEL_EVICT = 2;
+const int RC_KERNEL_ALLOC = 4;
+const int RC_KERNEL_PROPAGATE = 8;
+const int RC_KERNEL_TRACE = 16;
+const int RC_KERNEL_GATHER = 32;
+
 struct RadianceCascades {
     Vector3 min;
     Vector3 max;
@@ -89,6 +99,9 @@ struct RadianceCascades {
     int[RC_MAX_LEVELS] offsets;
     int[RC_MAX_LEVELS] counts;
     int frame;
+    // RC_KERNEL_* bits of kernels not to dispatch (0: all of them). For benches only: the light
+    // goes wrong without them.
+    int skip_kernels;
 
     // Sparse / Split Radiance Cascades mode (arXiv:2607.20384):
     // Probes are allocated on the GPU near visible G-Buffer surfaces in a hash table
@@ -567,14 +580,17 @@ fn void RadianceCascades.update(&self, Scene* scene) {
         p.rc_dims[3] = l;
         p.rc_info[3] = self.counts[l];
         t.set_uniforms(shaders::UB_RC_PARAMS, &p, RcParams::size);
+        if (self.skip_kernels & RC_KERNEL_TRACE) continue;
         begin_compute("drie-rc-trace");
         t.dispatch(((self.counts[l] + every - 1) / every + 63) / 64);
         end_compute();
     }
     g.set_uniforms(shaders::UB_RC_PARAMS, &p, RcParams::size);
-    begin_compute("drie-rc-gather");
-    g.dispatch((self.nx * self.ny * self.nz + 63) / 64);
-    end_compute();
+    if (!(self.skip_kernels & RC_KERNEL_GATHER)) {
+        begin_compute("drie-rc-gather");
+        g.dispatch((self.nx * self.ny * self.nz + 63) / 64);
+        end_compute();
+    }
     self.frame++;
 }
 
@@ -654,7 +670,7 @@ fn void RadianceCascades.run_sparse_update(
     }
 
     // 0. Clear hash table + counters + free lists after a reset or volume recenter
-    if (self.sparse_dirty) {
+    if (self.sparse_dirty && !(self.skip_kernels & RC_KERNEL_CLEAR)) {
         ComputePass* cp = self.clear_pass;
         cp.set_buffer(rc_split::VIEW_RC_HT_CLEAR, self.irradiance_buf);
         cp.set_buffer(rc_split::VIEW_RC_CNT_CLEAR, self.count_buf);
@@ -671,7 +687,7 @@ fn void RadianceCascades.run_sparse_update(
     // the next reset()/recenter() clears the table, so GI goes stale as the camera moves.
     // The pass rebuilds the hash table (moves the live entries out, then back in), which
     // also clears the tombstones that inserts racing for a level's last slots leave behind.
-    if (self.frame % RC_EVICT_PERIOD == 0) {
+    if (self.frame % RC_EVICT_PERIOD == 0 && !(self.skip_kernels & RC_KERNEL_EVICT)) {
         ComputePass* ep = self.evict_pass;
         ep.set_buffer(rc_split::VIEW_RC_HT_EVICT, self.irradiance_buf);
         ep.set_buffer(rc_split::VIEW_RC_FREE_EVICT, self.free_buf);
@@ -698,9 +714,11 @@ fn void RadianceCascades.run_sparse_update(
     ap.set_buffer(rc_split::VIEW_RC_VOX_ALLOC, self.voxel_buf);
     ap.set_buffer(rc_split::VIEW_RC_FREE_ALLOC, self.free_buf);
     ap.set_uniforms(rc_split::UB_RC_SPLIT_PARAMS, &p, rc_split::RcSplitParams::size);
-    begin_compute("drie-rc-alloc");
-    ap.dispatch(((width + 3) / 4 + 7) / 8, ((height + 3) / 4 + 7) / 8);
-    end_compute();
+    if (!(self.skip_kernels & RC_KERNEL_ALLOC)) {
+        begin_compute("drie-rc-alloc");
+        ap.dispatch(((width + 3) / 4 + 7) / 8, ((height + 3) / 4 + 7) / 8);
+        end_compute();
+    }
 
     // 1b. Propagate allocated probes upward (L0 -> L1 -> ... -> L_{max-1}) so every child has all 8 parents
     ComputePass* pp = self.propagate_pass;
@@ -710,6 +728,7 @@ fn void RadianceCascades.run_sparse_update(
     pp.set_buffer(rc_split::VIEW_RC_VOX_PROP, self.voxel_buf);
     pp.set_buffer(rc_split::VIEW_RC_FREE_PROP, self.free_buf);
     for (int l = 0; l < self.levels - 1; l++) {
+        if (self.skip_kernels & RC_KERNEL_PROPAGATE) break;
         p.rc_dims[3] = l;
         pp.set_uniforms(rc_split::UB_RC_SPLIT_PARAMS, &p, rc_split::RcSplitParams::size);
         begin_compute("drie-rc-propagate");
@@ -729,6 +748,7 @@ fn void RadianceCascades.run_sparse_update(
     for (int l = self.levels - 1; l >= 0; l--) {
         p.rc_dims[3] = l;
         tp.set_uniforms(rc_split::UB_RC_SPLIT_PARAMS, &p, rc_split::RcSplitParams::size);
+        if (self.skip_kernels & RC_KERNEL_TRACE) break;
         begin_compute("drie-rc-split-trace");
         tp.dispatch(((self.counts[l] + every - 1) / every + 63) / 64);
         end_compute();
@@ -742,9 +762,11 @@ fn void RadianceCascades.run_sparse_update(
     gp.set_buffer(rc_split::VIEW_RC_META_GATHER, self.meta_buf);
     gp.set_buffer(rc_split::VIEW_RC_CNT_GATHER, self.count_buf);
     gp.set_uniforms(rc_split::UB_RC_SPLIT_PARAMS, &p, rc_split::RcSplitParams::size);
-    begin_compute("drie-rc-split-gather");
-    gp.dispatch((self.level_cap[0] + 63) / 64);
-    end_compute();
+    if (!(self.skip_kernels & RC_KERNEL_GATHER)) {
+        begin_compute("drie-rc-split-gather");
+        gp.dispatch((self.level_cap[0] + 63) / 64);
+        end_compute();
+    }
 
     self.frame++;
 }
