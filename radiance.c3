@@ -116,6 +116,11 @@ struct RadianceCascades {
     // the root last voxelized into this volume (see recenter(): a different root forces a
     // full re-voxelize even when the snapped center didn't move)
     Object3D* voxelized_root;
+    // set by voxelize_region() while it's adding triangles, so set_voxel/add_triangle leave
+    // voxels outside [clip_min, clip_max] alone instead of clearing the whole grid
+    bool clip_region;
+    Vector3 clip_min;
+    Vector3 clip_max;
 }
 
 fn RadianceCascades* radiance_cascades(Vector3 min, Vector3 max, float spacing = 0.25, int levels = 4) {
@@ -262,8 +267,13 @@ fn uint rc_pack_glow(Vector3 c) @local {
 }
 
 // Makes the voxel at `p` solid, with this color (linear, 0..1) and glow (linear radiance).
-// Where two things share a voxel, the one that glows more keeps it.
+// Where two things share a voxel, the one that glows more keeps it. While `clip_region` is
+// set (voxelize_region()), `p` outside it is left alone: the caller is re-voxelizing only a
+// sub-box (a slab newly exposed by recenter()'s scroll) and the rest of the grid must stand.
 fn void RadianceCascades.set_voxel(&self, Vector3 p, Vector3 albedo, Vector3 glow) {
+    if (self.clip_region) {
+        for (int k = 0; k < 3; k++) if (p[k] < self.clip_min[k] || p[k] > self.clip_max[k]) return;
+    }
     Vector3 g = (p - self.min) / self.voxel_size;
     int x     = (int)math::floor(g.x);
     int y     = (int)math::floor(g.y);
@@ -282,10 +292,12 @@ fn void RadianceCascades.set_voxel(&self, Vector3 p, Vector3 albedo, Vector3 glo
 
 // Adds a triangle (world space) to the voxels.
 fn void RadianceCascades.add_triangle(&self, Vector3 a, Vector3 b, Vector3 c, Vector3 albedo, Vector3 glow) {
+    Vector3 bmin = self.clip_region ? self.clip_min : self.min;
+    Vector3 bmax = self.clip_region ? self.clip_max : self.max;
     for (int k = 0; k < 3; k++) {
         float lo = math::min(a[k], math::min(b[k], c[k]));
         float hi = math::max(a[k], math::max(b[k], c[k]));
-        if (hi < self.min[k] || lo > self.max[k]) return;
+        if (hi < bmin[k] || lo > bmax[k]) return;
     }
     // points on it no further apart than half a voxel
     float h    = self.voxel_size * 0.5f;
@@ -374,6 +386,18 @@ fn void RadianceCascades.voxelize(&self, Object3D* root) {
     self.clear_voxels();
     rc_add_tree(self, root);
     self.voxelized_root = root;
+}
+
+// Re-voxelizes only the sub-box [region_min, region_max] (world space), leaving every other
+// voxel as it stood. Used by recenter() to fill in the slab newly exposed by a scroll, without
+// clearing (and re-filling) the whole grid. `root`'s world matrices must be up to date.
+fn void RadianceCascades.voxelize_region(&self, Object3D* root, Vector3 region_min, Vector3 region_max) {
+    self.clip_region = true;
+    self.clip_min = region_min;
+    self.clip_max = region_max;
+    rc_add_tree(self, root);
+    self.clip_region = false;
+    self.voxels_changed = true;
 }
 
 struct RcLightList @local {
@@ -695,10 +719,11 @@ fn void RadianceCascades.update_sparse(
 }
 
 // Re-centers the voxel volume around `center` (snapped to probe spacing) and re-voxelizes
-// `root` — for sliding open-world GI volumes that follow the player. Also re-voxelizes when
-// `root` differs from the scene last voxelized into this volume, even if the snapped center
-// didn't move: several scenes can share one sliding volume (a doorway into another area), and
-// the stale voxels of the old scene must not stand in for the new one.
+// `root` — for sliding open-world GI volumes that follow the player. Scrolls the existing
+// voxels by the shift (in whole voxels) and re-voxelizes only the slab the scroll newly
+// exposed; a full re-voxelize only happens when `root` differs from the one last voxelized
+// into this volume (several scenes sharing one sliding volume) or the shift is bigger than
+// the box (a cut, or recenter() called rarely enough that the snapping no longer holds).
 fn void RadianceCascades.recenter(&self, Object3D* root, Vector3 center) {
     Vector3 size = self.max - self.min;
     Vector3 new_min = {
@@ -708,10 +733,72 @@ fn void RadianceCascades.recenter(&self, Object3D* root, Vector3 center) {
     };
     bool root_changed = root != self.voxelized_root;
     if (new_min == self.min && !root_changed) return;
+
+    Vector3 old_min = self.min;
     self.min = new_min;
     self.max = new_min + size;
-    self.clear_voxels();
-    self.voxelize(root);
+
+    int shift_vx = (int)math::round((new_min.x - old_min.x) / self.voxel_size);
+    int shift_vz = (int)math::round((new_min.z - old_min.z) / self.voxel_size);
+    if (root_changed || math::abs(shift_vx) >= self.vx || math::abs(shift_vz) >= self.vz) {
+        self.voxelize(root);
+        if (self.sparse) self.sparse_dirty = true;
+        return;
+    }
+    if (shift_vx == 0 && shift_vz == 0) {
+        if (self.sparse) self.sparse_dirty = true;
+        return;
+    }
+
+    uint[] scrolled = mem::new_array(uint, (sz)self.voxels.len);
+    for (int zn = 0; zn < self.vz; zn++) {
+        int zo = zn + shift_vz;
+        if (zo < 0 || zo >= self.vz) continue;
+        for (int yn = 0; yn < self.vy; yn++) {
+            for (int xn = 0; xn < self.vx; xn++) {
+                int xo = xn + shift_vx;
+                if (xo < 0 || xo >= self.vx) continue;
+                sz dst = (((sz)zn * self.vy + yn) * self.vx + xn) * 2;
+                sz src = (((sz)zo * self.vy + yn) * self.vx + xo) * 2;
+                scrolled[dst] = self.voxels[src];
+                scrolled[dst + 1] = self.voxels[src + 1];
+            }
+        }
+    }
+    free(self.voxels);
+    self.voxels = scrolled;
+    self.voxels_changed = true;
+
+    // Re-voxelize the slab(s) the scroll newly exposed (world space), with a small margin so
+    // a triangle straddling the seam isn't missed on either side.
+    float margin = self.voxel_size * 2;
+    if (shift_vx != 0) {
+        float shift_x = new_min.x - old_min.x;
+        float w = math::abs(shift_x) + margin;
+        Vector3 smin, smax;
+        if (shift_x > 0) {
+            smin = { self.max.x - w, self.min.y - margin, self.min.z - margin };
+            smax = { self.max.x + margin, self.max.y + margin, self.max.z + margin };
+        } else {
+            smin = { self.min.x - margin, self.min.y - margin, self.min.z - margin };
+            smax = { self.min.x + w, self.max.y + margin, self.max.z + margin };
+        }
+        self.voxelize_region(root, smin, smax);
+    }
+    if (shift_vz != 0) {
+        float shift_z = new_min.z - old_min.z;
+        float w = math::abs(shift_z) + margin;
+        Vector3 smin, smax;
+        if (shift_z > 0) {
+            smin = { self.min.x - margin, self.min.y - margin, self.max.z - w };
+            smax = { self.max.x + margin, self.max.y + margin, self.max.z + margin };
+        } else {
+            smin = { self.min.x - margin, self.min.y - margin, self.min.z - margin };
+            smax = { self.max.x + margin, self.max.y + margin, self.min.z + w };
+        }
+        self.voxelize_region(root, smin, smax);
+    }
+    self.voxelized_root = root;
     if (self.sparse) self.sparse_dirty = true;
 }
 
