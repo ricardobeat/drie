@@ -59,7 +59,7 @@ fn int main(String[] args) {
     String text = renderer.pipeline_cache(tmem);
     // (the node material drawn with the material shader's hooks)
     bool classic = m.node_build.programs.len() == 0;
-    expect(text.starts_with("drie-pipelines 3\n"), "the list has its header");
+    expect(text.starts_with("drie-pipelines 4\n"), "the list has its header");
     expect(count_lines(text, classic ? "P -1 " : "G ") >= 1, "it has the engine material's pipeline (with its generated program)");
     if (classic) {
         expect(count_lines(text, "N ") == 1, "and the node material's program");
