@@ -337,9 +337,6 @@ struct Renderer {
     Texture* focus_map;
     float focus_aperture;
     float focus_maxblur;
-    // The application's own build of the material shader, with its hooks (see shader.glsl).
-    // Unset, the engine's (no hooks). Read when the renderer starts.
-    MaterialShaders shaders;
     // In shadow maps, LOD objects are picked as if they were this many times further away
     // (1 or less: as in the picture). Shadows of grass and leaves need less than the plants.
     float shadow_lod_bias;
@@ -484,7 +481,7 @@ fn void Renderer.render_back_faces(&self, RenderTarget* target) {
     if (!state.back_pipeline.id) {
         state.back_pipeline = sg::make_pipeline(
             &&{
-                .shader = material_shader(DEPTH, false),
+                .shader = material_shader(PBR, DEPTH),
                 .index_type = UINT32,
                 .cull_mode = FRONT,
                 .face_winding = CCW,
@@ -495,7 +492,7 @@ fn void Renderer.render_back_faces(&self, RenderTarget* target) {
                         shaders::ATTR_THREE_UV,
                         shaders::ATTR_THREE_COLOR0,
                         shaders::ATTR_THREE_UV1,
-                        -1,
+                        shaders::ATTR_THREE_TANGENT,
                         shaders::ATTR_THREE_INST0,
                         shaders::ATTR_THREE_INST1,
                         shaders::ATTR_THREE_INST2,
@@ -621,12 +618,10 @@ struct RendererState @private {
     List{EventFilter} event_filters;
     List{FrameHook} overlays;
     bool gfx_ready;
-    // The material shader's programs (material_shader), by NodeVariant, for geometries without
-    // tangents [0] and with them [1]: each made the first time a draw takes it, and compiled
-    // in the background before that when a render sees that it will (start_material_shaders):
-    // the jobs, + 1 (0: none)
-    SgShader[8][2] material_shaders;
-    int[8][2] material_jobs;
+    // Precompiled material shaders by ShaderFamily and NodeVariant, created on first use
+    // (or warmed in the background via start_material_shaders).
+    SgShader[8][3] material_shaders;
+    int[8][3] material_jobs;
     // the blur that makes the moments of Renderer.shadow_type = VSM's maps (vsm.glsl)
     SgShader vsm_blur_shader;
     SgPipeline vsm_blur_pipeline;
@@ -919,30 +914,6 @@ alias ShaderDescFn = fn SgShaderDesc(SgBackend backend);
 // The programs of the material shader, as sokol-shdc generates them from a .glsl file that
 // includes shader_core.glsl: `my_module::three_shader_desc`, `three_opaque_shader_desc`,
 // `depth_shader_desc`, `shadow_shader_desc`, and for RenderTarget.mrt `three_mrt_shader_desc`
-// and `three_opaque_mrt_shader_desc`; for Renderer.shadow_type = VSM `three_vsm_shader_desc`
-// and `three_mrt_vsm_shader_desc`; for geometries with tangents `three_tangent_shader_desc`,
-// `three_mrt_tangent_shader_desc`, `three_vsm_tangent_shader_desc`,
-// `three_mrt_vsm_tangent_shader_desc` and `depth_tangent_shader_desc` (null: the engine's; with a `main` of its own and no
-// tangents' programs, those geometries' normal maps take their frame from the uv instead); for the
-// shadows of node materials that cut holes `shadow_nodes_shader_desc`. Read when a program is
-// first made (material_shader): set Renderer.shaders before the first render.
-struct MaterialShaders {
-    ShaderDescFn main;
-    ShaderDescFn opaque;
-    ShaderDescFn depth;
-    ShaderDescFn shadow;
-    ShaderDescFn main_mrt;
-    ShaderDescFn opaque_mrt;
-    ShaderDescFn main_vsm;
-    ShaderDescFn main_mrt_vsm;
-    ShaderDescFn main_tangent;
-    ShaderDescFn main_mrt_tangent;
-    ShaderDescFn main_vsm_tangent;
-    ShaderDescFn main_mrt_vsm_tangent;
-    ShaderDescFn depth_tangent;
-    ShaderDescFn shadow_nodes;
-}
-
 // Renderer.max_programs unset.
 const int DEFAULT_PROGRAMS = 1024;
 
@@ -1187,6 +1158,19 @@ fn SgBlendState blend_state(ulong key) @local {
     }
 }
 
+fn ShaderFamily shader_family_of(Material* mat) @local {
+    if (mat.type == BASIC || mat.type == NORMAL || mat.type == DEPTH || mat.type == MATCAP) return UNLIT;
+    if (mat.type == STANDARD && (mat.clearcoat > 0 || mat.clearcoat_node.id || mat.clearcoat_roughness_node.id
+        || mat.sheen > 0 || mat.sheen_color_map != null || mat.sheen_roughness_map != null
+        || mat.iridescence > 0 || mat.iridescence_map != null
+        || mat.anisotropy > 0 || mat.anisotropy_map != null
+        || mat.transmission > 0 || mat.transmission_map != null
+        || mat.glass)) {
+        return PHYSICAL;
+    }
+    return PBR;
+}
+
 fn SgPipeline get_pipeline(
     Side side,
     bool transparent,
@@ -1197,7 +1181,7 @@ fn SgPipeline get_pipeline(
     DrawKind kind = CUT,
     bool depth_test = true,
     bool depth_write = true,
-    bool tangents = false,
+    ShaderFamily family = PBR,
     NodeProgram* nodes = null,
     MaterialProgram* gen = null
 ) @private {
@@ -1208,21 +1192,16 @@ fn SgPipeline get_pipeline(
     // after the prepass, the coverage of the cut-out's edge is in the depth buffer's samples
     bool a2c      = alpha_test && !transparent && samples > 1 && kind != PRETESTED;
     if (kind == DEPTH) blend = 0;
-    // VSM: the programs that read the maps' moments (the one that cuts holes for all: the
-    // depth prepass has cut them for PRETESTED, and SOLID has none)
     bool vsm      = kind != DEPTH && state.renderer && state.renderer.shadow_type == VSM;
-    // (the prepass and what it has drawn test and write as they always do: see prepassed)
     if (kind == DEPTH || kind == PRETESTED) {
         depth_test = true;
         depth_write = true;
     }
     int depth = (depth_write ? 0 : 1) + (depth_test ? 0 : 2);
-    // the geometry's tangents: a program that reads them (the depth prepass too: the main pass
-    // tests against its depth with EQUAL, which wants the same vertex shader)
-    // (a node material's: its program's own)
-    ulong key = blend | (ulong)(tangents ? 1 : 0) << 27 | (ulong)depth << 28 | (ulong)(vsm ? 1 : 0) << 30
+    ulong key = blend | (ulong)depth << 28 | (ulong)(vsm ? 1 : 0) << 30
         | (ulong)kind.ordinal << 31 | (ulong)side.ordinal << 33 | (ulong)(wireframe ? 1 : 0) << 35
-        | (ulong)target << 36 | (ulong)(a2c ? 1 : 0) << 39 | (ulong)(transparent ? 1 : 0) << 40;
+        | (ulong)target << 36 | (ulong)(a2c ? 1 : 0) << 39 | (ulong)(transparent ? 1 : 0) << 40
+        | (ulong)family.ordinal << 41;
     if (gen) {
         SgPipeline? found = gen.pipelines[key];
         if (try found) return found;
@@ -1232,8 +1211,6 @@ fn SgPipeline get_pipeline(
     } else {
         if (try known = state.pipelines.get(key)) return known;
     }
-    // (for the pipeline cache: a new pipeline, the target Renderer.screen_stand_in as the window;
-    // not a node material's generated one, which its key alone can't build again)
     bool window = !rt || (state.renderer && rt == state.renderer.screen_stand_in);
     if (!gen || !gen.key.nodes) record_pipeline({
         .generated = gen != null,
@@ -1247,7 +1224,7 @@ fn SgPipeline get_pipeline(
         .kind = kind,
         .depth_test = depth_test,
         .depth_write = depth_write,
-        .tangents = tangents,
+        .tangents = false,
         .vsm = vsm,
         .target_samples = window ? 0 : rt.samples,
         .target_format = window ? SgPixelFormat.DEFAULT : rt.pixel_format(),
@@ -1261,7 +1238,6 @@ fn SgPipeline get_pipeline(
     }
     NodeVariant variant = variant_of(kind, rt);
     bool mrt = rt && rt.mrt;
-    // (the shader: see below)
     SgPipelineDesc desc = {
         .index_type = UINT32,
         .primitive_type = wireframe ? LINES : TRIANGLES,
@@ -1274,7 +1250,7 @@ fn SgPipeline get_pipeline(
                 shaders::ATTR_THREE_UV,
                 shaders::ATTR_THREE_COLOR0,
                 shaders::ATTR_THREE_UV1,
-                tangents ? shaders::ATTR_THREE_TANGENT_TANGENT : -1,
+                shaders::ATTR_THREE_TANGENT,
                 shaders::ATTR_THREE_INST0,
                 shaders::ATTR_THREE_INST1,
                 shaders::ATTR_THREE_INST2,
@@ -1309,21 +1285,18 @@ fn SgPipeline get_pipeline(
     if (gen) {
         ShaderProgram* own = kind == DEPTH ? gen.depth : gen.program;
         if (pipeline_warmup && !gen.key.nodes) {
-            // (a pipeline cache being loaded: compiled in the background, made when first drawn)
             pipeline_warmup.start_generated(own, &desc);
             return { };
         }
         desc.shader = own.make();
     } else if (nodes) {
-        // (compiled in the background first: none till then, see NodeProgram.busy)
-        if (!nodes.pipeline_ready(key, variant, node_base_desc(nodes, variant), &desc, background())) return { };
-        desc.shader = node_shader(nodes, variant);
+        if (!nodes.pipeline_ready(key, variant, node_base_desc(nodes, family, variant), &desc, background())) return { };
+        desc.shader = node_shader(nodes, family, variant);
     } else if (pipeline_warmup) {
-        // (a pipeline cache being loaded: compiled in the background, made when first drawn)
-        pipeline_warmup.start(variant, tangents, &desc);
+        pipeline_warmup.start(variant, false, &desc);
         return { };
     } else {
-        desc.shader = material_shader(variant, tangents);
+        desc.shader = material_shader(family, variant);
     }
     SgPipeline pip = sg::make_pipeline(&desc);
     if (!pip.id) abort("drie: sokol's pipeline pool is full (pipeline_pool_size in setup_gfx)");
@@ -1337,59 +1310,63 @@ fn SgPipeline get_pipeline(
     return pip;
 }
 
-// Variant `v` of a node material's program (nodes.c3), built at its first use from the
-// engine's description of that program, or the application's (Renderer.shaders).
-fn SgShader node_shader(NodeProgram* p, NodeVariant v) @local {
-    SgShader* s = &p.shaders[v.ordinal];
+fn SgShader node_shader(NodeProgram* p, ShaderFamily fam, NodeVariant v) @local {
+    if (v == DEPTH || v == SHADOW) fam = PBR;
+    if (fam == UNLIT) v = (v == MRT || v == OPAQUE_MRT || v == MRT_VSM) ? MRT : MAIN;
+    SgShader* s = &p.shaders[fam.ordinal][v.ordinal];
     if (s.id) return *s;
-    *s = p.make_shader(v, node_base_desc(p, v));
-    return *s;
-}
-
-// The program of the material shader (the engine's, or the application's: Renderer.shaders)
-// for variant `v`, for geometries with tangents or without: made the first time it is asked
-// for (after its compile in the background, if one was started: start_material_shader).
-fn SgShader material_shader(NodeVariant v, bool tangents) @local {
-    // (the tangents' programs all cut holes: the opaque draws take them too)
-    if (tangents && v == OPAQUE) v = MAIN;
-    if (tangents && v == OPAQUE_MRT) v = MRT;
-    int t = tangents ? 1 : 0;
-    SgShader* s = &state.material_shaders[t][v.ordinal];
-    if (s.id) return *s;
-    // (the driver's cache has it once its compile is done: made again at once then, rather
-    // than a second time beside it)
-    int job = state.material_jobs[t][v.ordinal] - 1;
+    int job = p.shader_jobs[fam.ordinal][v.ordinal] - 1;
     if (job >= 0) {
         while (sg_warm_state(job) == 0) thread::sleep_ms(1);
         sg_warm_end(job);
-        state.material_jobs[t][v.ordinal] = 0;
+        p.shader_jobs[fam.ordinal][v.ordinal] = 0;
     }
-    *s = sg::make_shader(&&material_shader_desc(v, tangents, false));
+    *s = p.make_shader(v, node_base_desc(p, fam, v));
     return *s;
 }
 
-// Starts compiling material_shader(v, tangents) in the background (Metal; elsewhere it is
-// compiled when first asked for), if it isn't made or compiling yet.
-fn void start_material_shader(NodeVariant v, bool tangents) @local {
-    if (tangents && v == OPAQUE) v = MAIN;
-    if (tangents && v == OPAQUE_MRT) v = MRT;
-    int t = tangents ? 1 : 0;
-    if (state.material_shaders[t][v.ordinal].id || state.material_jobs[t][v.ordinal]) return;
+fn void start_node_shader(NodeProgram* p, ShaderFamily fam, NodeVariant v) @local {
+    if (v == DEPTH || v == SHADOW) fam = PBR;
+    if (fam == UNLIT) v = (v == MRT || v == OPAQUE_MRT || v == MRT_VSM) ? MRT : MAIN;
+    if (p.shaders[fam.ordinal][v.ordinal].id || p.shader_jobs[fam.ordinal][v.ordinal]) return;
     @pool() {
-        SgShaderDesc desc = material_shader_desc(v, tangents, false);
+        SgShaderDesc desc = p.spliced(v, node_base_desc(p, fam, v));
         int job = sg_warm_shader_begin(&desc);
-        if (job >= 0) state.material_jobs[t][v.ordinal] = job + 1;
+        if (job >= 0) p.shader_jobs[fam.ordinal][v.ordinal] = job + 1;
     };
 }
 
-// Makes `job` (sg_warm_begin's or sg_warm_shader_begin's) the one compiling
-// material_shader(v, tangents), if that isn't made or compiling yet: false if it is.
-fn bool claim_material_job(NodeVariant v, bool tangents, int job) @private {
-    if (tangents && v == OPAQUE) v = MAIN;
-    if (tangents && v == OPAQUE_MRT) v = MRT;
-    int t = tangents ? 1 : 0;
-    if (state.material_shaders[t][v.ordinal].id || state.material_jobs[t][v.ordinal]) return false;
-    state.material_jobs[t][v.ordinal] = job + 1;
+fn SgShader material_shader(ShaderFamily fam, NodeVariant v) @local {
+    if (v == DEPTH || v == SHADOW) fam = PBR;
+    if (fam == UNLIT) v = (v == MRT || v == OPAQUE_MRT || v == MRT_VSM) ? MRT : MAIN;
+    SgShader* s = &state.material_shaders[fam.ordinal][v.ordinal];
+    if (s.id) return *s;
+    int job = state.material_jobs[fam.ordinal][v.ordinal] - 1;
+    if (job >= 0) {
+        while (sg_warm_state(job) == 0) thread::sleep_ms(1);
+        sg_warm_end(job);
+        state.material_jobs[fam.ordinal][v.ordinal] = 0;
+    }
+    *s = sg::make_shader(&&material_shader_desc(fam, v, false));
+    return *s;
+}
+
+fn void start_material_shader(ShaderFamily fam, NodeVariant v) @local {
+    if (v == DEPTH || v == SHADOW) fam = PBR;
+    if (fam == UNLIT) v = (v == MRT || v == OPAQUE_MRT || v == MRT_VSM) ? MRT : MAIN;
+    if (state.material_shaders[fam.ordinal][v.ordinal].id || state.material_jobs[fam.ordinal][v.ordinal]) return;
+    @pool() {
+        SgShaderDesc desc = material_shader_desc(fam, v, false);
+        int job = sg_warm_shader_begin(&desc);
+        if (job >= 0) state.material_jobs[fam.ordinal][v.ordinal] = job + 1;
+    };
+}
+
+fn bool claim_material_job(ShaderFamily fam, NodeVariant v, int job) @private {
+    if (v == DEPTH || v == SHADOW) fam = PBR;
+    if (fam == UNLIT) v = (v == MRT || v == OPAQUE_MRT || v == MRT_VSM) ? MRT : MAIN;
+    if (state.material_shaders[fam.ordinal][v.ordinal].id || state.material_jobs[fam.ordinal][v.ordinal]) return false;
+    state.material_jobs[fam.ordinal][v.ordinal] = job + 1;
     return true;
 }
 
@@ -1410,7 +1387,6 @@ fn int material_shaders_compiling() @private {
 // second or more each, the first time: the driver keeps them after that). `fs` is the
 // render's light parameters (build_light_params), which the programs' keys read.
 fn void start_material_programs(Renderer* r, Scene* scene, Camera* camera, FsParams* fs, bool prepass) @local {
-    if (classic_materials()) return;
     start_background_program(scene, camera, fs);
     for (int list = 0; list < 2; list++) {
         foreach (&item : list == 0 ? state.opaque : state.transparent) {
@@ -1448,21 +1424,31 @@ fn void start_background_program(Scene* scene, Camera* camera, FsParams* fs) @lo
 // than one after the other as they come to them, a second or more each the first time (the
 // driver keeps them after that).
 fn void start_material_shaders(Renderer* r, Scene* scene, bool prepass) @local {
-    // (only the classic path draws with them: engine materials have generated programs, and
-    // node materials their own)
-    if (!classic_materials()) return;
     RenderTarget* rt = r.render_target;
-    // the background (draw_background: drawn as a cut-out)
     Material* bg = scene.background_material;
-    if ((bg && !node_build_of(bg)) || scene.background_texture) start_material_shader(variant_of(CUT, rt), false);
+    if ((bg && !node_build_of(bg)) || scene.background_texture) {
+        start_material_shader(bg ? shader_family_of(bg) : UNLIT, variant_of(CUT, rt));
+    }
     for (int list = 0; list < 2; list++) {
         foreach (&item : list == 0 ? state.opaque : state.transparent) {
-            if (node_build_of(item.mesh.material)) continue;
-            bool tangents = uses_tangents(item);
+            Material* mat = item.mesh.material;
+            if (mat.type == SHADER) continue;
+            ShaderFamily fam = shader_family_of(mat);
             DrawKind kind = list == 1 || draws_lines(item) || has_holes(item) ? CUT : SOLID;
             if (list == 0 && kind == CUT && prepass && prepassed(item)) kind = PRETESTED;
-            start_material_shader(variant_of(kind, rt), tangents);
-            if (list == 0 && prepass && prepassed(item)) start_material_shader(DEPTH, tangents);
+            NodeVariant v = variant_of(kind, rt);
+            NodeBuild* nb = node_build_of(mat);
+            if (nb) {
+                start_node_shader(nb.program, fam, v);
+                // Warm the MRT twin in the background too so crossing from a non-MRT portal
+                // or cubemap pass into the main MRT target does not stall.
+                if (v == MAIN) start_node_shader(nb.program, fam, MRT);
+                if (v == OPAQUE) start_node_shader(nb.program, fam, OPAQUE_MRT);
+                if (list == 0 && prepass && prepassed(item)) start_node_shader(nb.program, PBR, DEPTH);
+            } else {
+                start_material_shader(fam, v);
+                if (list == 0 && prepass && prepassed(item)) start_material_shader(PBR, DEPTH);
+            }
         }
     }
 }
@@ -1476,64 +1462,43 @@ fn NodeVariant variant_of(DrawKind kind, RenderTarget* rt) @local {
     return mrt ? OPAQUE_MRT : OPAQUE;
 }
 
-// Whether the material shader has programs for geometries with tangents: the engine's has,
-// an application's (Renderer.shaders) if it gives all five.
-fn bool has_tangent_programs() @private {
-    MaterialShaders a = state.renderer ? state.renderer.shaders : { };
-    if (!a.main) return true;
-    return a.main_tangent && a.main_mrt_tangent && a.main_vsm_tangent && a.main_mrt_vsm_tangent && a.depth_tangent;
-}
+// Whether the material shader has programs for geometries with tangents: always true now that
+// the vertex shader always carries tangents.
+fn bool has_tangent_programs() @private => true;
 
 // (a pipeline cache being loaded compiles in the background whatever the renderer's setting)
 fn bool background() @local => (state.renderer && state.renderer.compile_in_background) || pipeline_warmup != null;
 
-// The application's description of the program that variant `v` of a node program is made
-// from.
-fn SgShaderDesc node_base_desc(NodeProgram* p, NodeVariant v) @local => material_shader_desc(v, false, p.cuts);
+fn SgShaderDesc node_base_desc(NodeProgram* p, ShaderFamily fam, NodeVariant v) @local => material_shader_desc(fam, v, p.cuts);
 
-// The description of a program of the application's material shader (Renderer.shaders);
-// `tangents`: the one for geometries with tangents (no OPAQUE ones: the MAIN ones stand for
-// them, as get_pipeline has it); `cuts`: for SHADOW, the node materials' that cut holes. A
-// program it doesn't give is a fault of the application's, except OPAQUE and OPAQUE_MRT (MAIN
-// and MRT draw them), DEPTH and the shadow programs: drie's own, whose vertex hook does
-// nothing. render_back_faces draws with the DEPTH one, and the shadow passes start with the
-// SHADOW pipeline, with generated programs too.
-fn SgShaderDesc material_shader_desc(NodeVariant v, bool tangents, bool cuts) @private {
-    MaterialShaders a = state.renderer ? state.renderer.shaders : { };
+fn SgShaderDesc material_shader_desc(ShaderFamily fam, NodeVariant v, bool cuts) @private {
     SgBackend backend = sg::query_backend();
-    if (v == SHADOW && cuts) return a.shadow_nodes ? a.shadow_nodes(backend) : shaders::shadow_nodes_shader_desc(backend);
-    if (v == SHADOW) return a.shadow ? a.shadow(backend) : shaders::shadow_shader_desc(backend);
-    ShaderDescFn f;
-    if (tangents) {
-        switch (v) {
-            case MAIN:
-            case OPAQUE: f = a.main_tangent;
-            case MRT:
-            case OPAQUE_MRT: f = a.main_mrt_tangent;
-            case VSM: f = a.main_vsm_tangent;
-            case MRT_VSM: f = a.main_mrt_vsm_tangent;
-            case DEPTH: f = a.depth_tangent;
-            case SHADOW: break;
-        }
-    } else {
-        switch (v) {
-            case MAIN: f = a.main;
-            case OPAQUE: f = a.opaque ? a.opaque : a.main;
-            case MRT: f = a.main_mrt;
-            case OPAQUE_MRT: f = a.opaque_mrt ? a.opaque_mrt : a.main_mrt;
-            case VSM: f = a.main_vsm;
-            case MRT_VSM: f = a.main_mrt_vsm;
-            case DEPTH: return a.depth ? a.depth(backend) : shaders::depth_shader_desc(backend);
-            case SHADOW: break;
-        }
+    if (v == SHADOW && cuts) return shaders::shadow_nodes_shader_desc(backend);
+    if (v == SHADOW) return shaders::shadow_shader_desc(backend);
+    if (v == DEPTH) return shaders::depth_shader_desc(backend);
+    switch (fam) {
+        case UNLIT:
+            return split_unlit_shader_desc(v, backend);
+        case PHYSICAL:
+            return split_physical_shader_desc(v, backend);
+        case PBR:
+            switch (v) {
+                case MAIN: return shaders::three_shader_desc(backend);
+                case OPAQUE: return shaders::three_opaque_shader_desc(backend);
+                case MRT: return shaders::three_mrt_shader_desc(backend);
+                case OPAQUE_MRT: return shaders::three_opaque_mrt_shader_desc(backend);
+                case VSM: return shaders::three_vsm_shader_desc(backend);
+                case MRT_VSM: return shaders::three_mrt_vsm_shader_desc(backend);
+                case DEPTH:
+                case SHADOW: break;
+            }
     }
-    if (!f) abort("drie: Renderer.shaders gives no program for %s%s", v, tangents ? " (tangents)" : "");
-    return f(backend);
+    unreachable("material_shader_desc");
 }
 
-// Whether the built-in materials, node materials too, draw with generated programs
-// (materials_nodes.c3) rather than the application's material shader (Renderer.shaders).
-fn bool generated_materials() @local => !classic_materials();
+// Plain and node materials use the precompiled split shaders (+ NodeProgram hooks).
+// Only meshes with GPU morph targets still route through materials_nodes.c3.
+fn bool generated_materials() @local => false;
 
 // The node material build whose graphs a draw of `mat` takes (none in a light map's bake,
 // which draws the material without them).
@@ -1659,13 +1624,13 @@ fn SgPipeline get_shadow_pipeline(NodeProgram* nodes = null) @private {
     SgPipelineDesc desc = shadow_pipeline_desc();
     record_pipeline({ .program = nodes, .shadow = true });
     if (nodes) {
-        if (!nodes.pipeline_ready(NODE_SHADOW_KEY, SHADOW, node_base_desc(nodes, SHADOW), &desc, background())) return { };
-        desc.shader = node_shader(nodes, SHADOW);
+        if (!nodes.pipeline_ready(NODE_SHADOW_KEY, SHADOW, node_base_desc(nodes, PBR, SHADOW), &desc, background())) return { };
+        desc.shader = node_shader(nodes, PBR, SHADOW);
     } else if (pipeline_warmup) {
         pipeline_warmup.start(SHADOW, false, &desc);
         return { };
     } else {
-        desc.shader = material_shader(SHADOW, false);
+        desc.shader = material_shader(PBR, SHADOW);
     }
     *pip = sg::make_pipeline(&desc);
     return *pip;
@@ -1676,7 +1641,7 @@ fn void clear_atlas_tile() @local {
     if (!state.tile_clear_pipeline.id) {
         state.tile_clear_pipeline = sg::make_pipeline(
             &&{
-                .shader = material_shader(SHADOW, false),
+                .shader = material_shader(PBR, SHADOW),
                 .index_type = UINT32,
                 .cull_mode = NONE,
                 .layout = vertex_layout(
@@ -3166,17 +3131,15 @@ fn void draw_depth_item(DrawItem* item, Mat4 view_proj) @local {
     Renderer* r       = state.renderer;
     float alpha_test  = alpha_test_of(mat);
     NodeBuild* nodes  = node_build_of(mat);
-    // (a node material's programs read no tangents: its normal map's frame from the uv)
-    bool tangents     = !nodes && uses_tangents(item);
     SgPipeline pip = get_pipeline(
-        mat.side, false, false, r.render_target, alpha_test > 0, 0, DEPTH, tangents: tangents,
+        mat.side, false, false, r.render_target, alpha_test > 0, 0, DEPTH,
         nodes: nodes ? nodes.program : null
     );
     // (a node material's program still compiling: not drawn yet)
     if (nodes && (!pip.id || nodes.program.busy())) return;
     sg::apply_pipeline(pip);
     SgBindings bind = { .vertex_buffers[0] = g.vbuf, .index_buffer = g.ibuf };
-    bind_instances(&bind, item, tangents);
+    bind_instances(&bind, item);
     Vec4 inst_cull = cull_bind(&bind, item.job - 1);
     Texture* map   = ready(mat.map);
     bind.views[shaders::VIEW_TEX_MAP] = map.view;
@@ -3266,9 +3229,10 @@ fn void material_slots(Material* mat, NodeBuild* nodes, Texture*[6]* slots, Vec4
 fn bool shadow_key_of(DrawItem* item, MaterialKey* key) @local {
     Mesh* m = item.mesh;
     Material* mat = m.material;
-    if (!generated_materials()) return false;
     m.geometry.upload_morph();
     m.upload_morph_weights();
+    bool has_morph = m.geometry.morph_view.id != 0 && m.morph_weights_view.id != 0;
+    if (!has_morph) return false;
     NodeBuild* build = node_build_of(mat);
     // (a node material's color step can cut holes without a map: shadow_nodes_fs's s_params.x)
     bool node_cuts = build && build.program.cuts;
@@ -3276,7 +3240,7 @@ fn bool shadow_key_of(DrawItem* item, MaterialKey* key) @local {
     *key = {
         .shadow = true,
         .nodes = build != null,
-        .morph = m.geometry.morph_view.id != 0 && m.morph_weights_view.id != 0,
+        .morph = true,
         .foliage = build && mat.foliage,
         .gpu_cull = item.job > 0 && cull.active,
         .displacement = displacement_params(mat).z > 0.5f,
@@ -3288,17 +3252,14 @@ fn bool shadow_key_of(DrawItem* item, MaterialKey* key) @local {
     return true;
 }
 
-// Whether `item` draws with a generated program (materials_nodes.c3), and its key: every
-// built-in material (node materials with their graphs, MaterialKey.nodes: see draw_build) in
-// the main pass and its depth prepass (the same key for both: see MaterialKey.prepassed), but
-// not with the application's programs (Renderer.shaders), which then draw every material.
 fn bool material_key_of(DrawItem* item, DrawKind kind, FsParams* fs, Vec4[6]* map_slots, MaterialKey* key) @local {
     Mesh* m = item.mesh;
     Material* mat = m.material;
     Renderer* r = state.renderer;
-    if (!generated_materials()) return false;
     m.geometry.upload_morph();
     m.upload_morph_weights();
+    bool has_morph = m.geometry.morph_view.id != 0 && m.morph_weights_view.id != 0;
+    if (!has_morph) return false;
     MaterialType type = mat.type;
     bool lit = type == LAMBERT || type == PHONG || type == STANDARD || type == TOON;
     bool standard = type == STANDARD;
@@ -3426,9 +3387,123 @@ fn bool material_key_of(DrawItem* item, DrawKind kind, FsParams* fs, Vec4[6]* ma
     return true;
 }
 
+fn void draw_shader_material(DrawItem* item, Mat4 view_proj, DrawKind kind) @local {
+    if (kind == DEPTH || state.bake.on) return;
+    Mesh* m = item.mesh;
+    Material* mat = m.material;
+    if (!mat.custom_shader) abort("drie: ShaderMaterial has no custom_shader");
+    BufferGeometry* g = m.geometry;
+    bool lines = draws_lines(item);
+    int elements;
+    SgBuffer indices = index_buffer_of(item, lines, &elements);
+    Renderer* r = state.renderer;
+    RenderTarget* rt = r.render_target;
+    bool mrt = rt && rt.mrt;
+    bool use_mrt_shader = mrt && mat.custom_shader_mrt != null;
+    SgShader* sh = use_mrt_shader ? &mat.custom_sg_shader_mrt : &mat.custom_sg_shader;
+    if (!sh.id) {
+        ShaderDescFn f = use_mrt_shader ? mat.custom_shader_mrt : mat.custom_shader;
+        SgShaderDesc sdesc = f(sg::query_backend());
+        *sh = sg::make_shader(&sdesc);
+        if (!sh.id) abort("drie: ShaderMaterial failed to create shader");
+    }
+    int target = rt ? (rt.samples > 1 ? 2 : 1) + (rt.mrt ? 4 : (rt.is_linear() ? 2 : 0)) : 0;
+    ulong blend = blend_key(mat);
+    int depth = (mat.depth_write ? 0 : 1) + (mat.depth_test ? 0 : 2);
+    ulong key = blend | (ulong)depth << 28 | (ulong)mat.side.ordinal << 33
+        | (ulong)(lines ? 1 : 0) << 35 | (ulong)target << 36
+        | (ulong)(mat.transparent ? 1 : 0) << 40 | (ulong)(use_mrt_shader ? 1 : 0) << 41;
+    if (!mat.custom_pipelines.is_initialized()) mat.custom_pipelines.init(mem);
+    SgPipeline pip;
+    if (try found = mat.custom_pipelines[key]) {
+        pip = found;
+    } else {
+        SgCullMode cull;
+        switch (mat.side) {
+            case FRONT_SIDE: cull = BACK;
+            case BACK_SIDE: cull = FRONT;
+            case DOUBLE_SIDE: cull = NONE;
+        }
+        SgPipelineDesc desc = {
+            .shader = *sh,
+            .index_type = UINT32,
+            .primitive_type = lines ? LINES : TRIANGLES,
+            .cull_mode = lines ? NONE : cull,
+            .face_winding = CCW,
+            .layout = {
+                .buffers[0].stride = FLOATS_PER_VERTEX * float::size,
+                .attrs[0] = { .format = FLOAT3, .offset = 0 },
+                .attrs[1] = { .format = FLOAT3, .offset = 12 },
+                .attrs[2] = { .format = FLOAT2, .offset = 24 },
+                .attrs[3] = { .format = FLOAT4, .offset = 32 },
+            },
+            .depth = {
+                .write_enabled = !mat.transparent && mat.depth_write,
+                .compare = mat.depth_test ? SgCompareFunc.LESS_EQUAL : SgCompareFunc.ALWAYS,
+            },
+            .label = "drie-shader-material",
+        };
+        if (rt) {
+            desc.sample_count = rt.samples;
+            desc.colors[0].pixel_format = rt.pixel_format();
+            desc.depth.pixel_format = DEPTH;
+        }
+        if (mrt) {
+            desc.color_count = 1 + MRT_COUNT;
+            for (int i = 0; i < MRT_COUNT; i++) {
+                desc.colors[i + 1].pixel_format = mrt_format(i);
+                if (!use_mrt_shader || mat.transparent) desc.colors[i + 1].write_mask = NONE;
+            }
+        }
+        desc.colors[0].blend = blend_state(blend);
+        pip = sg::make_pipeline(&desc);
+        if (!pip.id) abort("drie: ShaderMaterial failed to create pipeline");
+        mat.custom_pipelines[key] = pip;
+    }
+    sg::apply_pipeline(pip);
+    SgBindings bind = {
+        .vertex_buffers[0] = g.vbuf,
+        .index_buffer = indices,
+    };
+    for (int k = 0; k < 6; k++) {
+        Texture* t = mat.custom_textures[k];
+        if (!t && k == 0) t = mat.map;
+        if (t) {
+            Texture* rt_tex = ready(t);
+            bind.views[k] = rt_tex.view;
+            bind.samplers[k] = rt_tex.sampler;
+        }
+    }
+    if (mat.custom_bind) mat.custom_bind(mat, m, &bind);
+    sg::apply_bindings(&bind);
+    Mat4 model = m.matrix_world;
+    ShaderMaterialVsParams vs = {
+        .view_proj = view_proj,
+        .view_origin = { ...state.view_origin, 0 },
+        .model = model,
+        .normal_mat = model.invert().transpose(),
+        .camera_time = { ...state.node_camera, r.time },
+    };
+    sg::apply_uniforms(0, &&{ .ptr = &vs, .size = ShaderMaterialVsParams::size });
+    if (mat.custom_vs_uniforms && mat.custom_vs_uniforms_size > 0) {
+        sg::apply_uniforms(mat.custom_vs_ub, &&{ .ptr = mat.custom_vs_uniforms, .size = mat.custom_vs_uniforms_size });
+    }
+    if (mat.custom_fs_uniforms && mat.custom_fs_uniforms_size > 0) {
+        sg::apply_uniforms(mat.custom_fs_ub, &&{ .ptr = mat.custom_fs_uniforms, .size = mat.custom_fs_uniforms_size });
+    }
+    int instances = m.instance_data.len() ? (int)m.instance_data.len() : 1;
+    sg::draw(0, elements, instances);
+    r.info.calls++;
+    r.info.triangles += (lines ? elements / 2 : elements / 3) * instances;
+}
+
 fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = CUT) @local {
     Mesh* m           = item.mesh;
     Material* mat     = m.material;
+    if (mat.type == SHADER) {
+        draw_shader_material(item, view_proj, kind);
+        return;
+    }
     BufferGeometry* g = m.geometry;
     bool lines        = draws_lines(item);
     int elements;
@@ -3441,25 +3516,24 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     // a node material's graphs (none in a light map's bake): in its generated programs, or
     // with the material shader its hooks (`nodes`)
     NodeBuild* build = draw_build(mat);
-    NodeBuild* nodes = generated_materials() ? null : build;
+    // Only meshes with GPU morph targets use generated programs; all other materials use the
+    // precompiled split shaders (+ NodeProgram hooks).
+    MaterialKey key;
     Texture*[6] slots;
     Vec4[6] map_slots;
+    bool has_morph = m.geometry.morph_view.id != 0 && m.morph_weights_view.id != 0;
+    NodeBuild* nodes = has_morph ? null : build;
     material_slots(mat, nodes, &slots, &map_slots);
-    // the material's own generated program, where it has one (materials_nodes.c3)
-    MaterialKey key;
     MaterialProgram* gen = material_key_of(item, kind, fs, &map_slots, &key) ? material_program(key, build) : null;
-    // (a node material's: the uniforms and textures its program reads are this material's)
     NodeBuild* gen_build = gen && gen.key.nodes ? build : null;
     // (the depth prepass of what the material shader draws: its own program)
     if (kind == DEPTH && !gen) {
         draw_depth_item(item, view_proj);
         return;
     }
-    // (a node material's programs still compiling: not drawn yet)
     if (gen_build && material_busy(gen_build, gen)) return;
-    // the program of this pass: the main pass's, or the depth prepass's
     ShaderProgram* own = gen ? (kind == DEPTH ? gen.depth : gen.program) : null;
-    bool tangents = !state.bake.on && !nodes && (gen ? key.tangents : uses_tangents(item));
+    ShaderFamily family = shader_family_of(mat);
     SgPipeline pip = (
         state.bake.on ? (gen ? gen_bake_pipeline(gen, state.bake.format) : state.bake.pipeline)
             : get_pipeline(
@@ -3472,7 +3546,7 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
                 kind,
                 mat.depth_test,
                 mat.depth_write,
-                tangents,
+                family,
                 nodes ? nodes.program : null,
                 gen
             )
@@ -3487,7 +3561,7 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
         .vertex_buffers[0] = g.vbuf,
         .index_buffer = indices,
     };
-    bind_instances(&bind, item, tangents);
+    bind_instances(&bind, item);
     Vec4 inst_cull = cull_bind(&bind, item.job - 1);
     bind.views[shaders::VIEW_TEX_MAP] = map.view;
     bind.views[shaders::VIEW_TEX_NORMAL] = ready(mat.normal_map).view;
@@ -3546,8 +3620,8 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     // and render_transmission)
     Texture* none     = ready(state.white);
     bool transmission = mat.transmission > 0 && mat.type == STANDARD && state.transmission_mips.id != 0;
-    bind.views[shaders::VIEW_TEX_TRANSMISSION] = transmission ? state.transmission_mips_view : none.view;
-    bind.samplers[shaders::SMP_TRANSMISSION_SMP] = transmission ? state.mip_sampler : none.sampler;
+    bind.views[VIEW_TEX_TRANSMISSION] = transmission ? state.transmission_mips_view : none.view;
+    bind.samplers[SMP_TRANSMISSION_SMP] = transmission ? state.mip_sampler : none.sampler;
     bind.views[shaders::VIEW_TEX_GI] = state.gi_view;
     bind.views[shaders::VIEW_RC_PROBES] = state.radiance_view;
     bind.samplers[shaders::SMP_GI_SMP] = state.irradiance.sampler;
@@ -3630,8 +3704,9 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     } else {
         sg::apply_uniforms(shaders::UB_VS_PARAMS, &&{ .ptr = &vs, .size = VsParams::size });
     }
-    if (nodes) apply_node_params(nodes, m, true);
-    fs.node_flags = { nodes ? 1 : 0, 0, 0, 0 };
+    bool frag_nodes = nodes && nodes.program.has_frag;
+    if (nodes) apply_node_params(nodes, m, frag_nodes);
+    fs.node_flags = { frag_nodes ? 1 : 0, 0, 0, 0 };
 
     int flags = (mat.vertex_colors ? 1
         : 0) | (mat.foliage ? 2
@@ -3639,7 +3714,7 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
                 : 0) | (mat.glass ? 8
                     : 0) | (mat.vertex_light > 0 ? 16 : 0) | (mat.screen_target ? 32 : 0) | (mat.map_emissive ? 64 : 0)
         | (mat.vertex_occlusion && mat.vertex_colors ? 128 : 0) | (mat.premultiplied_alpha ? 256 : 0)
-        | (mat.tone_mapped ? 0 : 512);
+        | (mat.tone_mapped ? 0 : 512) | (mat.flat_shading ? 1024 : 0);
     fs.color = { ...color_to_linear(mat.color) * (mat.color_scale > 0 ? mat.color_scale : 1), mat.opacity };
     fs.emissive = { ...color_to_linear(mat.emissive) * mat.emissive_intensity, mat.vertex_light };
     if (state.bake.on) {
@@ -3784,7 +3859,7 @@ fn void draw_shadow_item(DrawItem* item, Mat4 light_vp, Vector3 origin = { 0, 0,
         SgPipeline pip = get_shadow_pipeline(nodes.program);
         if (!pip.id || nodes.program.busy()) return;
         sg::apply_pipeline(pip);
-    } else if (!classic_materials()) {
+    } else {
         // (the shared one again after a generated program's)
         sg::apply_pipeline(get_shadow_pipeline());
     }
@@ -3803,6 +3878,7 @@ fn void draw_shadow_item(DrawItem* item, Mat4 light_vp, Vector3 origin = { 0, 0,
     // (shadow_nodes: tex_map and tex_smp in s_map's and s_smp's slots, and node texture k in
     // tex_ext(5 - k), as draw_item binds them)
     if (nodes && nodes.program.cuts) {
+        bind.views[shaders::VIEW_SSR_DEPTH] = ready(state.white).view;
         for (int k = 0; k < NODE_TEXTURES; k++) {
             Texture* t = k < nodes.texture_count ? nodes.texture(k) : null;
             bind.views[shaders::VIEW_TEX_EXT5 - k] = ready(t).view;
@@ -3868,13 +3944,13 @@ fn void draw_shadow_item(DrawItem* item, Mat4 light_vp, Vector3 origin = { 0, 0,
 
 // The instance attributes of a draw (one identity instance for a plain mesh), and its
 // geometry's second uv set, and its tangents for a program that reads them (uses_tangents).
-fn void bind_instances(SgBindings* bind, DrawItem* item, bool tangents = false) @local {
+fn void bind_instances(SgBindings* bind, DrawItem* item) @local {
     Mesh* m = item.mesh;
     BufferGeometry* g = m.geometry;
     bind.vertex_buffers[2] = g.uv1buf.id ? g.uv1buf : zeros(g.vertex_count());
+    bind.vertex_buffers[3] = g.tangent_buf.id ? g.tangent_buf : zeros(g.vertex_count());
     bind.vertex_buffers[4] = displacement_heights(m);
     bind.vertex_buffers[5] = instance_colors(m);
-    if (tangents) bind.vertex_buffers[3] = g.tangent_buf;
     if (!m.instance_data.len()) {
         bind.vertex_buffers[1] = state.identity_instance;
         return;
@@ -4405,17 +4481,15 @@ fn void render_transmission(Renderer* r, Scene* scene, Camera* camera, Mat4 view
     Color background = scene.background ? scene.background : r.clear_color;
     Vector3 clear    = color_to_linear(background);
     // (this pass's programs, all at once: start_material_programs started the main pass's)
-    if (!classic_materials()) {
-        start_background_program(scene, camera, &tfs);
-        for (int list = 0; list < 2; list++) {
-            foreach (&item : list == 0 ? state.opaque : state.transparent) {
-                Material* mat = item.mesh.material;
-                if (list == 0 && !refracts(item)) start_item_program(item, mat.wireframe || has_holes(item) ? CUT : SOLID, &tfs);
-                if (refracts(item) && mat.side == DOUBLE_SIDE) {
-                    mat.side = BACK_SIDE;
-                    start_item_program(item, list == 0 && !mat.wireframe && !has_holes(item) ? SOLID : CUT, &tfs);
-                    mat.side = DOUBLE_SIDE;
-                }
+    start_background_program(scene, camera, &tfs);
+    for (int list = 0; list < 2; list++) {
+        foreach (&item : list == 0 ? state.opaque : state.transparent) {
+            Material* mat = item.mesh.material;
+            if (list == 0 && !refracts(item)) start_item_program(item, mat.wireframe || has_holes(item) ? CUT : SOLID, &tfs);
+            if (refracts(item) && mat.side == DOUBLE_SIDE) {
+                mat.side = BACK_SIDE;
+                start_item_program(item, list == 0 && !mat.wireframe && !has_holes(item) ? SOLID : CUT, &tfs);
+                mat.side = DOUBLE_SIDE;
             }
         }
     }
@@ -4898,7 +4972,7 @@ fn SgPipeline bake_pipeline(SgPixelFormat format) @local {
     if (pip.id) return *pip;
     *pip = sg::make_pipeline(
         &&{
-            .shader = material_shader(vsm ? VSM : OPAQUE, false),
+            .shader = material_shader(PBR, vsm ? VSM : OPAQUE),
             .index_type = UINT32,
             .cull_mode = NONE,
             .layout = vertex_layout(
@@ -4908,7 +4982,7 @@ fn SgPipeline bake_pipeline(SgPixelFormat format) @local {
                     shaders::ATTR_THREE_UV,
                     shaders::ATTR_THREE_COLOR0,
                     shaders::ATTR_THREE_UV1,
-                    -1,
+                    shaders::ATTR_THREE_TANGENT,
                     shaders::ATTR_THREE_INST0,
                     shaders::ATTR_THREE_INST1,
                     shaders::ATTR_THREE_INST2,
@@ -4999,8 +5073,7 @@ fn void Renderer.render_bake(
     state.lights.clear();
     collect_lights(lights);
     state.bake = { .on = true, .prev = prev, .width = target.width, .height = target.height };
-    // (the material shader's, with Renderer.shaders; generated programs have their own)
-    if (classic_materials()) state.bake.pipeline = bake_pipeline(target.pixel_format());
+    state.bake.pipeline = bake_pipeline(target.pixel_format());
     state.bake.format = target.pixel_format();
     state.caster_roots = objects;
     state.sun_caster = null;

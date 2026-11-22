@@ -8,17 +8,6 @@
 // material's own build sets.
 @block node_common
 #define NODE_PARAMS 32
-// The graph's uniforms into a NodeIn, one by one: from a copy made in a loop, Apple's Metal
-// compiler reads zeros where a value decides a discard_fragment (macOS 27, Apple GPUs)
-#define NODE_COPY_PARAMS(dst, src) \
-    dst[0] = src[0]; dst[1] = src[1]; dst[2] = src[2]; dst[3] = src[3]; \
-    dst[4] = src[4]; dst[5] = src[5]; dst[6] = src[6]; dst[7] = src[7]; \
-    dst[8] = src[8]; dst[9] = src[9]; dst[10] = src[10]; dst[11] = src[11]; \
-    dst[12] = src[12]; dst[13] = src[13]; dst[14] = src[14]; dst[15] = src[15]; \
-    dst[16] = src[16]; dst[17] = src[17]; dst[18] = src[18]; dst[19] = src[19]; \
-    dst[20] = src[20]; dst[21] = src[21]; dst[22] = src[22]; dst[23] = src[23]; \
-    dst[24] = src[24]; dst[25] = src[25]; dst[26] = src[26]; dst[27] = src[27]; \
-    dst[28] = src[28]; dst[29] = src[29]; dst[30] = src[30]; dst[31] = src[31];
 struct NodeIn {
     vec3 local;          // the position in the model (with an instance's matrix)
     vec3 local_normal;   //   and its normal (vertex stage)
@@ -34,11 +23,7 @@ struct NodeIn {
     vec4 vary1;
     vec4 vary2;
     vec4 vary3;
-    mat4 model;          // model -> world
-    mat4 view;           // world -> view
-    mat4 proj;           // view -> clip
-    vec4 info;           // xyz = the camera's position, w = time (s)
-    vec4 params[NODE_PARAMS]; // the graph's uniforms
+    mat4 instance_mat;   // per-instance 3x4 matrix (vertex stage; unused in fragment)
 };
 @end
 
@@ -144,11 +129,11 @@ layout(binding=2) uniform node_vs_params {
 };
 
 void node_vertex(NodeIn ni, inout vec3 local, inout vec4 vary0, inout vec4 vary1, inout vec4 vary2, inout vec4 vary3) {
-    local += ni.params[0].xyz;
-    vary0 = ni.params[1];
-    vary1 = ni.params[2];
-    vary2 = ni.params[3];
-    vary3 = ni.params[4];
+    local += (node_model * node_view * node_proj * node_params[0]).xyz + node_info.xyz;
+    vary0 = node_params[1];
+    vary1 = node_params[2];
+    vary2 = node_params[3];
+    vary3 = node_params[4];
 }
 
 // Runs a node material's node_vertex on `local` (the vertex with its instance's matrix),
@@ -168,12 +153,12 @@ void run_node_vertex(inout vec3 local, vec3 local_normal, mat4 model, out vec4 v
     ni.vary1 = vec4(0.0);
     ni.vary2 = vec4(0.0);
     ni.vary3 = vec4(0.0);
-    // (the mesh's matrix_world: a billboard's is drawn turned, `model`)
-    ni.model = node_model;
-    ni.view = node_view;
-    ni.proj = node_proj;
-    ni.info = node_info;
-    NODE_COPY_PARAMS(ni.params, node_params);
+    ni.instance_mat = mat4(
+        vec4(m0.x, m1.x, m2.x, 0.0),
+        vec4(m0.y, m1.y, m2.y, 0.0),
+        vec4(m0.z, m1.z, m2.z, 0.0),
+        vec4(m0.w, m1.w, m2.w, 1.0)
+    );
     vec4 v0 = vec4(0.0);
     vec4 v1 = vec4(0.0);
     vec4 v2 = vec4(0.0);
@@ -224,17 +209,13 @@ layout(binding=0) uniform vs_params {
 // the instance's color (InstancedMesh.set_color_at, three's instanceColor), linear; white
 // for meshes without (before the tangent: the same location in every program)
 in vec3 instance_color;
-#ifdef TANGENT
-in vec4 tangent;  // the tangents (BufferGeometry.tangents: glTF's TANGENT)
-#endif
+in vec4 tangent;  // the tangents (BufferGeometry.tangents: glTF's TANGENT; zeros without)
 
 out vec3 v_world_pos;
 out vec3 v_normal;
 out vec2 v_uv;
 out vec2 v_uv1;
-#ifdef TANGENT
 out vec4 v_tangent;   // the tangent in the world, w = the bitangent's sign
-#endif
 out vec3 v_color;
 out float v_alpha;
 out vec4 v_clip;
@@ -262,9 +243,7 @@ void main() {
         v_normal = vec3(0.0, 1.0, 0.0);
         v_uv = vec2(0.0);
         v_uv1 = vec2(0.0);
-#ifdef TANGENT
         v_tangent = vec4(0.0);
-#endif
         v_color = vec3(0.0);
         v_alpha = 0.0;
         v_clip = vec4(2.0, 2.0, 2.0, 1.0);
@@ -293,10 +272,8 @@ void main() {
     v_normal = (normal_mat * vec4(instance_dir(normal), 0.0)).xyz;
     v_uv = vec2(dot(uv_transform[0].xyz, vec3(uv, 1.0)), dot(uv_transform[1].xyz, vec3(uv, 1.0)));
     v_uv1 = uv1;
-#ifdef TANGENT
     // (a direction along the surface: the model matrix's, as three's)
     v_tangent = vec4((model * vec4(instance_dir(tangent.xyz), 0.0)).xyz, tangent.w);
-#endif
     v_color = color0.rgb;
     v_alpha = color0.a;
     gl_Position = view_proj * vec4(wp.xyz - view_origin.xyz, 1.0);
@@ -330,12 +307,7 @@ void main() {
 @include_block vs_main
 @end
 
-@vs vs_tangent
-#define TANGENT
-@include_block vs_main
-@end
-
-@vs shadow_vs
+@block shadow_vs_main
 layout(binding=0) uniform shadow_vs_params {
     mat4 s_view_proj;   // world - s_origin -> the light's clip space (see vs_params)
     vec4 s_origin;      // xyz: the light's position (0 for the sun's orthographic maps)
@@ -378,7 +350,7 @@ void main() {
 }
 @end
 
-@fs shadow_fs
+@block shadow_fs_main
 layout(binding=0) uniform texture2D s_map;
 layout(binding=1) uniform texture2D s_alpha;
 layout(binding=0) uniform sampler s_smp;
@@ -406,7 +378,7 @@ void main() {
 // The shadow maps' program for a node material whose color_node or opacity_node can cut it
 // (a discard, or an alpha under the material's alpha_test): shadow_vs and shadow_fs, with
 // what node_color reads carried to the fragments. Its node_color is spliced as fs's is.
-@vs shadow_nodes_vs
+@block shadow_nodes_vs_main
 layout(binding=0) uniform shadow_vs_params {
     mat4 s_view_proj;
     vec4 s_origin;
@@ -469,9 +441,10 @@ void main() {
 }
 @end
 
-@fs shadow_nodes_fs
+@block shadow_nodes_fs_main
 @include_block node_common
 layout(binding=0) uniform texture2D tex_map;
+layout(binding=8) uniform texture2D ssr_depth;
 layout(binding=26) uniform texture2D tex_ext0;
 layout(binding=27) uniform texture2D tex_ext1;
 layout(binding=28) uniform texture2D tex_ext2;
@@ -506,7 +479,8 @@ void node_color(NodeIn ni, inout vec4 base) {
     vec2 uv = ni.uv;
     base *= texture(sampler2D(tex_ext0, tex_smp), uv) * texture(sampler2D(tex_ext1, tex_smp), uv)
         * texture(sampler2D(tex_ext2, tex_smp), uv) * texture(sampler2D(tex_ext3, tex_smp), uv)
-        * texture(sampler2D(tex_ext4, tex_smp), uv) * texture(sampler2D(tex_ext5, tex_smp), uv) * ni.params[0];
+        * texture(sampler2D(tex_ext4, tex_smp), uv) * texture(sampler2D(tex_ext5, tex_smp), uv)
+        * texelFetch(sampler2D(ssr_depth, tex_smp), ivec2(0), 0) * node_params[0] * node_info;
 }
 
 void main() {
@@ -526,11 +500,7 @@ void main() {
     ni.vary1 = v_node1;
     ni.vary2 = v_node2;
     ni.vary3 = v_node3;
-    ni.model = node_model;
-    ni.view = node_view;
-    ni.proj = node_proj;
-    ni.info = node_info;
-    NODE_COPY_PARAMS(ni.params, node_params);
+    ni.instance_mat = mat4(1.0);
     vec4 base = vec4(1.0, 1.0, 1.0, s_params.y);
     if (s_params.z > 0.5) base *= texture(sampler2D(tex_map, tex_smp), v_uv);
     node_color(ni, base);
@@ -789,9 +759,7 @@ in vec3 v_world_pos;
 in vec3 v_normal;
 in vec2 v_uv;
 in vec2 v_uv1;
-#ifdef TANGENT
 in vec4 v_tangent;
-#endif
 in vec3 v_color;
 in float v_alpha;
 in vec4 v_clip;
@@ -820,24 +788,31 @@ void node_color(NodeIn ni, inout vec4 base) {
     vec2 uv = ni.uv;
     base *= texture(sampler2D(tex_ext0, tex_smp), uv) * texture(sampler2D(tex_ext1, tex_smp), uv)
         * texture(sampler2D(tex_ext2, tex_smp), uv) * texture(sampler2D(tex_ext3, tex_smp), uv)
-        * texture(sampler2D(tex_ext4, tex_smp), uv) * texture(sampler2D(tex_ext5, tex_smp), uv) * ni.params[0];
+        * texture(sampler2D(tex_ext4, tex_smp), uv) * texture(sampler2D(tex_ext5, tex_smp), uv)
+        * texelFetch(sampler2D(ssr_depth, tex_smp), ivec2(0), 0) * node_params[0] * ssr_params;
+    base += (node_model * node_view * node_proj * ssr_view_proj * node_info) * 0.0;
 }
 
 void node_normal(NodeIn ni, inout vec3 n) {
     vec2 uv = ni.uv;
     n = normalize(n + (texture(sampler2D(tex_ext0, tex_smp), uv) + texture(sampler2D(tex_ext1, tex_smp), uv)
         + texture(sampler2D(tex_ext2, tex_smp), uv) + texture(sampler2D(tex_ext3, tex_smp), uv)
-        + texture(sampler2D(tex_ext4, tex_smp), uv) + texture(sampler2D(tex_ext5, tex_smp), uv)).xyz * ni.params[0].x);
+        + texture(sampler2D(tex_ext4, tex_smp), uv) + texture(sampler2D(tex_ext5, tex_smp), uv)
+        + texelFetch(sampler2D(ssr_depth, tex_smp), ivec2(0), 0)).xyz * node_params[0].x + ssr_params.xyz * 0.0);
 }
 
-void node_surface(NodeIn ni, inout float rough, inout float metal, inout vec4 emissive) {
+void node_surface(NodeIn ni, inout vec4 base, inout float rough, inout float metal, inout vec4 emissive, inout float clearcoat, inout float clearcoat_rough) {
     vec2 uv = ni.uv;
     vec4 t = texture(sampler2D(tex_ext0, tex_smp), uv) * texture(sampler2D(tex_ext1, tex_smp), uv)
         * texture(sampler2D(tex_ext2, tex_smp), uv) * texture(sampler2D(tex_ext3, tex_smp), uv)
-        * texture(sampler2D(tex_ext4, tex_smp), uv) * texture(sampler2D(tex_ext5, tex_smp), uv) * ni.params[0];
+        * texture(sampler2D(tex_ext4, tex_smp), uv) * texture(sampler2D(tex_ext5, tex_smp), uv)
+        * texelFetch(sampler2D(ssr_depth, tex_smp), ivec2(0), 0) * node_params[0] * ssr_params;
+    base *= t;
     rough *= t.g;
     metal *= t.b;
     emissive = t;
+    clearcoat *= t.r;
+    clearcoat_rough *= t.a;
 }
 
 // A phong material's specular color and shininess (specularNode, shininessNode)
@@ -845,7 +820,7 @@ void node_specular(NodeIn ni, inout vec3 specular, inout float shininess) {
     vec2 uv = ni.uv;
     vec4 t = texture(sampler2D(tex_ext0, tex_smp), uv) * texture(sampler2D(tex_ext1, tex_smp), uv)
         * texture(sampler2D(tex_ext2, tex_smp), uv) * texture(sampler2D(tex_ext3, tex_smp), uv)
-        * texture(sampler2D(tex_ext4, tex_smp), uv) * texture(sampler2D(tex_ext5, tex_smp), uv) * ni.params[0];
+        * texture(sampler2D(tex_ext4, tex_smp), uv) * texture(sampler2D(tex_ext5, tex_smp), uv) * node_params[0];
     specular *= t.xyz;
     shininess *= t.w;
 }
@@ -856,7 +831,7 @@ void node_env(NodeIn ni, vec3 dir, float rough, inout vec3 env) {
     vec2 uv = ni.uv;
     vec4 t = texture(sampler2D(tex_ext0, tex_smp), uv) * texture(sampler2D(tex_ext1, tex_smp), uv)
         * texture(sampler2D(tex_ext2, tex_smp), uv) * texture(sampler2D(tex_ext3, tex_smp), uv)
-        * texture(sampler2D(tex_ext4, tex_smp), uv) * texture(sampler2D(tex_ext5, tex_smp), uv) * ni.params[0];
+        * texture(sampler2D(tex_ext4, tex_smp), uv) * texture(sampler2D(tex_ext5, tex_smp), uv) * node_params[0];
     env = env * t.xyz + dir * rough;
 }
 
@@ -864,7 +839,7 @@ void node_output(NodeIn ni, inout vec4 result) {
     vec2 uv = ni.uv;
     result *= texture(sampler2D(tex_ext0, tex_smp), uv) * texture(sampler2D(tex_ext1, tex_smp), uv)
         * texture(sampler2D(tex_ext2, tex_smp), uv) * texture(sampler2D(tex_ext3, tex_smp), uv)
-        * texture(sampler2D(tex_ext4, tex_smp), uv) * texture(sampler2D(tex_ext5, tex_smp), uv) * ni.params[0];
+        * texture(sampler2D(tex_ext4, tex_smp), uv) * texture(sampler2D(tex_ext5, tex_smp), uv) * node_params[0];
 }
 
 // What a node material's fragment hooks read: `n` the normal they shade with, `geo_n` the
@@ -884,11 +859,7 @@ NodeIn node_in(vec3 n, vec3 geo_n) {
     ni.vary1 = v_node1;
     ni.vary2 = v_node2;
     ni.vary3 = v_node3;
-    ni.model = node_model;
-    ni.view = node_view;
-    ni.proj = node_proj;
-    ni.info = node_info;
-    NODE_COPY_PARAMS(ni.params, node_params);
+    ni.instance_mat = mat4(1.0);
     return ni;
 }
 
@@ -1196,6 +1167,7 @@ vec3 direct(int mode, vec3 n, vec3 v, vec3 l, float dist, vec3 radiance, vec3 di
     // the toon material: the gradient's step in place of n.l, and no highlights
     if (mode == 6) return toon_gradient(ndl) * radiance * diffuse_color * RECIPROCAL_PI;
     vec3 h = normalize(l + v);
+#ifdef PHYSICAL
     if (mode == 3) {
         if (g_clearcoat > 0.0) {
             // the coat's own highlight, off its own normal (f0 0.04: an IOR of 1.5)
@@ -1222,6 +1194,7 @@ vec3 direct(int mode, vec3 n, vec3 v, vec3 l, float dist, vec3 radiance, vec3 di
             irradiance *= 1.0 - max(g_sheen_color.r, max(g_sheen_color.g, g_sheen_color.b)) * albedo;
         }
     }
+#endif
     vec3 result = irradiance * diffuse_color * RECIPROCAL_PI;
     if (mode == 1) return result;
 
@@ -1250,9 +1223,12 @@ vec3 direct(int mode, vec3 n, vec3 v, vec3 l, float dist, vec3 radiance, vec3 di
         float voh = clamp(dot(v, h), 0.0, 1.0);
         float nov = clamp(abs(dot(n, v)), 1e-4, 1.0);
         vec3 fresnel = g_f0 + (vec3(g_f90) - g_f0) * pow(1.0 - voh, 5.0);
+#ifdef PHYSICAL
         if (g_iridescence > 0.0) fresnel = mix(fresnel, g_iridescence_fresnel, g_iridescence);
+#endif
         float vis = v_smith(nov, snl, a);
         float d = d_ggx(noh, a);
+#ifdef PHYSICAL
         if (g_anisotropy > 0.0) {
             // rougher along g_anisotropy_t, by as much as it is anisotropic (three's alphaT)
             float at = max(mix(a, 1.0, g_anisotropy * g_anisotropy), a);
@@ -1261,6 +1237,7 @@ vec3 direct(int mode, vec3 n, vec3 v, vec3 l, float dist, vec3 radiance, vec3 di
             vis = v_smith_aniso(at, a, dot(t, v), dot(b, v), dot(t, sl), dot(b, sl), nov, snl);
             d = d_ggx_aniso(at, a, noh, dot(t, h), dot(b, h));
         }
+#endif
         spec += irradiance * fresnel * vis * d * norm;
     }
     return result;
@@ -2050,7 +2027,6 @@ void tangent_frame(vec3 n, vec2 duv1, vec2 duv2, out vec3 t, out vec3 b) {
     // a back face (its normal turned to the camera): the frame turned over too, as three's
     // tbn *= faceDirection
     bool back = dot(n, v_normal) < 0.0;
-#ifdef TANGENT
     // (a vertex without one, all zeros: the frame from the uv instead)
     if (dot(v_tangent.xyz, v_tangent.xyz) > 0.0) {
         vec3 vn = normalize(v_normal);
@@ -2062,7 +2038,6 @@ void tangent_frame(vec3 n, vec2 duv1, vec2 duv2, out vec3 t, out vec3 b) {
         }
         return;
     }
-#endif
     vec3 dp2perp = cross(g_dpdy, n);
     vec3 dp1perp = cross(n, g_dpdx);
     t = dp2perp * duv1.x + dp1perp * duv2.x;
@@ -2610,11 +2585,19 @@ void main() {
     }
     // three's alphaMap: its green channel
     if (has_map(MAP_ALPHA)) g_base.a *= material_map(MAP_ALPHA).g;
+    bool flat_shade = (fl & 1024) != 0;
+    vec3 base_n = v_normal;
+    if (flat_shade) {
+        vec3 fn_ = cross(dFdx(v_world_pos), dFdy(v_world_pos));
+        if (dot(fn_, fn_) > 1e-12) {
+            base_n = dot(fn_, camera_pos.xyz - v_world_pos) >= 0.0 ? fn_ : -fn_;
+        }
+    }
     bool nodes = node_flags.x > 0.5;
     NodeIn ni;
     if (nodes) {
-        vec3 fn = normalize(v_normal);
-        if (!gl_FrontFacing && !foliage) fn = -fn;
+        vec3 fn = normalize(base_n);
+        if (!gl_FrontFacing && !foliage && !flat_shade) fn = -fn;
         ni = node_in(fn, fn);
         node_color(ni, g_base);
     }
@@ -2643,8 +2626,8 @@ void main() {
 
     // (baking: the faces as the uv unwrap turned them, all front)
     bool baking = bake_params.x > 0.5;
-    vec3 n = normalize(v_normal);
-    if (!gl_FrontFacing && !foliage && !baking) n = -n;
+    vec3 n = normalize(base_n);
+    if (!gl_FrontFacing && !foliage && !baking && !flat_shade) n = -n;
     vec3 geo_n = n;
     g_dpdx = dFdx(v_world_pos);
     g_dpdy = dFdy(v_world_pos);
@@ -2706,6 +2689,7 @@ void main() {
     g_sheen_light = vec3(0.0);
     // the clear coat and the sheen before the surface hook, which can change them (a wet
     // surface: a coat of water over it)
+#ifdef PHYSICAL
     if (mode == 3) {
         // the clear coat: its strength and roughness, and its normal (the surface's own, under
         // the normal map, or from its own map)
@@ -2732,12 +2716,15 @@ void main() {
             if (has_map(MAP_SHEEN_ROUGHNESS)) g_sheen_rough *= material_map(MAP_SHEEN_ROUGHNESS).a;
         }
     }
+#endif
     vec4 node_glow = vec4(0.0);
     if (nodes) {
         ni.normal = n;
-        node_surface(ni, g_rough, g_metal, node_glow);
+        node_surface(ni, g_base, g_rough, g_metal, node_glow, g_clearcoat, g_clearcoat_rough);
         g_rough = clamp(g_rough, 0.0, 1.0);
         g_metal = clamp(g_metal, 0.0, 1.0);
+        g_clearcoat = clamp(g_clearcoat, 0.0, 1.0);
+        g_clearcoat_rough = clamp(g_clearcoat_rough, 0.045, 1.0);
         if (mode == 2) node_specular(ni, g_phong_specular, g_shininess);
     }
     if (mode != 0) {
@@ -2762,6 +2749,7 @@ void main() {
         vec3 dielectric = min(vec3(r0 * r0) * tint, vec3(1.0)) * strength;
         g_f0 = mix(dielectric, g_base.rgb, g_metal);
         g_f90 = mix(strength, 1.0, g_metal);
+#ifdef PHYSICAL
         vec3 pv = normalize(camera_pos.xyz - v_world_pos);
         float nov = clamp(dot(n, pv), 0.0, 1.0);
         // iridescence (three's): the film's reflectance over a dielectric and over a metal
@@ -2806,6 +2794,7 @@ void main() {
             g_anisotropy_t = t * dir.x + b * dir.y;
             g_anisotropy_b = b * dir.x - t * dir.y;
         }
+#endif
     }
 #ifdef MRT
     frag_indirect.ba = vec2(g_rough, g_metal);
@@ -2857,7 +2846,9 @@ void main() {
         int ms = int(map_slots[MAP_MATCAP / 4][MAP_MATCAP % 4]);
         vec3 matcap = ms >= 0 ? ext_slot_grad(ms, muv, dFdx(muv), dFdy(muv)).rgb : vec3(mix(0.2, 0.8, muv.y));
         outc = g_base.rgb * matcap;
-    } else {
+    }
+#ifndef UNLIT
+    else {
         vec3 diffuse_color = g_base.rgb;
         if (mode == 3) diffuse_color *= (1.0 - g_metal);
 
@@ -2885,11 +2876,13 @@ void main() {
         // three's lightMap: baked light, added to the indirect light
         if (has_map(MAP_LIGHT)) irradiance += material_map(MAP_LIGHT).rgb * light_map_params.x;
         outc = irradiance * diffuse_color * RECIPROCAL_PI * ao;
+#ifdef PHYSICAL
         if (g_sheen_rough > 0.0) {
             float albedo = sheen_albedo(n, v, g_sheen_rough);
             g_sheen_light += irradiance * g_sheen_color * albedo * RECIPROCAL_PI;
             outc *= 1.0 - max(g_sheen_color.r, max(g_sheen_color.g, g_sheen_color.b)) * albedo;
         }
+#endif
         ind_d = outc;
 
         int ndir = int(counts.x);
@@ -2995,6 +2988,7 @@ void main() {
             ltc_tables(ltc_base, n, v, rough, t1, t2);
             mat3 m_inv = mat3(vec3(t1.x, 0.0, t1.y), vec3(0.0, 1.0, 0.0), vec3(t1.z, 0.0, t1.w));
             vec3 fresnel = g_f0 * t2.x + (vec3(g_f90) - g_f0) * t2.y;
+#ifdef PHYSICAL
             mat3 cc_inv = mat3(1.0);
             float cc_fresnel = 0.0;
             if (g_clearcoat > 0.0) {
@@ -3004,6 +2998,7 @@ void main() {
                 cc_inv = mat3(vec3(c1.x, 0.0, c1.y), vec3(0.0, 1.0, 0.0), vec3(c1.z, 0.0, c1.w));
                 cc_fresnel = 0.04 * c2.x + 0.96 * c2.y;
             }
+#endif
             for (int k = 0; k < nrect; k++) {
                 gpu_point_light ra = points[int(counts.y) + k];
                 if (!lights_material(ra.shadow.z)) continue;
@@ -3020,7 +3015,9 @@ void main() {
                 vec3 c = ra.color.rgb * fog_transmittance(fog_distance(ra.pos.xyz, v_world_pos));
                 spec += c * fresnel * ltc_evaluate(n, v, m_inv, q);
                 outc += c * diffuse_color * ltc_evaluate(n, v, mat3(1.0), q);
+#ifdef PHYSICAL
                 if (g_clearcoat > 0.0) g_clearcoat_direct += c * cc_fresnel * ltc_evaluate(g_clearcoat_n, v, cc_inv, q);
+#endif
             }
         }
         spec *= ao;
@@ -3039,7 +3036,13 @@ void main() {
             ind_d += b;
         }
     }
+#else
+    else {
+        outc = g_base.rgb;
+    }
+#endif
 
+#ifndef UNLIT
     if ((fl & 8) != 0) {
         // glass: reflections stay visible however clear the pane is
         float fresnel = 0.04 + 0.96 * pow(1.0 - clamp(dot(n, v), 0.0, 1.0), 5.0);
@@ -3060,9 +3063,13 @@ void main() {
         if (env_params.x > 0.5 && mode != 1 && (ext_bits & 32) == 0 && env_combine.w < 0.5) {
             // reflections of the surroundings, fading as the surface gets rougher
             float nov = clamp(dot(n, v), 0.0, 1.0);
-            vec3 f0 = g_iridescence > 0.0 ? mix(g_f0, g_iridescence_f0, g_iridescence) : g_f0;
+            vec3 f0 = g_f0;
+#ifdef PHYSICAL
+            if (g_iridescence > 0.0) f0 = mix(g_f0, g_iridescence_f0, g_iridescence);
+#endif
             vec3 fr = f0 + (max(vec3((1.0 - g_rough) * g_f90), f0) - f0) * pow(1.0 - nov, 5.0);
             vec3 rn = n;
+#ifdef PHYSICAL
             if (g_anisotropy > 0.0) {
                 // the normal bent toward the stretched highlight (three's
                 // getIBLAnisotropyRadiance, Filament's)
@@ -3071,12 +3078,15 @@ void main() {
                 k *= k;
                 rn = normalize(mix(bent, n, k * k));
             }
+#endif
             vec3 r = dominant_reflection(reflect(-v, rn), rn, g_rough);
             vec3 env = env_reflection(r, g_rough, n);
             if (nodes) node_env(ni, r, g_rough, env);
             reflection_hook(r, env);
             env_term = env * fr;
+#ifdef PHYSICAL
             if (g_sheen_rough > 0.0) env_term *= 1.0 - max(g_sheen_color.r, max(g_sheen_color.g, g_sheen_color.b)) * sheen_albedo(n, v, g_sheen_rough);
+#endif
         }
         if (ssr_params.x > 0.0 || reflector_params.x > 0.0) {
             // the surface's sheen: a mirror image, strongest at a glancing angle
@@ -3111,6 +3121,7 @@ void main() {
         outc += env_term;
         ind_s += env_term;
         outc += spec;
+#ifdef PHYSICAL
         // transmission (Material.transmission): what is behind the surface, refracted through
         // the volume, takes the place of its diffuse light; highlights and reflections stay
         if (mode == 3 && transmission_color.a > 0.0) {
@@ -3144,7 +3155,9 @@ void main() {
             float f = schlick(0.04, 1.0, clamp(dot(cn, v), 0.0, 1.0));
             outc = outc * (1.0 - g_clearcoat * f) + coat * g_clearcoat;
         }
+#endif
     }
+#endif
 
     // three's envMap on a basic, lambert or phong material: what it mirrors (or what is seen
     // through it) over all of its light, by its reflectivity times the specular map's red
@@ -3269,68 +3282,6 @@ void main() {
 }
 @end
 
-@fs fs
-@include_block fs_main
-@end
-
-// The same without discard: for what the depth prepass has cut out already, and what has
-// no holes
-@fs fs_opaque
-#define NO_DISCARD
-@include_block fs_main
-@end
-
-// The same two, also writing the normal and the motion (RenderTarget.mrt)
-@fs fs_mrt
-#define MRT
-@include_block fs_main
-@end
-
-// Renderer.shadow_type = VSM: the shadows from the maps' moments. Only these two: what has no
-// holes is drawn by them too (each variant is a few MB of generated code).
-@fs fs_vsm
-#define VSM
-@include_block fs_main
-@end
-
-@fs fs_mrt_vsm
-#define MRT
-#define VSM
-@include_block fs_main
-@end
-
-@fs fs_opaque_mrt
-#define NO_DISCARD
-#define MRT
-@include_block fs_main
-@end
-
-// The geometries with tangents (vs_tangent): the four that can cut holes, the opaque ones'
-// draws too (each variant is a few MB of generated code)
-@fs fs_tangent
-#define TANGENT
-@include_block fs_main
-@end
-
-@fs fs_mrt_tangent
-#define TANGENT
-#define MRT
-@include_block fs_main
-@end
-
-@fs fs_vsm_tangent
-#define TANGENT
-#define VSM
-@include_block fs_main
-@end
-
-@fs fs_mrt_vsm_tangent
-#define TANGENT
-#define MRT
-#define VSM
-@include_block fs_main
-@end
-
 // The depth prepass (renderer.c3, Renderer.depth_prepass): depth only, for what has holes in
 // it (alpha tested, LOD cross-fades, the cull box). The main pass then draws those with
 // fs_opaque and an EQUAL depth test, so that no shader of the main pass discards (a shader
@@ -3355,9 +3306,7 @@ in vec3 v_world_pos;
 in vec3 v_normal;
 in vec2 v_uv;
 in vec2 v_uv1;
-#ifdef TANGENT
 in vec4 v_tangent;
-#endif
 in vec3 v_color;
 in float v_alpha;
 in vec4 v_clip;
@@ -3399,59 +3348,9 @@ void main() {
     }
     // for alpha to coverage (the depth prepass writes no color); r = the distance from the
     // camera's plane, for Renderer.render_back_faces
-    float unread = 0.0;
-#ifdef TANGENT
-    unread = v_tangent.x * 0.0;
-#endif
+    float unread = v_tangent.x * 0.0;
     frag_color = vec4(v_clip.w + unread + (v_normal + v_color + v_world_pos + v_clip.xyz + v_prev_clip.xyz).x * 0.0
         + v_line_distance * 0.0 + v_instance_color.x * 0.0 + (v_node0 + v_node1 + v_node2 + v_node3).x * 0.0,
         0.0, 0.0, alpha);
 }
 @end
-
-@fs depth_fs
-@include_block depth_main
-@end
-
-// The same for geometries with tangents: the main pass tests against the depth of this pass
-// with EQUAL, which needs the same vertex shader (one compiled apart can place them a hair off)
-@fs depth_tangent_fs
-#define TANGENT
-@include_block depth_main
-@end
-
-@program three vs fs
-@program three_opaque vs fs_opaque
-@program three_mrt vs fs_mrt
-@program three_opaque_mrt vs fs_opaque_mrt
-@program three_vsm vs fs_vsm
-@program three_mrt_vsm vs fs_mrt_vsm
-@program three_tangent vs_tangent fs_tangent
-@program three_mrt_tangent vs_tangent fs_mrt_tangent
-@program three_vsm_tangent vs_tangent fs_vsm_tangent
-@program three_mrt_vsm_tangent vs_tangent fs_mrt_vsm_tangent
-@program depth vs depth_fs
-@program depth_tangent vs_tangent depth_tangent_fs
-@program shadow shadow_vs shadow_fs
-
-// Clears the scissor box (Renderer.clear and render() with scissor_test): a triangle over the
-// whole target at the far depth, in one color.
-@vs clear_vs
-void main() {
-    vec2 p = vec2((gl_VertexIndex << 1) & 2, gl_VertexIndex & 2);
-    gl_Position = vec4(p * 2.0 - 1.0, 1.0, 1.0);
-}
-@end
-
-@fs clear_fs
-layout(binding=0) uniform clear_params {
-    vec4 clear_rgba;
-};
-out vec4 frag_color;
-void main() {
-    frag_color = clear_rgba;
-}
-@end
-
-@program clear_rect clear_vs clear_fs
-@program shadow_nodes shadow_nodes_vs shadow_nodes_fs

@@ -170,7 +170,7 @@ fn Node transmission_bicubic(int* fn_id, Node uv, Node lod) @private {
 }
 
 fn Node transmission_texture(NodeSampling how, Node coords = { }, Node a = { }) @local
-    => node_sample(how, shaders::VIEW_TEX_TRANSMISSION, shaders::SMP_TRANSMISSION_SMP, TEX_2D, coords, a);
+    => node_sample(how, VIEW_TEX_TRANSMISSION, SMP_TRANSMISSION_SMP, TEX_2D, coords, a);
 
 fn Node bicubic_w0(Node a) @local => (a * (a * (3.0f - a) - 3.0f) + 1.0f) * (1.0f / 6.0f);
 fn Node bicubic_w1(Node a) @local => (a * a * (a * 3.0f - 6.0f) + 4.0f) * (1.0f / 6.0f);

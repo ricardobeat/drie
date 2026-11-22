@@ -233,7 +233,7 @@ fn int main(String[] args) {
 
     NodeProgram* rings = mats[2].node_build.program;
     Generated gen = generated(mats[2]);
-    expect(gen.count ? gen.depth : rings.shaders[NodeVariant.DEPTH.ordinal].id != 0,
+    expect(gen.count ? gen.depth : rings.shaders[ShaderFamily.PBR.ordinal][NodeVariant.DEPTH.ordinal].id != 0,
            "the third ball through the depth prepass, with its own program");
     expect(gen.count ? gen.shadow : rings.shadow_pipeline.id != 0, "the third ball's shadow, with its own program");
     NodeBuild* build = mats[0].node_build;
@@ -272,7 +272,7 @@ fn int main(String[] args) {
         drie::commit();
         if (k == 2) {
             // (solid: the opaque program; the third, cut out after the prepass, too)
-            SgShader[8] built = mats[0].node_build.program.shaders;
+            SgShader[8] built = mats[0].node_build.program.shaders[ShaderFamily.PBR.ordinal];
             Generated g = generated(mats[0]);
             expect(g.count ? g.mrt : built[NodeVariant.OPAQUE_MRT.ordinal].id != 0, "MRT: the node materials' programs for it");
             continue;
@@ -417,6 +417,11 @@ fn int main(String[] args) {
             if (mp.key.shadow) continue;
             vs = mp.program.vs;
             fs = mp.program.fs;
+        }
+        if (!fs.len && called.node_build.program) {
+            NodeProgram* prog = called.node_build.program;
+            vs = string::tformat("%s\n%s", prog.vertex_funcs, prog.vertex_body);
+            fs = string::tformat("%s\n%s", prog.frag_funcs, prog.color_body);
         }
         ball.material = inlined;
         renderer.render(flat, cam);

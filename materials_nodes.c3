@@ -224,9 +224,8 @@ fn ulong hash64(String s) @local {
     return h;
 }
 
-// Whether every material draws with the application's material shader (Renderer.shaders)
-// rather than generated programs.
-macro bool classic_materials() @private => state.renderer && state.renderer.shaders.main;
+// (Materials draw with the precompiled split shaders and NodeProgram hooks; only GPU morph
+// meshes route through materials_nodes.c3.)
 
 // The program for `key`, built the first time it is asked for; with MaterialKey.nodes, the one
 // node material `build`'s graphs print, found through the build (NodeBuild.programs) and shared
@@ -639,7 +638,7 @@ fn VertexValues vertex_stage(MaterialKey key, NodeBuild* build = null, UserBinds
     o.instance_color = node_attribute(shaders::ATTR_THREE_INSTANCE_COLOR, VEC3);
     if (key.tangents) {
         // (a direction along the surface: the model matrix's, as three's)
-        Node tangent = node_attribute(shaders::ATTR_THREE_TANGENT_TANGENT, VEC4);
+        Node tangent = node_attribute(shaders::ATTR_THREE_TANGENT, VEC4);
         o.tangent = nodes::vec4((model * nodes::vec4(inst.dir(tangent.xyz()), 0)).xyz(), tangent.w());
     }
     o.line_distance = normal.x();

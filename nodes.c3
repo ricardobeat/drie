@@ -738,7 +738,15 @@ const int NODE_TEXTURES = 6;
 // node_output, node_env and node_specular (NodeProgram's bodies, in this order).
 const int NODE_HOOKS = 7;
 
+enum ShaderFamily : char {
+    PBR,
+    PHYSICAL,
+    UNLIT,
+}
+
 struct NodeProgram {
+    String vertex_funcs;
+    String frag_funcs;
     String vertex_body;
     String color_body;
     String normal_body;
@@ -748,8 +756,11 @@ struct NodeProgram {
     String specular_body;
     bool cuts;               // color_node or opacity_node can cut holes: a discard, or alpha
                              // (with the material's alpha_test), which the shadow maps cut too
+    bool has_frag;           // at least one fragment hook body is non-empty
+    bool has_vert;           // vertex hook body is non-empty
     String unsupported;      // what the graphs use that the hooks can't print ("": nothing)
-    SgShader[8] shaders;     // by NodeVariant
+    SgShader[8][3] shaders;  // by ShaderFamily, NodeVariant
+    int[8][3] shader_jobs;   // background sg_warm_shader_begin jobs (+1; 0: none)
     HashMap{ulong, SgPipeline} pipelines;
     SgPipeline shadow_pipeline;
     // its pipelines being compiled in the background (sg_warm_begin), by their pipelines' keys:
@@ -889,7 +900,13 @@ struct NodeGen @local {
     bool env;     // printing node_env's (nodes::env_direction() and env_roughness() are there)
     bool color;   // printing node_color's (nodes::material_color() is there)
     bool surface; // printing node_surface's (material_roughness() and material_metalness())
+    bool defer_color; // color_node emitted inside node_surface to share subgraphs with surface nodes
     bool discards; // a discard printed
+    int cur_func;  // NodeFunc index being printed (-1: inside a hook body)
+    List{int} frag_funcs;
+    List{int} vert_funcs;
+    DString frag_fn_defs;
+    DString vert_fn_defs;
     // what the graphs use that the hooks can't print (the program aborts when it is made)
     String unsupported;
 }
@@ -948,9 +965,13 @@ fn NodeBuild* node_build_of(Material* mat) {
         default: abort("drie: node materials need the GL, Metal or D3D11 backend");
     }
     @pool() {
-        NodeGen g = { .lang = lang, .build = b };
+        NodeGen g = { .lang = lang, .build = b, .cur_func = -1 };
         g.varyings.tinit();
         g.scope_open.tinit();
+        g.frag_funcs.tinit();
+        g.vert_funcs.tinit();
+        g.frag_fn_defs.tinit();
+        g.vert_fn_defs.tinit();
         sz count = node_graph.len() + 1;
         g.memo = mem::temp_array(uint, count);
         g.memo_epoch = mem::temp_array(uint, count);
@@ -959,6 +980,13 @@ fn NodeBuild* node_build_of(Material* mat) {
         g.reads_var = mem::temp_array(char, count);
         g.kept = mem::temp_array(String, count);
         // the fragment stage first: it finds the varyings the vertex stage writes
+        // When color_node is opaque (VEC3, no mask/opacity/alpha_test) and surface nodes are
+        // also present, run color_node inside node_surface so shared subgraphs (like grime or
+        // ground noise) are evaluated once per pixel instead of twice.
+        bool has_surface_nodes = mat.roughness_node.id || mat.metalness_node.id || mat.emissive_node.id
+            || mat.clearcoat_node.id || mat.clearcoat_roughness_node.id;
+        g.defer_color = mat.color_node.id && mat.color_node.type() != VEC4
+            && !mat.mask_node.id && !mat.opacity_node.id && mat.alpha_test <= 0 && has_surface_nodes;
         g.stage = FRAGMENT;
         g.color = true;
         String color = g.body(fn void(NodeGen* g, Material* mat) {
@@ -967,7 +995,7 @@ fn NodeBuild* node_build_of(Material* mat) {
                 g.line("if (!(%s)) %s", g.value_as(mat.mask_node, BOOL), g.lang == MSL ? "discard_fragment();" : "discard;");
                 g.discards = true;
             }
-            if (mat.color_node.id) {
+            if (mat.color_node.id && !g.defer_color) {
                 Node c = mat.color_node;
                 if (c.type() == VEC4) {
                     g.line("base = %s;", g.value_as(c, VEC4));
@@ -983,7 +1011,11 @@ fn NodeBuild* node_build_of(Material* mat) {
             if (mat.normal_node.id) g.line("n = normalize(%s);", g.value_as(mat.normal_node, VEC3));
         }, mat);
         g.surface = true;
+        g.color = g.defer_color;
         String surface = g.body(fn void(NodeGen* g, Material* mat) {
+            if (!g.defer_color && !mat.roughness_node.id && !mat.metalness_node.id && !mat.emissive_node.id
+                && !mat.clearcoat_node.id && !mat.clearcoat_roughness_node.id) return;
+            if (g.defer_color) g.line("base.xyz = %s;", g.value_as(mat.color_node, VEC3));
             if (mat.roughness_node.id) g.line("rough = %s;", g.value_as(mat.roughness_node, FLOAT));
             if (mat.metalness_node.id) g.line("metal = %s;", g.value_as(mat.metalness_node, FLOAT));
             if (mat.emissive_node.id) {
@@ -991,7 +1023,10 @@ fn NodeBuild* node_build_of(Material* mat) {
             } else {
                 g.line("emissive = %s;", g.zero(VEC4));
             }
+            if (mat.clearcoat_node.id) g.line("clearcoat = %s;", g.value_as(mat.clearcoat_node, FLOAT));
+            if (mat.clearcoat_roughness_node.id) g.line("clearcoat_rough = %s;", g.value_as(mat.clearcoat_roughness_node, FLOAT));
         }, mat);
+        g.color = false;
         g.surface = false;
         g.output = true;
         String output = g.body(fn void(NodeGen* g, Material* mat) {
@@ -1041,25 +1076,39 @@ fn NodeBuild* node_build_of(Material* mat) {
             }
             for (sz i = g.varyings.len(); i < NODE_VARYINGS; i++) g.line("vary%d = %s;", i, g.zero(VEC4));
         }, mat);
-        if (mat.clearcoat_node.id || mat.clearcoat_roughness_node.id) g.unsupported = "clearcoat_node and clearcoat_roughness_node";
         // (the material's maps its graphs read: there when it is built)
         for (int k = 0; k < b.texture_count; k++) b.texture(k);
-        b.program = node_program({ vertex, color, normal, surface, output, env, specular }, cuts, g.unsupported);
+        b.program = node_program(
+            { vertex, color, normal, surface, output, env, specular },
+            cuts,
+            g.unsupported,
+            g.vert_fn_defs.str_view(),
+            g.frag_fn_defs.str_view()
+        );
     };
     return b;
 }
 
 // The program of these hook bodies (vertex, color, normal, surface, output), made the first
 // time: shared by the materials whose graphs print them.
-fn NodeProgram* node_program(String[NODE_HOOKS] bodies, bool cuts, String unsupported = "") @private {
+fn NodeProgram* node_program(
+    String[NODE_HOOKS] bodies,
+    bool cuts,
+    String unsupported = "",
+    String vertex_funcs = "",
+    String frag_funcs = ""
+) @private {
     @pool() {
-        String key = string::tformat("%s\n--\n%s\n--\n%s\n--\n%s\n--\n%s\n--\n%s\n--\n%s\n--\n%s", bodies[0], bodies[1],
-                                     bodies[2], bodies[3], bodies[4], bodies[5], bodies[6], cuts);
+        String key = string::tformat("%s\n--\n%s\n--\n%s\n--\n%s\n--\n%s\n--\n%s\n--\n%s\n--\n%s\n--\n%s\n--\n%s",
+                                     bodies[0], bodies[1], bodies[2], bodies[3], bodies[4], bodies[5], bodies[6],
+                                     cuts, vertex_funcs, frag_funcs);
         if (unsupported.len) key = string::tformat("%s\n--\n%s", key, unsupported);
         if (!node_programs.is_initialized()) node_programs.init(mem);
         NodeProgram*? found = node_programs[key];
         if (try found) return found;
         NodeProgram* p = mem::new(NodeProgram);
+        p.vertex_funcs = vertex_funcs.copy(mem);
+        p.frag_funcs = frag_funcs.copy(mem);
         p.vertex_body = bodies[0].copy(mem);
         p.color_body = bodies[1].copy(mem);
         p.normal_body = bodies[2].copy(mem);
@@ -1068,11 +1117,86 @@ fn NodeProgram* node_program(String[NODE_HOOKS] bodies, bool cuts, String unsupp
         p.env_body = bodies[5].copy(mem);
         p.specular_body = bodies[6].copy(mem);
         p.cuts = cuts;
+        p.has_vert = bodies[0].len > 0;
+        p.has_frag = bodies[1].len > 0 || bodies[2].len > 0 || bodies[3].len > 0
+            || bodies[4].len > 0 || bodies[5].len > 0 || bodies[6].len > 0;
         p.unsupported = unsupported.copy(mem);
         p.pipelines.init(mem);
         node_programs[key.copy(mem)] = p;
         return p;
     };
+}
+
+// Prints a NodeFunction once per stage before any hook that calls it.
+fn void NodeGen.emit_func(&self, int fi) {
+    bool frag = self.stage == FRAGMENT;
+    List{int}* seen = frag ? &self.frag_funcs : &self.vert_funcs;
+    foreach (id : *seen) if (id == fi) return;
+    seen.push(fi);
+
+    NodeFunc* fd = node_funcs.get_ref(fi);
+    DString saved_out = self.out;
+    uint[] saved_memo = self.memo;
+    uint[] saved_memo_epoch = self.memo_epoch;
+    uint[] saved_serial = self.serial;
+    uint[] saved_local = self.local;
+    uint saved_locals = self.locals;
+    uint saved_scope = self.scope;
+    uint saved_epoch = self.epoch;
+    int saved_indent = self.indent;
+    int saved_cur_func = self.cur_func;
+    List{bool} saved_scope_open = self.scope_open;
+
+    sz count = node_graph.len() + 1;
+    self.out = dstring::temp();
+    self.memo = mem::temp_array(uint, count);
+    self.memo_epoch = mem::temp_array(uint, count);
+    self.serial = mem::temp_array(uint, count);
+    self.local = mem::temp_array(uint, count);
+    self.locals = 0;
+    self.scope_open = {};
+    self.scope_open.tinit();
+    self.scope_open.push(true);
+    self.scope = 1;
+    self.epoch = 1;
+    self.indent = 1;
+    self.cur_func = fi;
+
+    if (fd.ret == VOID) {
+        self.emit(fd.body);
+    } else {
+        String r = self.value_as(fd.body, fd.ret);
+        self.line("return %s;", r);
+    }
+    String body_text = self.out.str_view();
+
+    self.out = saved_out;
+    self.memo = saved_memo;
+    self.memo_epoch = saved_memo_epoch;
+    self.serial = saved_serial;
+    self.local = saved_local;
+    self.locals = saved_locals;
+    self.scope = saved_scope;
+    self.epoch = saved_epoch;
+    self.indent = saved_indent;
+    self.cur_func = saved_cur_func;
+    self.scope_open = saved_scope_open;
+
+    DString* defs = frag ? &self.frag_fn_defs : &self.vert_fn_defs;
+    String ret_t = fd.ret == VOID ? "void" : self.type_name(fd.ret);
+    if (self.lang == MSL) {
+        if (frag) {
+            defs.appendf("%s %s(thread const NodeIn& ni, constant node_fs_params& nu, texture2d<float> tex_ext0, sampler tex_smp, texture2d<float> tex_ext1, texture2d<float> tex_ext2, texture2d<float> tex_ext3, texture2d<float> tex_ext4, texture2d<float> tex_ext5", ret_t, fd.name);
+        } else {
+            defs.appendf("%s %s(thread const NodeIn& ni, constant node_vs_params& nu", ret_t, fd.name);
+        }
+    } else {
+        defs.appendf("%s %s(NodeIn ni", ret_t, fd.name);
+    }
+    for (int i = 0; i < fd.count; i++) {
+        defs.appendf(", %s p%d", self.type_name(fd.params[i]), i);
+    }
+    defs.appendf(")\n{\n%s}\n\n", body_text);
 }
 
 
@@ -1277,15 +1401,16 @@ fn String NodeGen.builtin(&self, Node n, NodeBuiltin b) {
             return "ni.local_normal";
         case POSITION_WORLD:
             if (self.stage == VERTEX_OUT) {
-                return string::tformat("%s.xyz", self.mat_mul("ni.model", string::tformat("%s(local, 1.0)", self.type_name(VEC4))));
+                String mm = self.lang == MSL ? "nu.node_model" : "node_model";
+                return string::tformat("%s.xyz", self.mat_mul(mm, string::tformat("%s(local, 1.0)", self.type_name(VEC4))));
             }
             return "ni.world";
         case NORMAL_WORLD: return "ni.normal";
         case NORMAL_GEOMETRY: return "ni.geo_normal";
-        case CAMERA_POSITION: return "ni.info.xyz";
+        case CAMERA_POSITION: return self.lang == MSL ? "nu.node_info.xyz" : "node_info.xyz";
         case VIEW_DIRECTION:
-            return string::tformat("normalize(ni.info.xyz - %s)", self.builtin(n, POSITION_WORLD));
-        case TIME: return "ni.info.w";
+            return string::tformat("normalize(%s - %s)", self.lang == MSL ? "nu.node_info.xyz" : "node_info.xyz", self.builtin(n, POSITION_WORLD));
+        case TIME: return self.lang == MSL ? "nu.node_info.w" : "node_info.w";
         case VERTEX_COLOR: return "ni.color";
         case FRAG_COORD:
             if (!fragment) abort("drie: nodes: frag_coord is for the fragment stage");
@@ -1293,9 +1418,9 @@ fn String NodeGen.builtin(&self, Node n, NodeBuiltin b) {
         case FRONT_FACING:
             if (!fragment) abort("drie: nodes: front_facing is for the fragment stage");
             return "(ni.frag.z > 0.5)";
-        case MODEL_MATRIX: return "ni.model";
-        case VIEW_MATRIX: return "ni.view";
-        case PROJECTION_MATRIX: return "ni.proj";
+        case MODEL_MATRIX: return self.lang == MSL ? "nu.node_model" : "node_model";
+        case VIEW_MATRIX: return self.lang == MSL ? "nu.node_view" : "node_view";
+        case PROJECTION_MATRIX: return self.lang == MSL ? "nu.node_proj" : "node_proj";
         case OUTPUT:
             if (!self.output) abort("drie: nodes: output() is for output_node");
             return "result";
@@ -1322,8 +1447,7 @@ fn String NodeGen.builtin(&self, Node n, NodeBuiltin b) {
             return "env";
         case INSTANCE_MATRIX:
             if (fragment) abort("drie: nodes: instance_matrix() is for the vertex stage (position_node)");
-            self.unsupported = "instance_matrix()";
-            return string::tformat("%s(1.0)", self.type_name(MAT4));
+            return "ni.instance_mat";
     }
 }
 
@@ -1390,17 +1514,18 @@ fn String NodeGen.uniform(&self, Node n) {
         if (p > NODE_PARAMS) abort("drie: nodes: more than %d vec4s of uniforms", NODE_PARAMS);
         b.uniforms.push(n);
     }
+    String np = self.lang == MSL ? "nu.node_params" : "node_params";
     NodeType t = n.type();
     switch (t) {
         case MAT4:
             // (its columns; HLSL's constructor takes rows, which SPIRV-Cross's mul(v, m) reads as columns)
             return string::tformat(
-                "%s(ni.params[%d], ni.params[%d], ni.params[%d], ni.params[%d])", self.type_name(MAT4), at, at + 1, at + 2, at + 3
+                "%s(%s[%d], %s[%d], %s[%d], %s[%d])", self.type_name(MAT4), np, at, np, at + 1, np, at + 2, np, at + 3
             );
         default:
             // (integers and bools as floats: Node.set)
             int c = components(t);
-            String x = c == 4 ? string::tformat("ni.params[%d]", at) : string::tformat("ni.params[%d].%s", at, "xyzw"[:(sz)c]);
+            String x = c == 4 ? string::tformat("%s[%d]", np, at) : string::tformat("%s[%d].%s", np, at, "xyzw"[:(sz)c]);
             return self.convert(x, type_of(FLOAT, c), t);
     }
 }
@@ -1680,14 +1805,74 @@ fn String NodeGen.emit(&self, Node n) {
                 e = string::tformat("(!%s)", self.value_as({ d.args[0] }, BOOL));
             }
         case INPUT:
+            if (d.res[0] == NodeSource.FS.ordinal && d.res[1] == fs_row("ssr_params")) {
+                int c = components(d.type);
+                int off = d.res[2];
+                String sp = self.lang == MSL ? "fu.ssr_params" : "ssr_params";
+                String x = c == 4 && off == 0 ? sp : string::tformat("%s.%s", sp, "xyzw"[off:c]);
+                e = self.convert(x, type_of(FLOAT, c), d.type);
+            } else if (d.res[0] == NodeSource.FS.ordinal && d.res[1] == fs_row("ssr_view_proj")) {
+                e = self.lang == MSL ? "fu.ssr_view_proj" : "ssr_view_proj";
+            } else {
+                self.unsupported = "engine uniform INPUT";
+                e = self.zero(d.type);
+            }
         case SAMPLE:
-            // (the screen's depth, nodes::viewport_depth...: only generated programs read it)
-            self.unsupported = "the screen's depth (nodes::ssr_on, viewport_depth, screen_position)";
-            e = self.zero(d.type);
+            if (d.res[0] == shaders::VIEW_SSR_DEPTH) {
+                NodeSampling sk = (NodeSampling)d.kind;
+                if (sk == SIZE) {
+                    switch (self.lang) {
+                        case GLSL: e = "textureSize(ssr_depth_tex_smp, 0)";
+                        case MSL: e = "int2(ssr_depth.get_width(), ssr_depth.get_height())";
+                        case HLSL:
+                            String sz_name = string::tformat("ssz%d", n.id);
+                            self.line("uint2 %s;", sz_name);
+                            self.line("ssr_depth.GetDimensions(%s.x, %s.y);", sz_name, sz_name);
+                            e = string::tformat("int2(%s)", sz_name);
+                    }
+                } else if (sk == FETCH) {
+                    String tc = self.value_as({ d.args[0] }, IVEC2);
+                    switch (self.lang) {
+                        case GLSL: e = string::tformat("texelFetch(ssr_depth_tex_smp, %s, 0)", tc);
+                        case MSL: e = string::tformat("ssr_depth.read(uint2(%s), 0)", tc);
+                        case HLSL: e = string::tformat("ssr_depth.Load(int3(%s, 0))", tc);
+                    }
+                } else {
+                    self.unsupported = "unsupported ssr_depth sample";
+                    e = self.zero(d.type);
+                }
+            } else {
+                self.unsupported = "engine texture SAMPLE";
+                e = self.zero(d.type);
+            }
         case PARAM:
+            if (self.cur_func != d.res[0]) abort("drie: nodes: a parameter of %s outside it", node_funcs[d.res[0]].name);
+            return string::tformat("p%d", d.kind);
         case CALL_FN:
-            self.unsupported = "graph functions (nodes::function)";
-            e = self.zero(d.type);
+            int fi = (int)bitcast(d.value[0], uint);
+            self.emit_func(fi);
+            NodeFunc* fd = node_funcs.get_ref(fi);
+            DString call;
+            call.tinit();
+            if (self.lang == MSL) {
+                call.appendf("%s(ni, nu", fd.name);
+                if (self.stage == FRAGMENT) {
+                    call.append(", tex_ext0, tex_smp, tex_ext1, tex_ext2, tex_ext3, tex_ext4, tex_ext5");
+                }
+            } else {
+                call.appendf("%s(ni", fd.name);
+            }
+            uint arg0 = bitcast(d.value[1], uint);
+            for (int i = 0; i < fd.count; i++) {
+                call.appendf(", %s", self.value_as({ node_args[(usz)arg0 + (usz)i] }, fd.params[i]));
+            }
+            call.append_char(')');
+            e = call.str_view();
+            if (d.type == VOID) {
+                self.line("%s;", e);
+                self.mark(n);
+                return "";
+            }
         case STORAGE:
         case ATTRIBUTE:
         case SYSTEM:
@@ -1740,6 +1925,15 @@ fn String NodeGen.call(&self, NodeData* d) {
 
 // ---- the program's shaders
 
+fn String msl_param_after(String sig, String prefix) @local {
+    sz? p = sig.index_of(prefix);
+    if (catch p) return "";
+    sz start = p + prefix.len;
+    sz end = start;
+    while (end < sig.len && sig[end] != ',' && sig[end] != ')') end++;
+    return sig[start..end - 1];
+}
+
 // `src` with the body of function `name` replaced by `body`; sokol-shdc (SPIRV-Cross) prints
 // a function as its signature, then "{" and "}" on lines of their own.
 fn String splice_body(String src, String name, String body) @local {
@@ -1752,9 +1946,29 @@ fn String splice_body(String src, String name, String body) @local {
     sz? close = src[at..].index_of("\n}\n");
     if (catch open) abort("drie: %s's body not found", name);
     if (catch close) abort("drie: %s's body not found", name);
+    String sig = src[at..at + open];
+    DString preamble;
+    preamble.tinit();
+    if (body.len) {
+        String nfp = msl_param_after(sig, "constant node_fs_params& ");
+        if (nfp.len) preamble.appendf("    constant node_fs_params& nu = %s;\n", nfp);
+        String nvp = msl_param_after(sig, "constant node_vs_params& ");
+        if (nvp.len) preamble.appendf("    constant node_vs_params& nu = %s;\n", nvp);
+        String fp = msl_param_after(sig, "constant fs_params& ");
+        if (fp.len) preamble.appendf("    constant fs_params& fu = %s;\n", fp);
+    }
     sz from = at + open + 3;
     sz to = at + close + 1;
-    return string::tformat("%s%s%s", src[:from], body, src[to..]);
+    return string::tformat("%s%s%s%s", src[:from], preamble.str_view(), body, src[to..]);
+}
+
+// Inserts `extra` immediately before `\nvoid <name>(`.
+fn String insert_before(String src, String name, String extra) @local {
+    if (!extra.len) return src;
+    String head = string::tformat("\nvoid %s(", name);
+    sz? at = src.index_of(head);
+    if (catch at) return src;
+    return string::tformat("%s\n%s%s", src[:at], extra, src[at..]);
 }
 
 // `desc` (the engine's or the application's program) with the hooks' bodies swapped, its
@@ -1763,24 +1977,25 @@ fn SgShaderDesc NodeProgram.spliced(&self, NodeVariant v, SgShaderDesc desc) {
     if (self.unsupported.len) {
         abort("drie: a node material uses %s, which the application's material shader (Renderer.shaders) has no hook for: only generated programs draw it", self.unsupported);
     }
-    String vs = splice_body(((ZString)desc.vertex_func.source).str_view(), "node_vertex", self.vertex_body);
+    String vs = ((ZString)desc.vertex_func.source).str_view();
+    vs = insert_before(vs, "node_vertex", self.vertex_funcs);
+    vs = splice_body(vs, "node_vertex", self.vertex_body);
     desc.vertex_func.source = vs.zstr_tcopy();
     if (v == SHADOW && self.cuts) {
         // (shadow_nodes: node_color only)
-        String fs = splice_body(((ZString)desc.fragment_func.source).str_view(), "node_color", self.color_body);
+        String fs = ((ZString)desc.fragment_func.source).str_view();
+        fs = insert_before(fs, "node_color", self.frag_funcs);
+        fs = splice_body(fs, "node_color", self.color_body);
         desc.fragment_func.source = fs.zstr_tcopy();
     } else if (v != DEPTH && v != SHADOW) {
         String fs = ((ZString)desc.fragment_func.source).str_view();
-        fs = splice_body(fs, "node_color", self.color_body);
-        fs = splice_body(fs, "node_normal", self.normal_body);
-        fs = splice_body(fs, "node_surface", self.surface_body);
-        fs = splice_body(fs, "node_output", self.output_body);
-        // (a build of the shader from before node_env or node_specular has none: fine
-        // without the slots they are for)
-        if (self.env_body.len || fs.contains("\nvoid node_env(")) fs = splice_body(fs, "node_env", self.env_body);
-        if (self.specular_body.len || fs.contains("\nvoid node_specular(")) {
-            fs = splice_body(fs, "node_specular", self.specular_body);
-        }
+        fs = insert_before(fs, "node_color", self.frag_funcs);
+        if (fs.contains("\nvoid node_color(")) fs = splice_body(fs, "node_color", self.color_body);
+        if (fs.contains("\nvoid node_normal(")) fs = splice_body(fs, "node_normal", self.normal_body);
+        if (fs.contains("\nvoid node_surface(")) fs = splice_body(fs, "node_surface", self.surface_body);
+        if (fs.contains("\nvoid node_output(")) fs = splice_body(fs, "node_output", self.output_body);
+        if (fs.contains("\nvoid node_env(")) fs = splice_body(fs, "node_env", self.env_body);
+        if (fs.contains("\nvoid node_specular(")) fs = splice_body(fs, "node_specular", self.specular_body);
         desc.fragment_func.source = fs.zstr_tcopy();
     }
     desc.label = "drie-node-material";

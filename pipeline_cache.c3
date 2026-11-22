@@ -125,10 +125,10 @@ fn bool PipelineWarmup.add(&self, PipelineRecord r) {
 // background (for get_pipeline): the program with it, if it isn't made or compiling yet.
 fn void PipelineWarmup.start(&self, NodeVariant v, bool tangents, SgPipelineDesc* desc) {
     @pool() {
-        SgShaderDesc shader = material_shader_desc(v, tangents, false);
+        SgShaderDesc shader = material_shader_desc(PBR, v, false);
         int job = sg_warm_begin(&shader, desc);
         if (job < 0) return;
-        if (!claim_material_job(v, tangents, job)) self.jobs.push(job);
+        if (!claim_material_job(PBR, v, job)) self.jobs.push(job);
     };
 }
 
@@ -418,6 +418,6 @@ fn void Renderer.pump_pipeline_cache(&self) {
         self.shadow_type = r.vsm ? ShadowType.VSM : shadow_type == VSM ? ShadowType.PCF : shadow_type;
         RenderTarget target = { .samples = r.target_samples, .format = r.target_format, .mrt = r.target_mrt };
         (void)get_pipeline(r.side, r.transparent, r.wireframe, r.target_samples ? &target : null, r.alpha_test,
-            r.blend, r.kind, r.depth_test, r.depth_write, r.tangents, r.program, gen);
+            r.blend, r.kind, r.depth_test, r.depth_write, PBR, r.program, gen);
     }
 }
