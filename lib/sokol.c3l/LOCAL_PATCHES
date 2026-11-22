@@ -11,3 +11,16 @@ To update: copy the new sokol.c3l/ over this folder, then re-apply each item bel
        #include "sokol_warm.h"
 3. manifest.json: drie's own. Keep it whole (-O2 -DNDEBUG cflags, the mingw, ios,
    ios-sim and linux-aarch64 targets, the linked libraries).
+4. c/sokol_gfx.h, GPU timestamps for drie's GpuTimer (gpu_timer.c3, platform/gputimer.c).
+   Every hunk is marked "drie patch (GPU timestamps)":
+   - declarations of sg_mtl_command_buffer() and sg_mtl_set_pass_timestamps(sample_buffer,
+     start_index, end_index), after sg_mtl_command_queue's;
+   - in _sg_mtl_backend_t, after `id<MTLCommandBuffer> cmd_buffer;`:
+       id<MTLCounterSampleBuffer> ts_buffer; int ts_start, ts_end;
+   - _sg_mtl_begin_compute_pass: when ts_buffer is set, the encoder comes from a
+     MTLComputePassDescriptor (serial dispatch) with sampleBufferAttachments[0] sampling the
+     start and end of the encoder; ts_buffer is cleared;
+   - _sg_mtl_begin_render_pass: when ts_buffer is set, pass_desc.sampleBufferAttachments[0]
+     samples the vertex stage's start and the fragment stage's end; ts_buffer is cleared;
+   - the two functions' implementations, before sg_mtl_command_queue's.
+   (The functions are bound in drie's platform/gputimer.c, not in sg.c3.)
