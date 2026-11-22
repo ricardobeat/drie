@@ -204,12 +204,19 @@ fn void update_scene(double dt)
 
 fn void animate(double time)
 {
-    double dt = last_frame_t < 0 ? 1.0 / 60.0 : math::clamp(time - last_frame_t, 0.0, 0.1);
+    double dt = last_frame_t < 0 ? 1.0 / 60.0 : math::clamp((time - last_frame_t) * 0.001, 0.0, 0.1);
     last_frame_t = time;
 
     int win_w = math::max(sapp::width(), 1);
     int win_h = math::max(sapp::height(), 1);
-    if (scene_rt.width != win_w || scene_rt.height != win_h)
+    if (!scene_rt)
+    {
+        scene_rt = drie::render_target(win_w, win_h, 1, RGBA16F);
+        output = postprocessing::output_pass(renderer);
+        camera.aspect = (float)win_w / (float)win_h;
+        camera.update_projection_matrix();
+    }
+    else if (scene_rt.width != win_w || scene_rt.height != win_h)
     {
         scene_rt.set_size(win_w, win_h);
         camera.aspect = (float)win_w / (float)win_h;
@@ -345,8 +352,6 @@ fn int main(String[] args)
         renderer.tone_mapping = ACES_FILMIC_TONE_MAPPING;
         renderer.tone_mapping_exposure = 1.15f;
         build_scene();
-        scene_rt = drie::render_target(W, H, 1, RGBA16F);
-        output = postprocessing::output_pass(renderer);
         controls = controls::orbit_controls(camera);
         controls.target = { 0.0f, 1.20f, -1.0f };
         drie::add_event_listener(&on_event);
