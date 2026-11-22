@@ -25,13 +25,16 @@ struct StorageBuffer {
     bool cpu_write;
     // also bound as a vertex buffer (instance attributes)
     bool vertex;
+    // also bound as an indirect argument buffer (dispatch_indirect)
+    bool indirect;
     ZString label;
 }
 
-fn StorageBuffer* storage_buffer(sz size, bool cpu_write = false, bool vertex = false, ZString label = "drie-storage") {
+fn StorageBuffer* storage_buffer(sz size, bool cpu_write = false, bool vertex = false, ZString label = "drie-storage", bool indirect = false) {
     StorageBuffer* b = mem::new(StorageBuffer);
     b.cpu_write = cpu_write;
     b.vertex = vertex;
+    b.indirect = indirect;
     b.label = label;
     b.ensure(size);
     return b;
@@ -63,7 +66,12 @@ fn void StorageBuffer.create(&self, usz size, void* data, usz bytes = 0) {
     self.dispose();
     self.size = size;
     SgBufferDesc desc = {
-        .usage = { .storage_buffer = true, .vertex_buffer = self.vertex, .write_transient = self.cpu_write },
+        .usage = {
+            .storage_buffer = true,
+            .vertex_buffer = self.vertex,
+            .indirect_buffer = self.indirect,
+            .write_transient = self.cpu_write,
+        },
         .size = size,
         .label = self.label,
     };
@@ -119,7 +127,7 @@ struct ComputePass {
     SgPipeline pipeline;
     SgBindings bindings;
     // uniform blocks, copied at set_uniforms and applied at each dispatch
-    char[512][4] uniforms;
+    char[4096][4] uniforms;
     usz[4] uniform_size;
 }
 
@@ -139,20 +147,32 @@ fn void ComputePass.set_view(&self, int slot, SgView view) {
 }
 
 fn void ComputePass.set_uniforms(&self, int slot, void* data, usz size) {
-    if (slot < 0 || slot >= 4 || size > 512) abort("drie: compute uniforms: slots 0..3, up to 512 bytes");
+    if (slot < 0 || slot >= 4 || size > 4096) abort("drie: compute uniforms: slots 0..3, up to 4096 bytes");
     mem::copy(&self.uniforms[slot], data, (sz)size);
     self.uniform_size[slot] = size;
 }
 
-// Runs the kernel over x * y * z groups. Only between begin_compute and end_compute.
-fn void ComputePass.dispatch(&self, int x, int y = 1, int z = 1) {
-    if (x <= 0 || y <= 0 || z <= 0) return;
+// Applies the pipeline, bindings and uniforms (dispatch and dispatch_indirect do it).
+fn void ComputePass.apply(&self) {
     sg::apply_pipeline(self.pipeline);
     sg::apply_bindings(&self.bindings);
     for (int i = 0; i < 4; i++) {
         if (self.uniform_size[i]) sg::apply_uniforms(i, &&{ .ptr = &self.uniforms[i], .size = self.uniform_size[i] });
     }
+}
+
+// Runs the kernel over x * y * z groups. Only between begin_compute and end_compute.
+fn void ComputePass.dispatch(&self, int x, int y = 1, int z = 1) {
+    if (x <= 0 || y <= 0 || z <= 0) return;
+    self.apply();
     sg::dispatch(x, y, z);
+}
+
+// Runs the kernel with group counts read from `buf` at `offset` bytes (3 uints).
+fn void ComputePass.dispatch_indirect(&self, StorageBuffer* buf, int offset = 0) {
+    if (!buf || !buf.buffer.id) return;
+    self.apply();
+    sg::dispatch_indirect(buf.buffer, offset);
 }
 
 // Whether the GPU runs compute shaders (always, on the backends the engine targets).
