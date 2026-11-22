@@ -43,7 +43,7 @@ struct rc_rad_texel {
     uvec2 p;           // rgb packed as half2 + half2
 };
 struct rc_probe_meta {
-    ivec4 coord;       // xyz = probe grid coord (world integer), w = level
+    ivec4 coord;       // xyz = probe grid coord (world integer), w = level, -1 while the slot is free
 };
 // Stored inside irradiance_buf:
 //   [0 .. hash_cap - 1]                 : uvec4(key_lo, key_hi, slot, last_frame)
@@ -316,7 +316,9 @@ void main() {
     int count = min(int(rc_cnt[level].v), rc_level_cap(level));
     if (slot >= count) return;
 
-    ivec3 pc = rc_meta[rc_probe_base(level) + slot].coord.xyz;
+    ivec4 pm = rc_meta[rc_probe_base(level) + slot].coord;
+    if (pm.w < 0) return; // a freed slot (rc_free_push)
+    ivec3 pc = pm.xyz;
     float sp = rc_min.w * float(1 << level);
     float usp = sp * 2.0;
     vec3 pos = (vec3(pc) + 0.5) * sp;
@@ -346,12 +348,16 @@ void main() {
 layout(binding=0) buffer rc_ht_evict { rc_uvec4 rc_ht[]; };
 layout(binding=1) buffer rc_free_evict { rc_uint rc_free[]; };
 layout(binding=2) buffer rc_rehash_evict { rc_uvec4 rc_rehash[]; };
+layout(binding=3) buffer rc_meta_evict { rc_probe_meta rc_meta[]; };
 
 layout(local_size_x=64) in;
 
+// Hands a data slot back to its level's free list and marks it free in rc_meta, so the
+// passes that walk a level's slots (propagate, trace, gather) skip it until it's reused.
 void rc_free_push(int level, uint slot) {
     int cap = rc_level_cap(level);
     int pbase = rc_probe_base(level);
+    rc_meta[pbase + int(slot)].coord.w = -1;
     uint idx = atomicAdd(rc_free[level].v, 1u);
     if (int(idx) < cap) rc_free[8 + pbase + int(idx)].v = slot;
     else atomicAdd(rc_free[level].v, uint(-1));
@@ -578,7 +584,9 @@ void main() {
 
     int slot = i / dd;
     int k = i - slot * dd;
-    ivec3 pc = rc_meta[rc_probe_base(level) + slot].coord.xyz;
+    ivec4 pm = rc_meta[rc_probe_base(level) + slot].coord;
+    if (pm.w < 0) return; // a freed slot (rc_free_push)
+    ivec3 pc = pm.xyz;
     float spacing = rc_min.w * float(1 << level);
     vec3 pos = (vec3(pc) + 0.5) * spacing;
 
@@ -743,7 +751,9 @@ void main() {
     int slot = int(gl_GlobalInvocationID.x);
     int count = min(int(rc_cnt[0].v), rc_level_cap(0));
     if (slot >= count) return;
-    ivec3 pc = rc_meta[rc_probe_base(0) + slot].coord.xyz;
+    ivec4 pm = rc_meta[rc_probe_base(0) + slot].coord;
+    if (pm.w < 0) return; // a freed slot (rc_free_push): nothing looks it up
+    ivec3 pc = pm.xyz;
     vec3 pos = (vec3(pc) + 0.5) * rc_min.w;
     ivec3 vc = ivec3(floor((pos - rc_min.xyz) / rc_tune.w));
     int irr_base = rc_info.w + slot * 6;

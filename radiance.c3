@@ -676,6 +676,7 @@ fn void RadianceCascades.run_sparse_update(
         ep.set_buffer(rc_split::VIEW_RC_HT_EVICT, self.irradiance_buf);
         ep.set_buffer(rc_split::VIEW_RC_FREE_EVICT, self.free_buf);
         ep.set_buffer(rc_split::VIEW_RC_REHASH_EVICT, self.rehash_buf);
+        ep.set_buffer(rc_split::VIEW_RC_META_EVICT, self.meta_buf);
         for (int phase = 0; phase < 2; phase++) {
             p.rc_dims[3] = phase;
             ep.set_uniforms(rc_split::UB_RC_SPLIT_PARAMS, &p, rc_split::RcSplitParams::size);
