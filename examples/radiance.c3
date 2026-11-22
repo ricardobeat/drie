@@ -156,16 +156,16 @@ fn void build_scene()
     dense_rc.sky_from_scene = false;
     dense_rc.sky_color = { 0.004f, 0.005f, 0.008f };
     dense_rc.ground_color = { 0.004f, 0.004f, 0.004f };
-    dense_rc.update_every = 2;
-    dense_rc.blend = 0.25f;
+    dense_rc.update_every = 1;
+    dense_rc.blend = 0.12f;
     dense_rc.voxelize(scene);
 
     split_rc = drie::radiance_cascades_sparse(bmin, bmax, spacing: 0.20f, levels: 4, max_probes: 16384, hash_cap: 65536);
     split_rc.sky_from_scene = false;
     split_rc.sky_color = { 0.004f, 0.005f, 0.008f };
     split_rc.ground_color = { 0.004f, 0.004f, 0.004f };
-    split_rc.update_every = 2;
-    split_rc.blend = 0.25f;
+    split_rc.update_every = 1;
+    split_rc.blend = 0.12f;
     split_rc.voxelize(scene);
 
     camera = drie::perspective_camera(58, (float)W / H, 0.05f, 40);

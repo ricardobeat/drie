@@ -204,9 +204,12 @@ void main() {
     float spacing = rc_min.w * float(1 << level);
     vec3 pos = rc_min.xyz + (vec3(pc) + 0.5) * spacing;
 
-    // the direction, somewhere else in its cell of the square each frame
-    uint h = rc_hash(uint(i) * 2654435761u + uint(rc_tune.z) * 362437u + uint(level) * 7919u);
-    vec2 jitter = vec2(float(h & 0xffffu), float(h >> 16)) / 65536.0;
+    // Low-discrepancy R2 quasi-random angular jitter per ray update (eliminates white-noise shimmer)
+    uint cell_h = rc_hash(uint(i) * 2654435761u + uint(level) * 7919u);
+    vec2 cell_seed = vec2(float(cell_h & 0xffffu), float(cell_h >> 16)) / 65536.0;
+    float r2_step = float(int(rc_tune.z) / max(rc_vox.w, 1));
+    vec2 jitter = fract(cell_seed + r2_step * vec2(0.7548776662, 0.5698402909));
+    uint h = rc_hash(cell_h ^ (uint(rc_tune.z) * 362437u));
     ivec2 uv = ivec2(k % d, k / d);
     vec3 rd = rc_direction((vec2(uv) + jitter) / float(d) * 2.0 - 1.0);
 
@@ -218,7 +221,17 @@ void main() {
     float t_hit;
     ivec3 cell;
     vec3 face;
-    int what = rc_march(pos + rd * t0, rd, t1 - t0, t_hit, cell, face);
+    float t_start = t0;
+    int what = rc_march(pos + rd * t_start, rd, t1 - t_start, t_hit, cell, face);
+    // If an upper-cascade ray starts inside a wall while the probe itself is in open air,
+    // back up slightly so it hits the wall's lit front face instead of returning black.
+    if (what == 3 && level > 0) {
+        ivec3 pvc = ivec3(floor((pos - rc_min.xyz) / rc_tune.w));
+        if (rc_in_grid(pvc) && !rc_solid(pvc)) {
+            t_start = max(t0 - spacing * 0.75, 0.0);
+            what = rc_march(pos + rd * t_start, rd, t1 - t_start, t_hit, cell, face);
+        }
+    }
     vec4 result = vec4(0.0);
     if (what == 1) {
         rc_voxel vx = rc_vox_data[rc_voxel_index(cell)];
@@ -230,11 +243,12 @@ void main() {
                   / 255.0 * exp2(float(e) - 128.0);
         }
         // just outside the face the ray came in through
-        vec3 hp = pos + rd * (t0 + t_hit) + face * (0.5 * rc_tune.w);
+        vec3 hp = pos + rd * (t_start + t_hit) + face * (0.5 * rc_tune.w);
         vec3 arriving = rc_bounce(hp, face) * rc_sky.w;
-        // one of the lights that reach it, picked by how much each would give (a shadow ray
-        // to every one costs too much); over the frames it comes to the same
+        // Deterministically shadow-test the first 4 contributing lights (zero light-selection flicker);
+        // fall back to RIS only for any extra lights beyond 4.
         int nl = rc_info.z;
+        int direct_tested = 0;
         float total = 0.0;
         vec3 picked = vec3(0.0);
         float picked_w = 0.0;
@@ -263,13 +277,21 @@ void main() {
             vec3 gives = lt.color.rgb * (ndl * cone * (sun ? 1.0 : rc_attenuation(dist, lt.pos.w, lt.color.w)));
             float w = max(gives.r, max(gives.g, gives.b));
             if (w <= 0.0) continue;
-            total += w;
-            seed = rc_hash(seed + uint(l) * 747796405u + 1u);
-            if (float(seed >> 8) / 16777216.0 * total < w) {
-                picked = gives;
-                picked_w = w;
-                picked_dir = ld;
-                picked_dist = dist;
+            if (direct_tested < 4) {
+                direct_tested++;
+                float st;
+                ivec3 sc;
+                vec3 sf;
+                if (rc_march(hp, ld, dist - rc_tune.w, st, sc, sf) != 1) arriving += gives;
+            } else {
+                total += w;
+                seed = rc_hash(seed + uint(l) * 747796405u + 1u);
+                if (float(seed >> 8) / 16777216.0 * total < w) {
+                    picked = gives;
+                    picked_w = w;
+                    picked_dir = ld;
+                    picked_dist = dist;
+                }
             }
         }
         if (picked_w > 0.0) {
@@ -286,28 +308,44 @@ void main() {
         if (level + 1 >= rc_info.y) {
             result = vec4(rc_sky_at(rd), 0.0);
         } else {
-            // on in the cascade above: its 8 probes around this one, and the 4 directions of
-            // each that share this one's cell of the square
+            // Merge with the 8 probes of the cascade above, rejecting solid probes and probes
+            // separated by a solid wall so coarse blocks and light leaks cannot contaminate `pos`.
             int up = level + 1;
             ivec3 udims = rc_level_dims(up);
             int ud = d * 2;
             int uoff = rc_level_offset(up);
-            vec3 g = (pos - rc_min.xyz) / (spacing * 2.0) - 0.5;
+            float usp = spacing * 2.0;
+            vec3 g = (pos - rc_min.xyz) / usp - 0.5;
             ivec3 b = ivec3(floor(g));
             vec3 f = g - vec3(b);
             vec3 sum = vec3(0.0);
+            float wsum = 0.0;
+            vec3 sum_any = vec3(0.0);
+            float wsum_any = 0.0;
             for (int n = 0; n < 8; n++) {
                 ivec3 o = ivec3(n & 1, (n >> 1) & 1, (n >> 2) & 1);
                 ivec3 c = clamp(b + o, ivec3(0), udims - 1);
+                vec3 up_pos = rc_min.xyz + (vec3(c) + 0.5) * usp;
+                ivec3 uvc = ivec3(floor((up_pos - rc_min.xyz) / rc_tune.w));
+                if (rc_in_grid(uvc) && rc_solid(uvc)) continue;
                 int at = uoff + ((c.z * udims.y + c.y) * udims.x + c.x) * ud * ud;
                 vec3 four = rc_unpack_rad(rc_rad[at + (uv.y * 2) * ud + uv.x * 2].p)
                           + rc_unpack_rad(rc_rad[at + (uv.y * 2) * ud + uv.x * 2 + 1].p)
                           + rc_unpack_rad(rc_rad[at + (uv.y * 2 + 1) * ud + uv.x * 2].p)
                           + rc_unpack_rad(rc_rad[at + (uv.y * 2 + 1) * ud + uv.x * 2 + 1].p);
                 vec3 w3 = mix(1.0 - f, f, vec3(o));
-                sum += four * (0.25 * w3.x * w3.y * w3.z);
+                float w = w3.x * w3.y * w3.z;
+                sum_any += four * (0.25 * w);
+                wsum_any += w;
+                // Check two midpoints for wall occlusion between child `pos` and parent `up_pos`
+                ivec3 m1 = ivec3(floor((mix(pos, up_pos, 0.35) - rc_min.xyz) / rc_tune.w));
+                ivec3 m2 = ivec3(floor((mix(pos, up_pos, 0.65) - rc_min.xyz) / rc_tune.w));
+                if ((rc_in_grid(m1) && rc_solid(m1)) || (rc_in_grid(m2) && rc_solid(m2))) continue;
+                sum += four * (0.25 * w);
+                wsum += w;
             }
-            result = vec4(sum, 0.0);
+            vec3 merged = wsum > 1e-4 ? sum / wsum : (wsum_any > 1e-4 ? sum_any / wsum_any : rc_sky_at(rd));
+            result = vec4(merged, 0.0);
         }
     }
     result.rgb = min(result.rgb, vec3(256.0));

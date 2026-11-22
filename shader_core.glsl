@@ -1774,14 +1774,16 @@ uint rc_probe_hash(uint x) {
 }
 
 int rc_lookup_sparse_probe(ivec3 c, int hash_cap) {
-    uint key_lo = (uint(c.x + 32768) & 0xffffu) | ((uint(c.y + 32768) & 0xffffu) << 16);
-    uint key_hi = (uint(c.z + 32768) & 0xffffu) | 0x01000000u;
+    uint key = (uint(c.x) & 0x1ffu)
+             | ((uint(c.y) & 0x1ffu) << 9)
+             | ((uint(c.z) & 0x1ffu) << 18)
+             | 0x80000000u;
     uint mask = uint(hash_cap - 1);
-    uint idx = rc_probe_hash(key_lo ^ (key_hi * 0x9e3779b9u)) & mask;
-    for (int step = 0; step < 16; step++) {
+    uint idx = rc_probe_hash(key) & mask;
+    for (int step = 0; step < 32; step++) {
         uvec4 e = floatBitsToUint(rc_probe_data[idx].e);
         if (e.y == 0u) return -1;
-        if (e.y == key_hi && e.x == key_lo) return int(e.z);
+        if (e.y == key) return int(e.z);
         idx = (idx + 1u) & mask;
     }
     return -1;
@@ -1811,13 +1813,15 @@ vec3 rc_irradiance(vec3 n, out float fade) {
             vec4 ex = rc_probe_data[at + side.x].e;
             vec3 e = ex.rgb * nn.x + rc_probe_data[at + side.y].e.rgb * nn.y + rc_probe_data[at + side.z].e.rgb * nn.z;
             vec3 w3 = mix(1.0 - f, f, vec3(o));
-            float w = (w3.x * w3.y * w3.z + 0.002) * ex.w;
+            float tw = w3.x * w3.y * w3.z;
+            float w = tw * ex.w;
             vec3 probe_pos = (vec3(c) + 0.5) * spacing;
-            float front = clamp((dot(probe_pos - v_world_pos, n) + 0.04) / 0.06, 0.0, 1.0);
+            float front = smoothstep(-0.15 * spacing, 0.45 * spacing, dot(probe_pos - v_world_pos, n));
             sum += e * (w * front);
             wsum += w * front;
-            sum_any += e * w;
-            wsum_any += w;
+            float wa = (tw + 1e-4) * ex.w;
+            sum_any += e * wa;
+            wsum_any += wa;
         }
         if (wsum > 1e-4) { fade = 1.0; return sum / wsum * rc_size.w; }
         if (wsum_any > 1e-5) { fade = 1.0; return sum_any / wsum_any * rc_size.w; }
@@ -1838,13 +1842,15 @@ vec3 rc_irradiance(vec3 n, out float fade) {
         vec4 ex = rc_probe_data[at + side.x].e;
         vec3 e = ex.rgb * nn.x + rc_probe_data[at + side.y].e.rgb * nn.y + rc_probe_data[at + side.z].e.rgb * nn.z;
         vec3 w3 = mix(1.0 - f, f, vec3(o));
-        float w = (w3.x * w3.y * w3.z + 0.002) * ex.w;
+        float tw = w3.x * w3.y * w3.z;
+        float w = tw * ex.w;
         vec3 probe_pos = rc_min.xyz + (vec3(c) + 0.5) * spacing;
-        float front = clamp((dot(probe_pos - v_world_pos, n) + 0.04) / 0.06, 0.0, 1.0);
+        float front = smoothstep(-0.15 * spacing, 0.45 * spacing, dot(probe_pos - v_world_pos, n));
         sum += e * (w * front);
         wsum += w * front;
-        sum_any += e * w;
-        wsum_any += w;
+        float wa = (tw + 1e-4) * ex.w;
+        sum_any += e * wa;
+        wsum_any += wa;
     }
     if (wsum > 1e-4) return sum / wsum * rc_size.w;
     return wsum_any > 1e-5 ? sum_any / wsum_any * rc_size.w : vec3(0.0);

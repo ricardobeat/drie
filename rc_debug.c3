@@ -409,6 +409,13 @@ const float[4][5] LEVEL_COLORS @local = {
     { 0.85f, 0.85f, 0.95f, 0.90f }, // L4+: white
 };
 
+fn int unwrap_z(uint key, RadianceCascades* rc, int lvl) @local {
+    float sp = rc.spacing * (float)(1 << lvl);
+    int z_mod = (int)((key >> 18) & 0x1ffu);
+    int base_z = (int)math::floor(rc.min.z / sp) - 16;
+    return base_z + ((z_mod - base_z) & 511);
+}
+
 fn void draw_sparse_level_probes(RadianceCascades* rc, int lvl, int slice0, bool draw_angles, int width, int height) @local {
     if (!st.irr_ready) return;
     float spacing = rc.spacing * (float)(1 << lvl);
@@ -426,12 +433,12 @@ fn void draw_sparse_level_probes(RadianceCascades* rc, int lvl, int slice0, bool
         drie::Vec4 raw = st.irr_cpu[h];
         uint key_lo = bitcast(raw.x, uint);
         uint key_hi = bitcast(raw.y, uint);
-        if ((key_hi & 0x01000000u) == 0) continue;
-        int plvl = (int)((key_hi >> 16) & 0xfu);
+        if ((key_hi & 0x80000000u) == 0) continue;
+        int plvl = (int)((key_hi >> 27) & 0x7u);
         if (plvl != lvl) continue;
         int ix = (int)(key_lo & 0xffffu) - 32768;
         int iy = (int)((key_lo >> 16) & 0xffffu) - 32768;
-        int iz = (int)(key_hi & 0xffffu) - 32768;
+        int iz = unwrap_z(key_hi, rc, plvl);
         if (math::abs(iy - target_iy) > 1) continue;
         float wx = ((float)ix + 0.5f) * spacing;
         float wz = ((float)iz + 0.5f) * spacing;
@@ -493,12 +500,12 @@ fn void draw_sparse_level_probes(RadianceCascades* rc, int lvl, int slice0, bool
         drie::Vec4 raw = st.irr_cpu[h];
         uint key_lo = bitcast(raw.x, uint);
         uint key_hi = bitcast(raw.y, uint);
-        if ((key_hi & 0x01000000u) == 0) continue;
-        int plvl = (int)((key_hi >> 16) & 0xfu);
+        if ((key_hi & 0x80000000u) == 0) continue;
+        int plvl = (int)((key_hi >> 27) & 0x7u);
         if (plvl != lvl) continue;
         int ix = (int)(key_lo & 0xffffu) - 32768;
         int iy = (int)((key_lo >> 16) & 0xffffu) - 32768;
-        int iz = (int)(key_hi & 0xffffu) - 32768;
+        int iz = unwrap_z(key_hi, rc, plvl);
         if (iy != target_iy || ((ix + iz) & 1) != 0) continue;
         float wx = ((float)ix + 0.5f) * spacing;
         float wz = ((float)iz + 0.5f) * spacing;
@@ -741,12 +748,12 @@ fn void draw_3d_scene_overlay(RadianceCascades* rc, int active_lvl, int slice0, 
                     drie::Vec4 raw = st.irr_cpu[h];
                     uint key_lo = bitcast(raw.x, uint);
                     uint key_hi = bitcast(raw.y, uint);
-                    if ((key_hi & 0x01000000u) == 0) continue;
-                    int plvl = (int)((key_hi >> 16) & 0xfu);
+                    if ((key_hi & 0x80000000u) == 0) continue;
+                    int plvl = (int)((key_hi >> 27) & 0x7u);
                     if (st.level >= 0 && plvl != active_lvl) continue;
                     int ix = (int)(key_lo & 0xffffu) - 32768;
                     int iy = (int)((key_lo >> 16) & 0xffffu) - 32768;
-                    int iz = (int)(key_hi & 0xffffu) - 32768;
+                    int iz = unwrap_z(key_hi, rc, plvl);
                     float sp = rc.spacing * (float)(1 << plvl);
                     Vector3 pos = { ((float)ix + 0.5f) * sp, ((float)iy + 0.5f) * sp, ((float)iz + 0.5f) * sp };
                     float dx = pos.x - st.pan_x;
@@ -788,12 +795,12 @@ fn void draw_3d_scene_overlay(RadianceCascades* rc, int active_lvl, int slice0, 
                         drie::Vec4 raw = st.irr_cpu[h];
                         uint key_lo = bitcast(raw.x, uint);
                         uint key_hi = bitcast(raw.y, uint);
-                        if ((key_hi & 0x01000000u) == 0) continue;
-                        int plvl = (int)((key_hi >> 16) & 0xfu);
+                        if ((key_hi & 0x80000000u) == 0) continue;
+                        int plvl = (int)((key_hi >> 27) & 0x7u);
                         if (st.level >= 0 && plvl != active_lvl) continue;
                         int ix = (int)(key_lo & 0xffffu) - 32768;
                         int iy = (int)((key_lo >> 16) & 0xffffu) - 32768;
-                        int iz = (int)(key_hi & 0xffffu) - 32768;
+                        int iz = unwrap_z(key_hi, rc, plvl);
                         float sp = rc.spacing * (float)(1 << plvl);
                         Vector3 pos = { ((float)ix + 0.5f) * sp, ((float)iy + 0.5f) * sp, ((float)iz + 0.5f) * sp };
                         float dx = pos.x - st.pan_x;
@@ -1094,7 +1101,7 @@ fn void draw_content(
             int occupied = 0;
             if (st.irr_ready) {
                 for (int h = 0; h < rc.hash_cap; h++) {
-                    if ((bitcast(st.irr_cpu[h].y, uint) & 0x01000000u) != 0) occupied++;
+                    if ((bitcast(st.irr_cpu[h].y, uint) & 0x80000000u) != 0) occupied++;
                 }
             }
             int total_rays = rc.offsets[rc.levels - 1] + rc.counts[rc.levels - 1];

@@ -71,10 +71,16 @@ uint rc_hash(uint x) {
     return x;
 }
 
-uvec2 rc_pack_key(ivec3 c, int level) {
-    uint lo = (uint(c.x + 32768) & 0xffffu) | ((uint(c.y + 32768) & 0xffffu) << 16);
-    uint hi = (uint(c.z + 32768) & 0xffffu) | ((uint(level) & 0xfu) << 16) | 0x01000000u;
-    return uvec2(lo, hi);
+uint rc_pack_key32(ivec3 c, int level) {
+    return (uint(c.x) & 0x1ffu)
+         | ((uint(c.y) & 0x1ffu) << 9)
+         | ((uint(c.z) & 0x1ffu) << 18)
+         | ((uint(level) & 0x7u) << 27)
+         | 0x80000000u;
+}
+
+uint rc_pack_xy(ivec3 c) {
+    return (uint(c.x + 32768) & 0xffffu) | ((uint(c.y + 32768) & 0xffffu) << 16);
 }
 
 vec3 rc_unpack_rad(uvec2 p) {
@@ -102,6 +108,20 @@ vec3 rc_unpack_oct_normal(vec2 e) {
 }
 @end
 
+@cs rc_clear_cs
+@include_block rc_split_common
+layout(binding=2) buffer rc_ht_clear { rc_uvec4 rc_ht[]; };
+layout(binding=4) buffer rc_cnt_clear { rc_uint rc_cnt[]; };
+
+layout(local_size_x=64) in;
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i < uint(rc_info.w)) rc_ht[i].v = uvec4(0u);
+    if (i < 8u) rc_cnt[i].v = 0u;
+}
+@end
+
 @cs rc_alloc_cs
 @include_block rc_split_common
 layout(binding=0) uniform texture2D rc_depth_tex;
@@ -110,37 +130,44 @@ layout(binding=0) uniform sampler rc_gb_smp;
 layout(binding=2) buffer rc_ht_alloc { rc_uvec4 rc_ht[]; };
 layout(binding=3) buffer rc_meta_alloc { rc_probe_meta rc_meta[]; };
 layout(binding=4) buffer rc_cnt_alloc { rc_uint rc_cnt[]; };
+layout(binding=5) readonly buffer rc_vox_alloc { rc_voxel rc_vox_data[]; };
 
 layout(local_size_x=8, local_size_y=8) in;
 
+bool rc_probe_is_solid(ivec3 c, float sp) {
+    vec3 pos = (vec3(c) + 0.5) * sp;
+    ivec3 vc = ivec3(floor((pos - rc_min.xyz) / rc_tune.w));
+    if (any(lessThan(vc, ivec3(0))) || any(greaterThanEqual(vc, rc_vox.xyz))) return false;
+    return (rc_vox_data[(vc.z * rc_vox.y + vc.y) * rc_vox.x + vc.x].albedo & 0x1000000u) != 0u;
+}
+
 void rc_touch_probe(ivec3 c, int level, uint frame) {
-    uvec2 key = rc_pack_key(c, level);
+    uint key = rc_pack_key32(c, level);
     uint mask = uint(rc_info.w - 1);
-    uint idx = rc_hash(key.x ^ (key.y * 0x9e3779b9u)) & mask;
+    uint idx = rc_hash(key) & mask;
     int cap = rc_level_cap(level);
     int pbase = rc_probe_base(level);
-    for (int step = 0; step < 16; step++) {
-        uint cur_hi = rc_ht[idx].v.y;
-        if (cur_hi == key.y && rc_ht[idx].v.x == key.x) {
+    for (int step = 0; step < 32; step++) {
+        uint cur = rc_ht[idx].v.y;
+        if (cur == key) {
             rc_ht[idx].v.w = frame;
             return;
         }
-        if (cur_hi == 0u) {
-            uint prev = atomicCompSwap(rc_ht[idx].v.y, 0u, key.y);
+        if (cur == 0u) {
+            uint prev = atomicCompSwap(rc_ht[idx].v.y, 0u, key);
             if (prev == 0u) {
                 uint slot = atomicAdd(rc_cnt[level].v, 1u);
                 if (int(slot) < cap) {
-                    rc_ht[idx].v.x = key.x;
+                    rc_ht[idx].v.x = rc_pack_xy(c);
                     rc_ht[idx].v.z = slot;
                     rc_ht[idx].v.w = frame;
                     rc_meta[pbase + int(slot)].coord = ivec4(c, level);
                 } else {
-                    // Pool full: release hash slot
                     rc_ht[idx].v.y = 0u;
                 }
                 return;
             }
-            if (prev == key.y && rc_ht[idx].v.x == key.x) {
+            if (prev == key) {
                 rc_ht[idx].v.w = frame;
                 return;
             }
@@ -150,7 +177,30 @@ void rc_touch_probe(ivec3 c, int level, uint frame) {
 }
 
 void main() {
-    // Subsample G-Buffer by 4x4 pixels
+    uint frame = uint(rc_tune.z) + 1u;
+
+    // Seed coarse background levels (L >= 2) across the voxel box whenever they fit in the
+    // level pool, so off-screen walls still carry multi-bounce light with zero L0 probes behind camera.
+    uint row_w = uint(max((int(rc_screen.w) + 3) / 4, 1));
+    uint gid = gl_GlobalInvocationID.y * row_w + gl_GlobalInvocationID.x;
+    vec3 box_max = rc_min.xyz + vec3(rc_dims.xyz) * rc_min.w;
+    for (int l = 2; l < rc_info.y; l++) {
+        float sp = rc_min.w * float(1 << l);
+        ivec3 cmin = ivec3(floor(rc_min.xyz / sp));
+        ivec3 cmax = ivec3(ceil(box_max / sp));
+        ivec3 cdim = max(cmax - cmin, ivec3(1));
+        int total = cdim.x * cdim.y * cdim.z;
+        if (total <= rc_level_cap(l) && int(gid) < total) {
+            int idx = int(gid);
+            int cx = idx % cdim.x;
+            int cy = (idx / cdim.x) % cdim.y;
+            int cz = idx / (cdim.x * cdim.y);
+            ivec3 c = cmin + ivec3(cx, cy, cz);
+            if (!rc_probe_is_solid(c, sp)) rc_touch_probe(c, l, frame);
+        }
+    }
+
+    // Subsample G-Buffer by 4x4 pixels and allocate non-solid L0 probes around visible surfaces
     ivec2 px = ivec2(gl_GlobalInvocationID.xy) * 4 + ivec2(2);
     ivec2 sz = textureSize(sampler2D(rc_depth_tex, rc_gb_smp), 0);
     if (px.x >= sz.x || px.y >= sz.y) return;
@@ -167,15 +217,85 @@ void main() {
     vec3 n = rc_unpack_oct_normal(texelFetch(sampler2D(rc_normal_tex, rc_gb_smp), px, 0).xy);
     vec3 p = wp + n * rc_ground.w;
 
-    uint frame = uint(rc_tune.z) + 1u;
-    int levels = rc_info.y;
-    for (int l = 0; l < levels; l++) {
-        float sp = rc_min.w * float(1 << l);
-        ivec3 b = ivec3(floor(p / sp - 0.5));
-        for (int k = 0; k < 8; k++) {
-            ivec3 o = ivec3(k & 1, (k >> 1) & 1, (k >> 2) & 1);
-            rc_touch_probe(b + o, l, frame);
+    float sp0 = rc_min.w;
+    ivec3 b0 = ivec3(floor(p / sp0 - 0.5));
+    for (int k = 0; k < 8; k++) {
+        ivec3 o = ivec3(k & 1, (k >> 1) & 1, (k >> 2) & 1);
+        ivec3 c = b0 + o;
+        if (!rc_probe_is_solid(c, sp0)) rc_touch_probe(c, 0, frame);
+    }
+}
+@end
+
+@cs rc_propagate_cs
+@include_block rc_split_common
+layout(binding=2) buffer rc_ht_prop { rc_uvec4 rc_ht[]; };
+layout(binding=3) buffer rc_meta_prop { rc_probe_meta rc_meta[]; };
+layout(binding=4) buffer rc_cnt_prop { rc_uint rc_cnt[]; };
+layout(binding=5) readonly buffer rc_vox_prop { rc_voxel rc_vox_data[]; };
+
+layout(local_size_x=64) in;
+
+bool rc_prop_is_solid(ivec3 c, float sp) {
+    vec3 pos = (vec3(c) + 0.5) * sp;
+    ivec3 vc = ivec3(floor((pos - rc_min.xyz) / rc_tune.w));
+    if (any(lessThan(vc, ivec3(0))) || any(greaterThanEqual(vc, rc_vox.xyz))) return false;
+    return (rc_vox_data[(vc.z * rc_vox.y + vc.y) * rc_vox.x + vc.x].albedo & 0x1000000u) != 0u;
+}
+
+void rc_prop_touch(ivec3 c, int level, uint frame) {
+    uint key = rc_pack_key32(c, level);
+    uint mask = uint(rc_info.w - 1);
+    uint idx = rc_hash(key) & mask;
+    int cap = rc_level_cap(level);
+    int pbase = rc_probe_base(level);
+    for (int step = 0; step < 32; step++) {
+        uint cur = rc_ht[idx].v.y;
+        if (cur == key) {
+            rc_ht[idx].v.w = frame;
+            return;
         }
+        if (cur == 0u) {
+            uint prev = atomicCompSwap(rc_ht[idx].v.y, 0u, key);
+            if (prev == 0u) {
+                uint slot = atomicAdd(rc_cnt[level].v, 1u);
+                if (int(slot) < cap) {
+                    rc_ht[idx].v.x = rc_pack_xy(c);
+                    rc_ht[idx].v.z = slot;
+                    rc_ht[idx].v.w = frame;
+                    rc_meta[pbase + int(slot)].coord = ivec4(c, level);
+                } else {
+                    rc_ht[idx].v.y = 0u;
+                }
+                return;
+            }
+            if (prev == key) {
+                rc_ht[idx].v.w = frame;
+                return;
+            }
+        }
+        idx = (idx + 1u) & mask;
+    }
+}
+
+void main() {
+    int level = rc_dims.w;
+    int up = level + 1;
+    if (up >= rc_info.y) return;
+    int slot = int(gl_GlobalInvocationID.x);
+    int count = min(int(rc_cnt[level].v), rc_level_cap(level));
+    if (slot >= count) return;
+
+    ivec3 pc = rc_meta[rc_probe_base(level) + slot].coord.xyz;
+    float sp = rc_min.w * float(1 << level);
+    float usp = sp * 2.0;
+    vec3 pos = (vec3(pc) + 0.5) * sp;
+    ivec3 b = ivec3(floor(pos / usp - 0.5));
+    uint frame = uint(rc_tune.z) + 1u;
+    for (int n = 0; n < 8; n++) {
+        ivec3 o = ivec3(n & 1, (n >> 1) & 1, (n >> 2) & 1);
+        ivec3 c = b + o;
+        if (!rc_prop_is_solid(c, usp)) rc_prop_touch(c, up, frame);
     }
 }
 @end
@@ -211,13 +331,13 @@ bool rc_solid(ivec3 c) {
 }
 
 int rc_lookup_probe(ivec3 c, int level) {
-    uvec2 key = rc_pack_key(c, level);
+    uint key = rc_pack_key32(c, level);
     uint mask = uint(rc_info.w - 1);
-    uint idx = rc_hash(key.x ^ (key.y * 0x9e3779b9u)) & mask;
-    for (int step = 0; step < 16; step++) {
-        uint hi = rc_ht[idx].v.y;
-        if (hi == 0u) return -1;
-        if (hi == key.y && rc_ht[idx].v.x == key.x) return int(rc_ht[idx].v.z);
+    uint idx = rc_hash(key) & mask;
+    for (int step = 0; step < 32; step++) {
+        uint cur = rc_ht[idx].v.y;
+        if (cur == 0u) return -1;
+        if (cur == key) return int(rc_ht[idx].v.z);
         idx = (idx + 1u) & mask;
     }
     return -1;
@@ -278,6 +398,46 @@ float rc_attenuation(float d, float cutoff, float decay) {
     return a;
 }
 
+vec3 rc_level_hemisphere(vec3 p, vec3 face, int level) {
+    if (level >= rc_info.y) return vec3(-1.0);
+    float sp = rc_min.w * float(1 << level);
+    int d = rc_info.x << level;
+    int dd = d * d;
+    int off = rc_level_off(level);
+    vec3 g = p / sp - 0.5;
+    ivec3 b = ivec3(floor(g));
+    vec3 f = g - vec3(b);
+    int best_slot = -1;
+    float best_w = -1.0;
+    for (int k = 0; k < 8; k++) {
+        ivec3 o = ivec3(k & 1, (k >> 1) & 1, (k >> 2) & 1);
+        int slot = rc_lookup_probe(b + o, level);
+        if (slot < 0) continue;
+        vec3 w3 = mix(1.0 - f, f, vec3(o));
+        float w = w3.x * w3.y * w3.z;
+        if (w > best_w) { best_w = w; best_slot = slot; }
+    }
+    if (best_slot < 0) return vec3(-1.0);
+    int step = max(d / 4, 1);
+    vec3 sum = vec3(0.0);
+    float wsum = 0.0;
+    int base = off + best_slot * dd;
+    for (int ky = 0; ky < d; ky += step) {
+        for (int kx = 0; kx < d; kx += step) {
+            vec2 e = (vec2(kx, ky) + 0.5) / float(d) * 2.0 - 1.0;
+            vec3 rd = rc_direction(e);
+            float c = dot(rd, face);
+            if (c <= 0.0) continue;
+            vec3 flat_d = vec3(e, 1.0 - abs(e.x) - abs(e.y));
+            float len = length(flat_d);
+            float w = c / (len * len * len);
+            sum += rc_unpack_rad(rc_rad[base + ky * d + kx].p) * w;
+            wsum += w;
+        }
+    }
+    return wsum > 1e-4 ? RC_PI * sum / wsum : vec3(0.0);
+}
+
 vec3 rc_sparse_bounce(vec3 p, vec3 face) {
     int axis = face.x != 0.0 ? (face.x > 0.0 ? 0 : 1) : (face.y != 0.0 ? (face.y > 0.0 ? 2 : 3) : (face.z > 0.0 ? 4 : 5));
     vec3 g = p / rc_min.w - 0.5;
@@ -296,7 +456,13 @@ vec3 rc_sparse_bounce(vec3 p, vec3 face) {
         sum += e.rgb * w;
         wsum += w;
     }
-    return wsum > 1e-4 ? sum / wsum : vec3(0.0);
+    if (wsum > 1e-4) return sum / wsum;
+    // Off-screen surface fallback: sample coarse L1 / L2 hemisphere so occluded walls still bounce light
+    vec3 fb = rc_level_hemisphere(p, face, 1);
+    if (fb.x >= 0.0) return fb;
+    fb = rc_level_hemisphere(p, face, 2);
+    if (fb.x >= 0.0) return fb;
+    return vec3(0.0);
 }
 
 vec3 rc_sky_at(vec3 rd) {
@@ -319,8 +485,12 @@ void main() {
     float spacing = rc_min.w * float(1 << level);
     vec3 pos = (vec3(pc) + 0.5) * spacing;
 
-    uint h = rc_hash(uint(i) * 2654435761u + uint(rc_tune.z) * 362437u + uint(level) * 7919u);
-    vec2 jitter = vec2(float(h & 0xffffu), float(h >> 16)) / 65536.0;
+    // Low-discrepancy R2 quasi-random angular jitter per ray update (eliminates white-noise shimmer)
+    uint cell_h = rc_hash(uint(i) * 2654435761u + uint(level) * 7919u);
+    vec2 cell_seed = vec2(float(cell_h & 0xffffu), float(cell_h >> 16)) / 65536.0;
+    float r2_step = float(int(rc_tune.z) / max(rc_vox.w, 1));
+    vec2 jitter = fract(cell_seed + r2_step * vec2(0.7548776662, 0.5698402909));
+    uint h = rc_hash(cell_h ^ (uint(rc_tune.z) * 362437u));
     ivec2 uv = ivec2(k % d, k / d);
     vec3 rd = rc_direction((vec2(uv) + jitter) / float(d) * 2.0 - 1.0);
 
@@ -331,7 +501,16 @@ void main() {
     float t_hit;
     ivec3 cell;
     vec3 face;
-    int what = rc_march(pos + rd * t0, rd, t1 - t0, t_hit, cell, face);
+    float t_start = t0;
+    int what = rc_march(pos + rd * t_start, rd, t1 - t_start, t_hit, cell, face);
+    // Recover lit front face when an upper-cascade ray starts just inside a wall
+    if (what == 3 && level > 0) {
+        ivec3 pvc = ivec3(floor((pos - rc_min.xyz) / rc_tune.w));
+        if (rc_in_grid(pvc) && !rc_solid(pvc)) {
+            t_start = max(t0 - spacing * 0.75, 0.0);
+            what = rc_march(pos + rd * t_start, rd, t1 - t_start, t_hit, cell, face);
+        }
+    }
     vec3 result = vec3(0.0);
     if (what == 1) {
         rc_voxel vx = rc_vox_data[rc_voxel_index(cell)];
@@ -342,9 +521,10 @@ void main() {
             light = vec3(float(vx.emissive & 0xffu), float((vx.emissive >> 8) & 0xffu), float((vx.emissive >> 16) & 0xffu))
                   / 255.0 * exp2(float(e) - 128.0);
         }
-        vec3 hp = pos + rd * (t0 + t_hit) + face * (0.5 * rc_tune.w);
+        vec3 hp = pos + rd * (t_start + t_hit) + face * (0.5 * rc_tune.w);
         vec3 arriving = rc_sparse_bounce(hp, face) * rc_sky.w;
         int nl = rc_info.z;
+        int direct_tested = 0;
         float total = 0.0;
         vec3 picked = vec3(0.0);
         float picked_w = 0.0;
@@ -369,13 +549,21 @@ void main() {
             vec3 gives = lt.color.rgb * (ndl * cone * (sun ? 1.0 : rc_attenuation(dist, lt.pos.w, lt.color.w)));
             float w = max(gives.r, max(gives.g, gives.b));
             if (w <= 0.0) continue;
-            total += w;
-            seed = rc_hash(seed + uint(l) * 747796405u + 1u);
-            if (float(seed >> 8) / 16777216.0 * total < w) {
-                picked = gives;
-                picked_w = w;
-                picked_dir = ld;
-                picked_dist = dist;
+            if (direct_tested < 4) {
+                direct_tested++;
+                float st;
+                ivec3 sc;
+                vec3 sf;
+                if (rc_march(hp, ld, dist - rc_tune.w, st, sc, sf) != 1) arriving += gives;
+            } else {
+                total += w;
+                seed = rc_hash(seed + uint(l) * 747796405u + 1u);
+                if (float(seed >> 8) / 16777216.0 * total < w) {
+                    picked = gives;
+                    picked_w = w;
+                    picked_dir = ld;
+                    picked_dist = dist;
+                }
             }
         }
         if (picked_w > 0.0) {
@@ -395,15 +583,22 @@ void main() {
             int up = level + 1;
             int ud = d * 2;
             int uoff = rc_level_off(up);
-            vec3 g = pos / (spacing * 2.0) - 0.5;
+            float usp = spacing * 2.0;
+            vec3 g = pos / usp - 0.5;
             ivec3 b = ivec3(floor(g));
             vec3 f = g - vec3(b);
             vec3 sum = vec3(0.0);
             float wsum = 0.0;
+            vec3 sum_any = vec3(0.0);
+            float wsum_any = 0.0;
             for (int n = 0; n < 8; n++) {
                 ivec3 o = ivec3(n & 1, (n >> 1) & 1, (n >> 2) & 1);
-                int uslot = rc_lookup_probe(b + o, up);
+                ivec3 uc = b + o;
+                int uslot = rc_lookup_probe(uc, up);
                 if (uslot < 0) continue;
+                vec3 up_pos = (vec3(uc) + 0.5) * usp;
+                ivec3 uvc = ivec3(floor((up_pos - rc_min.xyz) / rc_tune.w));
+                if (rc_in_grid(uvc) && rc_solid(uvc)) continue;
                 int at = uoff + uslot * ud * ud;
                 vec3 four = rc_unpack_rad(rc_rad[at + (uv.y * 2) * ud + uv.x * 2].p)
                           + rc_unpack_rad(rc_rad[at + (uv.y * 2) * ud + uv.x * 2 + 1].p)
@@ -411,10 +606,15 @@ void main() {
                           + rc_unpack_rad(rc_rad[at + (uv.y * 2 + 1) * ud + uv.x * 2 + 1].p);
                 vec3 w3 = mix(1.0 - f, f, vec3(o));
                 float w = w3.x * w3.y * w3.z;
+                sum_any += four * (0.25 * w);
+                wsum_any += w;
+                ivec3 m1 = ivec3(floor((mix(pos, up_pos, 0.35) - rc_min.xyz) / rc_tune.w));
+                ivec3 m2 = ivec3(floor((mix(pos, up_pos, 0.65) - rc_min.xyz) / rc_tune.w));
+                if ((rc_in_grid(m1) && rc_solid(m1)) || (rc_in_grid(m2) && rc_solid(m2))) continue;
                 sum += four * (0.25 * w);
                 wsum += w;
             }
-            result = wsum > 1e-4 ? sum / wsum : rc_sky_at(rd);
+            result = wsum > 1e-4 ? sum / wsum : (wsum_any > 1e-4 ? sum_any / wsum_any : rc_sky_at(rd));
         }
     }
     result = min(result, vec3(256.0));
@@ -479,6 +679,8 @@ void main() {
 }
 @end
 
+@program rc_clear rc_clear_cs
 @program rc_alloc rc_alloc_cs
+@program rc_propagate rc_propagate_cs
 @program rc_split_trace rc_split_trace_cs
 @program rc_split_gather rc_split_gather_cs
