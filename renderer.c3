@@ -1440,13 +1440,24 @@ fn void start_material_shaders(Renderer* r, Scene* scene, bool prepass) @local {
             NodeBuild* nb = node_build_of(mat);
             if (nb) {
                 start_node_shader(nb.program, fam, v);
-                // Warm the MRT twin in the background too so crossing from a non-MRT portal
-                // or cubemap pass into the main MRT target does not stall.
-                if (v == MAIN) start_node_shader(nb.program, fam, MRT);
-                if (v == OPAQUE) start_node_shader(nb.program, fam, OPAQUE_MRT);
+                // Warm the sibling variants (MAIN/OPAQUE/MRT/OPAQUE_MRT) in the background so
+                // switching between non-MRT portals, cull_box=true, and the main MRT target
+                // does not stall the main thread later.
+                if (v == MAIN || v == OPAQUE || v == MRT || v == OPAQUE_MRT) {
+                    start_node_shader(nb.program, fam, MAIN);
+                    start_node_shader(nb.program, fam, OPAQUE);
+                    start_node_shader(nb.program, fam, MRT);
+                    start_node_shader(nb.program, fam, OPAQUE_MRT);
+                }
                 if (list == 0 && prepass && prepassed(item)) start_node_shader(nb.program, PBR, DEPTH);
             } else {
                 start_material_shader(fam, v);
+                if (v == MAIN || v == OPAQUE || v == MRT || v == OPAQUE_MRT) {
+                    start_material_shader(fam, MAIN);
+                    start_material_shader(fam, OPAQUE);
+                    start_material_shader(fam, MRT);
+                    start_material_shader(fam, OPAQUE_MRT);
+                }
                 if (list == 0 && prepass && prepassed(item)) start_material_shader(PBR, DEPTH);
             }
         }
