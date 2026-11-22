@@ -43,7 +43,7 @@ struct rc_rad_texel {
     uvec2 p;           // rgb packed as half2 + half2
 };
 struct rc_probe_meta {
-    ivec4 coord;       // xyz = probe grid coord (world integer), w = level, -1 while the slot is free
+    ivec4 coord;       // xyz = probe grid coord (world integer), w = see rc_meta_w, -1 while the slot is free
 };
 // Stored inside irradiance_buf:
 //   [0 .. hash_cap - 1]                 : uvec4(key_lo, key_hi, slot, last_frame)
@@ -66,6 +66,32 @@ const uint RC_STALE_FRAMES = 24u;
 const uint RC_TOMBSTONE = 0x7fffffffu;
 
 int rc_level_cap(int l) { return l < 4 ? rc_lcap0[l] : rc_lcap1[l - 4]; }
+
+// rc_meta[].coord.w of a live probe: its level in bits 0-3 and, while it's new, the frame it
+// was born in above them (rc_tune.z + 1: 1..4096; 0 once rc_evict_cs sees every one of its
+// rays has been traced). A new probe, or one in a recycled slot, has nothing of its own in its
+// rays yet (zeros, or the light of the probe that had the slot before): its first trace of
+// each ray replaces what's there instead of blending into it, and until every ray has had
+// that first trace, what reads its rays leaves out those that haven't (rc_ray_traced).
+int rc_meta_w(int level, uint frame) { return level | (int(frame) << 4); }
+uint rc_frame_age(uint now, uint then) { return now >= then ? now - then : now + 4096u - then; }
+uint rc_probe_age(int w) { return rc_frame_age(uint(rc_tune.z) + 1u, uint(w >> 4)); }
+// Whether ray `i` (its index among its level's rays) of a probe whose rc_meta w is `w` has been
+// traced since the probe was born, this frame's trace included. rc_split_trace_cs traces ray
+// t * every + (t + rc_tune.z) % every in each group t of `every` rays: one ray in `every` a
+// frame, each in turn.
+bool rc_ray_traced(int w, int i) {
+    int birth = w >> 4;
+    if (birth == 0) return true;
+    int every = max(rc_vox.w, 1);
+    uint age = rc_probe_age(w);
+    if (age + 1u >= uint(every)) return true;
+    int t = i / every;
+    int o = i - t * every;
+    // frames from the probe's birth to this ray's first trace
+    int wait = (o - (t + birth - 1) % every + every) % every;
+    return uint(wait) <= age;
+}
 int rc_level_off(int l) { return l < 4 ? rc_loff0[l] : rc_loff1[l - 4]; }
 int rc_probe_base(int l) { return l < 4 ? rc_pbase0[l] : rc_pbase1[l - 4]; }
 
@@ -189,7 +215,7 @@ void rc_touch_probe(ivec3 c, int level, uint frame) {
     rc_ht[open].v.x = rc_pack_xy(c);
     rc_ht[open].v.z = uint(slot);
     rc_ht[open].v.w = frame;
-    rc_meta[rc_probe_base(level) + slot].coord = ivec4(c, level);
+    rc_meta[rc_probe_base(level) + slot].coord = ivec4(c, rc_meta_w(level, frame));
 }
 @end
 
@@ -378,6 +404,11 @@ void main() {
             rc_free_push(level, e.z);
             return;
         }
+        int mi = rc_probe_base(level) + int(e.z);
+        int w = rc_meta[mi].coord.w;
+        // every ray traced at least once: no longer new (and the 4096-frame wrap of the
+        // frame number can't make it look new again)
+        if ((w >> 4) != 0 && rc_probe_age(w) >= uint(max(rc_vox.w, 1))) rc_meta[mi].coord.w = level;
         rc_rehash[idx].v = e;
         return;
     }
@@ -525,8 +556,10 @@ vec3 rc_level_hemisphere(vec3 p, vec3 face, int level) {
     vec3 sum = vec3(0.0);
     float wsum = 0.0;
     int base = off + best_slot * dd;
+    int mw = rc_meta[rc_probe_base(level) + best_slot].coord.w;
     for (int ky = 0; ky < d; ky += step) {
         for (int kx = 0; kx < d; kx += step) {
+            if (!rc_ray_traced(mw, best_slot * dd + ky * d + kx)) continue;
             vec2 e = (vec2(kx, ky) + 0.5) / float(d) * 2.0 - 1.0;
             vec3 rd = rc_direction(e);
             float c = dot(rd, face);
@@ -704,11 +737,20 @@ void main() {
                 vec3 up_pos = (vec3(uc) + 0.5) * usp;
                 ivec3 uvc = ivec3(floor((up_pos - rc_min.xyz) / rc_tune.w));
                 if (rc_in_grid(uvc) && rc_solid(uvc)) continue;
-                int at = uoff + uslot * ud * ud;
-                vec3 four = rc_unpack_rad(rc_rad[at + (uv.y * 2) * ud + uv.x * 2].p)
-                          + rc_unpack_rad(rc_rad[at + (uv.y * 2) * ud + uv.x * 2 + 1].p)
-                          + rc_unpack_rad(rc_rad[at + (uv.y * 2 + 1) * ud + uv.x * 2].p)
-                          + rc_unpack_rad(rc_rad[at + (uv.y * 2 + 1) * ud + uv.x * 2 + 1].p);
+                // the 2x2 rays of the probe above that this ray's cone covers, those of them
+                // traced (see rc_ray_traced) scaled up to stand for all four
+                int uw = rc_meta[rc_probe_base(up) + uslot].coord.w;
+                int ur = uslot * ud * ud + (uv.y * 2) * ud + uv.x * 2;
+                vec3 four = vec3(0.0);
+                int traced = 0;
+                for (int q = 0; q < 4; q++) {
+                    int r = ur + (q >> 1) * ud + (q & 1);
+                    if (!rc_ray_traced(uw, r)) continue;
+                    four += rc_unpack_rad(rc_rad[uoff + r].p);
+                    traced++;
+                }
+                if (traced == 0) continue;
+                four *= 4.0 / float(traced);
                 vec3 w3 = mix(1.0 - f, f, vec3(o));
                 float w = w3.x * w3.y * w3.z;
                 sum_any += four * (0.25 * w);
@@ -725,7 +767,9 @@ void main() {
     result = min(result, vec3(256.0));
     int at = rc_level_off(level) + i;
     vec3 prev = rc_unpack_rad(rc_rad[at].p);
-    rc_rad[at].p = rc_pack_rad(mix(prev, result, rc_tune.y));
+    // a new probe's first trace of this ray replaces what the slot held (see rc_meta_w)
+    bool first = (pm.w >> 4) != 0 && rc_probe_age(pm.w) < uint(max(rc_vox.w, 1));
+    rc_rad[at].p = rc_pack_rad(first ? result : mix(prev, result, rc_tune.y));
 }
 @end
 
@@ -765,7 +809,13 @@ void main() {
     vec3 sum[6];
     float wsum[6];
     for (int a = 0; a < 6; a++) { sum[a] = vec3(0.0); wsum[a] = 0.0; }
+    // a new probe's rays not traced yet are left out (rc_ray_traced), and its irradiance
+    // counts for as much as the share of them that are (w), so probes around that have all
+    // theirs outweigh it
+    int traced = 0;
     for (int k = 0; k < d * d; k++) {
+        if (!rc_ray_traced(pm.w, slot * d * d + k)) continue;
+        traced++;
         vec2 e = (vec2(k % d, k / d) + 0.5) / float(d) * 2.0 - 1.0;
         vec3 flat_dir = vec3(e, 1.0 - abs(e.x) - abs(e.y));
         float len = length(flat_dir);
@@ -780,7 +830,7 @@ void main() {
         }
     }
     for (int a = 0; a < 6; a++) {
-        vec4 outv = vec4(RC_PI * sum[a] / max(wsum[a], 1e-4), 1.0);
+        vec4 outv = vec4(RC_PI * sum[a] / max(wsum[a], 1e-4), float(traced) / float(d * d));
         rc_ht[irr_base + a].v = floatBitsToUint(outv);
     }
 }
