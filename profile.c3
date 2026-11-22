@@ -39,6 +39,19 @@ fn void stop(String name, ulong started) {
     prof_slots[prof_count++] = { name, dt };
 }
 
+// sg::write_buffer_transient, timing the frame's first GPU call while profiling (on Metal,
+// sokol acquires the in-flight frame semaphore on the first buffer write or pass).
+fn void write_buffer_transient(SgWriteBufferDesc* desc) @inline {
+    if (!enabled || prof_frame_started) {
+        sg::write_buffer_transient(desc);
+        return;
+    }
+    prof_frame_started = true;
+    ulong t = stm::now();
+    sg::write_buffer_transient(desc);
+    prof_wait += stm::since(t);
+}
+
 // sg::begin_pass, timing the frame's first pass while profiling. drie calls this and commit()
 // in place of sokol's.
 fn void begin_pass(SgPass* pass) @inline {
