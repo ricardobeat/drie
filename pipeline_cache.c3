@@ -36,7 +36,7 @@
 module drie;
 import std::io, std::collections::list, sokol::sg;
 
-const String PIPELINE_CACHE_HEADER @local = "drie-pipelines 3\n";
+const String PIPELINE_CACHE_HEADER @local = "drie-pipelines 4\n";
 // pipelines compiled at once while a cache loads
 const int PIPELINE_CACHE_JOBS @local = 6;
 
@@ -66,9 +66,23 @@ struct PipelineRecord @private {
     bool target_mrt;
 }
 
+// Whether `a` and `b` print the same program: the same pointer (the common case: node_program()
+// already shares one NodeProgram* between every graph that prints the same hooks), or two
+// distinct ones with identical text — a loaded cache's own NodeProgram* (built by node_program()
+// too, but from a cache file whose "N" line used not to carry vertex_funcs/frag_funcs/unsupported,
+// so a graph that uses any of those got a key that didn't match and so a second, duplicate object).
+fn bool node_program_same_text(NodeProgram* a, NodeProgram* b) @local {
+    if (a == b) return true;
+    if (!a || !b) return false;
+    return a.cuts == b.cuts && a.vertex_funcs == b.vertex_funcs && a.frag_funcs == b.frag_funcs
+        && a.unsupported == b.unsupported && a.vertex_body == b.vertex_body && a.color_body == b.color_body
+        && a.normal_body == b.normal_body && a.surface_body == b.surface_body && a.output_body == b.output_body
+        && a.env_body == b.env_body && a.specular_body == b.specular_body;
+}
+
 fn bool PipelineRecord.same(&self, PipelineRecord* o) {
     return self.generated == o.generated && bitcast(self.key, KeyWords) == bitcast(o.key, KeyWords)
-        && self.program == o.program && self.shadow == o.shadow && self.side == o.side
+        && node_program_same_text(self.program, o.program) && self.shadow == o.shadow && self.side == o.side
         && self.transparent == o.transparent && self.wireframe == o.wireframe && self.alpha_test == o.alpha_test
         && self.blend == o.blend && self.kind == o.kind && self.depth_test == o.depth_test
         && self.depth_write == o.depth_write && self.tangents == o.tangents && self.vsm == o.vsm
@@ -164,9 +178,11 @@ fn void PipelineWarmup.start_generated(&self, ShaderProgram* p, SgPipelineDesc* 
 
 // The pipelines (those made so far), as the text load_pipeline_cache takes, in `a`'s memory:
 //
-//   drie-pipelines 3
-//   N <cuts> <7 lengths>                  a node program, numbered from 0 in the order listed,
-//   <its 7 hooks' bodies, one after the other (NODE_HOOKS)>
+//   drie-pipelines 4
+//   N <cuts> <unsupported, vertex_funcs, frag_funcs lengths> <7 lengths>
+//                                          a node program, numbered from 0 in the order listed
+//                                          (one line; the lengths' texts follow it in that order,
+//                                          then the 7 hooks' bodies, one after the other)
 //   S <program>                           a shadow map's pipeline (-1: the engine's program)
 //   P <program> <side> <transparent> <wireframe> <alpha_test> <blend> <kind> <depth_test>
 //     <depth_write> <tangents> <vsm> <target samples, 0: the window> <target format> <mrt>
@@ -222,15 +238,21 @@ fn String Renderer.pipeline_cache(&self, Allocator a, bool include_loaded = true
             }
             int program = -1;
             if (r.program) {
+                // dedupe by text, not pointer: a loaded cache's program and this run's can be
+                // distinct objects that print the same hooks (see node_program_same_text)
                 foreach (i, p : programs) {
-                    if (p == r.program) program = (int)i;
+                    if (node_program_same_text(p, r.program)) program = (int)i;
                 }
                 if (program < 0) {
                     NodeProgram* p = r.program;
                     program = (int)programs.len();
                     programs.push(p);
-                    out.appendf("N %d %d %d %d %d %d %d %d\n", p.cuts ? 1 : 0, p.vertex_body.len, p.color_body.len,
+                    out.appendf("N %d %d %d %d %d %d %d %d %d %d %d\n", p.cuts ? 1 : 0, p.unsupported.len,
+                        p.vertex_funcs.len, p.frag_funcs.len, p.vertex_body.len, p.color_body.len,
                         p.normal_body.len, p.surface_body.len, p.output_body.len, p.env_body.len, p.specular_body.len);
+                    out.append(p.unsupported);
+                    out.append(p.vertex_funcs);
+                    out.append(p.frag_funcs);
                     out.append(p.vertex_body);
                     out.append(p.color_body);
                     out.append(p.normal_body);
@@ -296,15 +318,26 @@ fn int Renderer.load_pipeline_cache(&self, String text) {
             }
             switch (f[0]) {
                 case "N":
-                    if (f.len != NODE_HOOKS + 2) return added;
+                    if (f.len != NODE_HOOKS + 5) return added;
+                    int unsupported_len = n[1];
+                    int vertex_funcs_len = n[2];
+                    int frag_funcs_len = n[3];
+                    if (unsupported_len < 0 || vertex_funcs_len < 0 || frag_funcs_len < 0) return added;
+                    if (at + (usz)unsupported_len + (usz)vertex_funcs_len + (usz)frag_funcs_len > text.len) return added;
+                    String unsupported = text[at:(usz)unsupported_len];
+                    at += (usz)unsupported_len;
+                    String vertex_funcs = text[at:(usz)vertex_funcs_len];
+                    at += (usz)vertex_funcs_len;
+                    String frag_funcs = text[at:(usz)frag_funcs_len];
+                    at += (usz)frag_funcs_len;
                     String[NODE_HOOKS] bodies;
                     foreach (i, &b : bodies) {
-                        int len = n[1 + i];
+                        int len = n[4 + i];
                         if (len < 0 || at + (usz)len > text.len) return added;
                         *b = text[at:(usz)len];
                         at += (usz)len;
                     }
-                    programs.push(node_program(bodies, n[0] == 1));
+                    programs.push(node_program(bodies, n[0] == 1, unsupported, vertex_funcs, frag_funcs));
                 case "S":
                     if (f.len != 2 || n[0] >= (int)programs.len()) return added;
                     if (w.add({ .program = n[0] < 0 ? null : programs[n[0]], .shadow = true })) added++;
