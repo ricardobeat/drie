@@ -91,12 +91,15 @@ struct RadianceCascades {
     // irradiance ([hash_cap..hash_cap + level_cap[0]*6 - 1]).
     bool sparse;
     bool freeze_alloc;                 // pauses rc_alloc_cs so debug cameras don't allocate probes
+    bool sparse_dirty;                 // clears sparse hash table + probe counters on next update
     int hash_cap;                      // power of 2 (e.g. 65536)
     int[RC_MAX_LEVELS] level_cap;      // max allocated probes per cascade level
     int[RC_MAX_LEVELS] probe_base;     // start offset in meta_buf per cascade level
     StorageBuffer* meta_buf;
     StorageBuffer* count_buf;
+    ComputePass* clear_pass;
     ComputePass* alloc_pass;
+    ComputePass* propagate_pass;
     ComputePass* split_trace;
     ComputePass* split_gather;
 }
@@ -158,7 +161,15 @@ fn RadianceCascades* radiance_cascades_sparse(
     int pbase = 0;
     int ray_at = 0;
     for (int l = 0; l < r.levels; l++) {
-        int cap = math::max(max_probes >> l, 256);
+        // Surface probe counts drop ~4x per level as spacing doubles (keeping ray budgets flat & lean)
+        int cap;
+        switch (l) {
+            case 0: cap = max_probes;
+            case 1: cap = math::max(max_probes / 4, 512);
+            case 2: cap = math::max(max_probes / 8, 512);
+            case 3: cap = math::max(max_probes / 32, 256);
+            default: cap = math::max(max_probes >> (l * 2), 128);
+        }
         r.level_cap[l] = cap;
         r.probe_base[l] = pbase;
         pbase += cap;
@@ -187,7 +198,9 @@ fn void RadianceCascades.upload(&self) {
         self.voxel_buf = storage_buffer(16, label: "drie-rc-voxels");
         self.brick_buf = storage_buffer(16, label: "drie-rc-bricks");
         SgBackend backend = sg::query_backend();
+        self.clear_pass = compute_pass(rc_split::rc_clear_shader_desc(backend), "drie-rc-clear");
         self.alloc_pass = compute_pass(rc_split::rc_alloc_shader_desc(backend), "drie-rc-alloc");
+        self.propagate_pass = compute_pass(rc_split::rc_propagate_shader_desc(backend), "drie-rc-propagate");
         self.split_trace = compute_pass(rc_split::rc_split_trace_shader_desc(backend), "drie-rc-split-trace");
         self.split_gather = compute_pass(rc_split::rc_split_gather_shader_desc(backend), "drie-rc-split-gather");
         return;
@@ -575,7 +588,19 @@ fn void RadianceCascades.update_sparse(
         }
     }
 
-    // 1. Allocate/touch probes around visible G-Buffer surfaces (4x4 pixel subsample)
+    // 0. Clear hash table + counters after a reset or volume recenter
+    if (self.sparse_dirty) {
+        ComputePass* cp = self.clear_pass;
+        cp.set_buffer(rc_split::VIEW_RC_HT_CLEAR, self.irradiance_buf);
+        cp.set_buffer(rc_split::VIEW_RC_CNT_CLEAR, self.count_buf);
+        cp.set_uniforms(rc_split::UB_RC_SPLIT_PARAMS, &p, rc_split::RcSplitParams::size);
+        begin_compute("drie-rc-clear");
+        cp.dispatch((self.hash_cap + 63) / 64);
+        end_compute();
+        self.sparse_dirty = false;
+    }
+
+    // 1. Allocate/touch non-solid L0 probes around visible G-Buffer surfaces + seed coarse L >= 2
     ComputePass* ap = self.alloc_pass;
     ap.bindings.views[rc_split::VIEW_RC_DEPTH_TEX] = depth_tex;
     ap.bindings.views[rc_split::VIEW_RC_NORMAL_TEX] = normal_tex;
@@ -583,10 +608,25 @@ fn void RadianceCascades.update_sparse(
     ap.set_buffer(rc_split::VIEW_RC_HT_ALLOC, self.irradiance_buf);
     ap.set_buffer(rc_split::VIEW_RC_META_ALLOC, self.meta_buf);
     ap.set_buffer(rc_split::VIEW_RC_CNT_ALLOC, self.count_buf);
+    ap.set_buffer(rc_split::VIEW_RC_VOX_ALLOC, self.voxel_buf);
     ap.set_uniforms(rc_split::UB_RC_SPLIT_PARAMS, &p, rc_split::RcSplitParams::size);
     begin_compute("drie-rc-alloc");
     ap.dispatch(((width + 3) / 4 + 7) / 8, ((height + 3) / 4 + 7) / 8);
     end_compute();
+
+    // 1b. Propagate allocated probes upward (L0 -> L1 -> ... -> L_{max-1}) so every child has all 8 parents
+    ComputePass* pp = self.propagate_pass;
+    pp.set_buffer(rc_split::VIEW_RC_HT_PROP, self.irradiance_buf);
+    pp.set_buffer(rc_split::VIEW_RC_META_PROP, self.meta_buf);
+    pp.set_buffer(rc_split::VIEW_RC_CNT_PROP, self.count_buf);
+    pp.set_buffer(rc_split::VIEW_RC_VOX_PROP, self.voxel_buf);
+    for (int l = 0; l < self.levels - 1; l++) {
+        p.rc_dims[3] = l;
+        pp.set_uniforms(rc_split::UB_RC_SPLIT_PARAMS, &p, rc_split::RcSplitParams::size);
+        begin_compute("drie-rc-propagate");
+        pp.dispatch((self.level_cap[l] + 63) / 64);
+        end_compute();
+    }
 
     // 2. Trace allocated probes top-down (levels-1 .. 0)
     ComputePass* tp = self.split_trace;
@@ -634,11 +674,13 @@ fn void RadianceCascades.recenter(&self, Object3D* root, Vector3 center) {
     self.max = new_min + size;
     self.clear_voxels();
     self.voxelize(root);
+    if (self.sparse) self.sparse_dirty = true;
 }
 
 // Start over (after a cut, or when much has changed): the next frame takes all it finds.
 fn void RadianceCascades.reset(&self) {
     self.frame = 0;
+    if (self.sparse) self.sparse_dirty = true;
 }
 
 fn void RadianceCascades.dispose(&self) {
