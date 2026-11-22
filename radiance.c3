@@ -129,7 +129,7 @@ fn RadianceCascades* radiance_cascades(Vector3 min, Vector3 max, float spacing =
 fn void RadianceCascades.upload(&self) {
     if (self.trace) return;
     int at = self.offsets[self.levels - 1] + self.counts[self.levels - 1];
-    self.cascade_buf = storage_buffer((sz)at * 16, label: "drie-rc-cascades");
+    self.cascade_buf = storage_buffer((sz)at * 8, label: "drie-rc-cascades");
     self.irradiance_buf = storage_buffer((sz)self.nx * self.ny * self.nz * 6 * 16, label: "drie-rc-irradiance");
     self.light_buf = storage_buffer(RC_MAX_LIGHTS * RcLight::size, cpu_write: true, label: "drie-rc-lights");
     self.voxel_buf = storage_buffer(16, label: "drie-rc-voxels");

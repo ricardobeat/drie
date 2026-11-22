@@ -35,6 +35,17 @@ struct rc_voxel {
 struct rc_texel {
     vec4 v;
 };
+struct rc_rad_texel {
+    uvec2 p;          // rgb packed as half2 + half2
+};
+vec3 rc_unpack_rad(uvec2 p) {
+    vec2 rg = unpackHalf2x16(p.x);
+    vec2 ba = unpackHalf2x16(p.y);
+    return vec3(rg, ba.x);
+}
+uvec2 rc_pack_rad(vec3 rgb) {
+    return uvec2(packHalf2x16(rgb.rg), packHalf2x16(vec2(rgb.b, 0.0)));
+}
 struct rc_brick {
     uint solid;       // the solid voxels in a block of 4 x 4 x 4 (a cell of cascade 0)
 };
@@ -80,7 +91,7 @@ struct rc_light {
     vec4 dir;     // where a spot light points, w = cos(angle); w = -2: a point light, -3: directional
     vec4 params;  // x = cos(inner angle)
 };
-layout(binding=1) buffer rc_cascades { rc_texel rc_rad[]; };
+layout(binding=1) buffer rc_cascades { rc_rad_texel rc_rad[]; };
 layout(binding=2) readonly buffer rc_irradiance { rc_texel rc_irr[]; };
 layout(binding=3) readonly buffer rc_lights { rc_light rc_light_data[]; };
 
@@ -284,28 +295,31 @@ void main() {
             vec3 g = (pos - rc_min.xyz) / (spacing * 2.0) - 0.5;
             ivec3 b = ivec3(floor(g));
             vec3 f = g - vec3(b);
-            vec4 sum = vec4(0.0);
+            vec3 sum = vec3(0.0);
             for (int n = 0; n < 8; n++) {
                 ivec3 o = ivec3(n & 1, (n >> 1) & 1, (n >> 2) & 1);
                 ivec3 c = clamp(b + o, ivec3(0), udims - 1);
                 int at = uoff + ((c.z * udims.y + c.y) * udims.x + c.x) * ud * ud;
-                vec4 four = rc_rad[at + (uv.y * 2) * ud + uv.x * 2].v + rc_rad[at + (uv.y * 2) * ud + uv.x * 2 + 1].v
-                          + rc_rad[at + (uv.y * 2 + 1) * ud + uv.x * 2].v + rc_rad[at + (uv.y * 2 + 1) * ud + uv.x * 2 + 1].v;
+                vec3 four = rc_unpack_rad(rc_rad[at + (uv.y * 2) * ud + uv.x * 2].p)
+                          + rc_unpack_rad(rc_rad[at + (uv.y * 2) * ud + uv.x * 2 + 1].p)
+                          + rc_unpack_rad(rc_rad[at + (uv.y * 2 + 1) * ud + uv.x * 2].p)
+                          + rc_unpack_rad(rc_rad[at + (uv.y * 2 + 1) * ud + uv.x * 2 + 1].p);
                 vec3 w3 = mix(1.0 - f, f, vec3(o));
                 sum += four * (0.25 * w3.x * w3.y * w3.z);
             }
-            result = vec4(sum.rgb, 0.0);
+            result = vec4(sum, 0.0);
         }
     }
     result.rgb = min(result.rgb, vec3(256.0));
     int at = rc_level_offset(level) + i;
-    rc_rad[at].v = mix(rc_rad[at].v, result, rc_tune.y);
+    vec3 prev = rc_unpack_rad(rc_rad[at].p);
+    rc_rad[at].p = rc_pack_rad(mix(prev, result.rgb, rc_tune.y));
 }
 @end
 
 @cs rc_gather_cs
 @include_block rc_common
-layout(binding=1) readonly buffer rc_gather_cascades { rc_texel rc_rad[]; };
+layout(binding=1) readonly buffer rc_gather_cascades { rc_rad_texel rc_rad[]; };
 layout(binding=2) buffer rc_gather_irradiance { rc_texel rc_irr[]; };
 
 layout(local_size_x=64) in;
@@ -318,7 +332,10 @@ void main() {
     vec3 pos = rc_min.xyz + (vec3(pc) + 0.5) * rc_min.w;
     ivec3 vc = ivec3(floor((pos - rc_min.xyz) / rc_tune.w));
     // a probe inside something holds no light: whoever reads the probes leaves it out
-    float valid = rc_in_grid(vc) && !rc_solid(vc) ? 1.0 : 0.0;
+    if (!rc_in_grid(vc) || rc_solid(vc)) {
+        for (int a = 0; a < 6; a++) rc_irr[probe * 6 + a].v = vec4(0.0);
+        return;
+    }
     int d = rc_info.x;
     vec3 sum[6];
     float wsum[6];
@@ -333,7 +350,7 @@ void main() {
         float len = length(flat_dir);
         float solid_angle = 1.0 / (len * len * len);
         vec3 dir = rc_direction(e);
-        vec3 radiance = rc_rad[rc_off0.x + probe * d * d + k].v.rgb;
+        vec3 radiance = rc_unpack_rad(rc_rad[rc_off0.x + probe * d * d + k].p);
         for (int a = 0; a < 6; a++) {
             float c = dir[a >> 1] * ((a & 1) == 0 ? 1.0 : -1.0);
             // (a little of what comes in from just below the horizon: with so few directions
@@ -344,7 +361,7 @@ void main() {
         }
     }
     for (int a = 0; a < 6; a++) {
-        rc_irr[probe * 6 + a].v = vec4(valid > 0.5 ? RC_PI * sum[a] / max(wsum[a], 1e-4) : vec3(0.0), valid);
+        rc_irr[probe * 6 + a].v = vec4(RC_PI * sum[a] / max(wsum[a], 1e-4), 1.0);
     }
 }
 @end
