@@ -212,6 +212,8 @@ fn void animate(double time)
     if (scene_rt.width != win_w || scene_rt.height != win_h)
     {
         scene_rt.set_size(win_w, win_h);
+        camera.aspect = (float)win_w / (float)win_h;
+        camera.update_projection_matrix();
     }
 
     ulong t0 = stm::now();
@@ -244,10 +246,10 @@ fn void animate(double time)
     {
         renderer.render(scene, camera);
     }
-    rc_debug::track(scene.radiance);
-
     output.set_source(scene_rt.texture);
     output.render(null);
+    drie::commit();
+    rc_debug::track(scene.radiance);
 
     double ms = stm::ms(stm::since(t0));
     smooth_ms = smooth_ms * 0.9 + ms * 0.1;
