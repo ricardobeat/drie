@@ -56,7 +56,7 @@ fn void StorageBuffer.write(&self, void* data, sz bytes) {
     }
     self.ensure(bytes);
     if (!bytes) return;
-    profile::write_buffer_transient(&&{ .src.data = { .ptr = data, .size = (usz)bytes }, .dst.buffer = self.buffer });
+    sg::write_buffer_transient(&&{ .src.data = { .ptr = data, .size = (usz)bytes }, .dst.buffer = self.buffer });
 }
 
 fn void StorageBuffer.create(&self, usz size, void* data, usz bytes = 0) {
