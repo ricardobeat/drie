@@ -174,14 +174,38 @@ fn void PipelineWarmup.start_generated(&self, ShaderProgram* p, SgPipelineDesc* 
 //                                         64 hex digits (the header's number goes up when
 //                                         the key's layout changes)
 //   H <key>                               a shadow map's pipeline with a generated program
-fn String Renderer.pipeline_cache(&self, Allocator a) {
+//
+// `include_loaded` (on by default) also writes what a loaded cache's records had
+// (cache_warmup.loaded: load_pipeline_cache's own full list, not just what's left pending),
+// so that saving after a run that mostly drew with an already-loaded cache doesn't lose
+// them: record_pipeline skips a pipeline started by the cache's own warmup (so a run doesn't
+// save back what it only compiled for someone else to use later), and get_pipeline finding
+// one already made the same way (compiled by the warmup, or by an earlier draw this run)
+// returns before ever reaching record_pipeline — so a pipeline the loaded cache already knew
+// about is never (re-)recorded by drawing with it, only by making it from scratch.
+fn String Renderer.pipeline_cache(&self, Allocator a, bool include_loaded = true) {
     DString out = dstring::new(a);
     out.append(PIPELINE_CACHE_HEADER);
-    if (!pipeline_records.is_initialized()) return out.str_view();
     @pool() {
+        List{PipelineRecord} merged;
+        merged.tinit();
+        if (pipeline_records.is_initialized()) foreach (&r : pipeline_records) merged.push(*r);
+        if (include_loaded && cache_warmup.loaded.is_initialized()) {
+            foreach (&r : cache_warmup.loaded) {
+                bool dup = false;
+                foreach (&o : merged) {
+                    if (o.same(r)) {
+                        dup = true;
+                        break;
+                    }
+                }
+                if (!dup) merged.push(*r);
+            }
+        }
+        if (!merged.len()) return out.str_view();
         List{NodeProgram*} programs;
         programs.tinit();
-        foreach (&r : pipeline_records) {
+        foreach (&r : merged) {
             if (r.generated) {
                 KeyWords k = bitcast(r.key, KeyWords);
                 String hex = string::tformat("%016x%016x%016x%016x", (ulong)(k.lo >> 64), (ulong)k.lo,
