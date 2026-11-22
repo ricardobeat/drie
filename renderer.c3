@@ -5056,7 +5056,8 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera) {
     // into an internal window-sized offscreen target so MSAA LOAD/STORE is preserved and the
     // swapchain is presented once in present_window_rt() at frame end.
     RenderTarget* saved_window_rt = self.render_target;
-    if (!saved_window_rt && state.in_frame && (state.window_rt_used || !self.auto_clear || self.scissor_test)) {
+    if (!saved_window_rt && state.in_frame && (state.window_rt_used || !self.auto_clear || self.scissor_test
+        || (scene.radiance && scene.radiance.sparse))) {
         self.render_target = ensure_window_rt(self);
         state.window_rt_used = true;
     }

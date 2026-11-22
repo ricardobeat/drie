@@ -517,7 +517,7 @@ fn void RadianceCascades.update_sparse(
     int width,
     int height
 ) {
-    if (!self.sparse) return;
+    if (!self.sparse || self.freeze_alloc) return;
     self.upload();
     if (self.voxels_changed) {
         self.voxel_buf.write(self.voxels.ptr, (sz)self.voxels.len * uint::size);
@@ -576,19 +576,17 @@ fn void RadianceCascades.update_sparse(
     }
 
     // 1. Allocate/touch probes around visible G-Buffer surfaces (4x4 pixel subsample)
-    if (!self.freeze_alloc) {
-        ComputePass* ap = self.alloc_pass;
-        ap.bindings.views[rc_split::VIEW_RC_DEPTH_TEX] = depth_tex;
-        ap.bindings.views[rc_split::VIEW_RC_NORMAL_TEX] = normal_tex;
-        ap.bindings.samplers[rc_split::SMP_RC_GB_SMP] = gb_sampler;
-        ap.set_buffer(rc_split::VIEW_RC_HT_ALLOC, self.irradiance_buf);
-        ap.set_buffer(rc_split::VIEW_RC_META_ALLOC, self.meta_buf);
-        ap.set_buffer(rc_split::VIEW_RC_CNT_ALLOC, self.count_buf);
-        ap.set_uniforms(rc_split::UB_RC_SPLIT_PARAMS, &p, rc_split::RcSplitParams::size);
-        begin_compute("drie-rc-alloc");
-        ap.dispatch(((width + 3) / 4 + 7) / 8, ((height + 3) / 4 + 7) / 8);
-        end_compute();
-    }
+    ComputePass* ap = self.alloc_pass;
+    ap.bindings.views[rc_split::VIEW_RC_DEPTH_TEX] = depth_tex;
+    ap.bindings.views[rc_split::VIEW_RC_NORMAL_TEX] = normal_tex;
+    ap.bindings.samplers[rc_split::SMP_RC_GB_SMP] = gb_sampler;
+    ap.set_buffer(rc_split::VIEW_RC_HT_ALLOC, self.irradiance_buf);
+    ap.set_buffer(rc_split::VIEW_RC_META_ALLOC, self.meta_buf);
+    ap.set_buffer(rc_split::VIEW_RC_CNT_ALLOC, self.count_buf);
+    ap.set_uniforms(rc_split::UB_RC_SPLIT_PARAMS, &p, rc_split::RcSplitParams::size);
+    begin_compute("drie-rc-alloc");
+    ap.dispatch(((width + 3) / 4 + 7) / 8, ((height + 3) / 4 + 7) / 8);
+    end_compute();
 
     // 2. Trace allocated probes top-down (levels-1 .. 0)
     ComputePass* tp = self.split_trace;

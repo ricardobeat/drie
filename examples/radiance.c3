@@ -223,7 +223,8 @@ fn void animate(double time)
     }
 
     renderer.set_render_target(scene_rt);
-    Camera* rc_cam = rc_debug::update((float)dt, win_w, win_h, camera.position, 2.95f);
+    Vector3 dbg_focus = controls ? controls.target : (Vector3){ 0, 1.2f, -0.5f };
+    Camera* rc_cam = rc_debug::update((float)dt, win_w, win_h, dbg_focus, 2.95f);
     if (rc_debug::active && rc_cam)
     {
         if (scene.radiance && scene.radiance.sparse && rc_debug::freeze_alloc)
@@ -254,7 +255,8 @@ fn void animate(double time)
 
 fn void on_event(Event* e)
 {
-    if (rc_debug::handle_event(e, camera.position, 2.95f)) return;
+    Vector3 dbg_focus = controls ? controls.target : (Vector3){ 0, 1.2f, -0.5f };
+    if (rc_debug::handle_event(e, dbg_focus, 2.95f)) return;
     if (e.type != KEY_DOWN || e.key_repeat) return;
     switch (e.key_code)
     {
@@ -273,7 +275,11 @@ fn void hud()
     if (rc_debug::active)
     {
         Vector3 look = controls ? (controls.target - camera.position).normalize() : (Vector3){ 0, 0, -1 };
-        rc_debug::draw_window(scene.radiance, MODE_NAMES[mode.ordinal], W, H, camera.position, look);
+        int win_w = math::max(sapp::width(), 1);
+        int win_h = math::max(sapp::height(), 1);
+        int ui_h = H;
+        int ui_w = math::max((int)math::round((float)ui_h * (float)win_w / (float)win_h), 640);
+        rc_debug::draw_window(scene.radiance, MODE_NAMES[mode.ordinal], ui_w, ui_h, camera.position, look);
         return;
     }
     ui::setup();
@@ -316,6 +322,15 @@ fn int main(String[] args)
         {
             lights_on = false;
         }
+        else if (args[i] == "--rc-debug")
+        {
+            rc_debug::active = true;
+        }
+        else if (args[i] == "--rc-debug-3d")
+        {
+            rc_debug::active = true;
+            rc_debug::set_3d(true);
+        }
         else
         {
             io::eprintfn("unknown option %s", args[i]);
@@ -350,9 +365,33 @@ fn int main(String[] args)
     for (int f = 0; f < 24; f++)
     {
         update_scene(0);
-        renderer.render(scene, camera);
+        Camera* rc_cam = rc_debug::active ? rc_debug::update(0, W, H, camera.position, 2.95f) : null;
+        if (rc_debug::active && rc_cam)
+        {
+            if (scene.radiance && scene.radiance.sparse && rc_debug::freeze_alloc)
+            {
+                scene.radiance.freeze_alloc = false;
+                renderer.render(scene, camera);
+                scene.radiance.freeze_alloc = true;
+                renderer.render(scene, rc_cam);
+                scene.radiance.freeze_alloc = false;
+            }
+            else
+            {
+                renderer.render(scene, rc_cam);
+            }
+        }
+        else
+        {
+            renderer.render(scene, camera);
+        }
+        rc_debug::track(scene.radiance, wait_now: f == 23);
         output.set_source(scene_rt.texture);
         output.render(toned);
+        if (rc_debug::active)
+        {
+            rc_debug::draw_target(toned, scene.radiance, MODE_NAMES[mode.ordinal], W, H, camera.position, { 0, 0, -1 });
+        }
         drie::commit();
     }
     char[] px = mem::new_array(char, (usz)W * H * 4);
