@@ -12,6 +12,7 @@
         "display.c",
         "platform/cgltf.c",
         "platform/readback.c",
+        "platform/gpucaps.c",
         "platform/imageio.c",
         "platform/gamectl.c",
         "platform/readback_win.c",
