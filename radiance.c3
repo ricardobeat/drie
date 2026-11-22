@@ -121,6 +121,23 @@ struct RadianceCascades {
     bool clip_region;
     Vector3 clip_min;
     Vector3 clip_max;
+
+    // The view that places probes and traces/gathers them (update_sparse()'s GPU work);
+    // renders from any other camera just read the irradiance it left, instead of redoing
+    // that work with their own G-Buffer. Leave null to update from whichever call turns out
+    // to be the frame's last (see update_sparse()): the common case of one camera a frame
+    // needs nothing set, and a multi-camera frame (a portal, a security feed, the player's
+    // own view) still updates once, from the view that matters, instead of once per call.
+    Camera* camera;
+    bool pending_sparse;             // an update_sparse() call this engine frame awaits flush_pending_sparse()
+    Scene* pending_scene;
+    SgView pending_depth_tex;
+    SgView pending_normal_tex;
+    SgSampler pending_gb_sampler;
+    Mat4 pending_inv_view_proj;
+    Vector3 pending_cam_pos;
+    int pending_width;
+    int pending_height;
 }
 
 fn RadianceCascades* radiance_cascades(Vector3 min, Vector3 max, float spacing = 0.25, int levels = 4) {
@@ -561,7 +578,11 @@ fn void RadianceCascades.update(&self, Scene* scene) {
 // Runs the sparse Split Radiance Cascades passes (alloc -> trace -> gather) using the
 // current frame's G-Buffer depth and normal textures. Called automatically by Renderer.render()
 // between the G-Buffer pass and the deferred lighting pass when `scene.radiance.sparse` is true.
-fn void RadianceCascades.update_sparse(
+// Runs the sparse Split Radiance Cascades passes (alloc -> trace -> gather) using depth_tex/
+// normal_tex as the G-Buffer to place probes around. Called once per engine frame, either
+// directly from update_sparse() (when self.camera names the render that drives it) or from
+// flush_pending_sparse() at the end of the frame (the default: whichever call turns out last).
+fn void RadianceCascades.run_sparse_update(
     &self,
     Scene* scene,
     SgView depth_tex,
@@ -572,7 +593,6 @@ fn void RadianceCascades.update_sparse(
     int width,
     int height
 ) {
-    if (!self.sparse || self.freeze_alloc) return;
     self.upload();
     if (self.voxels_changed) {
         self.voxel_buf.write(self.voxels.ptr, (sz)self.voxels.len * uint::size);
@@ -716,6 +736,70 @@ fn void RadianceCascades.update_sparse(
     end_compute();
 
     self.frame++;
+}
+
+// Called automatically by Renderer.render() between the G-Buffer pass and the deferred
+// lighting pass, for every non-reflecting render of a scene whose radiance is a sparse
+// volume: `camera` is the view that just rendered. The house renders its scene more than
+// once a frame (a portal, a security feed, the player's own view); without this, a sparse
+// volume updated on every one of those (three times the GPU cost, probes allocated from
+// whichever camera called last, the blend ramp and update_every's rotation advanced three
+// times too fast). Set `self.camera` to the view that should drive it (its own render
+// updates probes and traces/gathers them immediately; every other camera just reads the
+// irradiance it left). Leave `self.camera` null (the default) to update once a frame from
+// whichever call turns out to be the last — usually the player's own view, rendered after
+// a portal or a camera feed — by deferring the actual work to flush_pending_sparse() at
+// drie::commit(), when the G-Buffer the last call wrote is still there, untouched since.
+fn void RadianceCascades.update_sparse(
+    &self,
+    Scene* scene,
+    Camera* camera,
+    SgView depth_tex,
+    SgView normal_tex,
+    SgSampler gb_sampler,
+    Mat4 inv_view_proj,
+    Vector3 cam_pos,
+    int width,
+    int height
+) {
+    if (!self.sparse || self.freeze_alloc) return;
+    if (self.camera) {
+        if (camera != self.camera) return;
+        self.run_sparse_update(scene, depth_tex, normal_tex, gb_sampler, inv_view_proj, cam_pos, width, height);
+        return;
+    }
+    self.pending_scene = scene;
+    self.pending_depth_tex = depth_tex;
+    self.pending_normal_tex = normal_tex;
+    self.pending_gb_sampler = gb_sampler;
+    self.pending_inv_view_proj = inv_view_proj;
+    self.pending_cam_pos = cam_pos;
+    self.pending_width = width;
+    self.pending_height = height;
+    if (!self.pending_sparse) {
+        self.pending_sparse = true;
+        queue_sparse_flush(self);
+    }
+}
+
+// Runs the update a pending update_sparse() call (with no `camera` set) deferred, with the
+// parameters its last call this engine frame recorded. Called once per frame by commit(),
+// after every render() so the view that update_sparse() must use (usually the main view,
+// rendered after a portal or a camera feed) has already overwritten the shared G-Buffer
+// — and before the next frame's first render() pass overwrites it again.
+fn void RadianceCascades.flush_pending_sparse(&self) {
+    if (!self.pending_sparse) return;
+    self.pending_sparse = false;
+    self.run_sparse_update(
+        self.pending_scene,
+        self.pending_depth_tex,
+        self.pending_normal_tex,
+        self.pending_gb_sampler,
+        self.pending_inv_view_proj,
+        self.pending_cam_pos,
+        self.pending_width,
+        self.pending_height
+    );
 }
 
 // Re-centers the voxel volume around `center` (snapped to probe spacing) and re-voxelizes
