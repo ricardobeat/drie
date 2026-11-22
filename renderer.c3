@@ -619,6 +619,9 @@ struct RendererState @private {
     List{FrameHook} frame_hooks;
     List{EventFilter} event_filters;
     List{FrameHook} overlays;
+    // RadianceCascades with no `camera` set that recorded an update_sparse() call this engine
+    // frame, to flush (their last call's G-Buffer still wins) once commit() ends the frame.
+    List{RadianceCascades*} pending_sparse_flush;
     bool gfx_ready;
     // Precompiled material shaders by ShaderFamily and NodeVariant, created on first use
     // (or warmed in the background via start_material_shaders).
@@ -5149,6 +5152,7 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera) {
         if (scene.radiance && scene.radiance.sparse && !self.reflecting) {
             scene.radiance.update_sparse(
                 scene,
+                camera,
                 rt.depth_texture,
                 state.gb_tex[1],
                 state.gb_sampler,
@@ -5281,6 +5285,7 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera) {
         }
         scene.radiance.update_sparse(
             scene,
+            camera,
             self.render_target.depth_texture,
             self.render_target.normal_texture,
             state.gb_sampler,
@@ -5980,7 +5985,16 @@ fn MeshBasicMaterial* probe_resample() @local {
     return m;
 }
 
+// Queues `rc` (a sparse RadianceCascades with no `camera` set) for flush_pending_sparse() at
+// the end of the engine frame, once; see RadianceCascades.update_sparse().
+fn void queue_sparse_flush(RadianceCascades* rc) {
+    foreach (q : state.pending_sparse_flush) if (q == rc) return;
+    state.pending_sparse_flush.push(rc);
+}
+
 fn void commit() {
+    foreach (rc : state.pending_sparse_flush) rc.flush_pending_sparse();
+    state.pending_sparse_flush.clear();
     state.commit_pending = false;
     state.frame++;
     profile::commit();
