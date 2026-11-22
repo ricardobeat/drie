@@ -969,7 +969,12 @@ float d_ggx_aniso(float at, float ab, float noh, float toh, float boh) {
     return RECIPROCAL_PI * a2 * w2 * w2;
 }
 
+#ifdef DEFERRED_LIGHT
+int g_flags;
+int flags() { return g_flags; }
+#else
 int flags() { return int(specular.w + 0.5); }
+#endif
 
 // Sheen (three's BRDF_Sheen): the Charlie distribution of fibers, and Neubelt's visibility.
 float d_charlie(float rough, float noh) {
@@ -2105,7 +2110,11 @@ vec3 perturb_normal(vec3 n) {
 
 // The material's map `role` (MAP_*) at g_uv, from the slot it is in; white without one.
 // (macros: a constant index into map_slots, which can't be indexed by a variable here)
+#ifdef DEFERRED_LIGHT
+#define has_map(role) (false)
+#else
 #define has_map(role) (map_slots[(role) / 4][(role) % 4] >= 0.0)
+#endif
 #define material_map(role) ext_texel(int(map_slots[(role) / 4][(role) % 4]))
 // (its slot in uv_rel)
 #define map_uv_slot(role) (int(map_slots[(role) / 4][(role) % 4]) + 2)
@@ -2576,6 +2585,7 @@ void main() {
     int mode = pf & 7;
     bool foliage = (pf & 16) != 0;
     int fl = ((pf & 8) != 0 ? 4 : 0) | (foliage ? 2 : 0);
+    g_flags = fl;
     bool df_ssr = (pf & 32) != 0;
     bool df_env = (pf & 64) != 0;
     bool df_fog = (pf & 128) != 0;
@@ -3043,8 +3053,10 @@ void main() {
             // the other shadowed ones: a tile of shadow_atlas each
             int dsi = int(dirs[i].shadow.x);
             if (dsi >= 0 && (flags() & 4) != 0) lit = mix(1.0, dir_tile_shadow(dsi, n, l), dirs[i].shadow.y);
+#ifndef DEFERRED_LIGHT
             // parallax_map: the bumps' own shadows, toward the first directional light
             if (i == 0) lit *= parallax_shadow(geo_n, l);
+#endif
             if (lit > 0.0) outc += direct(mode, n, v, l, 1e6, dirs[i].color.rgb * lit, diffuse_color, spec);
         }
         if (dir_cascade_params.z > 0.5 && dir_shadow_params.x > 0.5) {

@@ -233,8 +233,10 @@ fn int main(String[] args) {
 
     NodeProgram* rings = mats[2].node_build.program;
     Generated gen = generated(mats[2]);
-    expect(gen.count ? gen.depth : rings.shaders[ShaderFamily.PBR.ordinal][NodeVariant.DEPTH.ordinal].id != 0,
-           "the third ball through the depth prepass, with its own program");
+    expect(gen.count ? gen.depth : (renderer.deferred
+               ? rings.shaders[ShaderFamily.GBUFFER.ordinal][NodeVariant.MAIN.ordinal].id != 0
+               : rings.shaders[ShaderFamily.PBR.ordinal][NodeVariant.DEPTH.ordinal].id != 0),
+           "the third ball through the gbuffer or depth prepass, with its own program");
     expect(gen.count ? gen.shadow : rings.shadow_pipeline.id != 0, "the third ball's shadow, with its own program");
     NodeBuild* build = mats[0].node_build;
     tint.set_color(0x40ff40);
@@ -271,10 +273,12 @@ fn int main(String[] args) {
         renderer.render(scene, camera);
         drie::commit();
         if (k == 2) {
-            // (solid: the opaque program; the third, cut out after the prepass, too)
-            SgShader[8] built = mats[0].node_build.program.shaders[ShaderFamily.PBR.ordinal];
+            // (solid: the opaque program; with deferred, the gbuffer opaque program is reused for MRT)
+            ShaderFamily fam = renderer.deferred ? ShaderFamily.GBUFFER : ShaderFamily.PBR;
+            NodeVariant v = renderer.deferred ? NodeVariant.OPAQUE : NodeVariant.OPAQUE_MRT;
+            SgShader[8] built = mats[0].node_build.program.shaders[fam.ordinal];
             Generated g = generated(mats[0]);
-            expect(g.count ? g.mrt : built[NodeVariant.OPAQUE_MRT.ordinal].id != 0, "MRT: the node materials' programs for it");
+            expect(g.count ? g.mrt : built[v.ordinal].id != 0, "MRT: the node materials' programs for it");
             continue;
         }
         readback::read_image(target.texture_image, W, H, px2.ptr);

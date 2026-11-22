@@ -320,6 +320,8 @@ struct Renderer {
     bool hdr_output;
     // Open the window with half-float pixels, so that hdr_output can be turned on later.
     bool hdr_window;
+    // Deferred G-Buffer + fullscreen lighting pass for single-sampled render targets.
+    bool deferred;
     // Fragments inside cull_box_min..max are not drawn (to look through a portal past whatever
     // stands between the camera and it).
     bool cull_box;
@@ -620,8 +622,17 @@ struct RendererState @private {
     bool gfx_ready;
     // Precompiled material shaders by ShaderFamily and NodeVariant, created on first use
     // (or warmed in the background via start_material_shaders).
-    SgShader[8][3] material_shaders;
-    int[8][3] material_jobs;
+    SgShader[8][4] material_shaders;
+    int[8][4] material_jobs;
+    // Deferred G-Buffer targets and fullscreen lighting pipelines.
+    int gb_width;
+    int gb_height;
+    SgImage[4] gb_color;
+    SgView[4] gb_att;
+    SgView[4] gb_tex;
+    SgShader[4] deferred_shaders;
+    SgPipeline[8] deferred_pipelines;
+    SgSampler gb_sampler;
     // the blur that makes the moments of Renderer.shadow_type = VSM's maps (vsm.glsl)
     SgShader vsm_blur_shader;
     SgPipeline vsm_blur_pipeline;
@@ -827,6 +838,7 @@ fn Renderer* renderer(bool antialias = true, int width = 800, int height = 600, 
         .auto_time = true,
         .gpu_culling = true,
         .depth_prepass = true,
+        .deferred = true,
         .shadow_map_auto_update = true,
         .depth_prepass_pixels = 1.5f,
         .max_lights = DEFAULT_MAX_LIGHTS,
@@ -1192,12 +1204,17 @@ fn SgPipeline get_pipeline(
     // after the prepass, the coverage of the cut-out's edge is in the depth buffer's samples
     bool a2c      = alpha_test && !transparent && samples > 1 && kind != PRETESTED;
     if (kind == DEPTH) blend = 0;
-    bool vsm      = kind != DEPTH && state.renderer && state.renderer.shadow_type == VSM;
+    bool vsm      = kind != DEPTH && family != GBUFFER && state.renderer && state.renderer.shadow_type == VSM;
     if (kind == DEPTH || kind == PRETESTED) {
         depth_test = true;
         depth_write = true;
     }
     int depth = (depth_write ? 0 : 1) + (depth_test ? 0 : 2);
+    if (family == GBUFFER) {
+        target = 7;
+        a2c = false;
+        blend = 0;
+    }
     ulong key = blend | (ulong)depth << 28 | (ulong)(vsm ? 1 : 0) << 30
         | (ulong)kind.ordinal << 31 | (ulong)side.ordinal << 33 | (ulong)(wireframe ? 1 : 0) << 35
         | (ulong)target << 36 | (ulong)(a2c ? 1 : 0) << 39 | (ulong)(transparent ? 1 : 0) << 40
@@ -1268,20 +1285,29 @@ fn SgPipeline get_pipeline(
         .label = kind == DEPTH ? "drie-depth-prepass" : "drie-pipeline",
     };
     if (kind == DEPTH) desc.colors[0].write_mask = NONE;
-    if (rt) {
-        desc.sample_count = rt.samples;
-        desc.colors[0].pixel_format = rt.pixel_format();
+    if (family == GBUFFER) {
+        desc.sample_count = 1;
+        desc.color_count = 4;
+        for (int i = 0; i < 4; i++) desc.colors[i] = { .pixel_format = RGBA16F };
         desc.depth.pixel_format = DEPTH;
-    }
-    if (mrt) {
-        desc.color_count = 1 + MRT_COUNT;
-        for (int i = 0; i < MRT_COUNT; i++) {
-            desc.colors[i + 1].pixel_format = mrt_format(i);
-            // what can be seen through leaves the normal, motion and light of what is behind it
-            if (kind == DEPTH || transparent) desc.colors[i + 1].write_mask = NONE;
+        desc.alpha_to_coverage_enabled = false;
+        desc.label = "drie-gbuffer";
+    } else {
+        if (rt) {
+            desc.sample_count = rt.samples;
+            desc.colors[0].pixel_format = rt.pixel_format();
+            desc.depth.pixel_format = DEPTH;
         }
+        if (mrt) {
+            desc.color_count = 1 + MRT_COUNT;
+            for (int i = 0; i < MRT_COUNT; i++) {
+                desc.colors[i + 1].pixel_format = mrt_format(i);
+                // what can be seen through leaves the normal, motion and light of what is behind it
+                if (kind == DEPTH || transparent) desc.colors[i + 1].write_mask = NONE;
+            }
+        }
+        desc.colors[0].blend = blend_state(blend);
     }
-    desc.colors[0].blend = blend_state(blend);
     if (gen) {
         ShaderProgram* own = kind == DEPTH ? gen.depth : gen.program;
         if (pipeline_warmup && !gen.key.nodes) {
@@ -1313,6 +1339,7 @@ fn SgPipeline get_pipeline(
 fn SgShader node_shader(NodeProgram* p, ShaderFamily fam, NodeVariant v) @local {
     if (v == DEPTH || v == SHADOW) fam = PBR;
     if (fam == UNLIT) v = (v == MRT || v == OPAQUE_MRT || v == MRT_VSM) ? MRT : MAIN;
+    if (fam == GBUFFER) v = (v == OPAQUE || v == OPAQUE_MRT) ? OPAQUE : MAIN;
     SgShader* s = &p.shaders[fam.ordinal][v.ordinal];
     if (s.id) return *s;
     int job = p.shader_jobs[fam.ordinal][v.ordinal] - 1;
@@ -1328,6 +1355,7 @@ fn SgShader node_shader(NodeProgram* p, ShaderFamily fam, NodeVariant v) @local 
 fn void start_node_shader(NodeProgram* p, ShaderFamily fam, NodeVariant v) @local {
     if (v == DEPTH || v == SHADOW) fam = PBR;
     if (fam == UNLIT) v = (v == MRT || v == OPAQUE_MRT || v == MRT_VSM) ? MRT : MAIN;
+    if (fam == GBUFFER) v = (v == OPAQUE || v == OPAQUE_MRT) ? OPAQUE : MAIN;
     if (p.shaders[fam.ordinal][v.ordinal].id || p.shader_jobs[fam.ordinal][v.ordinal]) return;
     @pool() {
         SgShaderDesc desc = p.spliced(v, node_base_desc(p, fam, v));
@@ -1339,6 +1367,7 @@ fn void start_node_shader(NodeProgram* p, ShaderFamily fam, NodeVariant v) @loca
 fn SgShader material_shader(ShaderFamily fam, NodeVariant v) @local {
     if (v == DEPTH || v == SHADOW) fam = PBR;
     if (fam == UNLIT) v = (v == MRT || v == OPAQUE_MRT || v == MRT_VSM) ? MRT : MAIN;
+    if (fam == GBUFFER) v = (v == OPAQUE || v == OPAQUE_MRT) ? OPAQUE : MAIN;
     SgShader* s = &state.material_shaders[fam.ordinal][v.ordinal];
     if (s.id) return *s;
     int job = state.material_jobs[fam.ordinal][v.ordinal] - 1;
@@ -1354,6 +1383,7 @@ fn SgShader material_shader(ShaderFamily fam, NodeVariant v) @local {
 fn void start_material_shader(ShaderFamily fam, NodeVariant v) @local {
     if (v == DEPTH || v == SHADOW) fam = PBR;
     if (fam == UNLIT) v = (v == MRT || v == OPAQUE_MRT || v == MRT_VSM) ? MRT : MAIN;
+    if (fam == GBUFFER) v = (v == OPAQUE || v == OPAQUE_MRT) ? OPAQUE : MAIN;
     if (state.material_shaders[fam.ordinal][v.ordinal].id || state.material_jobs[fam.ordinal][v.ordinal]) return;
     @pool() {
         SgShaderDesc desc = material_shader_desc(fam, v, false);
@@ -1365,6 +1395,7 @@ fn void start_material_shader(ShaderFamily fam, NodeVariant v) @local {
 fn bool claim_material_job(ShaderFamily fam, NodeVariant v, int job) @private {
     if (v == DEPTH || v == SHADOW) fam = PBR;
     if (fam == UNLIT) v = (v == MRT || v == OPAQUE_MRT || v == MRT_VSM) ? MRT : MAIN;
+    if (fam == GBUFFER) v = (v == OPAQUE || v == OPAQUE_MRT) ? OPAQUE : MAIN;
     if (state.material_shaders[fam.ordinal][v.ordinal].id || state.material_jobs[fam.ordinal][v.ordinal]) return false;
     state.material_jobs[fam.ordinal][v.ordinal] = job + 1;
     return true;
@@ -1429,36 +1460,41 @@ fn void start_material_shaders(Renderer* r, Scene* scene, bool prepass) @local {
     if ((bg && !node_build_of(bg)) || scene.background_texture) {
         start_material_shader(bg ? shader_family_of(bg) : UNLIT, variant_of(CUT, rt));
     }
+    bool defer_ok = can_defer(r, true);
     for (int list = 0; list < 2; list++) {
         foreach (&item : list == 0 ? state.opaque : state.transparent) {
             Material* mat = item.mesh.material;
             if (mat.type == SHADER) continue;
-            ShaderFamily fam = shader_family_of(mat);
+            bool use_gb = list == 0 && defer_ok && is_deferred_item(item);
+            ShaderFamily fam = use_gb ? GBUFFER : shader_family_of(mat);
             DrawKind kind = list == 1 || draws_lines(item) || has_holes(item) ? CUT : SOLID;
-            if (list == 0 && kind == CUT && prepass && prepassed(item)) kind = PRETESTED;
+            if (!use_gb && list == 0 && kind == CUT && prepass && prepassed(item)) kind = PRETESTED;
             NodeVariant v = variant_of(kind, rt);
             NodeBuild* nb = node_build_of(mat);
             if (nb) {
                 start_node_shader(nb.program, fam, v);
-                // Warm the sibling variants (MAIN/OPAQUE/MRT/OPAQUE_MRT) in the background so
-                // switching between non-MRT portals, cull_box=true, and the main MRT target
-                // does not stall the main thread later.
-                if (v == MAIN || v == OPAQUE || v == MRT || v == OPAQUE_MRT) {
+                if (use_gb) {
+                    start_node_shader(nb.program, GBUFFER, MAIN);
+                    start_node_shader(nb.program, GBUFFER, OPAQUE);
+                } else if (v == MAIN || v == OPAQUE || v == MRT || v == OPAQUE_MRT) {
                     start_node_shader(nb.program, fam, MAIN);
                     start_node_shader(nb.program, fam, OPAQUE);
                     start_node_shader(nb.program, fam, MRT);
                     start_node_shader(nb.program, fam, OPAQUE_MRT);
                 }
-                if (list == 0 && prepass && prepassed(item)) start_node_shader(nb.program, PBR, DEPTH);
+                if (!use_gb && list == 0 && prepass && prepassed(item)) start_node_shader(nb.program, PBR, DEPTH);
             } else {
                 start_material_shader(fam, v);
-                if (v == MAIN || v == OPAQUE || v == MRT || v == OPAQUE_MRT) {
+                if (use_gb) {
+                    start_material_shader(GBUFFER, MAIN);
+                    start_material_shader(GBUFFER, OPAQUE);
+                } else if (v == MAIN || v == OPAQUE || v == MRT || v == OPAQUE_MRT) {
                     start_material_shader(fam, MAIN);
                     start_material_shader(fam, OPAQUE);
                     start_material_shader(fam, MRT);
                     start_material_shader(fam, OPAQUE_MRT);
                 }
-                if (list == 0 && prepass && prepassed(item)) start_material_shader(PBR, DEPTH);
+                if (!use_gb && list == 0 && prepass && prepassed(item)) start_material_shader(PBR, DEPTH);
             }
         }
     }
@@ -1492,6 +1528,8 @@ fn SgShaderDesc material_shader_desc(ShaderFamily fam, NodeVariant v, bool cuts)
             return split_unlit_shader_desc(v, backend);
         case PHYSICAL:
             return split_physical_shader_desc(v, backend);
+        case GBUFFER:
+            return split_gbuffer_shader_desc(v, backend);
         case PBR:
             switch (v) {
                 case MAIN: return shaders::three_shader_desc(backend);
@@ -3508,7 +3546,202 @@ fn void draw_shader_material(DrawItem* item, Mat4 view_proj, DrawKind kind) @loc
     r.info.triangles += (lines ? elements / 2 : elements / 3) * instances;
 }
 
-fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = CUT) @local {
+fn void ensure_gbuffer(int w, int h) @local {
+    if (state.gb_width == w && state.gb_height == h) return;
+    if (state.gb_width) {
+        for (int i = 0; i < 4; i++) {
+            sg::destroy_view(state.gb_att[i]);
+            sg::destroy_view(state.gb_tex[i]);
+            sg::destroy_image(state.gb_color[i]);
+        }
+    }
+    if (!state.gb_sampler.id) {
+        state.gb_sampler = sg::make_sampler(
+            &&{
+                .min_filter = NEAREST,
+                .mag_filter = NEAREST,
+                .wrap_u = CLAMP_TO_EDGE,
+                .wrap_v = CLAMP_TO_EDGE,
+            }
+        );
+    }
+    state.gb_width = w;
+    state.gb_height = h;
+    for (int i = 0; i < 4; i++) {
+        state.gb_color[i] = sg::make_image(
+            &&{
+                .usage = { .color_attachment = true },
+                .width = w,
+                .height = h,
+                .sample_count = 1,
+                .pixel_format = RGBA16F,
+                .label = "drie-gbuffer-color",
+            }
+        );
+        state.gb_att[i] = sg::make_view(&&{ .color_attachment = { .image = state.gb_color[i] } });
+        state.gb_tex[i] = sg::make_view(&&{ .texture = { .image = state.gb_color[i] } });
+    }
+}
+
+fn bool can_defer(Renderer* self, bool whole) @local {
+    RenderTarget* rt = self.render_target;
+    return self.deferred && rt && rt.samples == 1 && rt.depth_buffer && whole
+        && !state.bake.on && !self.scissor_test && self.viewport[2] == 0 && self.viewport[3] == 0;
+}
+
+fn bool is_deferred_item(DrawItem* item) @local {
+    Mesh* m = item.mesh;
+    Material* mat = m.material;
+    if (mat.transparent || draws_lines(item) || refracts(item)) return false;
+    if (m.geometry.morph_view.id != 0 && m.morph_weights_view.id != 0) return false;
+    if (mat.type != STANDARD && mat.type != LAMBERT && mat.type != BASIC) return false;
+    if (shader_family_of(mat) == PHYSICAL) return false;
+    if (mat.screen_target || mat.reflector || mat.env_map) return false;
+    if (mat.env_intensity != 0 && mat.env_intensity != 1) return false;
+    if (state.probes_view.id && !mat.env_probes && state.scene && state.scene.environment) return false;
+    if (mat.light_channels != 0) return false;
+    if (mat.ssr != 0 && mat.ssr != 1) return false;
+    if (mat.ssr > 0 && mat.ssr_reach > 0 && state.renderer && mat.ssr_reach != state.renderer.ssr_reach) return false;
+    if (mat.env_node.id || mat.output_node.id || mat.specular_node.id || mat.shininess_node.id) return false;
+    if (!mat.depth_test || !mat.depth_write || !mat.tone_mapped || mat.premultiplied_alpha) return false;
+    if (mat.parallax_map && mat.parallax_shadow > 0) return false;
+    if (mat.type == STANDARD) {
+        if (mat.ior != 0 && mat.ior != 1.5f) return false;
+        if (mat.specular_intensity != 1.0f || mat.specular_color != (Vector3) { 1, 1, 1 }) return false;
+        if (mat.specular_color_map || mat.specular_intensity_map) return false;
+    }
+    return true;
+}
+
+fn void draw_deferred_lighting(
+    Renderer* r,
+    Scene* scene,
+    Camera* camera,
+    Mat4 view_proj_rel,
+    FsParams* fs,
+    Vector3 clear,
+    float clear_alpha
+) @local {
+    RenderTarget* rt = r.render_target;
+    bool mrt = rt.mrt;
+    bool vsm = vsm_on();
+    int sidx = (mrt ? 1 : 0) | (vsm ? 2 : 0);
+    if (!state.deferred_shaders[sidx].id) {
+        state.deferred_shaders[sidx] = sg::make_shader(&&split_deferred_shader_desc(mrt, vsm, sg::query_backend()));
+    }
+    int pidx = sidx | (rt.is_linear() ? 4 : 0);
+    if (!state.deferred_pipelines[pidx].id) {
+        SgPipelineDesc desc = {
+            .shader = state.deferred_shaders[sidx],
+            .depth = { .pixel_format = NONE, .write_enabled = false, .compare = ALWAYS },
+            .sample_count = 1,
+            .color_count = mrt ? 1 + MRT_COUNT : 1,
+            .label = "drie-deferred-light",
+        };
+        desc.colors[0].pixel_format = rt.pixel_format();
+        if (mrt) {
+            for (int i = 0; i < MRT_COUNT; i++) desc.colors[i + 1].pixel_format = mrt_format(i);
+        }
+        state.deferred_pipelines[pidx] = sg::make_pipeline(&desc);
+    }
+    sg::apply_pipeline(state.deferred_pipelines[pidx]);
+
+    Texture* none = ready(state.white);
+    if (!state.clamp_sampler.id) {
+        state.clamp_sampler = sg::make_sampler(
+            &&{
+                .min_filter = LINEAR,
+                .mag_filter = LINEAR,
+                .wrap_u = CLAMP_TO_EDGE,
+                .wrap_v = CLAMP_TO_EDGE,
+            }
+        );
+    }
+    if (!state.no_probes.id) {
+        char[4] white = { 255, 255, 255, 255 };
+        state.no_probes_image = sg::make_image(
+            &&{ .type = ARRAY, .width = 1, .height = 1, .num_slices = 1, .data = { .ptr = &white, .size = 4 } }
+        );
+        state.no_probes = sg::make_view(&&{ .texture = { .image = state.no_probes_image } });
+    }
+
+    SgBindings bind;
+    bind.views[shaders::VIEW_TEX_MAP] = state.gb_tex[0];
+    bind.views[shaders::VIEW_TEX_NORMAL] = state.gb_tex[1];
+    bind.views[shaders::VIEW_TEX_ARM] = state.gb_tex[2];
+    bind.views[shaders::VIEW_TEX_PARALLAX] = state.gb_tex[3];
+    bind.views[VIEW_TEX_TRANSMISSION] = rt.depth_texture;
+    bind.samplers[shaders::SMP_TEX_SMP] = state.gb_sampler;
+    bind.samplers[SMP_TRANSMISSION_SMP] = state.gb_sampler;
+    for (int k = 0; k < 6; k++) bind.views[shaders::VIEW_TEX_EXT0 + k] = none.view;
+    if (vsm) {
+        bind.views[shaders::VIEW_VSM_MAP] = state.vsm_spot.view;
+        bind.views[shaders::VIEW_VSM_ATLAS] = state.vsm_atlas.view;
+        bind.views[shaders::VIEW_VSM_SUN] = state.vsm_sun.view;
+        bind.samplers[shaders::SMP_VSM_SMP] = state.vsm_sampler;
+    } else {
+        bind.views[shaders::VIEW_SHADOW_MAP] = state.shadow_view;
+        bind.views[shaders::VIEW_SHADOW_ATLAS] = state.atlas_view;
+        bind.views[shaders::VIEW_SUN_SHADOW] = state.sun_view;
+    }
+    bind.samplers[shaders::SMP_SHADOW_SMP] = state.shadow_sampler;
+    bind.views[shaders::VIEW_FOG_VOLUME] = state.fog_view;
+    bool ssr = r.ssr_color.id != 0 && r.ssr_depth.id != 0;
+    bind.views[shaders::VIEW_SSR_COLOR] = ssr ? r.ssr_color : none.view;
+    bind.views[shaders::VIEW_SSR_DEPTH] = ssr ? r.ssr_depth : none.view;
+    bind.views[shaders::VIEW_SSR_BACK] = ssr && r.ssr_back.id ? r.ssr_back : none.view;
+    bind.views[shaders::VIEW_REFLECTOR_MAP] = none.view;
+    bind.samplers[shaders::SMP_SSR_SMP] = state.clamp_sampler;
+    bind.views[shaders::VIEW_TEX_GI] = state.gi_view;
+    bind.views[shaders::VIEW_RC_PROBES] = state.radiance_view;
+    bind.samplers[shaders::SMP_GI_SMP] = state.irradiance.sampler;
+
+    FsParams df = *fs;
+    Texture* env_map = scene.environment;
+    Texture* env = ready(env_map);
+    bool env_diffuse = false;
+    if (env_map && env_map.has_env_sh) {
+        env_diffuse = true;
+        EnvLight* el = &env_map.env_light;
+        float[6] sun = { el.sun_dir.x, el.sun_dir.y, el.sun_dir.z, el.sun.x, el.sun.y, el.sun.z };
+        foreach (i, c : el.sh) df.env_sh[i] = { ...c, i < 6 ? sun[i] : 0 };
+    }
+    bool probes = state.probes_view.id != 0;
+    bind.views[shaders::VIEW_TEX_ENV] = env.view;
+    bind.views[shaders::VIEW_TEX_PROBES] = probes ? state.probes_view : state.no_probes;
+    bind.samplers[shaders::SMP_ENV_SMP] = probes ? state.probes_sampler : env.sampler;
+    lights_gpu.bind(&bind);
+    sg::apply_bindings(&bind);
+
+    bool zo = depth_zero_to_one();
+    DeferredLightParams dp = {
+        .inv_view_proj = view_proj_rel.invert(),
+        .view_origin = { ...camera.matrix_world.get_position(), zo ? 1 : 0 },
+        .clear_color = { clear.x, clear.y, clear.z, clear_alpha },
+        .screen_info = { 1.0f / rt.width, 1.0f / rt.height, zo ? 1 : 0, 0 },
+    };
+    sg::apply_uniforms(0, &&{ .ptr = &dp, .size = DeferredLightParams::size });
+
+    df.screen_params = { 1.0f / rt.width, 1.0f / rt.height, 0, 0 };
+    df.surface_params = { 0, 0, 0, 0 };
+    df.env_params = probes
+        ? (Vec4) { 2, 1, 0, 0 }
+        : (Vec4) { env_map ? 1 : 0, env_map ? scene.environment_intensity : 1, env_diffuse ? 1 : 0, env_map ? env_map.env_distance_range : 0 };
+    df.env_combine = { };
+    df.reflector_params = { };
+    df.frame_custom = r.custom;
+    df.ssr_view_proj = r.ssr_view_proj;
+    df.ssr_params = { ssr ? 1.0f : 0.0f, r.ssr_reach, (float)(r.ssr_frame % 64), zo ? 1 : 0 };
+    df.ssr_thickness = { ssr && r.ssr_back.id ? 1 : 0, r.ssr_reach, 0, 0 };
+    df.quality_params = { r.shadow_sample_scale, r.ssr_steps, r.ssr_max_step, 0 };
+    sg::apply_uniforms(1, &&{ .ptr = &df, .size = FsParams::size });
+
+    sg::draw(0, 3, 1);
+    r.info.calls++;
+    r.info.triangles += 1;
+}
+
+fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = CUT, bool deferred_gb = false) @local {
     Mesh* m           = item.mesh;
     Material* mat     = m.material;
     if (mat.type == SHADER) {
@@ -3544,7 +3777,7 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     }
     if (gen_build && material_busy(gen_build, gen)) return;
     ShaderProgram* own = gen ? (kind == DEPTH ? gen.depth : gen.program) : null;
-    ShaderFamily family = shader_family_of(mat);
+    ShaderFamily family = deferred_gb ? GBUFFER : shader_family_of(mat);
     SgPipeline pip = (
         state.bake.on ? (gen ? gen_bake_pipeline(gen, state.bake.format) : state.bake.pipeline)
             : get_pipeline(
@@ -4846,9 +5079,6 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera) {
         // (multisampled: kept for the second half of the pass)
         for (int i = 0; i <= (self.render_target.mrt ? MRT_COUNT : 0); i++) pass.action.colors[i].store_action = STORE;
     }
-    profile::begin_pass(&pass);
-    if (!whole && clears) clear_rect(self, { clear.x, clear.y, clear.z, scene.background ? 1.0f : self.clear_alpha });
-    apply_view_rect(self);
     // (not with a cull box: everything would have holes)
     bool prepass = self.depth_prepass && !self.cull_box;
     // pixels per unit of tan(angle) up the view, for prepassed()
@@ -4857,8 +5087,81 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera) {
         RenderTarget* rt = self.render_target;
         state.prepass_focal = camera.projection_matrix[1][1] * 0.5f * (rt ? rt.height : sapp::heightf());
     }
+    bool use_deferred = can_defer(self, whole);
+    if (use_deferred) {
+        bool has_deferred = false;
+        foreach (&item : state.opaque) {
+            if (is_deferred_item(item)) {
+                has_deferred = true;
+                break;
+            }
+        }
+        use_deferred = has_deferred;
+    }
+    if (use_deferred) {
+        RenderTarget* rt = self.render_target;
+        ensure_gbuffer(rt.width, rt.height);
+        SgPass gb_pass = {
+            .action = {
+                .colors[0] = { .load_action = CLEAR, .store_action = STORE },
+                .colors[1] = { .load_action = CLEAR, .store_action = STORE },
+                .colors[2] = { .load_action = CLEAR, .store_action = STORE },
+                .colors[3] = { .load_action = CLEAR, .store_action = STORE },
+                .depth = { .load_action = CLEAR, .store_action = STORE, .clear_value = 1 },
+            },
+            .attachments = {
+                .colors[0] = state.gb_att[0],
+                .colors[1] = state.gb_att[1],
+                .colors[2] = state.gb_att[2],
+                .colors[3] = state.gb_att[3],
+                .depth_stencil = rt.depth_view,
+            },
+            .label = "drie-gbuffer",
+        };
+        profile::begin_pass(&gb_pass);
+        foreach (&item : state.opaque) {
+            if (!is_deferred_item(item)) continue;
+            DrawKind kind = has_holes(item) ? CUT : SOLID;
+            draw_item(item, view_proj_rel, &fs, kind, deferred_gb: true);
+        }
+        sg::end_pass();
+        profile::stop("render: gbuffer", pt);
+        pt = profile::start();
+
+        SgPass light_pass = {
+            .action = {
+                .colors[0] = { .load_action = DONTCARE, .store_action = STORE },
+            },
+            .attachments = { .colors[0] = rt.color_view },
+            .label = "drie-deferred-light",
+        };
+        if (rt.mrt) {
+            for (int i = 0; i < MRT_COUNT; i++) {
+                light_pass.action.colors[i + 1] = { .load_action = DONTCARE, .store_action = STORE };
+                light_pass.attachments.colors[i + 1] = rt.mrt_color_view[i];
+            }
+        }
+        profile::begin_pass(&light_pass);
+        draw_deferred_lighting(self, scene, camera, view_proj_rel, &fs, clear, scene.background ? 1.0f : self.clear_alpha);
+        sg::end_pass();
+        profile::stop("render: deferred light", pt);
+        pt = profile::start();
+
+        pass.action.colors[0].load_action = LOAD;
+        pass.action.colors[0].store_action = STORE;
+        pass.action.depth = { .load_action = LOAD, .store_action = STORE };
+        if (rt.mrt) {
+            for (int i = 1; i <= MRT_COUNT; i++) {
+                pass.action.colors[i] = { .load_action = LOAD, .store_action = STORE };
+            }
+        }
+    }
+    profile::begin_pass(&pass);
+    if (!whole && clears) clear_rect(self, { clear.x, clear.y, clear.z, scene.background ? 1.0f : self.clear_alpha });
+    apply_view_rect(self);
     if (prepass) {
         foreach (&item : state.opaque) {
+            if (use_deferred && is_deferred_item(item)) continue;
             if (prepassed(item)) draw_item(item, view_proj_rel, &fs, DEPTH);
         }
     }
@@ -4866,6 +5169,7 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera) {
     pt = profile::start();
     draw_background(scene, camera, view_proj_rel, &fs);
     foreach (&item : state.opaque) {
+        if (use_deferred && is_deferred_item(item)) continue;
         // (the glass after the copy, see below)
         if (split && refracts(item)) continue;
         DrawKind kind = SOLID;
