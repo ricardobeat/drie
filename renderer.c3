@@ -953,6 +953,7 @@ fn void setup_gfx(SgEnvironment environment) @local {
     );
     stm::setup();
     state.start_ticks = stm::now();
+    query_gpu_caps();
     // (the material shader's programs are made when they are first drawn with: material_shader)
     SgBackend backend = sg::query_backend();
     state.vsm_blur_shader = sg::make_shader(&&shaders::vsm_shader_desc(backend));
