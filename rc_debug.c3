@@ -212,7 +212,7 @@ fn Camera* update(float dt, int width, int height, Vector3 focus = {}, float cut
         st.cam3d.aspect = aspect;
         st.cam3d.near = 0.1f;
         st.cam3d.far = 150.0f;
-        Vector3 target = { st.pan_x, st.cut_y - 1.1f, st.pan_z };
+        Vector3 target = { st.pan_x, st.cut_y - 1.2f, st.pan_z };
         float cp = math::cos(st.orbit_pitch);
         float sp = math::sin(st.orbit_pitch);
         Vector3 offset = {
@@ -222,10 +222,18 @@ fn Camera* update(float dt, int width, int height, Vector3 focus = {}, float cut
         };
         st.cam3d.position = target + offset;
         st.cam3d.rotation = {};
+        // update_matrix_world() BEFORE look_at_vec() so look_at_vec reads the new camera position!
+        st.cam3d.update_matrix_world();
         st.cam3d.look_at_vec(target);
         st.cam3d.update_matrix_world();
+        st.cam3d.custom_projection = false;
         st.cam3d.update_projection_matrix();
         st.last_vp = st.cam3d.projection_matrix.mul(st.cam3d.matrix_world.invert());
+        // Slice roof/ceiling above cut_y in 3D orbit mode too when camera is above cut_y
+        if (st.cam3d.position.y > st.cut_y + 0.15f) {
+            drie::oblique_projection(st.cam3d, { 0, -1, 0 }, -st.cut_y, 0);
+            st.cam3d.custom_projection = true;
+        }
         return st.cam3d;
     }
 
