@@ -565,6 +565,7 @@ export class DrieRenderer {
 			if (o.isMesh || o.isSprite) this._billboard(o);
 			if (o.__drieGroups !== undefined || (o.isMesh && Array.isArray(o.material))) this._groups(o, drawn, frame);
 			if (o.isInstancedMesh) this._instances(o);
+			if (o.isMesh && o.geometry?.morphAttributes?.position?.length) this._morph(o);
 			if (o.isLightProbeGrid && shown && o.__drieVolume !== undefined) this._scene.grids.push(o);
 			if (o.isSkinnedMesh && drawn) this._skin(o, frame);
 			if (o.isMesh && !o.isBatchedMesh && (this._outline || o.__drieOutline !== undefined)) this._outlineOf(o, drawn, sceneId, frame);
@@ -674,6 +675,45 @@ export class DrieRenderer {
 		mesh.__drieInstances = version;
 		mesh.__drieCount = mesh.count;
 		mesh.__drieColors = colorVersion;
+	}
+
+	_morph(mesh) {
+		const morphPos = mesh.geometry?.morphAttributes?.position;
+		if (!morphPos || morphPos.length === 0) return;
+		const targets = morphPos.length;
+		const vcount = mesh.geometry.attributes.position.count;
+		if (mesh.isInstancedMesh && mesh.morphTexture) {
+			const tex = mesh.morphTexture;
+			const version = tex.version;
+			const count = mesh.count;
+			if (mesh.__drieMorph === version && mesh.__drieMorphCount === count) return;
+			const src = tex.image?.data;
+			if (!src) return;
+			const stride = tex.image.width; // targets + 1 (slot 0 is baseInfluence)
+			let out = mesh.__drieMorphBuf;
+			if (!out || out.length !== count * targets) out = mesh.__drieMorphBuf = new Float32Array(count * targets);
+			for (let i = 0; i < count; i++) {
+				const row = i * stride;
+				const dst = i * targets;
+				for (let t = 0; t < targets; t++) out[dst + t] = src[row + 1 + t];
+			}
+			N.meshMorphWeights(mesh.__drie, out, targets, count, vcount);
+			mesh.__drieMorph = version;
+			mesh.__drieMorphCount = count;
+		} else if (mesh.morphTargetInfluences?.length) {
+			const inf = mesh.morphTargetInfluences;
+			let changed = mesh.__drieMorphInf?.length !== targets;
+			if (!changed) {
+				for (let t = 0; t < targets; t++) {
+					if (mesh.__drieMorphInf[t] !== (inf[t] ?? 0)) { changed = true; break; }
+				}
+			}
+			if (!changed) return;
+			let out = mesh.__drieMorphInf;
+			if (!out || out.length !== targets) out = mesh.__drieMorphInf = new Float32Array(targets);
+			for (let t = 0; t < targets; t++) out[t] = inf[t] ?? 0;
+			N.meshMorphWeights(mesh.__drie, out, targets, 0, vcount);
+		}
 	}
 
 	// three's BatchedMesh: for each of its geometries a drie instanced mesh of the batch's
@@ -942,6 +982,28 @@ export class DrieRenderer {
 		geometry.__drie = N.geometry(floats(a.position, 3), normals, floats(a.uv, 2), color,
 			geometry.index ? geometry.index.array : null, joints, floats(a.skinWeight, 4), floats(a.uv1, 2),
 			floats(a.tangent, 4));
+		const morphPos = geometry.morphAttributes?.position;
+		if (morphPos?.length) {
+			const vcount = a.position.count;
+			const targets = morphPos.length;
+			const relative = geometry.morphTargetsRelative === true;
+			const base = relative ? null : floats(a.position, 3);
+			const deltas = new Float32Array(targets * vcount * 4);
+			for (let t = 0; t < targets; t++) {
+				const attr = morphPos[t];
+				const arr = floats(attr, 3);
+				const off = t * vcount * 4;
+				for (let v = 0; v < vcount; v++) {
+					const s = v * 3;
+					const d = off + v * 4;
+					deltas[d] = relative ? arr[s] : arr[s] - base[s];
+					deltas[d + 1] = relative ? arr[s + 1] : arr[s + 1] - base[s + 1];
+					deltas[d + 2] = relative ? arr[s + 2] : arr[s + 2] - base[s + 2];
+					deltas[d + 3] = 0;
+				}
+			}
+			N.geometryMorph(geometry.__drie, deltas, targets, vcount);
+		}
 		geometry.__drieVersion = version;
 		return geometry.__drie;
 	}
@@ -1167,14 +1229,14 @@ export class DrieRenderer {
 			m.blendDstAlpha ?? m.blendDst ?? 205);
 	}
 
-	// depthTest, depthWrite and toneMapped (three sets them for each draw: no needsUpdate either).
+	// depthTest, depthWrite, toneMapped and flatShading (three sets them for each draw: no needsUpdate either).
 	_depth(material) {
 		const key = (material.depthTest === false ? 1 : 0) + (material.depthWrite === false ? 2 : 0)
-			+ (material.toneMapped === false ? 4 : 0);
+			+ (material.toneMapped === false ? 4 : 0) + (material.flatShading === true ? 8 : 0);
 		if (material.__drieDepth === key) return;
 		material.__drieDepth = key;
 		N.materialDepth(material.__drie, material.depthTest !== false, material.depthWrite !== false,
-			material.toneMapped !== false);
+			material.toneMapped !== false, material.flatShading === true);
 	}
 
 	// MeshPhysicalMaterial's clear coat, sheen, iridescence and anisotropy, sent when they change.

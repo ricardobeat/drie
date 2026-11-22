@@ -111,6 +111,8 @@ struct Material {
     bool depth_write;
     // Its colors go through the renderer's tone mapping (three's toneMapped).
     bool tone_mapped;
+    // Flat face normals from screen-space position derivatives (three's flatShading).
+    bool flat_shading;
     Color emissive;
     float emissive_intensity;
     // The color map glows too: emissive * emissive_intensity is multiplied by it (three's

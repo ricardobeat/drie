@@ -23,10 +23,17 @@ struct BufferGeometry {
     // tangent) * w). The tangent frame of normal and anisotropy maps; empty without them, and
     // the frame is then taken from how the position and the uv change across the screen.
     List{float} tangents;
+    // Morph targets (three's morphAttributes.position): T * V vec4s of (dx, dy, dz, 0) deltas.
+    List{float} morph_positions;
+    int morph_targets;
+    int morph_vertex_count;
     // GPU state, created lazily on first render.
     SgBuffer vbuf;
     SgBuffer uv1buf;
     SgBuffer tangent_buf;
+    SgBuffer morph_buf;
+    SgView morph_view;
+    bool morph_uploaded;
     SgBuffer ibuf;
     SgBuffer wire_ibuf;
     uint wire_count;
@@ -51,6 +58,7 @@ fn void BufferGeometry.init_lists(&self) {
     self.skin_weights.allocator = mem;
     self.uv1.allocator = mem;
     self.tangents.allocator = mem;
+    self.morph_positions.allocator = mem;
 }
 
 fn void BufferGeometry.compute_bounding_sphere(&self) {
@@ -282,7 +290,44 @@ fn void BufferGeometry.upload(&self) {
             &&{ .data = { .ptr = self.tangents.entries, .size = (usz)self.vertex_count() * 4 * float::size } }
         );
     }
+    self.upload_morph();
     self.uploaded = true;
+}
+
+// Sets position morph target deltas: `target_count * vertex_count` vec4s of (dx, dy, dz, 0).
+fn void BufferGeometry.set_morph_positions(&self, float[] deltas, int target_count, int vertex_count) {
+    self.morph_positions.clear();
+    if (target_count <= 0 || vertex_count <= 0 || deltas.len < (usz)target_count * (usz)vertex_count * 4) {
+        self.morph_targets = 0;
+        self.morph_vertex_count = 0;
+        self.morph_uploaded = false;
+        return;
+    }
+    sz n = (sz)target_count * (sz)vertex_count * 4;
+    self.morph_positions.reserve(n);
+    for (sz i = 0; i < n; i++) self.morph_positions.push(deltas[i]);
+    self.morph_targets = target_count;
+    self.morph_vertex_count = vertex_count;
+    self.morph_uploaded = false;
+}
+
+// Uploads morph target deltas to a GPU storage buffer (called by the renderer).
+fn void BufferGeometry.upload_morph(&self) {
+    if (self.morph_uploaded) return;
+    if (self.morph_view.id) sg::destroy_view(self.morph_view);
+    if (self.morph_buf.id) sg::destroy_buffer(self.morph_buf);
+    self.morph_view = { };
+    self.morph_buf = { };
+    if (self.morph_targets > 0 && self.morph_positions.len() > 0) {
+        self.morph_buf = sg::make_buffer(
+            &&{
+                .usage = { .storage_buffer = true },
+                .data = { .ptr = self.morph_positions.entries, .size = (usz)self.morph_positions.len() * float::size },
+            }
+        );
+        self.morph_view = sg::make_view(&&{ .storage_buffer = { .buffer = self.morph_buf } });
+    }
+    self.morph_uploaded = true;
 }
 
 // Builds the edge index buffer used by wireframe materials (called by the renderer).
@@ -350,6 +395,11 @@ fn void BufferGeometry.dispose(&self) {
     self.uv1buf = { };
     if (self.tangent_buf.id) sg::destroy_buffer(self.tangent_buf);
     self.tangent_buf = { };
+    if (self.morph_view.id) sg::destroy_view(self.morph_view);
+    if (self.morph_buf.id) sg::destroy_buffer(self.morph_buf);
+    self.morph_view = { };
+    self.morph_buf = { };
+    self.morph_uploaded = false;
     self.vbuf = { };
     self.ibuf = { };
     self.wire_ibuf = { };
