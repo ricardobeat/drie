@@ -5269,6 +5269,26 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera) {
     if (!self.render_target) draw_overlays();
     sg::end_pass();
     profile::stop("render: main transparent", pt);
+    // Fallback for sparse RC when a render uses MSAA or has no deferred opaque items:
+    // uses the resolved depth_texture and normal_texture from MRT.
+    if (!use_deferred && scene.radiance && scene.radiance.sparse && !self.reflecting
+        && self.render_target && self.render_target.depth_texture.id && self.render_target.normal_texture.id) {
+        if (!state.gb_sampler.id) {
+            state.gb_sampler = sg::make_sampler(
+                &&{ .min_filter = NEAREST, .mag_filter = NEAREST, .wrap_u = CLAMP_TO_EDGE, .wrap_v = CLAMP_TO_EDGE }
+            );
+        }
+        scene.radiance.update_sparse(
+            scene,
+            self.render_target.depth_texture,
+            self.render_target.normal_texture,
+            state.gb_sampler,
+            view_proj_rel.invert(),
+            camera_pos,
+            self.render_target.width,
+            self.render_target.height
+        );
+    }
     // When rendering to the window, finish the frame (at the end of the animation loop's
     // frame, when inside it: another render() may draw into it). With a render target, the
     // caller usually runs more passes (post-processing) and must call drie::commit() at the end.

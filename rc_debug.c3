@@ -14,15 +14,23 @@ const int RAD_SLOT = 11;
 struct State @local {
     bool initialized;
     OrthographicCamera* cam;
+    PerspectiveCamera* cam3d;
+    bool view_3d;
+    bool all_slices_3d;
     float pan_x;
     float pan_z;
     float half_h;
     float cut_y;
+    float orbit_yaw;
+    float orbit_pitch;
+    float orbit_dist;
+    bool dragging;
     int level;          // 0..levels-1, or -1 for ALL
     int slice_y;        // cascade-0 probe Y index (-1 = auto from cut_y)
     bool show_angles;
     bool show_voxels;
     bool[512] keys;
+    drie::Mat4 last_vp;       // active camera view_proj for 3D projection
 
     // Async GPU readback buffers (1-frame-late, zero stall)
     RadianceCascades* last_rc;
@@ -43,17 +51,28 @@ struct State @local {
 
 State st @local = {
     .half_h = 6.5f,
+    .orbit_yaw = -0.65f,
+    .orbit_pitch = 0.62f,
+    .orbit_dist = 9.5f,
+    .all_slices_3d = true,
     .level = 0,
     .slice_y = -1,
     .show_angles = true,
     .show_voxels = false,
 };
 
+fn void set_3d(bool on) {
+    st.view_3d = on;
+}
+
 fn void reset(Vector3 focus, float cut_y) {
     st.pan_x = focus.x;
     st.pan_z = focus.z;
     st.half_h = 6.5f;
     st.cut_y = cut_y;
+    st.orbit_yaw = -0.65f;
+    st.orbit_pitch = 0.62f;
+    st.orbit_dist = 9.5f;
     st.slice_y = -1;
 }
 
@@ -92,6 +111,8 @@ fn bool handle_event(Event* e, Vector3 focus = {}, float cut_y = 2.4f, KeyCode t
                     case NUM_3: st.level = 3;
                     case NUM_4:
                     case TAB: st.level = -1;
+                    case M: st.view_3d = !st.view_3d;
+                    case A: st.all_slices_3d = !st.all_slices_3d;
                     case R: st.show_angles = !st.show_angles;
                     case B: st.show_voxels = !st.show_voxels;
                     case SPACE: reset(focus, cut_y);
@@ -113,41 +134,101 @@ fn bool handle_event(Event* e, Vector3 focus = {}, float cut_y = 2.4f, KeyCode t
         case KEY_UP:
             if ((int)e.key_code < 512) st.keys[(int)e.key_code] = false;
             return true;
+        case MOUSE_DOWN:
+            if (e.mouse_button == LEFT) st.dragging = true;
+            return true;
+        case MOUSE_UP:
+            if (e.mouse_button == LEFT) st.dragging = false;
+            return true;
+        case MOUSE_MOVE:
+            if (st.dragging && st.view_3d) {
+                st.orbit_yaw -= e.mouse_dx * 0.006f;
+                st.orbit_pitch = drie::clamp(st.orbit_pitch + e.mouse_dy * 0.006f, 0.08f, 1.48f);
+            }
+            return true;
         case MOUSE_SCROLL:
             float factor = e.scroll_y > 0 ? 0.9f : 1.11f;
-            st.half_h = drie::clamp(st.half_h * factor, 1.5f, 35.0f);
+            if (st.view_3d) {
+                st.orbit_dist = drie::clamp(st.orbit_dist * factor, 2.0f, 45.0f);
+            } else {
+                st.half_h = drie::clamp(st.half_h * factor, 1.5f, 35.0f);
+            }
             return true;
         case UNFOCUSED:
             st.keys = {};
+            st.dragging = false;
             return false;
         default:
             return false;
     }
 }
 
-// Updates pan/zoom/cut plane and returns the top-down OrthographicCamera (sliced at cut_y).
-fn OrthographicCamera* update(float dt, int width, int height, Vector3 focus = {}, float cut_y = 2.4f) {
+// Updates pan/zoom/orbit/cut plane and returns the active debug Camera (top-down Ortho or 3D Perspective).
+fn Camera* update(float dt, int width, int height, Vector3 focus = {}, float cut_y = 2.4f) {
     if (!st.initialized) {
         st.initialized = true;
         st.cam = drie::orthographic_camera(-10, 10, 10, -10, 10, 45);
+        st.cam3d = drie::perspective_camera(55, 16.0f / 9.0f, 0.1f, 150.0f);
         reset(focus, cut_y);
     }
     float mult = (st.keys[(int)KeyCode.LEFT_SHIFT] || st.keys[(int)KeyCode.RIGHT_SHIFT]) ? 2.5f : 1.0f;
-    float speed = st.half_h * 0.9f * mult * dt;
-    if (st.keys[(int)KeyCode.LEFT]) st.pan_x -= speed;
-    if (st.keys[(int)KeyCode.RIGHT]) st.pan_x += speed;
-    if (st.keys[(int)KeyCode.UP]) st.pan_z -= speed;
-    if (st.keys[(int)KeyCode.DOWN]) st.pan_z += speed;
-    if (st.keys[(int)KeyCode.EQUAL] || st.keys[(int)KeyCode.KP_ADD]) {
-        st.half_h = drie::clamp(st.half_h * (1.0f - 1.5f * dt), 1.5f, 35.0f);
-    }
-    if (st.keys[(int)KeyCode.MINUS] || st.keys[(int)KeyCode.KP_SUBTRACT]) {
-        st.half_h = drie::clamp(st.half_h * (1.0f + 1.5f * dt), 1.5f, 35.0f);
+    float base_scale = st.view_3d ? st.orbit_dist * 0.55f : st.half_h;
+    float speed = base_scale * 0.9f * mult * dt;
+    if (st.view_3d) {
+        float sy = math::sin(st.orbit_yaw);
+        float cy = math::cos(st.orbit_yaw);
+        // forward on XZ is (-sy, -cy), right is (cy, -sy)
+        if (st.keys[(int)KeyCode.UP])    { st.pan_x -= sy * speed; st.pan_z -= cy * speed; }
+        if (st.keys[(int)KeyCode.DOWN])  { st.pan_x += sy * speed; st.pan_z += cy * speed; }
+        if (st.keys[(int)KeyCode.RIGHT]) { st.pan_x += cy * speed; st.pan_z -= sy * speed; }
+        if (st.keys[(int)KeyCode.LEFT])  { st.pan_x -= cy * speed; st.pan_z += sy * speed; }
+        if (st.keys[(int)KeyCode.Q]) st.orbit_yaw += 1.4f * dt;
+        if (st.keys[(int)KeyCode.E]) st.orbit_yaw -= 1.4f * dt;
+        if (st.keys[(int)KeyCode.PAGE_UP]) st.orbit_pitch = drie::clamp(st.orbit_pitch + 1.0f * dt, 0.08f, 1.48f);
+        if (st.keys[(int)KeyCode.PAGE_DOWN]) st.orbit_pitch = drie::clamp(st.orbit_pitch - 1.0f * dt, 0.08f, 1.48f);
+        if (st.keys[(int)KeyCode.EQUAL] || st.keys[(int)KeyCode.KP_ADD]) {
+            st.orbit_dist = drie::clamp(st.orbit_dist * (1.0f - 1.5f * dt), 2.0f, 45.0f);
+        }
+        if (st.keys[(int)KeyCode.MINUS] || st.keys[(int)KeyCode.KP_SUBTRACT]) {
+            st.orbit_dist = drie::clamp(st.orbit_dist * (1.0f + 1.5f * dt), 2.0f, 45.0f);
+        }
+    } else {
+        if (st.keys[(int)KeyCode.LEFT]) st.pan_x -= speed;
+        if (st.keys[(int)KeyCode.RIGHT]) st.pan_x += speed;
+        if (st.keys[(int)KeyCode.UP]) st.pan_z -= speed;
+        if (st.keys[(int)KeyCode.DOWN]) st.pan_z += speed;
+        if (st.keys[(int)KeyCode.EQUAL] || st.keys[(int)KeyCode.KP_ADD]) {
+            st.half_h = drie::clamp(st.half_h * (1.0f - 1.5f * dt), 1.5f, 35.0f);
+        }
+        if (st.keys[(int)KeyCode.MINUS] || st.keys[(int)KeyCode.KP_SUBTRACT]) {
+            st.half_h = drie::clamp(st.half_h * (1.0f + 1.5f * dt), 1.5f, 35.0f);
+        }
     }
     if (st.keys[(int)KeyCode.LEFT_BRACKET]) st.cut_y -= 2.0f * dt;
     if (st.keys[(int)KeyCode.RIGHT_BRACKET]) st.cut_y += 2.0f * dt;
 
     float aspect = height > 0 ? (float)width / (float)height : 16.0f / 9.0f;
+    if (st.view_3d) {
+        st.cam3d.aspect = aspect;
+        st.cam3d.near = 0.1f;
+        st.cam3d.far = 150.0f;
+        Vector3 target = { st.pan_x, st.cut_y - 1.1f, st.pan_z };
+        float cp = math::cos(st.orbit_pitch);
+        float sp = math::sin(st.orbit_pitch);
+        Vector3 offset = {
+            math::sin(st.orbit_yaw) * cp * st.orbit_dist,
+            sp * st.orbit_dist,
+            math::cos(st.orbit_yaw) * cp * st.orbit_dist,
+        };
+        st.cam3d.position = target + offset;
+        st.cam3d.rotation = {};
+        st.cam3d.look_at_vec(target);
+        st.cam3d.update_matrix_world();
+        st.cam3d.update_projection_matrix();
+        st.last_vp = st.cam3d.projection_matrix.mul(st.cam3d.matrix_world.invert());
+        return st.cam3d;
+    }
+
     st.cam.left = -st.half_h * aspect;
     st.cam.right = st.half_h * aspect;
     st.cam.top = st.half_h;
@@ -159,6 +240,7 @@ fn OrthographicCamera* update(float dt, int width, int height, Vector3 focus = {
     st.cam.rotation = { -drie::PI / 2, 0, 0 };
     st.cam.update_matrix_world();
     st.cam.update_projection_matrix();
+    st.last_vp = st.cam.projection_matrix.mul(st.cam.matrix_world.invert());
     return st.cam;
 }
 
@@ -545,6 +627,200 @@ fn void draw_probe_rose(RadianceCascades* rc, int lvl, int cx, int cy, int cz, i
     sgl::end();
 }
 
+fn void sgl_wire_box_3d(Vector3 b0, Vector3 b1, float[4] col) @local {
+    sgl::begin_lines();
+    sgl::c4f(col[0], col[1], col[2], col[3]);
+    float[2] xs = { b0.x, b1.x };
+    float[2] ys = { b0.y, b1.y };
+    float[2] zs = { b0.z, b1.z };
+    for (int i = 0; i < 2; i++) {
+        for (int j = 0; j < 2; j++) {
+            sgl::v3f(xs[0], ys[i], zs[j]); sgl::v3f(xs[1], ys[i], zs[j]);
+            sgl::v3f(xs[i], ys[0], zs[j]); sgl::v3f(xs[i], ys[1], zs[j]);
+            sgl::v3f(xs[i], ys[j], zs[0]); sgl::v3f(xs[i], ys[j], zs[1]);
+        }
+    }
+    sgl::end();
+}
+
+// Appends a 6-face shaded 3D cube inside an active sgl::begin_quads() block.
+fn void sgl_cube_quads(Vector3 c, float r, float[3] rgb, float a) @local {
+    float x0 = c.x - r; float x1 = c.x + r;
+    float y0 = c.y - r; float y1 = c.y + r;
+    float z0 = c.z - r; float z1 = c.z + r;
+    // +Y (top, brightest)
+    sgl::c4f(rgb[0], rgb[1], rgb[2], a);
+    sgl::v3f(x0, y1, z0); sgl::v3f(x1, y1, z0); sgl::v3f(x1, y1, z1); sgl::v3f(x0, y1, z1);
+    // -Y (bottom, darkest)
+    sgl::c4f(rgb[0] * 0.55f, rgb[1] * 0.55f, rgb[2] * 0.55f, a);
+    sgl::v3f(x0, y0, z1); sgl::v3f(x1, y0, z1); sgl::v3f(x1, y0, z0); sgl::v3f(x0, y0, z0);
+    // +Z
+    sgl::c4f(rgb[0] * 0.85f, rgb[1] * 0.85f, rgb[2] * 0.85f, a);
+    sgl::v3f(x0, y0, z1); sgl::v3f(x1, y0, z1); sgl::v3f(x1, y1, z1); sgl::v3f(x0, y1, z1);
+    // -Z
+    sgl::c4f(rgb[0] * 0.72f, rgb[1] * 0.72f, rgb[2] * 0.72f, a);
+    sgl::v3f(x1, y0, z0); sgl::v3f(x0, y0, z0); sgl::v3f(x0, y1, z0); sgl::v3f(x1, y1, z0);
+    // +X
+    sgl::c4f(rgb[0] * 0.92f, rgb[1] * 0.92f, rgb[2] * 0.92f, a);
+    sgl::v3f(x1, y0, z1); sgl::v3f(x1, y0, z0); sgl::v3f(x1, y1, z0); sgl::v3f(x1, y1, z1);
+    // -X
+    sgl::c4f(rgb[0] * 0.65f, rgb[1] * 0.65f, rgb[2] * 0.65f, a);
+    sgl::v3f(x0, y0, z0); sgl::v3f(x0, y0, z1); sgl::v3f(x0, y1, z1); sgl::v3f(x0, y1, z0);
+}
+
+fn void draw_3d_scene_overlay(RadianceCascades* rc, int active_lvl, int slice0, Vector3 marker, Vector3 marker_dir) @local {
+    sgl::matrix_mode_projection();
+    sgl::load_matrix((float*)&st.last_vp);
+    sgl::matrix_mode_modelview();
+    sgl::load_identity();
+
+    if (rc) {
+        sgl_wire_box_3d(rc.min, rc.max, { 0.35f, 0.85f, 1.0f, 0.75f });
+
+        float[4] lcol = LEVEL_COLORS[math::min(active_lvl, 4)];
+        float spacing = rc.spacing * (float)(1 << active_lvl);
+        float cube_r = spacing * 0.16f;
+        int d = rc.base_directions << active_lvl;
+        int dd = d * d;
+        int off = rc.offsets[active_lvl];
+
+        if (rc.sparse) {
+            if (st.irr_ready) {
+                float max_d2 = (st.orbit_dist * 2.5f) * (st.orbit_dist * 2.5f);
+                int drawn = 0;
+                sgl::begin_quads();
+                for (int h = 0; h < rc.hash_cap && drawn < 4000; h++) {
+                    drie::Vec4 raw = st.irr_cpu[h];
+                    uint key_lo = bitcast(raw.x, uint);
+                    uint key_hi = bitcast(raw.y, uint);
+                    if ((key_hi & 0x01000000u) == 0) continue;
+                    int plvl = (int)((key_hi >> 16) & 0xfu);
+                    if (st.level >= 0 && plvl != active_lvl) continue;
+                    int ix = (int)(key_lo & 0xffffu) - 32768;
+                    int iy = (int)((key_lo >> 16) & 0xffffu) - 32768;
+                    int iz = (int)(key_hi & 0xffffu) - 32768;
+                    float sp = rc.spacing * (float)(1 << plvl);
+                    Vector3 pos = { ((float)ix + 0.5f) * sp, ((float)iy + 0.5f) * sp, ((float)iz + 0.5f) * sp };
+                    float dx = pos.x - st.pan_x;
+                    float dz = pos.z - st.pan_z;
+                    if (dx * dx + dz * dz > max_d2) continue;
+                    drawn++;
+                    uint slot = bitcast(raw.z, uint);
+                    float[4] plc = LEVEL_COLORS[math::min(plvl, 4)];
+                    float[3] rgb = { plc[0] * 0.5f, plc[1] * 0.5f, plc[2] * 0.5f };
+                    float alpha = 0.85f;
+                    if (plvl == 0 && (int)slot < rc.level_cap[0]) {
+                        sz base = (sz)rc.hash_cap + (sz)slot * 6;
+                        if (st.irr_cpu[base].w < 0.5f) {
+                            rgb = { 0.5f, 0.1f, 0.1f };
+                            alpha = 0.35f;
+                        } else {
+                            Vector3 avg;
+                            for (int a = 0; a < 6; a++) {
+                                drie::Vec4 e = st.irr_cpu[base + a];
+                                avg += { e.x, e.y, e.z };
+                            }
+                            rgb = tone_rgb(avg * (1.0f / 6.0f));
+                        }
+                    }
+                    sgl_cube_quads(pos, sp * 0.16f, rgb, alpha);
+                }
+                sgl::end();
+            }
+        } else {
+            // Dense 3D probe cubes (strided in XZ/Y when all_slices_3d is on to stay within vertex budget)
+            int[<3>] dims = rc.level_dims(active_lvl);
+            int y0 = st.all_slices_3d ? 0 : math::clamp(slice0 >> active_lvl, 0, dims.y - 1);
+            int y1 = st.all_slices_3d ? dims.y : y0 + 1;
+            int xz_step = st.all_slices_3d && (dims.x * dims.y * dims.z > 4000) ? 2 : 1;
+            int y_step = st.all_slices_3d && dims.y > 8 ? 2 : 1;
+
+            sgl::begin_quads();
+            for (int iy = y0; iy < y1; iy += y_step) {
+                float wy = rc.min.y + ((float)iy + 0.5f) * spacing;
+                for (int iz = 0; iz < dims.z; iz += xz_step) {
+                    float wz = rc.min.z + ((float)iz + 0.5f) * spacing;
+                    for (int ix = 0; ix < dims.x; ix += xz_step) {
+                        float wx = rc.min.x + ((float)ix + 0.5f) * spacing;
+                        // skip solid interior cubes so the 3D view stays clean
+                        int vx = (int)math::floor((wx - rc.min.x) / rc.voxel_size);
+                        int vy = (int)math::floor((wy - rc.min.y) / rc.voxel_size);
+                        int vz = (int)math::floor((wz - rc.min.z) / rc.voxel_size);
+                        if (vx >= 0 && vx < rc.vx && vy >= 0 && vy < rc.vy && vz >= 0 && vz < rc.vz) {
+                            if ((rc.voxels[(((sz)vz * rc.vy + vy) * rc.vx + vx) * 2] & 0x1000000u) != 0) continue;
+                        }
+                        float[3] rgb = { lcol[0] * 0.5f, lcol[1] * 0.5f, lcol[2] * 0.5f };
+                        if (active_lvl == 0 && st.irr_ready) {
+                            sz p_idx = ((sz)iz * dims.y + iy) * dims.x + ix;
+                            Vector3 avg;
+                            for (int a = 0; a < 6; a++) {
+                                drie::Vec4 e = st.irr_cpu[p_idx * 6 + a];
+                                avg += { e.x, e.y, e.z };
+                            }
+                            rgb = tone_rgb(avg * (1.0f / 6.0f));
+                        } else if (st.rad_ready) {
+                            sz p_idx = ((sz)iz * dims.y + iy) * dims.x + ix;
+                            Vector3 avg;
+                            int step = math::max(dd / 16, 1);
+                            int cnt = 0;
+                            for (int k = 0; k < dd; k += step) {
+                                avg += unpack_rad((sz)off + p_idx * dd + k);
+                                cnt++;
+                            }
+                            if (cnt > 0) rgb = tone_rgb(avg * (1.0f / (float)cnt));
+                        }
+                        sgl_cube_quads({ wx, wy, wz }, cube_r, rgb, 0.82f);
+                    }
+                }
+            }
+            sgl::end();
+
+            // 3D angular rays on the inspected (center) probe
+            int cx = math::clamp((int)math::floor((st.pan_x - rc.min.x) / spacing), 0, dims.x - 1);
+            int cy = math::clamp(slice0 >> active_lvl, 0, dims.y - 1);
+            int cz = math::clamp((int)math::floor((st.pan_z - rc.min.z) / spacing), 0, dims.z - 1);
+            Vector3 cpos = {
+                rc.min.x + ((float)cx + 0.5f) * spacing,
+                rc.min.y + ((float)cy + 0.5f) * spacing,
+                rc.min.z + ((float)cz + 0.5f) * spacing,
+            };
+            sgl_wire_box_3d(cpos - (Vector3){ spacing * 0.5f, spacing * 0.5f, spacing * 0.5f },
+                            cpos + (Vector3){ spacing * 0.5f, spacing * 0.5f, spacing * 0.5f }, { 1, 1, 1, 0.95f });
+            if (st.show_angles && st.rad_ready) {
+                sz p_idx = ((sz)cz * dims.y + cy) * dims.x + cx;
+                float t1 = rc.interval * (math::pow(4.0f, (float)(active_lvl + 1)) - 1.0f) / 3.0f;
+                float ray_scale = math::min(t1, spacing * 3.0f);
+                sgl::begin_lines();
+                for (int ky = 0; ky < d; ky++) {
+                    for (int kx = 0; kx < d; kx++) {
+                        int k = ky * d + kx;
+                        float ex = ((float)kx + 0.5f) / (float)d * 2.0f - 1.0f;
+                        float ey = ((float)ky + 0.5f) / (float)d * 2.0f - 1.0f;
+                        Vector3 rd = oct_dir(ex, ey);
+                        Vector3 rad = unpack_rad((sz)off + p_idx * dd + k);
+                        float[3] rgb = tone_rgb(rad * 2.5f);
+                        sgl::c4f(rgb[0], rgb[1], rgb[2], 0.9f);
+                        sgl::v3f(cpos.x, cpos.y, cpos.z);
+                        sgl::v3f(cpos.x + rd.x * ray_scale, cpos.y + rd.y * ray_scale, cpos.z + rd.z * ray_scale);
+                    }
+                }
+                sgl::end();
+            }
+        }
+    }
+
+    // 3D yellow player column + look arrow
+    if (marker_dir != (Vector3){}) {
+        sgl_wire_box_3d({ marker.x - 0.18f, marker.y, marker.z - 0.18f },
+                        { marker.x + 0.18f, marker.y + 1.65f, marker.z + 0.18f }, { 1.0f, 0.92f, 0.2f, 0.95f });
+        sgl::begin_lines();
+        sgl::c4f(1.0f, 0.95f, 0.25f, 0.95f);
+        sgl::v3f(marker.x, marker.y + 1.4f, marker.z);
+        sgl::v3f(marker.x + marker_dir.x * 1.2f, marker.y + 1.4f, marker.z + marker_dir.z * 1.2f);
+        sgl::end();
+    }
+}
+
 fn void draw_content(
     SglContext gl,
     SglPipeline pip,
@@ -559,8 +835,6 @@ fn void draw_content(
     sgl::set_context(gl);
     sgl::defaults();
     sgl::load_pipeline(pip);
-    sgl::matrix_mode_projection();
-    sgl::ortho(0, (float)width, (float)height, 0, -1, 1);
 
     float px_per_m = (float)height / (2.0f * st.half_h);
     int slice0 = rc ? active_slice(rc) : 0;
@@ -569,61 +843,74 @@ fn void draw_content(
     int cy = 0;
     int cz = 0;
 
+    if (st.view_3d) {
+        draw_3d_scene_overlay(rc, active_lvl, slice0, marker, marker_dir);
+    }
+
+    sgl::matrix_mode_projection();
+    sgl::load_identity();
+    sgl::ortho(0, (float)width, (float)height, 0, -1, 1);
+    sgl::matrix_mode_modelview();
+    sgl::load_identity();
+
     if (rc) {
-        float[2] b0 = world_to_px(rc.min.x, rc.min.z, width, height);
-        float[2] b1 = world_to_px(rc.max.x, rc.max.z, width, height);
-        sgl_box(b0[0], b0[1], b1[0], b1[1], { 0.4f, 0.85f, 1.0f, 0.8f });
-
-        if (st.show_voxels) {
-            int vy = math::clamp(slice0 * 4 + 2, 0, rc.vy - 1);
-            float vs = rc.voxel_size;
-            float vpx = math::max(vs * px_per_m, 1.0f);
-            sgl::begin_quads();
-            sgl::c4f(0.85f, 0.85f, 0.9f, 0.24f);
-            for (int vz = 0; vz < rc.vz; vz++) {
-                float wz = rc.min.z + (float)vz * vs;
-                for (int vx = 0; vx < rc.vx; vx++) {
-                    if ((rc.voxels[(((sz)vz * rc.vy + vy) * rc.vx + vx) * 2] & 0x1000000u) == 0) continue;
-                    float wx = rc.min.x + (float)vx * vs;
-                    float[2] sp = world_to_px(wx, wz, width, height);
-                    if (sp[0] < -vpx || sp[0] > (float)width + vpx || sp[1] < -vpx || sp[1] > (float)height + vpx) continue;
-                    sgl::v2f(sp[0], sp[1]);
-                    sgl::v2f(sp[0] + vpx, sp[1]);
-                    sgl::v2f(sp[0] + vpx, sp[1] + vpx);
-                    sgl::v2f(sp[0], sp[1] + vpx);
-                }
-            }
-            sgl::end();
-        }
-
-        if (st.level < 0) {
-            for (int l = rc.levels - 1; l >= 0; l--) {
-                draw_level_probes(rc, l, slice0, st.show_angles && l == 0, width, height);
-            }
-        } else {
-            draw_level_probes(rc, active_lvl, slice0, st.show_angles, width, height);
-        }
-
         int[<3>] dims = rc.level_dims(active_lvl);
         float spacing = rc.spacing * (float)(1 << active_lvl);
         cx = math::clamp((int)math::floor((st.pan_x - rc.min.x) / spacing), 0, dims.x - 1);
         cy = math::clamp(slice0 >> active_lvl, 0, dims.y - 1);
         cz = math::clamp((int)math::floor((st.pan_z - rc.min.z) / spacing), 0, dims.z - 1);
-        float cwx = rc.min.x + ((float)cx + 0.5f) * spacing;
-        float cwz = rc.min.z + ((float)cz + 0.5f) * spacing;
-        float[2] csp = world_to_px(cwx, cwz, width, height);
-        float t0 = rc.interval * (math::pow(4.0f, (float)active_lvl) - 1.0f) / 3.0f;
-        float t1 = rc.interval * (math::pow(4.0f, (float)(active_lvl + 1)) - 1.0f) / 3.0f;
-        float[4] lcol = LEVEL_COLORS[math::min(active_lvl, 4)];
-        if (t0 > 0.001f) sgl_circle(csp[0], csp[1], t0 * px_per_m, 48, { lcol[0], lcol[1], lcol[2], 0.45f });
-        sgl_circle(csp[0], csp[1], t1 * px_per_m, 64, { lcol[0], lcol[1], lcol[2], 0.85f });
-        sgl_box(csp[0] - 8, csp[1] - 8, csp[0] + 8, csp[1] + 8, { 1, 1, 1, 0.95f });
+
+        if (!st.view_3d) {
+            float[2] b0 = world_to_px(rc.min.x, rc.min.z, width, height);
+            float[2] b1 = world_to_px(rc.max.x, rc.max.z, width, height);
+            sgl_box(b0[0], b0[1], b1[0], b1[1], { 0.4f, 0.85f, 1.0f, 0.8f });
+
+            if (st.show_voxels) {
+                int vy = math::clamp(slice0 * 4 + 2, 0, rc.vy - 1);
+                float vs = rc.voxel_size;
+                float vpx = math::max(vs * px_per_m, 1.0f);
+                sgl::begin_quads();
+                sgl::c4f(0.85f, 0.85f, 0.9f, 0.24f);
+                for (int vz = 0; vz < rc.vz; vz++) {
+                    float wz = rc.min.z + (float)vz * vs;
+                    for (int vx = 0; vx < rc.vx; vx++) {
+                        if ((rc.voxels[(((sz)vz * rc.vy + vy) * rc.vx + vx) * 2] & 0x1000000u) == 0) continue;
+                        float wx = rc.min.x + (float)vx * vs;
+                        float[2] sp = world_to_px(wx, wz, width, height);
+                        if (sp[0] < -vpx || sp[0] > (float)width + vpx || sp[1] < -vpx || sp[1] > (float)height + vpx) continue;
+                        sgl::v2f(sp[0], sp[1]);
+                        sgl::v2f(sp[0] + vpx, sp[1]);
+                        sgl::v2f(sp[0] + vpx, sp[1] + vpx);
+                        sgl::v2f(sp[0], sp[1] + vpx);
+                    }
+                }
+                sgl::end();
+            }
+
+            if (st.level < 0) {
+                for (int l = rc.levels - 1; l >= 0; l--) {
+                    draw_level_probes(rc, l, slice0, st.show_angles && l == 0, width, height);
+                }
+            } else {
+                draw_level_probes(rc, active_lvl, slice0, st.show_angles, width, height);
+            }
+
+            float cwx = rc.min.x + ((float)cx + 0.5f) * spacing;
+            float cwz = rc.min.z + ((float)cz + 0.5f) * spacing;
+            float[2] csp = world_to_px(cwx, cwz, width, height);
+            float t0 = rc.interval * (math::pow(4.0f, (float)active_lvl) - 1.0f) / 3.0f;
+            float t1 = rc.interval * (math::pow(4.0f, (float)(active_lvl + 1)) - 1.0f) / 3.0f;
+            float[4] lcol = LEVEL_COLORS[math::min(active_lvl, 4)];
+            if (t0 > 0.001f) sgl_circle(csp[0], csp[1], t0 * px_per_m, 48, { lcol[0], lcol[1], lcol[2], 0.45f });
+            sgl_circle(csp[0], csp[1], t1 * px_per_m, 64, { lcol[0], lcol[1], lcol[2], 0.85f });
+            sgl_box(csp[0] - 8, csp[1] - 8, csp[0] + 8, csp[1] + 8, { 1, 1, 1, 0.95f });
+        }
 
         if (st.show_angles && !rc.sparse) draw_probe_rose(rc, active_lvl, cx, cy, cz, width);
     }
 
-    // Optional player/camera marker
-    if (marker_dir != (Vector3){}) {
+    // Optional player/camera marker (2D top-down mode)
+    if (!st.view_3d && marker_dir != (Vector3){}) {
         float[2] psp = world_to_px(marker.x, marker.z, width, height);
         sgl::begin_lines();
         sgl::c4f(1.0f, 0.95f, 0.25f, 0.95f);
@@ -657,7 +944,8 @@ fn void draw_content(
         float row = 2.0f;
         sdtx::color3f(0.35f, 0.92f, 1.0f);
         sdtx::pos(2.0f, row);
-        sdtx::puts(string::tformat("RC DEBUG  [TOP-DOWN | VHS OFF]  VOL: %s", vol_name.len ? vol_name : "NONE").zstr_tcopy());
+        sdtx::puts(string::tformat("RC DEBUG  [%s | VHS OFF]  VOL: %s",
+            st.view_3d ? "3D ORBIT" : "TOP-DOWN", vol_name.len ? vol_name : "NONE").zstr_tcopy());
         row += 1.6f;
 
         sdtx::color3f(0.88f, 0.90f, 0.94f);
@@ -775,7 +1063,7 @@ fn void draw_content(
 
         sdtx::color3f(0.72f, 0.78f, 0.85f);
         sdtx::pos(2.0f, ((float)height - 22.0f) / 8.0f);
-        sdtx::puts("ARROWS:pan (SHIFT:fast)  +/-:zoom  [/]:cut Y  W/S:slice  0-3/4:cascade  R:angles  B:voxels  SPACE:reset  F3:exit");
+        sdtx::puts("ARROWS:pan  M:2D/3D  DRAG/QE:orbit  +/-:zoom  [/]:cutY  W/S:slice  A:allY  0-3/4:lvl  R:ang  B:vox  F3:exit");
     };
 
     sgl::context_draw(gl);
