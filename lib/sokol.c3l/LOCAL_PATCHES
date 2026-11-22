@@ -1,0 +1,13 @@
+drie's local changes to sokol-c3 (https://github.com/floooh/sokol-c3)
+
+Base: sokol-c3 4baf498 (sokol 1c62e3d, indirect draw and dispatch, PR #1651).
+
+To update: copy the new sokol.c3l/ over this folder, then re-apply each item below.
+
+1. c/sokol_warm.h: drie's own file (background shader compiles that fill the driver
+   cache). Not in upstream; keep it.
+2. c/sokol.c: after `#include "sokol_cmdbuf.h"`, add
+       // drie: background shader compiles that fill the driver cache (sokol_warm.h)
+       #include "sokol_warm.h"
+3. manifest.json: drie's own. Keep it whole (-O2 -DNDEBUG cflags, the mingw, ios,
+   ios-sim and linux-aarch64 targets, the linked libraries).
