@@ -385,7 +385,7 @@ fn void draw_sparse_level_probes(RadianceCascades* rc, int lvl, int slice0, bool
     float[4] lcol = LEVEL_COLORS[math::min(lvl, 4)];
     float px_per_m = (float)height / (2.0f * st.half_h);
     float node_r = drie::clamp(spacing * px_per_m * 0.16f, 2.5f, 7.0f);
-    float max_spoke = drie::clamp(spacing * px_per_m * 0.55f, 8.0f, 34.0f);
+    float max_spoke = drie::clamp(spacing * px_per_m * 0.85f, 14.0f, 52.0f);
 
     sgl::begin_quads();
     for (int h = 0; h < rc.hash_cap; h++) {
@@ -565,7 +565,7 @@ fn void draw_level_probes(RadianceCascades* rc, int lvl, int slice0, bool draw_a
 
     // 2. Angular ray spokes (projected onto XZ plane)
     if (!draw_angles || !st.rad_ready) return;
-    float max_spoke = drie::clamp(spacing * px_per_m * 0.55f, 8.0f, 34.0f);
+    float max_spoke = drie::clamp(spacing * px_per_m * 0.85f, 14.0f, 52.0f);
     sgl::begin_lines();
     for (int iz = 0; iz < dims.z; iz += angle_stride) {
         float wz = rc.min.z + ((float)iz + 0.5f) * spacing;
@@ -734,6 +734,52 @@ fn void draw_3d_scene_overlay(RadianceCascades* rc, int active_lvl, int slice0, 
                     sgl_cube_quads(pos, sp * 0.16f, rgb, alpha);
                 }
                 sgl::end();
+
+                // 3D radiating angular lines on sparse cubes
+                if (st.show_angles && st.rad_ready) {
+                    int ray_probes = 0;
+                    sgl::begin_lines();
+                    for (int h = 0; h < rc.hash_cap && ray_probes < 1200; h++) {
+                        drie::Vec4 raw = st.irr_cpu[h];
+                        uint key_lo = bitcast(raw.x, uint);
+                        uint key_hi = bitcast(raw.y, uint);
+                        if ((key_hi & 0x01000000u) == 0) continue;
+                        int plvl = (int)((key_hi >> 16) & 0xfu);
+                        if (st.level >= 0 && plvl != active_lvl) continue;
+                        int ix = (int)(key_lo & 0xffffu) - 32768;
+                        int iy = (int)((key_lo >> 16) & 0xffffu) - 32768;
+                        int iz = (int)(key_hi & 0xffffu) - 32768;
+                        float sp = rc.spacing * (float)(1 << plvl);
+                        Vector3 pos = { ((float)ix + 0.5f) * sp, ((float)iy + 0.5f) * sp, ((float)iz + 0.5f) * sp };
+                        float dx = pos.x - st.pan_x;
+                        float dz = pos.z - st.pan_z;
+                        if (dx * dx + dz * dz > max_d2) continue;
+                        uint slot = bitcast(raw.z, uint);
+                        if ((int)slot >= rc.level_cap[plvl]) continue;
+                        ray_probes++;
+                        int pd = rc.base_directions << plvl;
+                        int pdd = pd * pd;
+                        int poff = rc.offsets[plvl];
+                        int k_step = pd > 8 ? 2 : 1;
+                        float ray_len = sp * 0.72f;
+                        for (int ky = 0; ky < pd; ky += k_step) {
+                            for (int kx = 0; kx < pd; kx += k_step) {
+                                int k = ky * pd + kx;
+                                float ex = ((float)kx + 0.5f) / (float)pd * 2.0f - 1.0f;
+                                float ey = ((float)ky + 0.5f) / (float)pd * 2.0f - 1.0f;
+                                Vector3 rd = oct_dir(ex, ey);
+                                Vector3 rad = unpack_rad((sz)poff + (sz)slot * pdd + k);
+                                float lum = rad.x * 0.2126f + rad.y * 0.7152f + rad.z * 0.0722f;
+                                float len = ray_len * (0.35f + 0.65f * drie::clamp(lum * 2.5f / (0.25f + lum * 2.5f), 0, 1));
+                                float[3] rgb = tone_rgb(rad * 3.0f);
+                                sgl::c4f(rgb[0], rgb[1], rgb[2], 0.35f + 0.55f * drie::clamp(lum * 3.0f / (0.2f + lum * 3.0f), 0, 1));
+                                sgl::v3f(pos.x, pos.y, pos.z);
+                                sgl::v3f(pos.x + rd.x * len, pos.y + rd.y * len, pos.z + rd.z * len);
+                            }
+                        }
+                    }
+                    sgl::end();
+                }
             }
         } else {
             // Dense 3D probe cubes (strided in XZ/Y when all_slices_3d is on to stay within vertex budget)
@@ -782,6 +828,47 @@ fn void draw_3d_scene_overlay(RadianceCascades* rc, int active_lvl, int slice0, 
                 }
             }
             sgl::end();
+
+            // 3D radiating angular lines on all drawn dense cubes
+            if (st.show_angles && st.rad_ready) {
+                int k_step = d > 8 ? 2 : 1;
+                float ray_len = spacing * 0.72f;
+                int ray_probes = 0;
+                sgl::begin_lines();
+                for (int iy = y0; iy < y1 && ray_probes < 1600; iy += y_step) {
+                    float wy = rc.min.y + ((float)iy + 0.5f) * spacing;
+                    for (int iz = 0; iz < dims.z && ray_probes < 1600; iz += xz_step) {
+                        float wz = rc.min.z + ((float)iz + 0.5f) * spacing;
+                        for (int ix = 0; ix < dims.x && ray_probes < 1600; ix += xz_step) {
+                            float wx = rc.min.x + ((float)ix + 0.5f) * spacing;
+                            int vx = (int)math::floor((wx - rc.min.x) / rc.voxel_size);
+                            int vy = (int)math::floor((wy - rc.min.y) / rc.voxel_size);
+                            int vz = (int)math::floor((wz - rc.min.z) / rc.voxel_size);
+                            if (vx >= 0 && vx < rc.vx && vy >= 0 && vy < rc.vy && vz >= 0 && vz < rc.vz) {
+                                if ((rc.voxels[(((sz)vz * rc.vy + vy) * rc.vx + vx) * 2] & 0x1000000u) != 0) continue;
+                            }
+                            ray_probes++;
+                            sz p_idx = ((sz)iz * dims.y + iy) * dims.x + ix;
+                            for (int ky = 0; ky < d; ky += k_step) {
+                                for (int kx = 0; kx < d; kx += k_step) {
+                                    int k = ky * d + kx;
+                                    float ex = ((float)kx + 0.5f) / (float)d * 2.0f - 1.0f;
+                                    float ey = ((float)ky + 0.5f) / (float)d * 2.0f - 1.0f;
+                                    Vector3 rd = oct_dir(ex, ey);
+                                    Vector3 rad = unpack_rad((sz)off + p_idx * dd + k);
+                                    float lum = rad.x * 0.2126f + rad.y * 0.7152f + rad.z * 0.0722f;
+                                    float len = ray_len * (0.35f + 0.65f * drie::clamp(lum * 2.5f / (0.25f + lum * 2.5f), 0, 1));
+                                    float[3] rgb = tone_rgb(rad * 3.0f);
+                                    sgl::c4f(rgb[0], rgb[1], rgb[2], 0.35f + 0.55f * drie::clamp(lum * 3.0f / (0.2f + lum * 3.0f), 0, 1));
+                                    sgl::v3f(wx, wy, wz);
+                                    sgl::v3f(wx + rd.x * len, wy + rd.y * len, wz + rd.z * len);
+                                }
+                            }
+                        }
+                    }
+                }
+                sgl::end();
+            }
 
             // 3D angular rays on the inspected (center) probe
             int cx = math::clamp((int)math::floor((st.pan_x - rc.min.x) / spacing), 0, dims.x - 1);
@@ -1098,7 +1185,7 @@ fn void draw_window(
     if (!active || !sapp::isvalid()) return;
     if (!st.win_gl.id) {
         ui::setup();
-        st.win_gl = sgl::make_context(&&{ .max_vertices = 262144, .max_commands = 64 });
+        st.win_gl = sgl::make_context(&&{ .max_vertices = 524288, .max_commands = 64 });
         st.win_pip = sgl::context_make_pipeline(st.win_gl, &&blend_desc());
         st.win_text = sdtx::make_context(&&{ .char_buf_size = 4096, .canvas_width = (float)width, .canvas_height = (float)height });
     }
@@ -1121,7 +1208,7 @@ fn void draw_target(
     if (!st.img_gl.id) {
         ui::setup();
         st.img_gl = sgl::make_context(&&{
-            .max_vertices = 262144,
+            .max_vertices = 524288,
             .max_commands = 64,
             .color_format = RGBA8,
             .depth_format = NONE,
