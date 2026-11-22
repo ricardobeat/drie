@@ -845,10 +845,11 @@ fn void RadianceCascades.recenter(&self, Object3D* root, Vector3 center) {
         if (self.sparse) self.sparse_dirty = true;
         return;
     }
-    if (shift_vx == 0 && shift_vz == 0) {
-        if (self.sparse) self.sparse_dirty = true;
-        return;
-    }
+    // A scroll keeps the sparse probes: they're keyed and placed in world space, so they
+    // stand where they were. Those the box leaves behind are evicted once nothing sees them,
+    // and the new slab's get light as the camera finds them. Clearing them (as a cut or a
+    // change of scene still does) would put the GI back to nothing at every step of the box.
+    if (shift_vx == 0 && shift_vz == 0) return;
 
     uint[] scrolled = mem::new_array(uint, (sz)self.voxels.len);
     for (int zn = 0; zn < self.vz; zn++) {
@@ -899,7 +900,6 @@ fn void RadianceCascades.recenter(&self, Object3D* root, Vector3 center) {
         self.voxelize_region(root, smin, smax);
     }
     self.voxelized_root = root;
-    if (self.sparse) self.sparse_dirty = true;
 }
 
 // Start over (after a cut, or when much has changed): the next frame takes all it finds.
