@@ -2813,7 +2813,9 @@ fn FsParams build_light_params(Scene* scene, Camera* camera, SpotLight* caster) 
     if (scene.radiance) {
         RadianceCascades* rc = scene.radiance;
         p.rc_min = { ...rc.min, rc.spacing };
-        p.rc_size = { rc.nx, rc.ny, rc.nz, rc.intensity };
+        p.rc_size = rc.sparse
+            ? (Vec4) { -(float)rc.hash_cap, 0, 0, rc.intensity }
+            : (Vec4) { rc.nx, rc.ny, rc.nz, rc.intensity };
     }
     if (scene.fog) {
         Fog* f = scene.fog;
@@ -5142,6 +5144,19 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera) {
         sg::end_pass();
         profile::stop("render: gbuffer", pt);
         pt = profile::start();
+
+        if (scene.radiance && scene.radiance.sparse && !self.reflecting) {
+            scene.radiance.update_sparse(
+                scene,
+                rt.depth_texture,
+                state.gb_tex[1],
+                state.gb_sampler,
+                view_proj_rel.invert(),
+                camera_pos,
+                rt.width,
+                rt.height
+            );
+        }
 
         SgLoadAction light_load = self.scissor_test ? SgLoadAction.CLEAR : SgLoadAction.DONTCARE;
         SgPass light_pass = {

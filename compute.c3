@@ -119,7 +119,7 @@ struct ComputePass {
     SgPipeline pipeline;
     SgBindings bindings;
     // uniform blocks, copied at set_uniforms and applied at each dispatch
-    char[256][4] uniforms;
+    char[512][4] uniforms;
     usz[4] uniform_size;
 }
 
@@ -139,7 +139,7 @@ fn void ComputePass.set_view(&self, int slot, SgView view) {
 }
 
 fn void ComputePass.set_uniforms(&self, int slot, void* data, usz size) {
-    if (slot < 0 || slot >= 4 || size > 256) abort("drie: compute uniforms: slots 0..3, up to 256 bytes");
+    if (slot < 0 || slot >= 4 || size > 512) abort("drie: compute uniforms: slots 0..3, up to 512 bytes");
     mem::copy(&self.uniforms[slot], data, (sz)size);
     self.uniform_size[slot] = size;
 }

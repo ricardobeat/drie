@@ -27,7 +27,7 @@
 // frames (`blend`), so the result takes some frames to settle after a change.
 module drie;
 import std::math, std::collections::list;
-import sokol;
+import sokol, drie_shaders::rc_split;
 
 const int RC_MAX_LEVELS = 8;
 const int RC_MAX_LIGHTS = 64;
@@ -84,6 +84,20 @@ struct RadianceCascades {
     int[RC_MAX_LEVELS] offsets;
     int[RC_MAX_LEVELS] counts;
     int frame;
+
+    // Sparse / Split Radiance Cascades mode (arXiv:2607.20384):
+    // Probes are allocated on the GPU near visible G-Buffer surfaces in a hash table
+    // stored at the front of `irradiance_buf` ([0..hash_cap-1]), followed by L0 6-face
+    // irradiance ([hash_cap..hash_cap + level_cap[0]*6 - 1]).
+    bool sparse;
+    int hash_cap;                      // power of 2 (e.g. 65536)
+    int[RC_MAX_LEVELS] level_cap;      // max allocated probes per cascade level
+    int[RC_MAX_LEVELS] probe_base;     // start offset in meta_buf per cascade level
+    StorageBuffer* meta_buf;
+    StorageBuffer* count_buf;
+    ComputePass* alloc_pass;
+    ComputePass* split_trace;
+    ComputePass* split_gather;
 }
 
 fn RadianceCascades* radiance_cascades(Vector3 min, Vector3 max, float spacing = 0.25, int levels = 4) {
@@ -123,15 +137,65 @@ fn RadianceCascades* radiance_cascades(Vector3 min, Vector3 max, float spacing =
     return r;
 }
 
+// Creates a Sparse / Split Radiance Cascades volume: probes are allocated on the GPU around
+// visible surfaces in a hash table instead of a dense 3D probe grid, enabling large open
+// areas with bounded VRAM (`max_probes` for L0, halved per coarser cascade level).
+fn RadianceCascades* radiance_cascades_sparse(
+    Vector3 min,
+    Vector3 max,
+    float spacing = 0.25,
+    int levels = 4,
+    int max_probes = 16384,
+    int hash_cap = 65536
+) {
+    RadianceCascades* r = radiance_cascades(min, max, spacing, levels);
+    r.sparse = true;
+    // round hash_cap up to power of 2
+    int hc = 1024;
+    while (hc < hash_cap && hc < 1 << 20) hc <<= 1;
+    r.hash_cap = hc;
+    int pbase = 0;
+    int ray_at = 0;
+    for (int l = 0; l < r.levels; l++) {
+        int cap = math::max(max_probes >> l, 256);
+        r.level_cap[l] = cap;
+        r.probe_base[l] = pbase;
+        pbase += cap;
+        int d = r.base_directions << l;
+        r.offsets[l] = ray_at;
+        r.counts[l] = cap * d * d;
+        ray_at += r.counts[l];
+    }
+    return r;
+}
+
 // Makes the GPU's part (the buffers and the passes), if it isn't made yet. update() and the
 // renderer call it; until then the cascades touch no GPU, so they can be made and voxelized
 // on a thread that doesn't draw.
 fn void RadianceCascades.upload(&self) {
+    if (self.sparse) {
+        if (self.alloc_pass) return;
+        int total_rays = self.offsets[self.levels - 1] + self.counts[self.levels - 1];
+        int total_meta = self.probe_base[self.levels - 1] + self.level_cap[self.levels - 1];
+        self.cascade_buf = storage_buffer((sz)total_rays * 8, label: "drie-rc-split-cascades");
+        // irradiance_buf holds [hash_cap uvec4 hash entries] + [level_cap[0] * 6 vec4 irradiance]
+        self.irradiance_buf = storage_buffer((sz)(self.hash_cap + self.level_cap[0] * 6) * 16, label: "drie-rc-split-irr");
+        self.meta_buf = storage_buffer((sz)total_meta * 16, label: "drie-rc-split-meta");
+        self.count_buf = storage_buffer(8 * 4, label: "drie-rc-split-counts");
+        self.light_buf = storage_buffer(RC_MAX_LIGHTS * shaders::RcLight::size, cpu_write: true, label: "drie-rc-lights");
+        self.voxel_buf = storage_buffer(16, label: "drie-rc-voxels");
+        self.brick_buf = storage_buffer(16, label: "drie-rc-bricks");
+        SgBackend backend = sg::query_backend();
+        self.alloc_pass = compute_pass(rc_split::rc_alloc_shader_desc(backend), "drie-rc-alloc");
+        self.split_trace = compute_pass(rc_split::rc_split_trace_shader_desc(backend), "drie-rc-split-trace");
+        self.split_gather = compute_pass(rc_split::rc_split_gather_shader_desc(backend), "drie-rc-split-gather");
+        return;
+    }
     if (self.trace) return;
     int at = self.offsets[self.levels - 1] + self.counts[self.levels - 1];
     self.cascade_buf = storage_buffer((sz)at * 8, label: "drie-rc-cascades");
     self.irradiance_buf = storage_buffer((sz)self.nx * self.ny * self.nz * 6 * 16, label: "drie-rc-irradiance");
-    self.light_buf = storage_buffer(RC_MAX_LIGHTS * RcLight::size, cpu_write: true, label: "drie-rc-lights");
+    self.light_buf = storage_buffer(RC_MAX_LIGHTS * shaders::RcLight::size, cpu_write: true, label: "drie-rc-lights");
     self.voxel_buf = storage_buffer(16, label: "drie-rc-voxels");
     self.brick_buf = storage_buffer(16, label: "drie-rc-bricks");
     SgBackend backend = sg::query_backend();
@@ -281,7 +345,7 @@ fn void RadianceCascades.voxelize(&self, Object3D* root) {
 }
 
 struct RcLightList @local {
-    RcLight[RC_MAX_LIGHTS] lights;
+    shaders::RcLight[RC_MAX_LIGHTS] lights;
     int count;
     Vector3 sky;
     Vector3 ground;
@@ -381,7 +445,7 @@ fn void RadianceCascades.update(&self, Scene* scene) {
         self.sky_color = list.sky / (float)PI;
         self.ground_color = list.ground / (float)PI;
     }
-    self.light_buf.write(&list.lights, (sz)math::max(list.count, 1) * RcLight::size);
+    self.light_buf.write(&list.lights, (sz)math::max(list.count, 1) * shaders::RcLight::size);
 
     int every = math::max(self.update_every, 1);
     int turn  = self.frame / every;
@@ -438,6 +502,139 @@ fn void RadianceCascades.update(&self, Scene* scene) {
     self.frame++;
 }
 
+// Runs the sparse Split Radiance Cascades passes (alloc -> trace -> gather) using the
+// current frame's G-Buffer depth and normal textures. Called automatically by Renderer.render()
+// between the G-Buffer pass and the deferred lighting pass when `scene.radiance.sparse` is true.
+fn void RadianceCascades.update_sparse(
+    &self,
+    Scene* scene,
+    SgView depth_tex,
+    SgView normal_tex,
+    SgSampler gb_sampler,
+    Mat4 inv_view_proj,
+    Vector3 cam_pos,
+    int width,
+    int height
+) {
+    if (!self.sparse) return;
+    self.upload();
+    if (self.voxels_changed) {
+        self.voxel_buf.write(self.voxels.ptr, (sz)self.voxels.len * uint::size);
+        uint[] bricks = mem::new_array(uint, (sz)self.nx * self.ny * self.nz);
+        defer free(bricks);
+        for (int z = 0; z < self.vz; z++) {
+            for (int y = 0; y < self.vy; y++) {
+                for (int x = 0; x < self.vx; x++) {
+                    if (self.voxels[(((sz)z * self.vy + y) * self.vx + x)
+                        * 2]) bricks[((sz)(z / 4) * self.ny + y / 4) * self.nx + x / 4]++;
+                }
+            }
+        }
+        self.brick_buf.write(bricks.ptr, (sz)bricks.len * uint::size);
+        self.voxels_changed = false;
+    }
+    RcLightList* list = mem::new(RcLightList);
+    defer free(list);
+    rc_collect_lights(self, scene, list);
+    if (self.sky_from_scene) {
+        self.sky_color = list.sky / (float)PI;
+        self.ground_color = list.ground / (float)PI;
+    }
+    self.light_buf.write(&list.lights, (sz)math::max(list.count, 1) * shaders::RcLight::size);
+
+    int every = math::max(self.update_every, 1);
+    int turn  = self.frame / every;
+    bool zo   = depth_zero_to_one();
+    rc_split::RcSplitParams p = {
+        .rc_min = { ...self.min, self.spacing },
+        .rc_dims = { self.nx, self.ny, self.nz, 0 },
+        .rc_tune = {
+            self.interval,
+            math::max(self.blend, 1.0f / (float)(turn + 1)),
+            (float)(self.frame % 4096),
+            self.voxel_size,
+        },
+        .rc_info = { self.base_directions, self.levels, list.count, self.hash_cap },
+        .rc_sky = { ...self.sky_color, self.bounce },
+        .rc_ground = { ...self.ground_color, self.normal_offset },
+        .rc_vox = { self.vx, self.vy, self.vz, every },
+        .rc_inv_vp = inv_view_proj,
+        .rc_cam_pos = { ...cam_pos, zo ? 1 : 0 },
+        .rc_screen = { 1.0f / (float)width, 1.0f / (float)height, zo ? 1 : 0, (float)width },
+    };
+    for (int l = 0; l < self.levels; l++) {
+        if (l < 4) {
+            p.rc_lcap0[l] = self.level_cap[l];
+            p.rc_loff0[l] = self.offsets[l];
+            p.rc_pbase0[l] = self.probe_base[l];
+        } else {
+            p.rc_lcap1[l - 4] = self.level_cap[l];
+            p.rc_loff1[l - 4] = self.offsets[l];
+            p.rc_pbase1[l - 4] = self.probe_base[l];
+        }
+    }
+
+    // 1. Allocate/touch probes around visible G-Buffer surfaces (4x4 pixel subsample)
+    ComputePass* ap = self.alloc_pass;
+    ap.bindings.views[rc_split::VIEW_RC_DEPTH_TEX] = depth_tex;
+    ap.bindings.views[rc_split::VIEW_RC_NORMAL_TEX] = normal_tex;
+    ap.bindings.samplers[rc_split::SMP_RC_GB_SMP] = gb_sampler;
+    ap.set_buffer(rc_split::VIEW_RC_HT_ALLOC, self.irradiance_buf);
+    ap.set_buffer(rc_split::VIEW_RC_META_ALLOC, self.meta_buf);
+    ap.set_buffer(rc_split::VIEW_RC_CNT_ALLOC, self.count_buf);
+    ap.set_uniforms(rc_split::UB_RC_SPLIT_PARAMS, &p, rc_split::RcSplitParams::size);
+    begin_compute("drie-rc-alloc");
+    ap.dispatch(((width + 3) / 4 + 7) / 8, ((height + 3) / 4 + 7) / 8);
+    end_compute();
+
+    // 2. Trace allocated probes top-down (levels-1 .. 0)
+    ComputePass* tp = self.split_trace;
+    tp.set_buffer(rc_split::VIEW_RC_SPLIT_VOXELS, self.voxel_buf);
+    tp.set_buffer(rc_split::VIEW_RC_SPLIT_CASCADES, self.cascade_buf);
+    tp.set_buffer(rc_split::VIEW_RC_HT_TRACE, self.irradiance_buf);
+    tp.set_buffer(rc_split::VIEW_RC_SPLIT_LIGHTS, self.light_buf);
+    tp.set_buffer(rc_split::VIEW_RC_SPLIT_BRICKS, self.brick_buf);
+    tp.set_buffer(rc_split::VIEW_RC_META_TRACE, self.meta_buf);
+    tp.set_buffer(rc_split::VIEW_RC_CNT_TRACE, self.count_buf);
+    for (int l = self.levels - 1; l >= 0; l--) {
+        p.rc_dims[3] = l;
+        tp.set_uniforms(rc_split::UB_RC_SPLIT_PARAMS, &p, rc_split::RcSplitParams::size);
+        begin_compute("drie-rc-split-trace");
+        tp.dispatch(((self.counts[l] + every - 1) / every + 63) / 64);
+        end_compute();
+    }
+
+    // 3. Gather L0 allocated probes into 6-face irradiance
+    ComputePass* gp = self.split_gather;
+    gp.set_buffer(rc_split::VIEW_RC_GATHER_VOXELS, self.voxel_buf);
+    gp.set_buffer(rc_split::VIEW_RC_SPLIT_GATHER_CASCADES, self.cascade_buf);
+    gp.set_buffer(rc_split::VIEW_RC_HT_GATHER, self.irradiance_buf);
+    gp.set_buffer(rc_split::VIEW_RC_META_GATHER, self.meta_buf);
+    gp.set_buffer(rc_split::VIEW_RC_CNT_GATHER, self.count_buf);
+    gp.set_uniforms(rc_split::UB_RC_SPLIT_PARAMS, &p, rc_split::RcSplitParams::size);
+    begin_compute("drie-rc-split-gather");
+    gp.dispatch((self.level_cap[0] + 63) / 64);
+    end_compute();
+
+    self.frame++;
+}
+
+// Re-centers the voxel volume around `center` (snapped to probe spacing) and re-voxelizes
+// `root` — for sliding open-world GI volumes that follow the player.
+fn void RadianceCascades.recenter(&self, Object3D* root, Vector3 center) {
+    Vector3 size = self.max - self.min;
+    Vector3 new_min = {
+        math::floor((center.x - size.x * 0.5f) / self.spacing) * self.spacing,
+        self.min.y,
+        math::floor((center.z - size.z * 0.5f) / self.spacing) * self.spacing,
+    };
+    if (new_min == self.min) return;
+    self.min = new_min;
+    self.max = new_min + size;
+    self.clear_voxels();
+    self.voxelize(root);
+}
+
 // Start over (after a cut, or when much has changed): the next frame takes all it finds.
 fn void RadianceCascades.reset(&self) {
     self.frame = 0;
@@ -445,10 +642,11 @@ fn void RadianceCascades.reset(&self) {
 
 fn void RadianceCascades.dispose(&self) {
     free(self.voxels);
-    if (!self.trace) return;
-    self.voxel_buf.dispose();
-    self.brick_buf.dispose();
-    self.cascade_buf.dispose();
-    self.irradiance_buf.dispose();
-    self.light_buf.dispose();
+    if (self.voxel_buf) self.voxel_buf.dispose();
+    if (self.brick_buf) self.brick_buf.dispose();
+    if (self.cascade_buf) self.cascade_buf.dispose();
+    if (self.irradiance_buf) self.irradiance_buf.dispose();
+    if (self.light_buf) self.light_buf.dispose();
+    if (self.meta_buf) self.meta_buf.dispose();
+    if (self.count_buf) self.count_buf.dispose();
 }

@@ -1764,10 +1764,65 @@ vec3 gi_irradiance(vec3 n, out float cover) {
 // box, 0 outside it, between the two over its outermost half cell.
 // Blended between the 8 probes around, leaving out those inside things and those behind the
 // surface's own plane: a wall takes none of the light of the room behind it.
+uint rc_probe_hash(uint x) {
+    x ^= x >> 16;
+    x *= 0x7feb352du;
+    x ^= x >> 15;
+    x *= 0x846ca68bu;
+    x ^= x >> 16;
+    return x;
+}
+
+int rc_lookup_sparse_probe(ivec3 c, int hash_cap) {
+    uint key_lo = (uint(c.x + 32768) & 0xffffu) | ((uint(c.y + 32768) & 0xffffu) << 16);
+    uint key_hi = (uint(c.z + 32768) & 0xffffu) | 0x01000000u;
+    uint mask = uint(hash_cap - 1);
+    uint idx = rc_probe_hash(key_lo ^ (key_hi * 0x9e3779b9u)) & mask;
+    for (int step = 0; step < 16; step++) {
+        uvec4 e = floatBitsToUint(rc_probe_data[idx].e);
+        if (e.y == 0u) return -1;
+        if (e.y == key_hi && e.x == key_lo) return int(e.z);
+        idx = (idx + 1u) & mask;
+    }
+    return -1;
+}
+
 vec3 rc_irradiance(vec3 n, out float fade) {
     fade = 0.0;
     if (rc_size.w <= 0.0) return vec3(0.0);
     float spacing = rc_min.w;
+    ivec3 side = ivec3(n.x >= 0.0 ? 0 : 1, n.y >= 0.0 ? 2 : 3, n.z >= 0.0 ? 4 : 5);
+    vec3 nn = n * n;
+    vec3 sum = vec3(0.0);
+    float wsum = 0.0;
+    vec3 sum_any = vec3(0.0);
+    float wsum_any = 0.0;
+    if (rc_size.x < -0.5) {
+        int hash_cap = int(-rc_size.x + 0.5);
+        vec3 g = (v_world_pos + n * (0.25 * spacing)) / spacing - 0.5;
+        ivec3 b = ivec3(floor(g));
+        vec3 f = g - vec3(b);
+        for (int k = 0; k < 8; k++) {
+            ivec3 o = ivec3(k & 1, (k >> 1) & 1, (k >> 2) & 1);
+            ivec3 c = b + o;
+            int slot = rc_lookup_sparse_probe(c, hash_cap);
+            if (slot < 0) continue;
+            int at = hash_cap + slot * 6;
+            vec4 ex = rc_probe_data[at + side.x].e;
+            vec3 e = ex.rgb * nn.x + rc_probe_data[at + side.y].e.rgb * nn.y + rc_probe_data[at + side.z].e.rgb * nn.z;
+            vec3 w3 = mix(1.0 - f, f, vec3(o));
+            float w = (w3.x * w3.y * w3.z + 0.002) * ex.w;
+            vec3 probe_pos = (vec3(c) + 0.5) * spacing;
+            float front = clamp((dot(probe_pos - v_world_pos, n) + 0.04) / 0.06, 0.0, 1.0);
+            sum += e * (w * front);
+            wsum += w * front;
+            sum_any += e * w;
+            wsum_any += w;
+        }
+        if (wsum > 1e-4) { fade = 1.0; return sum / wsum * rc_size.w; }
+        if (wsum_any > 1e-5) { fade = 1.0; return sum_any / wsum_any * rc_size.w; }
+        return vec3(0.0);
+    }
     vec3 g = (v_world_pos + n * (0.25 * spacing) - rc_min.xyz) / spacing;
     vec3 edge = min(g, rc_size.xyz - g);
     fade = clamp(min(edge.x, min(edge.y, edge.z)) * 2.0, 0.0, 1.0);
@@ -1776,12 +1831,6 @@ vec3 rc_irradiance(vec3 n, out float fade) {
     ivec3 b = ivec3(floor(g));
     vec3 f = g - vec3(b);
     ivec3 dims = ivec3(rc_size.xyz);
-    ivec3 side = ivec3(n.x >= 0.0 ? 0 : 1, n.y >= 0.0 ? 2 : 3, n.z >= 0.0 ? 4 : 5);
-    vec3 nn = n * n;
-    vec3 sum = vec3(0.0);
-    float wsum = 0.0;
-    vec3 sum_any = vec3(0.0);
-    float wsum_any = 0.0;
     for (int k = 0; k < 8; k++) {
         ivec3 o = ivec3(k & 1, (k >> 1) & 1, (k >> 2) & 1);
         ivec3 c = clamp(b + o, ivec3(0), dims - 1);

@@ -168,7 +168,9 @@ fn void track(RadianceCascades* rc, bool wait_now = false) {
     if (st.last_rc != rc) {
         if (st.irr_cpu.len) free(st.irr_cpu);
         if (st.rad_cpu.len) free(st.rad_cpu);
-        sz irr_count = (sz)rc.nx * rc.ny * rc.nz * 6;
+        sz irr_count = rc.sparse
+            ? (sz)(rc.hash_cap + rc.level_cap[0] * 6)
+            : (sz)rc.nx * rc.ny * rc.nz * 6;
         sz rad_rays = (sz)(rc.offsets[rc.levels - 1] + rc.counts[rc.levels - 1]);
         st.irr_cpu = mem::new_array(drie::Vec4, irr_count);
         st.rad_cpu = mem::new_array(uint, rad_rays * 2);
@@ -283,7 +285,124 @@ const float[4][5] LEVEL_COLORS @local = {
     { 0.85f, 0.85f, 0.95f, 0.90f }, // L4+: white
 };
 
+fn void draw_sparse_level_probes(RadianceCascades* rc, int lvl, int slice0, bool draw_angles, int width, int height) @local {
+    if (!st.irr_ready) return;
+    float spacing = rc.spacing * (float)(1 << lvl);
+    int target_iy = (int)math::floor((rc.min.y + ((float)slice0 + 0.5f) * rc.spacing) / spacing);
+    int d = rc.base_directions << lvl;
+    int dd = d * d;
+    int off = rc.offsets[lvl];
+    float[4] lcol = LEVEL_COLORS[math::min(lvl, 4)];
+    float px_per_m = (float)height / (2.0f * st.half_h);
+    float node_r = drie::clamp(spacing * px_per_m * 0.16f, 2.5f, 7.0f);
+    float max_spoke = drie::clamp(spacing * px_per_m * 0.55f, 8.0f, 34.0f);
+
+    sgl::begin_quads();
+    for (int h = 0; h < rc.hash_cap; h++) {
+        drie::Vec4 raw = st.irr_cpu[h];
+        uint key_lo = bitcast(raw.x, uint);
+        uint key_hi = bitcast(raw.y, uint);
+        if ((key_hi & 0x01000000u) == 0) continue;
+        int plvl = (int)((key_hi >> 16) & 0xfu);
+        if (plvl != lvl) continue;
+        int ix = (int)(key_lo & 0xffffu) - 32768;
+        int iy = (int)((key_lo >> 16) & 0xffffu) - 32768;
+        int iz = (int)(key_hi & 0xffffu) - 32768;
+        if (math::abs(iy - target_iy) > 1) continue;
+        float wx = ((float)ix + 0.5f) * spacing;
+        float wz = ((float)iz + 0.5f) * spacing;
+        float[2] sp = world_to_px(wx, wz, width, height);
+        if (sp[0] < -16 || sp[0] > (float)(width + 16) || sp[1] < -16 || sp[1] > (float)(height + 16)) continue;
+
+        uint slot = bitcast(raw.z, uint);
+        float[3] rgb = { lcol[0] * 0.4f, lcol[1] * 0.4f, lcol[2] * 0.4f };
+        bool solid = false;
+        if (lvl == 0 && (int)slot < rc.level_cap[0]) {
+            sz base = (sz)rc.hash_cap + (sz)slot * 6;
+            drie::Vec4 e0 = st.irr_cpu[base];
+            solid = e0.w < 0.5f;
+            if (!solid) {
+                Vector3 avg;
+                for (int a = 0; a < 6; a++) {
+                    drie::Vec4 e = st.irr_cpu[base + a];
+                    avg += { e.x, e.y, e.z };
+                }
+                rgb = tone_rgb(avg * (1.0f / 6.0f));
+            } else {
+                rgb = { 0.45f, 0.08f, 0.08f };
+            }
+        } else if (st.rad_ready && (int)slot < rc.level_cap[lvl]) {
+            Vector3 avg;
+            int step = math::max(dd / 16, 1);
+            int cnt = 0;
+            for (int k = 0; k < dd; k += step) {
+                avg += unpack_rad((sz)off + (sz)slot * dd + k);
+                cnt++;
+            }
+            if (cnt > 0) rgb = tone_rgb(avg * (1.0f / (float)cnt));
+        }
+
+        float br = node_r + 1.0f;
+        sgl::c4f(lcol[0], lcol[1], lcol[2], solid ? 0.35f : 0.9f);
+        sgl::v2f(sp[0] - br, sp[1] - br);
+        sgl::v2f(sp[0] + br, sp[1] - br);
+        sgl::v2f(sp[0] + br, sp[1] + br);
+        sgl::v2f(sp[0] - br, sp[1] + br);
+
+        sgl::c4f(rgb[0], rgb[1], rgb[2], solid ? 0.45f : 0.9f);
+        sgl::v2f(sp[0] - node_r, sp[1] - node_r);
+        sgl::v2f(sp[0] + node_r, sp[1] - node_r);
+        sgl::v2f(sp[0] + node_r, sp[1] + node_r);
+        sgl::v2f(sp[0] - node_r, sp[1] + node_r);
+    }
+    sgl::end();
+
+    if (!draw_angles || !st.rad_ready) return;
+    sgl::begin_lines();
+    for (int h = 0; h < rc.hash_cap; h++) {
+        drie::Vec4 raw = st.irr_cpu[h];
+        uint key_lo = bitcast(raw.x, uint);
+        uint key_hi = bitcast(raw.y, uint);
+        if ((key_hi & 0x01000000u) == 0) continue;
+        int plvl = (int)((key_hi >> 16) & 0xfu);
+        if (plvl != lvl) continue;
+        int ix = (int)(key_lo & 0xffffu) - 32768;
+        int iy = (int)((key_lo >> 16) & 0xffffu) - 32768;
+        int iz = (int)(key_hi & 0xffffu) - 32768;
+        if (iy != target_iy || ((ix + iz) & 1) != 0) continue;
+        float wx = ((float)ix + 0.5f) * spacing;
+        float wz = ((float)iz + 0.5f) * spacing;
+        float[2] sp = world_to_px(wx, wz, width, height);
+        if (sp[0] < -36 || sp[0] > (float)(width + 36) || sp[1] < -36 || sp[1] > (float)(height + 36)) continue;
+
+        uint slot = bitcast(raw.z, uint);
+        if ((int)slot >= rc.level_cap[lvl]) continue;
+        int k_step = d > 16 ? 2 : 1;
+        for (int ky = 0; ky < d; ky += k_step) {
+            for (int kx = 0; kx < d; kx += k_step) {
+                int k = ky * d + kx;
+                float ex = ((float)kx + 0.5f) / (float)d * 2.0f - 1.0f;
+                float ey = ((float)ky + 0.5f) / (float)d * 2.0f - 1.0f;
+                Vector3 rd = oct_dir(ex, ey);
+                if (math::abs(rd.y) > 0.72f) continue;
+                Vector3 rad = unpack_rad((sz)off + (sz)slot * dd + k);
+                float lum = rad.x * 0.2126f + rad.y * 0.7152f + rad.z * 0.0722f;
+                float len = max_spoke * (0.35f + 0.65f * drie::clamp(lum * 2.5f / (0.25f + lum * 2.5f), 0, 1));
+                float[3] rgb = tone_rgb(rad * 3.0f);
+                sgl::c4f(rgb[0], rgb[1], rgb[2], 0.35f + 0.6f * drie::clamp(lum * 3.0f / (0.15f + lum * 3.0f), 0, 1));
+                sgl::v2f(sp[0], sp[1]);
+                sgl::v2f(sp[0] + rd.x * len, sp[1] + rd.z * len);
+            }
+        }
+    }
+    sgl::end();
+}
+
 fn void draw_level_probes(RadianceCascades* rc, int lvl, int slice0, bool draw_angles, int width, int height) @local {
+    if (rc.sparse) {
+        draw_sparse_level_probes(rc, lvl, slice0, draw_angles, width, height);
+        return;
+    }
     int[<3>] dims = rc.level_dims(lvl);
     float spacing = rc.spacing * (float)(1 << lvl);
     int iy = math::clamp(slice0 >> lvl, 0, dims.y - 1);
@@ -500,7 +619,7 @@ fn void draw_content(
         sgl_circle(csp[0], csp[1], t1 * px_per_m, 64, { lcol[0], lcol[1], lcol[2], 0.85f });
         sgl_box(csp[0] - 8, csp[1] - 8, csp[0] + 8, csp[1] + 8, { 1, 1, 1, 0.95f });
 
-        if (st.show_angles) draw_probe_rose(rc, active_lvl, cx, cy, cz, width);
+        if (st.show_angles && !rc.sparse) draw_probe_rose(rc, active_lvl, cx, cy, cz, width);
     }
 
     // Optional player/camera marker
@@ -543,6 +662,32 @@ fn void draw_content(
 
         sdtx::color3f(0.88f, 0.90f, 0.94f);
         if (rc) {
+        if (rc.sparse) {
+            int occupied = 0;
+            if (st.irr_ready) {
+                for (int h = 0; h < rc.hash_cap; h++) {
+                    if ((bitcast(st.irr_cpu[h].y, uint) & 0x01000000u) != 0) occupied++;
+                }
+            }
+            int total_rays = rc.offsets[rc.levels - 1] + rc.counts[rc.levels - 1];
+            float rad_mb = (float)((double)total_rays * 8.0 / (1024.0 * 1024.0));
+            float irr_mb = (float)((double)(rc.hash_cap + rc.level_cap[0] * 6) * 16.0 / (1024.0 * 1024.0));
+            sdtx::pos(2.0f, row);
+            sdtx::puts(string::tformat("SPARSE: %d/%d hash (%.0f%%)  L0cap=%d  VOX: %dx%dx%d (%.3fm)",
+                occupied, rc.hash_cap, 100.0f * (float)occupied / (float)rc.hash_cap, rc.level_cap[0],
+                rc.vx, rc.vy, rc.vz, rc.voxel_size).zstr_tcopy());
+            row += 1.4f;
+
+            sdtx::pos(2.0f, row);
+            sdtx::puts(string::tformat("BOX: (%.1f,%.1f,%.1f)..(%.1f,%.1f,%.1f)  LVL:%d  DIR:%d",
+                rc.min.x, rc.min.y, rc.min.z, rc.max.x, rc.max.y, rc.max.z, rc.levels, rc.base_directions).zstr_tcopy());
+            row += 1.4f;
+
+            sdtx::pos(2.0f, row);
+            sdtx::puts(string::tformat("CFG: every=%d  blend=%.2f  bounce=%.2f  frame=%d  VRAM=%.1fMB",
+                rc.update_every, rc.blend, rc.bounce, rc.frame, rad_mb + irr_mb).zstr_tcopy());
+            row += 1.6f;
+        } else {
             int total_probes = rc.nx * rc.ny * rc.nz;
             int total_rays = rc.offsets[rc.levels - 1] + rc.counts[rc.levels - 1];
             float rad_mb = (float)((double)total_rays * 8.0 / (1024.0 * 1024.0));
@@ -561,6 +706,7 @@ fn void draw_content(
             sdtx::puts(string::tformat("CFG: every=%d  blend=%.2f  bounce=%.2f  frame=%d  VRAM=%.1fMB",
                 rc.update_every, rc.blend, rc.bounce, rc.frame, rad_mb + irr_mb).zstr_tcopy());
             row += 1.6f;
+        }
 
             int[<3>] ld = rc.level_dims(active_lvl);
             float l_spacing = rc.spacing * (float)(1 << active_lvl);
@@ -582,7 +728,7 @@ fn void draw_content(
                 st.pan_x, st.pan_z, st.half_h, st.cut_y, slice0, rc.ny - 1, slice_world_y).zstr_tcopy());
             row += 1.4f;
 
-            if (active_lvl == 0 && st.irr_ready) {
+            if (!rc.sparse && active_lvl == 0 && st.irr_ready) {
                 sz p_idx = ((sz)cz * ld.y + cy) * ld.x + cx;
                 drie::Vec4 e0 = st.irr_cpu[p_idx * 6 + 0];
                 bool valid = e0.w > 0.5f;

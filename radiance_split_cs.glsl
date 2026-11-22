@@ -1,0 +1,484 @@
+// Sparse / Split Radiance Cascades compute kernels (arXiv:2607.20384 style):
+//   rc_alloc_cs        reads G-Buffer depth + normal and allocates world-space probes near
+//                      visible surfaces across all cascade levels in a GPU hash table.
+//   rc_split_trace_cs  traces rays ONLY for active allocated probes, splits/bins hits into
+//                      cascade intervals, and merges sparsely via hash-table lookups of L+1.
+//   rc_split_gather_cs gathers L0 allocated probes' angular radiance into 6-face irradiance
+//                      stored right after the hash table in `irradiance_buf` (so material
+//                      shaders need no extra buffer binding).
+@header module drie_shaders::rc_split;
+@header import drie;
+
+@ctype mat4 Mat4
+@ctype vec4 Vec4
+
+@block rc_split_common
+layout(binding=0) uniform rc_split_params {
+    vec4 rc_min;       // xyz = voxel box min, w = L0 probe spacing (m)
+    ivec4 rc_dims;     // xyz = voxel brick dims (vx/4, vy/4, vz/4), w = active cascade level
+    vec4 rc_tune;      // x = L0 reach (m), y = blend, z = frame, w = voxel size (m)
+    ivec4 rc_info;     // x = base_directions, y = levels, z = lights, w = hash_cap (power of 2)
+    vec4 rc_sky;       // rgb = sky radiance, w = bounce strength
+    vec4 rc_ground;    // rgb = ground radiance, w = normal_offset
+    ivec4 rc_vox;      // xyz = voxel dims (vx, vy, vz), w = update_every
+    ivec4 rc_lcap0;    // probe pool capacity for levels 0..3
+    ivec4 rc_lcap1;    // probe pool capacity for levels 4..7
+    ivec4 rc_loff0;    // ray buffer start offset (in rays) for levels 0..3
+    ivec4 rc_loff1;    // ray buffer start offset (in rays) for levels 4..7
+    ivec4 rc_pbase0;   // probe_meta start index for levels 0..3
+    ivec4 rc_pbase1;   // probe_meta start index for levels 4..7
+    mat4 rc_inv_vp;    // inverse relative view-projection for G-Buffer allocation
+    vec4 rc_cam_pos;   // xyz = camera world pos, w = depth_zero_to_one (1 or 0)
+    vec4 rc_screen;    // xy = 1/w, 1/h, z = flip_y (1 on Metal/D3D), w = screen width (px)
+};
+
+struct rc_voxel {
+    uint albedo;       // rgb8, bit 24 = solid
+    uint emissive;     // rgb8 + shared exponent
+};
+struct rc_brick {
+    uint solid;
+};
+struct rc_rad_texel {
+    uvec2 p;           // rgb packed as half2 + half2
+};
+struct rc_probe_meta {
+    ivec4 coord;       // xyz = probe grid coord (world integer), w = level
+};
+// Stored inside irradiance_buf:
+//   [0 .. hash_cap - 1]                 : uvec4(key_lo, key_hi, slot, last_frame)
+//   [hash_cap .. hash_cap + lcap0*6 - 1]: vec4(irradiance.rgb, valid) via floatBitsToUint
+struct rc_uvec4 {
+    uvec4 v;
+};
+struct rc_uint {
+    uint v;
+};
+
+const float RC_PI = 3.14159265;
+const uint RC_STALE_FRAMES = 24u;
+
+int rc_level_cap(int l) { return l < 4 ? rc_lcap0[l] : rc_lcap1[l - 4]; }
+int rc_level_off(int l) { return l < 4 ? rc_loff0[l] : rc_loff1[l - 4]; }
+int rc_probe_base(int l) { return l < 4 ? rc_pbase0[l] : rc_pbase1[l - 4]; }
+
+uint rc_hash(uint x) {
+    x ^= x >> 16;
+    x *= 0x7feb352du;
+    x ^= x >> 15;
+    x *= 0x846ca68bu;
+    x ^= x >> 16;
+    return x;
+}
+
+uvec2 rc_pack_key(ivec3 c, int level) {
+    uint lo = (uint(c.x + 32768) & 0xffffu) | ((uint(c.y + 32768) & 0xffffu) << 16);
+    uint hi = (uint(c.z + 32768) & 0xffffu) | ((uint(level) & 0xfu) << 16) | 0x01000000u;
+    return uvec2(lo, hi);
+}
+
+vec3 rc_unpack_rad(uvec2 p) {
+    vec2 rg = unpackHalf2x16(p.x);
+    vec2 ba = unpackHalf2x16(p.y);
+    return vec3(rg, ba.x);
+}
+
+uvec2 rc_pack_rad(vec3 rgb) {
+    return uvec2(packHalf2x16(rgb.rg), packHalf2x16(vec2(rgb.b, 0.0)));
+}
+
+vec3 rc_direction(vec2 e) {
+    vec3 n = vec3(e, 1.0 - abs(e.x) - abs(e.y));
+    float t = max(-n.z, 0.0);
+    n.xy += vec2(n.x >= 0.0 ? -t : t, n.y >= 0.0 ? -t : t);
+    return normalize(n);
+}
+
+vec3 rc_unpack_oct_normal(vec2 e) {
+    vec3 n = vec3(e, 1.0 - abs(e.x) - abs(e.y));
+    float t = max(-n.z, 0.0);
+    n.xy += vec2(n.x >= 0.0 ? -t : t, n.y >= 0.0 ? -t : t);
+    return normalize(n);
+}
+@end
+
+@cs rc_alloc_cs
+@include_block rc_split_common
+layout(binding=0) uniform texture2D rc_depth_tex;
+layout(binding=1) uniform texture2D rc_normal_tex;
+layout(binding=0) uniform sampler rc_gb_smp;
+layout(binding=2) buffer rc_ht_alloc { rc_uvec4 rc_ht[]; };
+layout(binding=3) buffer rc_meta_alloc { rc_probe_meta rc_meta[]; };
+layout(binding=4) buffer rc_cnt_alloc { rc_uint rc_cnt[]; };
+
+layout(local_size_x=8, local_size_y=8) in;
+
+void rc_touch_probe(ivec3 c, int level, uint frame) {
+    uvec2 key = rc_pack_key(c, level);
+    uint mask = uint(rc_info.w - 1);
+    uint idx = rc_hash(key.x ^ (key.y * 0x9e3779b9u)) & mask;
+    int cap = rc_level_cap(level);
+    int pbase = rc_probe_base(level);
+    for (int step = 0; step < 16; step++) {
+        uint cur_hi = rc_ht[idx].v.y;
+        if (cur_hi == key.y && rc_ht[idx].v.x == key.x) {
+            rc_ht[idx].v.w = frame;
+            return;
+        }
+        if (cur_hi == 0u) {
+            uint prev = atomicCompSwap(rc_ht[idx].v.y, 0u, key.y);
+            if (prev == 0u) {
+                uint slot = atomicAdd(rc_cnt[level].v, 1u);
+                if (int(slot) < cap) {
+                    rc_ht[idx].v.x = key.x;
+                    rc_ht[idx].v.z = slot;
+                    rc_ht[idx].v.w = frame;
+                    rc_meta[pbase + int(slot)].coord = ivec4(c, level);
+                } else {
+                    // Pool full: release hash slot
+                    rc_ht[idx].v.y = 0u;
+                }
+                return;
+            }
+            if (prev == key.y && rc_ht[idx].v.x == key.x) {
+                rc_ht[idx].v.w = frame;
+                return;
+            }
+        }
+        idx = (idx + 1u) & mask;
+    }
+}
+
+void main() {
+    // Subsample G-Buffer by 4x4 pixels
+    ivec2 px = ivec2(gl_GlobalInvocationID.xy) * 4 + ivec2(2);
+    ivec2 sz = textureSize(sampler2D(rc_depth_tex, rc_gb_smp), 0);
+    if (px.x >= sz.x || px.y >= sz.y) return;
+
+    float raw_d = texelFetch(sampler2D(rc_depth_tex, rc_gb_smp), px, 0).r;
+    if (raw_d >= 0.99999) return;
+
+    vec2 su = (vec2(px) + 0.5) * rc_screen.xy;
+    vec2 ndc_xy = su * 2.0 - 1.0;
+    if (rc_screen.z > 0.5) ndc_xy.y = -ndc_xy.y;
+    float ndc_z = rc_cam_pos.w > 0.5 ? raw_d : raw_d * 2.0 - 1.0;
+    vec4 rel = rc_inv_vp * vec4(ndc_xy, ndc_z, 1.0);
+    vec3 wp = rel.xyz / rel.w + rc_cam_pos.xyz;
+    vec3 n = rc_unpack_oct_normal(texelFetch(sampler2D(rc_normal_tex, rc_gb_smp), px, 0).xy);
+    vec3 p = wp + n * rc_ground.w;
+
+    uint frame = uint(rc_tune.z) + 1u;
+    int levels = rc_info.y;
+    for (int l = 0; l < levels; l++) {
+        float sp = rc_min.w * float(1 << l);
+        ivec3 b = ivec3(floor(p / sp - 0.5));
+        for (int k = 0; k < 8; k++) {
+            ivec3 o = ivec3(k & 1, (k >> 1) & 1, (k >> 2) & 1);
+            rc_touch_probe(b + o, l, frame);
+        }
+    }
+}
+@end
+
+@cs rc_split_trace_cs
+@include_block rc_split_common
+struct rc_light {
+    vec4 pos;
+    vec4 color;
+    vec4 dir;
+    vec4 params;
+};
+layout(binding=0) readonly buffer rc_split_voxels { rc_voxel rc_vox_data[]; };
+layout(binding=1) buffer rc_split_cascades { rc_rad_texel rc_rad[]; };
+layout(binding=2) readonly buffer rc_ht_trace { rc_uvec4 rc_ht[]; };
+layout(binding=3) readonly buffer rc_split_lights { rc_light rc_light_data[]; };
+layout(binding=4) readonly buffer rc_split_bricks { rc_brick rc_brick_data[]; };
+layout(binding=5) readonly buffer rc_meta_trace { rc_probe_meta rc_meta[]; };
+layout(binding=6) readonly buffer rc_cnt_trace { rc_uint rc_cnt[]; };
+
+layout(local_size_x=64) in;
+
+bool rc_in_grid(ivec3 c) {
+    return all(greaterThanEqual(c, ivec3(0))) && all(lessThan(c, rc_vox.xyz));
+}
+
+int rc_voxel_index(ivec3 c) {
+    return (c.z * rc_vox.y + c.y) * rc_vox.x + c.x;
+}
+
+bool rc_solid(ivec3 c) {
+    return (rc_vox_data[rc_voxel_index(c)].albedo & 0x1000000u) != 0u;
+}
+
+int rc_lookup_probe(ivec3 c, int level) {
+    uvec2 key = rc_pack_key(c, level);
+    uint mask = uint(rc_info.w - 1);
+    uint idx = rc_hash(key.x ^ (key.y * 0x9e3779b9u)) & mask;
+    for (int step = 0; step < 16; step++) {
+        uint hi = rc_ht[idx].v.y;
+        if (hi == 0u) return -1;
+        if (hi == key.y && rc_ht[idx].v.x == key.x) return int(rc_ht[idx].v.z);
+        idx = (idx + 1u) & mask;
+    }
+    return -1;
+}
+
+int rc_march(vec3 ro, vec3 rd, float reach, out float t_hit, out ivec3 cell, out vec3 face) {
+    float vs = rc_tune.w;
+    vec3 g = (ro - rc_min.xyz) / vs;
+    float reach_v = reach / vs;
+    ivec3 c = ivec3(floor(g));
+    t_hit = 0.0;
+    cell = c;
+    face = vec3(0.0);
+    if (!rc_in_grid(c)) return 2;
+    if (rc_solid(c)) return 3;
+    vec3 inv = 1.0 / max(abs(rd), vec3(1e-6));
+    ivec3 stp = ivec3(rd.x >= 0.0 ? 1 : -1, rd.y >= 0.0 ? 1 : -1, rd.z >= 0.0 ? 1 : -1);
+    vec3 ahead = vec3(greaterThan(stp, ivec3(0)));
+    vec3 next = abs(vec3(c) + ahead - g) * inv;
+    for (int i = 0; i < 400; i++) {
+        ivec3 bc = c >> 2;
+        int axis;
+        float t;
+        if (rc_brick_data[(bc.z * rc_dims.y + bc.y) * rc_dims.x + bc.x].solid == 0u) {
+            vec3 leave = abs(vec3(bc * 4) + ahead * 4.0 - g) * inv;
+            axis = leave.x < leave.y ? (leave.x < leave.z ? 0 : 2) : (leave.y < leave.z ? 1 : 2);
+            t = leave[axis];
+            if (t > reach_v) return 0;
+            c = clamp(ivec3(floor(g + rd * t)), bc * 4, bc * 4 + 3);
+            c[axis] = bc[axis] * 4 + (stp[axis] > 0 ? 4 : -1);
+            if (!rc_in_grid(c)) return 2;
+            next = abs(vec3(c) + ahead - g) * inv;
+        } else {
+            axis = next.x < next.y ? (next.x < next.z ? 0 : 2) : (next.y < next.z ? 1 : 2);
+            t = next[axis];
+            if (t > reach_v) return 0;
+            c[axis] += stp[axis];
+            if (!rc_in_grid(c)) return 2;
+            next[axis] += inv[axis];
+        }
+        if (rc_solid(c)) {
+            t_hit = t * vs;
+            cell = c;
+            face[axis] = -float(stp[axis]);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+float rc_attenuation(float d, float cutoff, float decay) {
+    float a = 1.0 / max(pow(d, decay), 0.01);
+    if (cutoff > 0.0) {
+        float r = d / cutoff;
+        float f = clamp(1.0 - r * r * r * r, 0.0, 1.0);
+        a *= f * f;
+    }
+    return a;
+}
+
+vec3 rc_sparse_bounce(vec3 p, vec3 face) {
+    int axis = face.x != 0.0 ? (face.x > 0.0 ? 0 : 1) : (face.y != 0.0 ? (face.y > 0.0 ? 2 : 3) : (face.z > 0.0 ? 4 : 5));
+    vec3 g = p / rc_min.w - 0.5;
+    ivec3 b = ivec3(floor(g));
+    vec3 f = g - vec3(b);
+    vec3 sum = vec3(0.0);
+    float wsum = 0.0;
+    int irr_base = rc_info.w;
+    for (int k = 0; k < 8; k++) {
+        ivec3 o = ivec3(k & 1, (k >> 1) & 1, (k >> 2) & 1);
+        int slot = rc_lookup_probe(b + o, 0);
+        if (slot < 0) continue;
+        vec4 e = uintBitsToFloat(rc_ht[irr_base + slot * 6 + axis].v);
+        vec3 w3 = mix(1.0 - f, f, vec3(o));
+        float w = w3.x * w3.y * w3.z * e.w;
+        sum += e.rgb * w;
+        wsum += w;
+    }
+    return wsum > 1e-4 ? sum / wsum : vec3(0.0);
+}
+
+vec3 rc_sky_at(vec3 rd) {
+    return mix(rc_ground.rgb, rc_sky.rgb, 0.5 * rd.y + 0.5);
+}
+
+void main() {
+    int level = rc_dims.w;
+    int count = min(int(rc_cnt[level].v), rc_level_cap(level));
+    int d = rc_info.x << level;
+    int dd = d * d;
+    int total_rays = count * dd;
+    int turn = int(gl_GlobalInvocationID.x);
+    int i = turn * rc_vox.w + (turn + int(rc_tune.z)) % rc_vox.w;
+    if (i >= total_rays) return;
+
+    int slot = i / dd;
+    int k = i - slot * dd;
+    ivec3 pc = rc_meta[rc_probe_base(level) + slot].coord.xyz;
+    float spacing = rc_min.w * float(1 << level);
+    vec3 pos = (vec3(pc) + 0.5) * spacing;
+
+    uint h = rc_hash(uint(i) * 2654435761u + uint(rc_tune.z) * 362437u + uint(level) * 7919u);
+    vec2 jitter = vec2(float(h & 0xffffu), float(h >> 16)) / 65536.0;
+    ivec2 uv = ivec2(k % d, k / d);
+    vec3 rd = rc_direction((vec2(uv) + jitter) / float(d) * 2.0 - 1.0);
+
+    float base = rc_tune.x;
+    float t0 = base * (pow(4.0, float(level)) - 1.0) / 3.0;
+    float t1 = base * (pow(4.0, float(level + 1)) - 1.0) / 3.0;
+
+    float t_hit;
+    ivec3 cell;
+    vec3 face;
+    int what = rc_march(pos + rd * t0, rd, t1 - t0, t_hit, cell, face);
+    vec3 result = vec3(0.0);
+    if (what == 1) {
+        rc_voxel vx = rc_vox_data[rc_voxel_index(cell)];
+        vec3 albedo = vec3(float(vx.albedo & 0xffu), float((vx.albedo >> 8) & 0xffu), float((vx.albedo >> 16) & 0xffu)) / 255.0;
+        vec3 light = vec3(0.0);
+        uint e = vx.emissive >> 24;
+        if (e != 0u) {
+            light = vec3(float(vx.emissive & 0xffu), float((vx.emissive >> 8) & 0xffu), float((vx.emissive >> 16) & 0xffu))
+                  / 255.0 * exp2(float(e) - 128.0);
+        }
+        vec3 hp = pos + rd * (t0 + t_hit) + face * (0.5 * rc_tune.w);
+        vec3 arriving = rc_sparse_bounce(hp, face) * rc_sky.w;
+        int nl = rc_info.z;
+        float total = 0.0;
+        vec3 picked = vec3(0.0);
+        float picked_w = 0.0;
+        vec3 picked_dir = vec3(0.0);
+        float picked_dist = 0.0;
+        uint seed = h;
+        for (int l = 0; l < nl; l++) {
+            rc_light lt = rc_light_data[l];
+            bool sun = lt.dir.w < -2.5;
+            vec3 lv = lt.pos.xyz - hp;
+            float dist = length(lv);
+            if (!sun && lt.pos.w > 0.0 && dist > lt.pos.w) continue;
+            vec3 ld = lv / max(dist, 1e-4);
+            if (sun) { ld = lt.pos.xyz; dist = 1e4; }
+            float ndl = dot(face, ld);
+            if (ndl <= 0.0) continue;
+            float cone = 1.0;
+            if (lt.dir.w > -1.5) {
+                cone = smoothstep(lt.dir.w, lt.params.x, dot(-ld, lt.dir.xyz));
+                if (cone <= 0.0) continue;
+            }
+            vec3 gives = lt.color.rgb * (ndl * cone * (sun ? 1.0 : rc_attenuation(dist, lt.pos.w, lt.color.w)));
+            float w = max(gives.r, max(gives.g, gives.b));
+            if (w <= 0.0) continue;
+            total += w;
+            seed = rc_hash(seed + uint(l) * 747796405u + 1u);
+            if (float(seed >> 8) / 16777216.0 * total < w) {
+                picked = gives;
+                picked_w = w;
+                picked_dir = ld;
+                picked_dist = dist;
+            }
+        }
+        if (picked_w > 0.0) {
+            float st;
+            ivec3 sc;
+            vec3 sf;
+            if (rc_march(hp, picked_dir, picked_dist - rc_tune.w, st, sc, sf) != 1) arriving += picked * (total / picked_w);
+        }
+        light += albedo * arriving / RC_PI;
+        result = light;
+    } else if (what == 2) {
+        result = rc_sky_at(rd);
+    } else if (what == 0) {
+        if (level + 1 >= rc_info.y) {
+            result = rc_sky_at(rd);
+        } else {
+            int up = level + 1;
+            int ud = d * 2;
+            int uoff = rc_level_off(up);
+            vec3 g = pos / (spacing * 2.0) - 0.5;
+            ivec3 b = ivec3(floor(g));
+            vec3 f = g - vec3(b);
+            vec3 sum = vec3(0.0);
+            float wsum = 0.0;
+            for (int n = 0; n < 8; n++) {
+                ivec3 o = ivec3(n & 1, (n >> 1) & 1, (n >> 2) & 1);
+                int uslot = rc_lookup_probe(b + o, up);
+                if (uslot < 0) continue;
+                int at = uoff + uslot * ud * ud;
+                vec3 four = rc_unpack_rad(rc_rad[at + (uv.y * 2) * ud + uv.x * 2].p)
+                          + rc_unpack_rad(rc_rad[at + (uv.y * 2) * ud + uv.x * 2 + 1].p)
+                          + rc_unpack_rad(rc_rad[at + (uv.y * 2 + 1) * ud + uv.x * 2].p)
+                          + rc_unpack_rad(rc_rad[at + (uv.y * 2 + 1) * ud + uv.x * 2 + 1].p);
+                vec3 w3 = mix(1.0 - f, f, vec3(o));
+                float w = w3.x * w3.y * w3.z;
+                sum += four * (0.25 * w);
+                wsum += w;
+            }
+            result = wsum > 1e-4 ? sum / wsum : rc_sky_at(rd);
+        }
+    }
+    result = min(result, vec3(256.0));
+    int at = rc_level_off(level) + i;
+    vec3 prev = rc_unpack_rad(rc_rad[at].p);
+    rc_rad[at].p = rc_pack_rad(mix(prev, result, rc_tune.y));
+}
+@end
+
+@cs rc_split_gather_cs
+@include_block rc_split_common
+layout(binding=0) readonly buffer rc_gather_voxels { rc_voxel rc_vox_data[]; };
+layout(binding=1) readonly buffer rc_split_gather_cascades { rc_rad_texel rc_rad[]; };
+layout(binding=2) buffer rc_ht_gather { rc_uvec4 rc_ht[]; };
+layout(binding=5) readonly buffer rc_meta_gather { rc_probe_meta rc_meta[]; };
+layout(binding=6) readonly buffer rc_cnt_gather { rc_uint rc_cnt[]; };
+
+layout(local_size_x=64) in;
+
+bool rc_in_grid(ivec3 c) {
+    return all(greaterThanEqual(c, ivec3(0))) && all(lessThan(c, rc_vox.xyz));
+}
+
+bool rc_solid(ivec3 c) {
+    return (rc_vox_data[(c.z * rc_vox.y + c.y) * rc_vox.x + c.x].albedo & 0x1000000u) != 0u;
+}
+
+void main() {
+    int slot = int(gl_GlobalInvocationID.x);
+    int count = min(int(rc_cnt[0].v), rc_level_cap(0));
+    if (slot >= count) return;
+    ivec3 pc = rc_meta[rc_probe_base(0) + slot].coord.xyz;
+    vec3 pos = (vec3(pc) + 0.5) * rc_min.w;
+    ivec3 vc = ivec3(floor((pos - rc_min.xyz) / rc_tune.w));
+    int irr_base = rc_info.w + slot * 6;
+    if (rc_in_grid(vc) && rc_solid(vc)) {
+        for (int a = 0; a < 6; a++) rc_ht[irr_base + a].v = uvec4(0u);
+        return;
+    }
+    int d = rc_info.x;
+    vec3 sum[6];
+    float wsum[6];
+    for (int a = 0; a < 6; a++) { sum[a] = vec3(0.0); wsum[a] = 0.0; }
+    for (int k = 0; k < d * d; k++) {
+        vec2 e = (vec2(k % d, k / d) + 0.5) / float(d) * 2.0 - 1.0;
+        vec3 flat_dir = vec3(e, 1.0 - abs(e.x) - abs(e.y));
+        float len = length(flat_dir);
+        float solid_angle = 1.0 / (len * len * len);
+        vec3 dir = rc_direction(e);
+        vec3 radiance = rc_unpack_rad(rc_rad[rc_loff0.x + slot * d * d + k].p);
+        for (int a = 0; a < 6; a++) {
+            float c = dir[a >> 1] * ((a & 1) == 0 ? 1.0 : -1.0);
+            float w = max(c + 0.15, 0.0) * solid_angle;
+            sum[a] += radiance * w;
+            wsum[a] += w;
+        }
+    }
+    for (int a = 0; a < 6; a++) {
+        vec4 outv = vec4(RC_PI * sum[a] / max(wsum[a], 1e-4), 1.0);
+        rc_ht[irr_base + a].v = floatBitsToUint(outv);
+    }
+}
+@end
+
+@program rc_alloc rc_alloc_cs
+@program rc_split_trace rc_split_trace_cs
+@program rc_split_gather rc_split_gather_cs
