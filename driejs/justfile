@@ -274,7 +274,67 @@ assets: \
     (asset "textures/ambientcg/Ice002_1K-JPG_Displacement.jpg" "68be58c53d6e4238dccb0efd3a8c89a947477ff9c51b736e905cb9075e7a3a03") \
     (asset "textures/ambientcg/Ice003_1K-JPG_Color.jpg" "faee9ddb462d05bc96ebd3a4d412d229381e1d188abf777102e08aa4e696740a") \
     (asset "textures/noises/voronoi/grayscale-256x256.png" "0bd7c9a6e440cb7ddd97a231fc5c3f93582a91609ead627075f6f2aa284aaccc") \
-    (asset "textures/noises/perlin/rgb-256x256.png" "a6e852dd6115654f6c436454faba04fc7dc5c355a1a3769a7c9c905dbcb8f41a")
+    (asset "textures/noises/perlin/rgb-256x256.png" "a6e852dd6115654f6c436454faba04fc7dc5c355a1a3769a7c9c905dbcb8f41a") \
+    (asset "models/fbx/bunny_thickness.jpg" "e9af62ada3f96ce8d88470ed612d6a2741e96ccb695358a3864f83608e6dea61") \
+    (asset "models/fbx/stanford-bunny.fbx" "d93bc888e6bd7d205792a90ac21443286eb189bc15f56326b3b8becff17665e5") \
+    (asset "models/fbx/white.jpg" "5916d841b03e6f8bf712b3195b66d7a922861b8753f94c28e8ea5d4ea99ef545") \
+    (asset "models/gltf/DragonAttenuation.glb" "dbac78de3fefb33ba744cfa703936892b6e2fc47b58d88acc52f4be39e5464be") \
+    (asset "models/gltf/Nefertiti/Nefertiti.glb" "d8c00c742b59137695245eefeef0e217d6e33c64eeaeb1904ff39f6b31542639") \
+    (asset "textures/alphaMap.jpg" "fb4abdb14c18946bbfdc55b92ae7090781499e728ccb460fdd9c514470545dcb") \
+    (asset "textures/cube/angus/cube_m00_c00.jpg" "91d3c69ca2255217eb391f26c8a80e9a18c4774d840e33c2c8458e0eeb857e63") \
+    (asset "textures/cube/angus/cube_m00_c01.jpg" "5b62b8c085f7e2acc2ac4507be91f66d786c893a28ddd1becbf02525c8226d4c") \
+    (asset "textures/cube/angus/cube_m00_c02.jpg" "acce6efb5500b3b2e2169cb2d39cf09f4d8e7ce52ce736bdc9884475349c3296") \
+    (asset "textures/cube/angus/cube_m00_c03.jpg" "9de6e5797a5648f4779c97136ee880c1ef7489ebad1b3dc78eeed681a5a4da71") \
+    (asset "textures/cube/angus/cube_m00_c04.jpg" "6cfcf22fd21e4cbed1212934aa901fda9f9b81afb49d2da40c5fc16d52b77dce") \
+    (asset "textures/cube/angus/cube_m00_c05.jpg" "6617aa31784623150183b67621fb5508e9fd780d431e08705947ba36d3dc41f2") \
+    (asset "textures/cube/angus/cube_m01_c00.jpg" "ce9869d6ed5d1792a200980e0448e85606a0cded9dcaf0521748e137736663b4") \
+    (asset "textures/cube/angus/cube_m01_c01.jpg" "2e2ac3f48e4a4aa2364d6450082f785da207a50c2f1d933448a7b4dcf73681a3") \
+    (asset "textures/cube/angus/cube_m01_c02.jpg" "a358109f3955db8b069e29281390ce5990b0bcebdefb3a6a8d02c6ba5049597c") \
+    (asset "textures/cube/angus/cube_m01_c03.jpg" "6492fbe39e0689a3f94c55c027bc0935087c72135f7bb9c2ea2136b0f1ef71e4") \
+    (asset "textures/cube/angus/cube_m01_c04.jpg" "424ca767df4781064f06bec4b18e0c00ce833b33b00e9bc37336396d95ea6e56") \
+    (asset "textures/cube/angus/cube_m01_c05.jpg" "56731a6c35d9ebe888adef6f518369cffcc5367d15a95e427c167307d0a577f7") \
+    (asset "textures/cube/angus/cube_m02_c00.jpg" "6aea33d353d5bd5c55e14c10a8f2d0530aed382ba7df5c4a49b5bd4579b5e9f5") \
+    (asset "textures/cube/angus/cube_m02_c01.jpg" "9e6abc09ec1ff759c0c98a7833d674ac0df21f1efc7ac718cbd483914dab5642") \
+    (asset "textures/cube/angus/cube_m02_c02.jpg" "1d8cfd31577311b9be6d93842bb0473801491ae453ce84edd2757b171cd77405") \
+    (asset "textures/cube/angus/cube_m02_c03.jpg" "ae7790dd278b98a0acf52c4e2b2627f76832348504b7295ebcbeac6a67ebb0e7") \
+    (asset "textures/cube/angus/cube_m02_c04.jpg" "7e66a736f13f200e9546466f5a8afc388340fa9673d348539f04e259f8700907") \
+    (asset "textures/cube/angus/cube_m02_c05.jpg" "c95a318ae6e911a9184fa7bb70dac34019c3d86563ab6fca5cf4dc7d7af72541") \
+    (asset "textures/cube/angus/cube_m03_c00.jpg" "336f3af9768daf436cb97b8a7ac269c25e716e30829b066a27a967a1d563e500") \
+    (asset "textures/cube/angus/cube_m03_c01.jpg" "19e2a0e70a31a49694c1e59c99ba108bd1e6a794c044845cced1e9af54002446") \
+    (asset "textures/cube/angus/cube_m03_c02.jpg" "3d3df8a8e043371665b4b21a4f50fc0897e28affd446349f68528a18174fc741") \
+    (asset "textures/cube/angus/cube_m03_c03.jpg" "85c1635c19b442f284082afe9de83ae8670fc03510880a9ba69d0b6acf67c582") \
+    (asset "textures/cube/angus/cube_m03_c04.jpg" "96eef6e8495dc0b46f18dc8c0aa0323782cadb06b7ad1af957c6435abad95b14") \
+    (asset "textures/cube/angus/cube_m03_c05.jpg" "08095ec74c20f4bbc3cd5b05b81134893725041132cd599f55a3b6fa07296d34") \
+    (asset "textures/cube/angus/cube_m04_c00.jpg" "aa17112bed3c6705279e09677c49c89a00fae5fa8438be2e32749e1cefe71ff5") \
+    (asset "textures/cube/angus/cube_m04_c01.jpg" "538c4486d9ca7c7b93c3930c0a90dadc9631310807a8135355f67a496dc1bde3") \
+    (asset "textures/cube/angus/cube_m04_c02.jpg" "f027737c2d28d46b47a9361c984062163b47168426384e40e16aa17885cdab4e") \
+    (asset "textures/cube/angus/cube_m04_c03.jpg" "5fe9ed99bb305c9bb8dfc9898f49847d242697802c7ecac3657732761c17e156") \
+    (asset "textures/cube/angus/cube_m04_c04.jpg" "e2f6148606cf2024013e0db64de004652d02088ab4430fb9b52bf6d0751add1d") \
+    (asset "textures/cube/angus/cube_m04_c05.jpg" "be0cabe9f8639de15774a34c89ca9a93a5c2dc2899cb53b1ccbcda4c87f10c54") \
+    (asset "textures/cube/angus/cube_m05_c00.jpg" "fb0963a44fd248e67a7bc949d03e859203dfbca0bc01c61d6afab9ffd03136e6") \
+    (asset "textures/cube/angus/cube_m05_c01.jpg" "3464ccb29e529db59a4509d937ca8df2811be87ff463c389798ea27b60415999") \
+    (asset "textures/cube/angus/cube_m05_c02.jpg" "5865f07534d0f179db571e0cf77bb382e200c6cf06beca497d3c6004b1aca6f4") \
+    (asset "textures/cube/angus/cube_m05_c03.jpg" "5e8209ec04799ece1b894256b14eef47aa1e7d37871a0551e29694878a53454e") \
+    (asset "textures/cube/angus/cube_m05_c04.jpg" "7bce46db7ab150a48ac187a43a13adaf22cffbc30eaeff2ffbb7a4be35774225") \
+    (asset "textures/cube/angus/cube_m05_c05.jpg" "f73ac3376df603d6cdcc41d7a6e13c35820b0eded89c3573fe6022305635821c") \
+    (asset "textures/cube/angus/cube_m06_c00.jpg" "b599f0124938418845ea9784a02b39d7c2362216cb1b3e2f6e21650b2ced25e3") \
+    (asset "textures/cube/angus/cube_m06_c01.jpg" "eeca143fcdf5ce57541974bc4095051ab0d41b2a939bc0286b1429f08dbab2df") \
+    (asset "textures/cube/angus/cube_m06_c02.jpg" "09b9e3166eae81d41da10543b755e8c02cc09121407dee99d12d5f3cde76441f") \
+    (asset "textures/cube/angus/cube_m06_c03.jpg" "d13a4fe84491b446fdfaff445c9c3608fbfdb52d26eda0cd7788e960f073ba1e") \
+    (asset "textures/cube/angus/cube_m06_c04.jpg" "bb166e6ea83d3a2b99c436a69d002b7ff1f42b2fe7f3f3d28c99ffd123c047d6") \
+    (asset "textures/cube/angus/cube_m06_c05.jpg" "b1c0d92570f45c1c276ce73d27be4c62f95d0802840e5c2b262ba50afd874c57") \
+    (asset "textures/cube/angus/cube_m07_c00.jpg" "a4aa34065c0c700c4d5a16ab07ae315a7fa326e7a5d362ef5374ea55717fae8d") \
+    (asset "textures/cube/angus/cube_m07_c01.jpg" "b8321ac425d9620d93049dec72ddbc281cbfb769b03068540c0abd3449869b7e") \
+    (asset "textures/cube/angus/cube_m07_c02.jpg" "5b023f1db8c6536eb146caa5dea1fdef6f10b9feeb105c9eb3bb45c132313542") \
+    (asset "textures/cube/angus/cube_m07_c03.jpg" "06078d81198e24ece854390f75a121e5701eaf0212adf9e310e87b954e35a601") \
+    (asset "textures/cube/angus/cube_m07_c04.jpg" "18dc1c56910b5a7ccfe759538b920e86e164b2feff829b7f6c38c48a9e590c46") \
+    (asset "textures/cube/angus/cube_m07_c05.jpg" "722706511a8d6162ef68d70171ff15f33d5358000c4bf7350fd65fdbd027a03e") \
+    (asset "textures/cube/angus/cube_m08_c00.jpg" "c2321c39a6c14eb7e5ef05565e901ab02ae226e1def462e81eb0b80772004da0") \
+    (asset "textures/cube/angus/cube_m08_c01.jpg" "c2321c39a6c14eb7e5ef05565e901ab02ae226e1def462e81eb0b80772004da0") \
+    (asset "textures/cube/angus/cube_m08_c02.jpg" "c2321c39a6c14eb7e5ef05565e901ab02ae226e1def462e81eb0b80772004da0") \
+    (asset "textures/cube/angus/cube_m08_c03.jpg" "c2321c39a6c14eb7e5ef05565e901ab02ae226e1def462e81eb0b80772004da0") \
+    (asset "textures/cube/angus/cube_m08_c04.jpg" "c2321c39a6c14eb7e5ef05565e901ab02ae226e1def462e81eb0b80772004da0") \
+    (asset "textures/cube/angus/cube_m08_c05.jpg" "c2321c39a6c14eb7e5ef05565e901ab02ae226e1def462e81eb0b80772004da0")
 
 [private]
 asset path sha256: (fetch examples + "/" + path sha256 "demos/" + path)
