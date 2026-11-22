@@ -319,7 +319,7 @@ const VolumetricFog VOLUMETRIC_FOG_DEFAULTS = {
     .volumetric = true,
     .shade_density = 1,
     .noise_scale = 0.15f,
-    .resolution = 0.125f,
+    .resolution = 0.25f,
     .slices = 96
 };
 
@@ -902,8 +902,8 @@ struct LightShadow {
     float focus;
     // Like three's shadow.autoUpdate and needsUpdate: with auto_update off the map is drawn
     // once, and again whenever needs_update is set. For lamps that stay where they are among
-    // things that don't move. Up to four such lights share one atlas, next to the one light
-    // whose map follows every frame.
+    // things that don't move. Additional dynamic shadowed spot, point and directional lights
+    // also share the shadow atlas and redraw each frame while auto_update is on.
     bool auto_update;
     bool needs_update;
     // Leave instanced meshes (scattered plants, usually by the thousand) out of this

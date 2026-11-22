@@ -222,7 +222,7 @@ A material's maps besides `map`, `normal_map` and `arm_map` share six texture sl
 | Tube lights | `point_light.length` (m, along the light's x axis) | Intensity spread along the tube; falls off as the square of the distance whatever `decay`; `distance` cuts off from its nearest point |
 | Static shadow atlas | `light.shadow.auto_update = false`, `light.shadow.needs_update = true` | Set `needs_update = true` to redraw |
 | Shadow filtering | `renderer.shadow_type` (`PCF`, `VSM`), `light.shadow.radius` (`2`), `shadow.blur_samples` (`8`, VSM's blur taps), `shadow.bias` (`0`, VSM only; PCF uses `shadow.normal_bias`) | |
-| Shadow atlas capacity | `renderer.shadow_atlas_capacity` (`8`) | Tiles the atlas has room for at first: one per spot light with `shadow.auto_update = false` and per shadowed directional light besides the first; grows to what they need, up to 64 |
+| Shadow atlas capacity | `renderer.shadow_atlas_capacity` (`8`) | Tiles the atlas has room for at first: one per static spot light (`shadow.auto_update = false`), per extra dynamic spot/directional light besides the primary ones, and six per shadowed point light; grows to what they need, up to 64 |
 | Light maps | `material.light_map` (`texture.channel = 1` for `uv1`), `material.light_map_intensity` | For `BASIC`, the map replaces the indirect light of 1 (as map / PI) |
 | Progressive light map | `drie::progressive_lightmap(renderer, res)` (`1024`), `plm.scene.add(light)`, `plm.add_objects(objects, pack:)`, `plm.update(camera, blend_window:, blur_edges:)` (`100`, `true`), `plm.texture(i)`, `plm.show_debug(visible)`, `plm.dispose()` | `add_objects` sets `light_map = texture(1)`, shadows on, and packs their `uv` into `uv1` (potpack; `pack: false` keeps your `uv1`); lights passed to it go to `plm.scene`; call `update` before `render()` |
 | Cascaded shadows | `light.shadow.cascades` (`4`, 1..4), `shadow.max_distance` (`150`), `shadow.split_lambda` (`0.7`), `shadow.cascade_blend` (`0.1`), `renderer.debug_cascades` | With `cascades = 1`, uses `light.shadow_extent` and optional `light.shadow_follow = true` |
@@ -268,7 +268,7 @@ A material's maps besides `map`, `normal_map` and `arm_map` share six texture sl
 
 | Feature | Key API / Fields | Notes |
 | --- | --- | --- |
-| Volumetric fog | `drie::volumetric_fog(color, density)`, `resolution` (`0.125`), `slices` (`96`), `light_scatter`, `spot_light.fog_glow`, `height_*`, `sun_shafts`, `sun_direction`, `sun_color`, `noise_amount`, `noise_scale`, `noise_wind`, `fog.set_clear_box(min, max)`, `fog.clear_box_density` | Set `fog.volumetric = false` to disable |
+| Volumetric fog | `drie::volumetric_fog(color, density)`, `resolution` (`0.25`), `slices` (`96`), `light_scatter`, `spot_light.fog_glow`, `height_*`, `sun_shafts`, `sun_direction`, `sun_color`, `noise_amount`, `noise_scale`, `noise_wind`, `fog.set_clear_box(min, max)`, `fog.clear_box_density` | Set `fog.volumetric = false` to disable |
 
 </details>
 

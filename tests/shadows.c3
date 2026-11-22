@@ -96,6 +96,64 @@ fn int main(String[] args) {
     usz i = ((usz)p[1] * W + (usz)p[0]) * 4;
     expect(tinted[i + 1] > tinted[i] + 40 && tinted[i + 1] > tinted[i + 2] + 40, "the sun uses its cascades");
 
+    // Two dynamic shadowed spotlights (auto_update = true): the first uses shadow_map, the
+    // second gets a dynamic tile in shadow_atlas — checked in both PCF and VSM, plus moving.
+    Scene* spot_scene = drie::scene();
+    spot_scene.add(drie::hemisphere_light(0xffffff, 0x404040, 0.4f));
+    SpotLight*[2] spots = {
+        drie::spot_light(0xffffff, 80, distance: 20, angle: 0.9f, penumbra: 0.2f, decay: 2),
+        drie::spot_light(0xffffff, 80, distance: 20, angle: 0.9f, penumbra: 0.2f, decay: 2),
+    };
+    spots[0].position = { 4, 5, 3 };
+    spots[1].position = { -4, 5, 3 };
+    foreach (s : spots) {
+        s.target.position = { 0, 0, 0 };
+        s.cast_shadow = true;
+        s.shadow.map_size = 512;
+        s.shadow.near = 0.5f;
+        s.shadow.far = 20;
+        spot_scene.add(s);
+        spot_scene.add(s.target);
+    }
+    Mesh* sfloor = drie::mesh(drie::plane_geometry(20, 20), drie::mesh_standard_material(color: 0x808080));
+    sfloor.rotation.x = -(float)math::PI / 2;
+    sfloor.receive_shadow = true;
+    spot_scene.add(sfloor);
+    Mesh* sbox = drie::mesh(drie::box_geometry(1, 1, 1), drie::mesh_standard_material(color: 0xc08040));
+    sbox.position = { 0, 0.5f, 0 };
+    sbox.cast_shadow = true;
+    spot_scene.add(sbox);
+
+    renderer.debug_cascades = false;
+    char[] spx = mem::new_array(char, (usz)W * (usz)H * 4);
+    for (int m = 0; m < 2; m++) {
+        renderer.shadow_type = m == 0 ? PCF : VSM;
+        spots[1].position = { -4, 5, 3 };
+        renderer.render(spot_scene, camera);
+        drie::commit();
+        readback::read_image(rt.texture_image, W, H, spx.ptr);
+        float s_open = lum(spx, 0, 2.2f);
+        float s_a    = lum(spx, -1.0f, -0.75f); // in first spot's shadow only
+        float s_b    = lum(spx, 1.0f, -0.75f);  // in second (dynamic atlas) spot's shadow only
+        float s_both = lum(spx, 0, -0.7f);
+        String tag   = m == 0 ? "PCF" : "VSM";
+        io::printfn("spots (%s): open %.1f, first %.1f, second %.1f, both %.1f", tag, s_open, s_a, s_b, s_both);
+        expect(s_a < s_open - 15, m == 0 ? "PCF: first dynamic spot casts shadow" : "VSM: first dynamic spot casts shadow");
+        expect(s_b < s_open - 15, m == 0 ? "PCF: second dynamic spot casts shadow (atlas)" : "VSM: second dynamic spot casts shadow (atlas)");
+        expect(math::abs(s_a - s_b) < 10, m == 0 ? "PCF: both dynamic spots equally dark" : "VSM: both dynamic spots equally dark");
+        expect(s_both < math::min(s_a, s_b) - 8, m == 0 ? "PCF: overlap darkest" : "VSM: overlap darkest");
+        // Move second spot to the other side and verify its atlas tile updates live
+        spots[1].position = { -4, 5, -3 };
+        renderer.render(spot_scene, camera);
+        drie::commit();
+        readback::read_image(rt.texture_image, W, H, spx.ptr);
+        float s_old = lum(spx, 1.0f, -0.75f);
+        float s_new = lum(spx, 1.0f, 0.75f);
+        expect(s_old > s_b + 15 && s_new < s_open - 15,
+               m == 0 ? "PCF: second dynamic spot shadow follows movement" : "VSM: second dynamic spot shadow follows movement");
+    }
+    renderer.shadow_type = PCF;
+
     char[] rgb = mem::new_array(char, (usz)W * (usz)H * 3);
     for (usz k = 0; k < (usz)W * H; k++) rgb[k * 3:3] = px[k * 4:3];
     if (!png::write(out_path, rgb, W, H, channels: 3)) {

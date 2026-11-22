@@ -2002,14 +2002,15 @@ fn Mat4 light_view_proj(Light* l, Camera* camera, bool relative = false, int fac
     return directional_shadow_view_proj((DirectionalLight*)l, camera, state.atlas_tile);
 }
 
-// Draws the atlas's tiles: those of the spot lights with shadow.auto_update off that ask for
-// it, or whose tile has changed hands, then those of the shadowed directional lights besides
-// the sun (state.sun_caster), every frame unless their shadow.auto_update is off too.
+// Draws the atlas's tiles: static spot and point lights (shadow.auto_update off) first, drawn
+// only when they ask for it or their tile changed hands, then dynamic shadowed lights besides
+// the primary spot (`caster`) and sun (`state.sun_caster`) — extra directional, point and spot
+// lights — every frame unless their shadow.auto_update is off too.
 // `bake` (render_bake): the tiles of all of the bake's shadowed lights, spot and directional,
 // drawn every time after the main render's, which are left as they are (unless the atlas is
 // new: then the main render draws its own again). The atlas is made big enough for both, so
 // that neither makes it anew for the other.
-fn void update_shadow_atlas(Scene* scene, Camera* camera, bool bake = false) @local {
+fn void update_shadow_atlas(Scene* scene, Camera* camera, bool bake = false, SpotLight* caster = null) @local {
     state.atlas_pending.clear();
     int tile = 4;
     int keep;
@@ -2045,6 +2046,13 @@ fn void update_shadow_atlas(Scene* scene, Camera* camera, bool bake = false) @lo
         tile = math::max(tile, shadow_map_size(((DirectionalLight*)l).shadow.map_size));
     }
     if (!bake) {
+        foreach (l : state.lights) {
+            if (l.light_type != SPOT || !l.cast_shadow || !l.visible || l.intensity <= 0) continue;
+            SpotLight* sl = (SpotLight*)l;
+            if (sl == caster || !sl.shadow.auto_update || state.atlas_pending.len() >= MAX_ATLAS_TILES) continue;
+            state.atlas_pending.push(sl);
+            tile = math::max(tile, shadow_map_size(sl.shadow.map_size));
+        }
         foreach (l : state.lights) {
             if (l.light_type != POINT || !l.cast_shadow || !l.visible || l.intensity <= 0) continue;
             PointLight* pl = (PointLight*)l;
@@ -4888,7 +4896,7 @@ fn SpotLight* prepare_and_draw_shadows(Scene* scene, Camera* camera, bool bake =
     if (shadows && !bake) draw_sun_shadow(sun);
     profile::stop("render: sun shadow", pt);
     pt = profile::start();
-    if (shadows) update_shadow_atlas(scene, camera, bake);
+    if (shadows) update_shadow_atlas(scene, camera, bake, caster);
     // a render that draws no shadow maps (a reflector's, reusing the last frame's) can come
     // before any that does: the shaders still sample the maps, so they must exist
     if (!shadows || bake) {
