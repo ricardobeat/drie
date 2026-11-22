@@ -373,6 +373,7 @@ fn void rc_add_tree(RadianceCascades* self, Object3D* o) @local {
 fn void RadianceCascades.voxelize(&self, Object3D* root) {
     self.clear_voxels();
     rc_add_tree(self, root);
+    self.voxelized_root = root;
 }
 
 struct RcLightList @local {
@@ -694,7 +695,10 @@ fn void RadianceCascades.update_sparse(
 }
 
 // Re-centers the voxel volume around `center` (snapped to probe spacing) and re-voxelizes
-// `root` — for sliding open-world GI volumes that follow the player.
+// `root` — for sliding open-world GI volumes that follow the player. Also re-voxelizes when
+// `root` differs from the scene last voxelized into this volume, even if the snapped center
+// didn't move: several scenes can share one sliding volume (a doorway into another area), and
+// the stale voxels of the old scene must not stand in for the new one.
 fn void RadianceCascades.recenter(&self, Object3D* root, Vector3 center) {
     Vector3 size = self.max - self.min;
     Vector3 new_min = {
@@ -702,7 +706,8 @@ fn void RadianceCascades.recenter(&self, Object3D* root, Vector3 center) {
         self.min.y,
         math::floor((center.z - size.z * 0.5f) / self.spacing) * self.spacing,
     };
-    if (new_min == self.min) return;
+    bool root_changed = root != self.voxelized_root;
+    if (new_min == self.min && !root_changed) return;
     self.min = new_min;
     self.max = new_min + size;
     self.clear_voxels();
