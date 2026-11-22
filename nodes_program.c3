@@ -522,8 +522,8 @@ fn uint[] merge_sets(uint[] a, uint[] b) @local {
 
 fn uint ProgramGen.builtin_var(&self, NodeBuiltin b) => self.nodes + 1 + b.ordinal;
 
-// The variables (and builtins) `n`'s value reads. A SEQ's are what its statements and value
-// read and don't assign themselves; a builtin reads what it is bound to.
+// The variables (and builtins) `n`'s value reads. A SEQ's are the builtins its statements and
+// value read and don't bind themselves; a builtin reads what it is bound to.
 fn uint[] ProgramGen.vars_of(&self, Node n) {
     if (self.var_set_done[n.id]) return self.var_sets[n.id];
     NodeData* d = node_data(n);
@@ -543,13 +543,13 @@ fn uint[] ProgramGen.vars_of(&self, Node n) {
             self.seq_reads_in(d.args[0], seen, reads, assigns);
             self.seq_reads({ d.args[1] }, seen, reads, assigns);
             uint k;
-            foreach (i, x : reads) {
-                if (x && !assigns[i]) k++;
+            for (sz i = count; i < reads.len; i++) {
+                if (reads[i] && !assigns[i]) k++;
             }
             r = mem::temp_array(uint, k);
             k = 0;
-            foreach (i, x : reads) {
-                if (x && !assigns[i]) r[k++] = (uint)i;
+            for (sz i = count; i < reads.len; i++) {
+                if (reads[i] && !assigns[i]) r[k++] = (uint)i;
             }
         case CONST:
         case UNIFORM:
