@@ -981,6 +981,10 @@ fn void draw_content(
     Vector3 marker,
     Vector3 marker_dir
 ) @local {
+    if (rc != st.last_rc) {
+        st.irr_ready = false;
+        st.rad_ready = false;
+    }
     sgl::set_context(gl);
     sgl::defaults();
     sgl::load_pipeline(pip);
