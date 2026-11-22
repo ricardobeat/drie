@@ -7,6 +7,7 @@ import drie, drie::ui, drie::readback, sokol;
 import std::math;
 
 bool active;
+bool freeze_alloc = true;
 
 const int IRR_SLOT = 10;
 const int RAD_SLOT = 11;
@@ -29,6 +30,7 @@ struct State @local {
     int slice_y;        // cascade-0 probe Y index (-1 = auto from cut_y)
     bool show_angles;
     bool show_voxels;
+    bool color_by_age;
     bool[512] keys;
     drie::Mat4 last_vp;       // active camera view_proj for 3D projection
 
@@ -59,6 +61,7 @@ State st @local = {
     .slice_y = -1,
     .show_angles = true,
     .show_voxels = false,
+    .color_by_age = true,
 };
 
 fn void set_3d(bool on) {
@@ -115,6 +118,8 @@ fn bool handle_event(Event* e, Vector3 focus = {}, float cut_y = 2.4f, KeyCode t
                     case A: st.all_slices_3d = !st.all_slices_3d;
                     case R: st.show_angles = !st.show_angles;
                     case B: st.show_voxels = !st.show_voxels;
+                    case C: st.color_by_age = !st.color_by_age;
+                    case P: freeze_alloc = !freeze_alloc;
                     case SPACE: reset(focus, cut_y);
                     case W:
                         if (st.last_rc) {
@@ -317,6 +322,22 @@ fn Vector3 oct_dir(float ex, float ey) @local {
     return ((Vector3){ nx, ny, nz }).normalize();
 }
 
+fn float[3] age_color(uint last_frame, int cur_frame) @local {
+    uint cf = (uint)math::max(cur_frame, 1);
+    uint age = cf >= last_frame ? cf - last_frame : 0;
+    if (age <= 2) return { 0.15f, 1.00f, 0.55f };  // fresh (current frame): bright green-cyan
+    if (age <= 15) {
+        float t = (float)(age - 2) / 13.0f;
+        return { 0.15f + 0.85f * t, 1.00f - 0.10f * t, 0.55f * (1.0f - t) }; // -> yellow
+    }
+    if (age <= 60) {
+        float t = (float)(age - 15) / 45.0f;
+        return { 1.00f, 0.90f - 0.50f * t, 0.10f }; // -> orange
+    }
+    float t = drie::clamp((float)(age - 60) / 120.0f, 0, 1);
+    return { 1.00f - 0.65f * t, 0.40f - 0.12f * t, 0.15f + 0.70f * t }; // -> cool violet-blue
+}
+
 fn float[3] tone_rgb(Vector3 c) @local {
     float[3] out;
     for (int i = 0; i < 3; i++) {
@@ -405,9 +426,15 @@ fn void draw_sparse_level_probes(RadianceCascades* rc, int lvl, int slice0, bool
         if (sp[0] < -16 || sp[0] > (float)(width + 16) || sp[1] < -16 || sp[1] > (float)(height + 16)) continue;
 
         uint slot = bitcast(raw.z, uint);
+        uint last_f = bitcast(raw.w, uint);
         float[3] rgb = { lcol[0] * 0.4f, lcol[1] * 0.4f, lcol[2] * 0.4f };
         bool solid = false;
-        if (lvl == 0 && (int)slot < rc.level_cap[0]) {
+        if (st.color_by_age) {
+            if (lvl == 0 && (int)slot < rc.level_cap[0]) {
+                solid = st.irr_cpu[(sz)rc.hash_cap + (sz)slot * 6].w < 0.5f;
+            }
+            rgb = solid ? (float[3]){ 0.45f, 0.08f, 0.08f } : age_color(last_f, rc.frame);
+        } else if (lvl == 0 && (int)slot < rc.level_cap[0]) {
             sz base = (sz)rc.hash_cap + (sz)slot * 6;
             drie::Vec4 e0 = st.irr_cpu[base];
             solid = e0.w < 0.5f;
@@ -714,10 +741,15 @@ fn void draw_3d_scene_overlay(RadianceCascades* rc, int active_lvl, int slice0, 
                     if (dx * dx + dz * dz > max_d2) continue;
                     drawn++;
                     uint slot = bitcast(raw.z, uint);
+                    uint last_f = bitcast(raw.w, uint);
                     float[4] plc = LEVEL_COLORS[math::min(plvl, 4)];
                     float[3] rgb = { plc[0] * 0.5f, plc[1] * 0.5f, plc[2] * 0.5f };
                     float alpha = 0.85f;
-                    if (plvl == 0 && (int)slot < rc.level_cap[0]) {
+                    if (st.color_by_age) {
+                        bool solid = plvl == 0 && (int)slot < rc.level_cap[0] && st.irr_cpu[(sz)rc.hash_cap + (sz)slot * 6].w < 0.5f;
+                        rgb = solid ? (float[3]){ 0.5f, 0.1f, 0.1f } : age_color(last_f, rc.frame);
+                        if (solid) alpha = 0.35f;
+                    } else if (plvl == 0 && (int)slot < rc.level_cap[0]) {
                         sz base = (sz)rc.hash_cap + (sz)slot * 6;
                         if (st.irr_cpu[base].w < 0.5f) {
                             rgb = { 0.5f, 0.1f, 0.1f };
@@ -1067,8 +1099,9 @@ fn void draw_content(
             row += 1.4f;
 
             sdtx::pos(2.0f, row);
-            sdtx::puts(string::tformat("CFG: every=%d  blend=%.2f  bounce=%.2f  frame=%d  VRAM=%.1fMB",
-                rc.update_every, rc.blend, rc.bounce, rc.frame, rad_mb + irr_mb).zstr_tcopy());
+            sdtx::puts(string::tformat("CFG: every=%d  blend=%.2f  alloc=%s  color=%s  VRAM=%.1fMB",
+                rc.update_every, rc.blend, freeze_alloc ? "PLAYER" : "DEBUG",
+                st.color_by_age ? "AGE" : "RAD", rad_mb + irr_mb).zstr_tcopy());
             row += 1.6f;
         } else {
             int total_probes = rc.nx * rc.ny * rc.nz;
@@ -1086,8 +1119,8 @@ fn void draw_content(
             row += 1.4f;
 
             sdtx::pos(2.0f, row);
-            sdtx::puts(string::tformat("CFG: every=%d  blend=%.2f  bounce=%.2f  frame=%d  VRAM=%.1fMB",
-                rc.update_every, rc.blend, rc.bounce, rc.frame, rad_mb + irr_mb).zstr_tcopy());
+            sdtx::puts(string::tformat("CFG: every=%d  blend=%.2f  VRAM=%.1fMB",
+                rc.update_every, rc.blend, rad_mb + irr_mb).zstr_tcopy());
             row += 1.6f;
         }
 
@@ -1134,13 +1167,23 @@ fn void draw_content(
             }
             row += 1.6f;
 
-            sdtx::pos(2.0f, row);
-            sdtx::color3f(0.15f, 0.85f, 1.0f); sdtx::puts("L0 ");
-            sdtx::color3f(0.25f, 1.0f, 0.45f); sdtx::puts("L1 ");
-            sdtx::color3f(1.0f, 0.78f, 0.2f);  sdtx::puts("L2 ");
-            sdtx::color3f(1.0f, 0.35f, 0.85f); sdtx::puts("L3  ");
-            sdtx::color3f(1.0f, 0.92f, 0.2f);  sdtx::puts("[PLAYER]  ");
-            sdtx::color3f(0.95f, 0.35f, 0.35f); sdtx::puts("[SOLID]");
+            if (rc.sparse && st.color_by_age) {
+                sdtx::pos(2.0f, row);
+                sdtx::color3f(0.15f, 1.00f, 0.55f); sdtx::puts("NEW ");
+                sdtx::color3f(0.95f, 0.90f, 0.20f); sdtx::puts("RECENT ");
+                sdtx::color3f(1.00f, 0.45f, 0.15f); sdtx::puts("AGING ");
+                sdtx::color3f(0.45f, 0.35f, 0.90f); sdtx::puts("OLD  ");
+                sdtx::color3f(1.00f, 0.92f, 0.20f); sdtx::puts("[PLAYER]  ");
+                sdtx::color3f(0.95f, 0.35f, 0.35f); sdtx::puts("[SOLID]");
+            } else {
+                sdtx::pos(2.0f, row);
+                sdtx::color3f(0.15f, 0.85f, 1.0f); sdtx::puts("L0 ");
+                sdtx::color3f(0.25f, 1.0f, 0.45f); sdtx::puts("L1 ");
+                sdtx::color3f(1.0f, 0.78f, 0.2f);  sdtx::puts("L2 ");
+                sdtx::color3f(1.0f, 0.35f, 0.85f); sdtx::puts("L3  ");
+                sdtx::color3f(1.0f, 0.92f, 0.2f);  sdtx::puts("[PLAYER]  ");
+                sdtx::color3f(0.95f, 0.35f, 0.35f); sdtx::puts("[SOLID]");
+            }
 
             if (st.show_angles) {
                 sdtx::color3f(0.75f, 0.85f, 0.95f);
@@ -1158,7 +1201,7 @@ fn void draw_content(
 
         sdtx::color3f(0.72f, 0.78f, 0.85f);
         sdtx::pos(2.0f, ((float)height - 22.0f) / 8.0f);
-        sdtx::puts("ARROWS:pan  M:2D/3D  DRAG/QE:orbit  +/-:zoom  [/]:cutY  W/S:slice  A:allY  0-3/4:lvl  R:ang  B:vox  F3:exit");
+        sdtx::puts("ARROWS:pan M:2D/3D DRAG/QE:orbit +/-:zoom [/]:cutY 0-3/4:lvl R:ang C:age/rad P:alloc F3:exit");
     };
 
     sgl::context_draw(gl);
