@@ -90,6 +90,7 @@ struct RadianceCascades {
     // stored at the front of `irradiance_buf` ([0..hash_cap-1]), followed by L0 6-face
     // irradiance ([hash_cap..hash_cap + level_cap[0]*6 - 1]).
     bool sparse;
+    bool freeze_alloc;                 // pauses rc_alloc_cs so debug cameras don't allocate probes
     int hash_cap;                      // power of 2 (e.g. 65536)
     int[RC_MAX_LEVELS] level_cap;      // max allocated probes per cascade level
     int[RC_MAX_LEVELS] probe_base;     // start offset in meta_buf per cascade level
@@ -575,17 +576,19 @@ fn void RadianceCascades.update_sparse(
     }
 
     // 1. Allocate/touch probes around visible G-Buffer surfaces (4x4 pixel subsample)
-    ComputePass* ap = self.alloc_pass;
-    ap.bindings.views[rc_split::VIEW_RC_DEPTH_TEX] = depth_tex;
-    ap.bindings.views[rc_split::VIEW_RC_NORMAL_TEX] = normal_tex;
-    ap.bindings.samplers[rc_split::SMP_RC_GB_SMP] = gb_sampler;
-    ap.set_buffer(rc_split::VIEW_RC_HT_ALLOC, self.irradiance_buf);
-    ap.set_buffer(rc_split::VIEW_RC_META_ALLOC, self.meta_buf);
-    ap.set_buffer(rc_split::VIEW_RC_CNT_ALLOC, self.count_buf);
-    ap.set_uniforms(rc_split::UB_RC_SPLIT_PARAMS, &p, rc_split::RcSplitParams::size);
-    begin_compute("drie-rc-alloc");
-    ap.dispatch(((width + 3) / 4 + 7) / 8, ((height + 3) / 4 + 7) / 8);
-    end_compute();
+    if (!self.freeze_alloc) {
+        ComputePass* ap = self.alloc_pass;
+        ap.bindings.views[rc_split::VIEW_RC_DEPTH_TEX] = depth_tex;
+        ap.bindings.views[rc_split::VIEW_RC_NORMAL_TEX] = normal_tex;
+        ap.bindings.samplers[rc_split::SMP_RC_GB_SMP] = gb_sampler;
+        ap.set_buffer(rc_split::VIEW_RC_HT_ALLOC, self.irradiance_buf);
+        ap.set_buffer(rc_split::VIEW_RC_META_ALLOC, self.meta_buf);
+        ap.set_buffer(rc_split::VIEW_RC_CNT_ALLOC, self.count_buf);
+        ap.set_uniforms(rc_split::UB_RC_SPLIT_PARAMS, &p, rc_split::RcSplitParams::size);
+        begin_compute("drie-rc-alloc");
+        ap.dispatch(((width + 3) / 4 + 7) / 8, ((height + 3) / 4 + 7) / 8);
+        end_compute();
+    }
 
     // 2. Trace allocated probes top-down (levels-1 .. 0)
     ComputePass* tp = self.split_trace;
