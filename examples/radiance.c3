@@ -14,7 +14,7 @@
 //   L                  toggle direct spotlights (on / emissive panels only)
 //   F3                 toggle drie::rc_debug probe visualizer (M: 2D/3D, C: age/rad, P: alloc)
 module radiance_example;
-import drie, drie::ui, drie::controls, drie::rc_debug, drie::readback, drie::png, sokol;
+import drie, drie::postprocessing, drie::ui, drie::controls, drie::rc_debug, drie::readback, drie::png, sokol;
 import std::io, std::math;
 
 const int W = 1280;
@@ -33,6 +33,8 @@ Renderer* renderer;
 Scene* scene;
 PerspectiveCamera* camera;
 OrbitControls* controls;
+RenderTarget* scene_rt;
+OutputPass* output;
 RadianceCascades* dense_rc;
 RadianceCascades* split_rc;
 SpotLight* key_light;
@@ -68,11 +70,11 @@ fn void build_scene()
     MeshStandardMaterial* pillar_mat = drie::mesh_standard_material(color: 0xeae8e4, roughness: 0.72f);
 
     MeshStandardMaterial* cyan_glow = drie::mesh_standard_material(
-        color: 0x000000, roughness: 0.9f, emissive: 0x18f0e0, emissive_intensity: 7.5f);
+        color: 0x000000, roughness: 0.9f, emissive: 0x18f0e0, emissive_intensity: 10.0f);
     MeshStandardMaterial* amber_glow = drie::mesh_standard_material(
-        color: 0x000000, roughness: 0.9f, emissive: 0xff8818, emissive_intensity: 7.0f);
+        color: 0x000000, roughness: 0.9f, emissive: 0xff8818, emissive_intensity: 10.0f);
     MeshStandardMaterial* magenta_glow = drie::mesh_standard_material(
-        color: 0x000000, roughness: 0.9f, emissive: 0xff2898, emissive_intensity: 6.5f);
+        color: 0x000000, roughness: 0.9f, emissive: 0xff2898, emissive_intensity: 9.0f);
 
     // Room shell: X in [-3.8, 3.8], Y in [0, 3.2], Z in [-3.8, 4.0]
     add_box({ 0, -0.1f, 0.1f }, { 8.0f, 0.2f, 8.2f }, floor_mat, false, true);
@@ -205,6 +207,13 @@ fn void animate(double time)
     double dt = last_frame_t < 0 ? 1.0 / 60.0 : math::clamp(time - last_frame_t, 0.0, 0.1);
     last_frame_t = time;
 
+    int win_w = math::max(sapp::width(), 1);
+    int win_h = math::max(sapp::height(), 1);
+    if (scene_rt.width != win_w || scene_rt.height != win_h)
+    {
+        scene_rt.set_size(win_w, win_h);
+    }
+
     ulong t0 = stm::now();
     update_scene(dt);
     if (controls)
@@ -213,7 +222,8 @@ fn void animate(double time)
         if (!rc_debug::active) controls.update();
     }
 
-    Camera* rc_cam = rc_debug::update((float)dt, sapp::width(), sapp::height(), camera.position, 2.95f);
+    renderer.set_render_target(scene_rt);
+    Camera* rc_cam = rc_debug::update((float)dt, win_w, win_h, camera.position, 2.95f);
     if (rc_debug::active && rc_cam)
     {
         if (scene.radiance && scene.radiance.sparse && rc_debug::freeze_alloc)
@@ -234,6 +244,9 @@ fn void animate(double time)
         renderer.render(scene, camera);
     }
     rc_debug::track(scene.radiance);
+
+    output.set_source(scene_rt.texture);
+    output.render(null);
 
     double ms = stm::ms(stm::since(t0));
     smooth_ms = smooth_ms * 0.9 + ms * 0.1;
@@ -286,16 +299,26 @@ fn void hud()
 fn int main(String[] args)
 {
     String png_path;
-    for (usz i = 1; i + 1 < args.len; i += 2)
+    for (usz i = 1; i < args.len; i++)
     {
-        switch (args[i])
+        if (args[i] == "--png" && i + 1 < args.len)
         {
-            case "--png": png_path = args[i + 1];
-            case "--mode":
-                if (args[i + 1] == "dense") { mode = DENSE; }
-                else if (args[i + 1] == "off") { mode = OFF; }
-                else { mode = SPLIT; }
-            default: io::eprintfn("unknown option %s", args[i]);
+            png_path = args[++i];
+        }
+        else if (args[i] == "--mode" && i + 1 < args.len)
+        {
+            String m = args[++i];
+            if (m == "dense") { mode = DENSE; }
+            else if (m == "off") { mode = OFF; }
+            else { mode = SPLIT; }
+        }
+        else if (args[i] == "--no-lights")
+        {
+            lights_on = false;
+        }
+        else
+        {
+            io::eprintfn("unknown option %s", args[i]);
         }
     }
 
@@ -305,6 +328,8 @@ fn int main(String[] args)
         renderer.tone_mapping = ACES_FILMIC_TONE_MAPPING;
         renderer.tone_mapping_exposure = 1.15f;
         build_scene();
+        scene_rt = drie::render_target(W, H, 1, RGBA16F);
+        output = postprocessing::output_pass(renderer);
         controls = controls::orbit_controls(camera);
         controls.target = { 0.0f, 1.20f, -1.0f };
         drie::add_event_listener(&on_event);
@@ -318,16 +343,20 @@ fn int main(String[] args)
     renderer.tone_mapping = ACES_FILMIC_TONE_MAPPING;
     renderer.tone_mapping_exposure = 1.15f;
     build_scene();
-    RenderTarget* rt = drie::render_target(W, H, 1, RGBA8);
-    renderer.set_render_target(rt);
+    scene_rt = drie::render_target(W, H, 1, RGBA16F);
+    RenderTarget* toned = drie::render_target(W, H, 1, RGBA8, false);
+    output = postprocessing::output_pass(renderer);
+    renderer.set_render_target(scene_rt);
     for (int f = 0; f < 24; f++)
     {
         update_scene(0);
         renderer.render(scene, camera);
+        output.set_source(scene_rt.texture);
+        output.render(toned);
         drie::commit();
     }
     char[] px = mem::new_array(char, (usz)W * H * 4);
-    readback::read_image(rt.texture_image, W, H, px.ptr);
+    readback::read_image(toned.texture_image, W, H, px.ptr);
     if (!png::write(png_path, px, W, H))
     {
         io::eprintfn("could not write %s", png_path);
