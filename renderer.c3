@@ -781,6 +781,12 @@ struct RendererState @private {
     int transmission_height;
     SgPipeline mip_pipeline;
     SgSampler mip_sampler;
+    // Offscreen window-sized target for multi-pass windowed frames (auto_clear = false,
+    // scissor_test, or clear()): all passes render into window_rt with full MSAA LOAD/STORE,
+    // then present_window_rt() blits it to the swapchain once at the end of on_frame().
+    RenderTarget* window_rt;
+    SgPipeline blit_pipeline;
+    bool window_rt_used;
     // the scene's background_texture, drawn as a sphere around the camera
     Mesh* background;
     // the scene's background_texture when it is flat: a quad that fills the view
@@ -1035,8 +1041,10 @@ fn void on_frame() @local {
     apply_window_colors();
     foreach (h : state.frame_hooks) h();
     state.in_frame = true;
+    state.window_rt_used = false;
     if (state.renderer.animation_loop) state.renderer.animation_loop(stm::ms(stm::since(state.start_ticks)));
     state.in_frame = false;
+    if (state.window_rt_used) present_window_rt();
     if (state.commit_pending) commit();
 }
 
@@ -3961,10 +3969,67 @@ fn void window_drawn() @local {
     }
 }
 
+// Ensures the internal window-sized offscreen target exists and matches the window's size.
+fn RenderTarget* ensure_window_rt(Renderer* r) @local {
+    int w = math::max(sapp::width(), 1);
+    int h = math::max(sapp::height(), 1);
+    int samples = r.sample_count > 1 ? 4 : 1;
+    if (!state.window_rt) {
+        state.window_rt = render_target(w, h, samples, RGBA8);
+    } else {
+        state.window_rt.set_size(w, h, samples);
+    }
+    return state.window_rt;
+}
+
+// Blits `state.window_rt` to the swapchain in a single pass at the end of on_frame(), then
+// draws overlays on top. Avoids multiple swapchain passes per frame (which Metal discards
+// MSAA on and presents repeatedly).
+fn void present_window_rt() @local {
+    if (!state.window_rt) return;
+    mip_pipeline();
+    if (!state.blit_pipeline.id) {
+        state.blit_pipeline = sg::make_pipeline(
+            &&{
+                .shader = sg::make_shader(&&postprocessing::output_shader_desc(sg::query_backend())),
+                .depth = { .write_enabled = false, .compare = ALWAYS },
+                .label = "drie-window-blit",
+            }
+        );
+    }
+    SgPass pass = {
+        .action = {
+            .colors[0] = { .load_action = DONTCARE, .store_action = STORE },
+            .depth = { .load_action = DONTCARE, .store_action = DONTCARE },
+        },
+        .swapchain = sglue::swapchain(),
+        .label = "drie-present",
+    };
+    profile::begin_pass(&pass);
+    sg::apply_pipeline(state.blit_pipeline);
+    SgBindings bind;
+    bind.views[postprocessing::VIEW_OUTPUT_SRC] = state.window_rt.texture;
+    bind.views[postprocessing::VIEW_OUTPUT_EXPOSURE] = state.window_rt.texture;
+    bind.samplers[postprocessing::SMP_OUTPUT_SMP] = state.mip_sampler;
+    sg::apply_bindings(&bind);
+    postprocessing::OutputParams p = { .params = { 0, 1, 0, 1 } };
+    sg::apply_uniforms(postprocessing::UB_OUTPUT_PARAMS, &&{ .ptr = &p, .size = postprocessing::OutputParams::size });
+    sg::draw(0, 3, 1);
+    draw_overlays();
+    sg::end_pass();
+    state.commit_pending = true;
+}
+
 // Clears the target (the window, or render_target) to clear_color and the far depth now, as
 // three's renderer.clear(): only the scissor box with scissor_test.
 fn void Renderer.clear(&self) {
     if (!state.gfx_ready) return;
+    RenderTarget* saved_rt = self.render_target;
+    if (!saved_rt && state.in_frame) {
+        self.render_target = ensure_window_rt(self);
+        state.window_rt_used = true;
+    }
+    defer self.render_target = saved_rt;
     bool first = first_pass(self.render_target);
     Vector3 c = clear_value(self, self.clear_color);
     SgPass pass = {
@@ -4643,6 +4708,16 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera) {
     }
     profile::stop("render: transmission", pt);
     pt = profile::start();
+
+    // Multi-pass windowed frames (auto_clear = false, scissor_test, or after clear()) render
+    // into an internal window-sized offscreen target so MSAA LOAD/STORE is preserved and the
+    // swapchain is presented once in present_window_rt() at frame end.
+    RenderTarget* saved_window_rt = self.render_target;
+    if (!saved_window_rt && state.in_frame && (state.window_rt_used || !self.auto_clear || self.scissor_test)) {
+        self.render_target = ensure_window_rt(self);
+        state.window_rt_used = true;
+    }
+    defer self.render_target = saved_window_rt;
 
     Color background = scene.background ? scene.background : self.clear_color;
     Vector3 clear    = clear_value(self, background);
