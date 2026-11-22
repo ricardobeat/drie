@@ -342,7 +342,7 @@ float vf_window(float d, float cutoff) {
 float vf_inverse_square(vec3 o, vec3 dir, float s0, float s1, vec3 lp, float radius) {
     vec3 to_light = lp - o;
     float b = dot(to_light, dir);
-    float h = max(sqrt(max(dot(to_light, to_light) - b * b, 0.0)), max(radius, 0.05));
+    float h = max(sqrt(max(dot(to_light, to_light) - b * b, 0.0)), max(radius, 0.25));
     return (atan((s1 - b) / h) - atan((s0 - b) / h)) / h;
 }
 
@@ -373,10 +373,6 @@ void main() {
     int cl_y = int(vf_clusters.y);
     int cl_z = int(vf_clusters.z);
 
-    // interleaved gradient noise, moved on every frame
-    vec2 px = vec2(cell) + vf_cam.w * vec2(5.588238, 5.588238);
-    float jitter = fract(52.9829189 * fract(dot(px, vec2(0.06711056, 0.00583715))));
-
     float fd = 0.0;     // meters of fog so far, weighted by its density
     float last_t = 1.0;
     vec3 light = vec3(0.0);
@@ -386,49 +382,75 @@ void main() {
         float z1 = k + 1 >= grid.z ? vf_depth.z : vf_depth.x * exp(float(k + 1) / vf_depth.y);
         vec3 p1 = cam + ray * z1;
         float seg = (z1 - z0) * ray_len;
-        float zs = mix(z0, z1, jitter);
-        vec3 p = cam + ray * zs;
-        float w = vf_height_mean(p0.y, p1.y) * vf_box_fraction(p0, p1) * side_density * vf_mist(p);
-        float fd_mid = fd + seg * w * jitter;
+        float zm = 0.5 * (z0 + z1);
+        vec3 pm = cam + ray * zm;
+        float za = mix(z0, z1, 0.25);
+        float zb = mix(z0, z1, 0.75);
+        vec3 pa = cam + ray * za;
+        vec3 pb = cam + ray * zb;
+        float w = vf_height_mean(p0.y, p1.y) * vf_box_fraction(p0, p1) * side_density * vf_mist(pm);
+        float fd_mid = fd + seg * w * 0.5;
         fd += seg * w;
         float t = vf_transmittance(fd);
         // the fog's own light, the sun's towards it
         vec3 own = vf_color.rgb;
         if (sun_glow > 0.0) {
             float lit = sun_glow;
-            if (shafts) lit *= mix(1.0, vf_sun(p, zs), vf_sun_color.w);
+            if (shafts) lit *= mix(1.0, 0.5 * (vf_sun(pa, za) + vf_sun(pb, zb)), vf_sun_color.w);
             own = mix(own, vf_sun_color.rgb, lit);
         }
         light += own * (last_t - t);
         // the lamps': the fog glows around them (1 / d^2, integrated over the slice)
         if (scatter > 0.0 && w > 0.0 && vf_clusters.w > 0.5) {
-            int slice = zs <= vf_cluster_depth.x ? 0 : int(floor(log(zs / vf_cluster_depth.x) * vf_cluster_depth.y));
+            int slice = zm <= vf_cluster_depth.x ? 0 : int(floor(log(zm / vf_cluster_depth.x) * vf_cluster_depth.y));
             slice = clamp(slice, 0, cl_z - 1);
             uvec4 range = clusters[tile.x + cl_x * (tile.y + cl_y * slice)].range;
             int first = int(range.x);
             int np = int(range.y);
             int ns = int(range.z);
             float s0 = z0 * ray_len;
+            float sm = zm * ray_len;
             float s1 = z1 * ray_len;
             vec3 glow = vec3(0.0);
             for (int i = 0; i < np; i++) {
                 vf_point_light pl = points[cluster_lights[first + i].index];
-                float d = length(pl.pos.xyz - p);
+                float d = length(pl.pos.xyz - pm);
                 float along = vf_inverse_square(cam, look, s0, s1, pl.pos.xyz, pl.params.x);
                 glow += pl.color.rgb * along * vf_window(d, pl.pos.w) * vf_transmittance(fd_mid + d * w);
             }
             for (int i = 0; i < ns; i++) {
                 int s = int(cluster_lights[first + np + i].index);
                 if (spots[s].params.w <= 0.0) continue;
-                vec3 lv = p - spots[s].pos.xyz;
-                float d = length(lv);
-                float cone = smoothstep(spots[s].dir.w, spots[s].params.x, dot(lv / max(d, 1e-4), spots[s].dir.xyz));
-                if (cone <= 0.0) continue;
-                float lit = cone * vf_spot_lit(s, p);
-                if (lit <= 0.0) continue;
-                float along = vf_inverse_square(cam, look, s0, s1, spots[s].pos.xyz, spots[s].params.y);
-                glow += spots[s].color.rgb * (spots[s].params.w * lit * along * vf_window(d, spots[s].pos.w))
-                      * vf_transmittance(fd_mid + d * w);
+                vec3 sp = spots[s].pos.xyz;
+                vec3 sd = spots[s].dir.xyz;
+                float cos_o = spots[s].dir.w;
+                float cos_i = spots[s].params.x;
+                float rad = spots[s].params.y;
+                float cutoff = spots[s].pos.w;
+                float acc = 0.0;
+                // Two stratified sub-slices per froxel keep cone edges and shadow shafts smooth
+                // without per-froxel XY jitter creating checkerboard patterns.
+                vec3 lv0 = pa - sp;
+                float d0 = length(lv0);
+                float c0 = smoothstep(cos_o, cos_i, dot(lv0 / max(d0, 1e-4), sd));
+                if (c0 > 0.0) {
+                    float lit0 = c0 * vf_spot_lit(s, pa);
+                    if (lit0 > 0.0) {
+                        acc += lit0 * vf_inverse_square(cam, look, s0, sm, sp, rad)
+                             * vf_window(d0, cutoff) * vf_transmittance(fd - seg * w * 0.75 + d0 * w);
+                    }
+                }
+                vec3 lv1 = pb - sp;
+                float d1 = length(lv1);
+                float c1 = smoothstep(cos_o, cos_i, dot(lv1 / max(d1, 1e-4), sd));
+                if (c1 > 0.0) {
+                    float lit1 = c1 * vf_spot_lit(s, pb);
+                    if (lit1 > 0.0) {
+                        acc += lit1 * vf_inverse_square(cam, look, sm, s1, sp, rad)
+                             * vf_window(d1, cutoff) * vf_transmittance(fd - seg * w * 0.25 + d1 * w);
+                    }
+                }
+                if (acc > 0.0) glow += spots[s].color.rgb * (spots[s].params.w * acc);
             }
             light += glow * scatter * w;
         }

@@ -102,10 +102,22 @@ fn SgView update_fog_volume(
     }
     // (Renderer.fog_resolution_scale: finer or coarser all round)
     float q      = resolution_scale > 0 ? resolution_scale : 1;
-    float res    = math::min((f.resolution > 0 ? f.resolution : 0.125f) * q, 1.0f);
+    float res    = math::min((f.resolution > 0 ? f.resolution : 0.25f) * q, 1.0f);
     int cx       = math::max((int)math::ceil((float)width * res), 1);
     int cy       = math::max((int)math::ceil((float)height * res), 1);
     int slices   = math::min(math::max((int)((f.slices > 0 ? f.slices : 96) * q + 0.5f), 2), 256);
+    // Keep the tiled slice atlas within GPU limits and a reasonable VRAM budget on HiDPI/4K targets.
+    int per_row  = (int)math::ceil(math::sqrt((float)slices));
+    int rows     = (slices + per_row - 1) / per_row;
+    int max_dim  = sg::query_limits().max_image_size_2d;
+    int cap_dim  = max_dim > 0 ? math::min(max_dim, 4096) : 4096;
+    if (cx * per_row > cap_dim || cy * rows > cap_dim) {
+        float sx = (float)cap_dim / (float)(cx * per_row);
+        float sy = (float)cap_dim / (float)(cy * rows);
+        float s  = math::min(sx, sy);
+        cx = math::max((int)math::floor((float)cx * s), 1);
+        cy = math::max((int)math::floor((float)cy * s), 1);
+    }
     FogVolume* v = fog_volume_for(cx, cy, slices);
 
     Mat4 cw        = camera.matrix_world;
