@@ -47,6 +47,8 @@ bool lights_on = true;
 double sim_time = 0;
 double last_frame_t = -1;
 double smooth_ms = 16.0;
+ulong frame_count = 1;
+ulong last_tab_frame = 0;
 
 fn void add_box(Vector3 pos, Vector3 size, Material* mat, bool cast_shadow = true, bool recv_shadow = true)
 {
@@ -204,6 +206,7 @@ fn void update_scene(double dt)
 
 fn void animate(double time)
 {
+    frame_count++;
     double dt = last_frame_t < 0 ? 1.0 / 60.0 : math::clamp((time - last_frame_t) * 0.001, 0.0, 0.1);
     last_frame_t = time;
 
@@ -264,6 +267,23 @@ fn void animate(double time)
 
 fn void on_event(Event* e)
 {
+    if (e.type == KEY_DOWN && !e.key_repeat)
+    {
+        if (e.key_code == TAB)
+        {
+            if (last_tab_frame != frame_count)
+            {
+                last_tab_frame = frame_count;
+                set_mode(mode == SPLIT ? DENSE : (mode == DENSE ? OFF : SPLIT));
+            }
+            return;
+        }
+        if (e.key_code == L)
+        {
+            lights_on = !lights_on;
+            return;
+        }
+    }
     Vector3 dbg_focus = controls ? controls.target : (Vector3){ 0, 1.2f, -0.5f };
     if (rc_debug::handle_event(e, dbg_focus, 2.95f)) return;
     if (e.type != KEY_DOWN || e.key_repeat) return;
@@ -272,9 +292,7 @@ fn void on_event(Event* e)
         case NUM_1: set_mode(SPLIT);
         case NUM_2: set_mode(DENSE);
         case NUM_3: set_mode(OFF);
-        case TAB:   set_mode(mode == SPLIT ? DENSE : (mode == DENSE ? OFF : SPLIT));
         case SPACE: sweep = !sweep;
-        case L:     lights_on = !lights_on;
         default: {}
     }
 }

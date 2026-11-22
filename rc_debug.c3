@@ -113,8 +113,7 @@ fn bool handle_event(Event* e, Vector3 focus = {}, float cut_y = 2.4f, KeyCode t
                     case NUM_1: st.level = 1;
                     case NUM_2: st.level = 2;
                     case NUM_3: st.level = 3;
-                    case NUM_4:
-                    case TAB: st.level = -1;
+                    case NUM_4: st.level = -1;
                     case M: st.view_3d = !st.view_3d;
                     case A: st.all_slices_3d = !st.all_slices_3d;
                     case R: st.show_angles = !st.show_angles;
@@ -132,6 +131,9 @@ fn bool handle_event(Event* e, Vector3 focus = {}, float cut_y = 2.4f, KeyCode t
                             int cur = active_slice(st.last_rc);
                             st.slice_y = math::clamp(cur - 1, 0, st.last_rc.ny - 1);
                         }
+                    case TAB:
+                    case L:
+                        return false;
                     default:
                         break;
                 }
