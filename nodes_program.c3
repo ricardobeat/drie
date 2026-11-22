@@ -64,8 +64,8 @@ struct NodeFunc {
     bool pure;
 }
 
-List{NodeFunc} node_funcs @local;
-List{uint} node_args @local;
+List{NodeFunc} node_funcs @private;
+List{uint} node_args @private;
 
 // A new function `name` returning a `ret` of `params`: its parameters are node_param(f, i), its
 // body is set with node_func_body. Functions are printed in a program once per stage that calls

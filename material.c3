@@ -1,6 +1,7 @@
 // Materials. Constructors take named arguments, mirroring three's parameter objects:
 //   drie::mesh_standard_material(color: 0x44aa88, roughness: 0.4)
 module drie;
+import sokol, std::collections::map;
 
 enum Side {
     FRONT_SIDE,
@@ -76,7 +77,20 @@ constdef MaterialType : int {
     MATCAP   = 5,
     TOON     = 6,
     DEPTH    = 7,
+    SHADER   = 8,
 }
+
+// Standard vertex uniform block (binding 0) provided to ShaderMaterial shaders.
+struct ShaderMaterialVsParams {
+    Mat4 view_proj;   // world - view_origin -> clip space
+    Vec4 view_origin; // xyz = camera world position
+    Mat4 model;       // mesh matrix_world
+    Mat4 normal_mat;  // transpose(inverse(model))
+    Vec4 camera_time; // xyz = camera world position, w = renderer time (s)
+}
+
+// Optional per-draw hook for ShaderMaterial to populate extra views, samplers, or buffers.
+alias ShaderBindFn = fn void(Material* mat, Mesh* mesh, SgBindings* bind);
 
 // How MeshDepthMaterial writes the depth (three's depthPacking): BASIC_DEPTH_PACKING as a
 // gray (white near), or spread over the channels for more than 8 bits.
@@ -392,6 +406,23 @@ struct Material {
     Node clearcoat_roughness_node;
     // The shaders built for them (at the first draw, and again when one changes).
     NodeBuild* node_build;
+
+    // ShaderMaterial (MaterialType.SHADER): custom sokol shader with standard mesh vertex
+    // attributes (position, normal, uv, color0 at locations 0..3) and ShaderMaterialVsParams
+    // at uniform block 0.
+    ShaderDescFn custom_shader;
+    ShaderDescFn custom_shader_mrt;
+    void* custom_vs_uniforms;
+    usz custom_vs_uniforms_size;
+    int custom_vs_ub;
+    void* custom_fs_uniforms;
+    usz custom_fs_uniforms_size;
+    int custom_fs_ub;
+    Texture*[6] custom_textures;
+    ShaderBindFn custom_bind;
+    SgShader custom_sg_shader;
+    SgShader custom_sg_shader_mrt;
+    HashMap{ulong, SgPipeline} custom_pipelines;
 }
 
 // A copy of the material to change on its own (like three's Material.clone). Textures are
@@ -401,6 +432,9 @@ fn Material* Material.clone(&self) {
     *m = *self;
     // (its node shaders: its own build, sharing the program)
     m.node_build = null;
+    m.custom_sg_shader = { };
+    m.custom_sg_shader_mrt = { };
+    m.custom_pipelines = { };
     return m;
 }
 
@@ -475,6 +509,9 @@ struct LineBasicMaterial {
     inline Material material;
 }
 struct LineDashedMaterial {
+    inline Material material;
+}
+struct ShaderMaterial {
     inline Material material;
 }
 
@@ -731,5 +768,42 @@ fn MeshToonMaterial* mesh_toon_material(
     m.emissive = emissive;
     m.emissive_intensity = emissive_intensity;
     m.map = map;
+    return m;
+}
+
+// Custom shader material (three's ShaderMaterial): draws a mesh with a user-supplied sokol
+// shader descriptor. Receives standard vertex attributes (position, normal, uv, color0 at
+// locations 0..3) and ShaderMaterialVsParams at uniform block 0.
+fn ShaderMaterial* shader_material(
+    ShaderDescFn shader,
+    ShaderDescFn shader_mrt = null,
+    bool transparent = false,
+    Side side = FRONT_SIDE,
+    bool wireframe = false,
+    bool depth_test = true,
+    bool depth_write = true,
+    Blending blending = NORMAL_BLENDING,
+    void* vs_uniforms = null,
+    usz vs_uniforms_size = 0,
+    int vs_ub = 1,
+    void* fs_uniforms = null,
+    usz fs_uniforms_size = 0,
+    int fs_ub = 1,
+    ShaderBindFn on_bind = null
+) {
+    ShaderMaterial* m = mem::new(ShaderMaterial);
+    m.init_base(SHADER, 0xffffff, 1, transparent, side, wireframe, false);
+    m.depth_test = depth_test;
+    m.depth_write = depth_write;
+    m.blending = blending;
+    m.custom_shader = shader;
+    m.custom_shader_mrt = shader_mrt;
+    m.custom_vs_uniforms = vs_uniforms;
+    m.custom_vs_uniforms_size = vs_uniforms_size;
+    m.custom_vs_ub = vs_ub;
+    m.custom_fs_uniforms = fs_uniforms;
+    m.custom_fs_uniforms_size = fs_uniforms_size;
+    m.custom_fs_ub = fs_ub;
+    m.custom_bind = on_bind;
     return m;
 }

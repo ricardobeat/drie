@@ -44,3 +44,82 @@ void reflection_hook(vec3 dir, inout vec3 sky) {}
 
 @include tonemapping.glsl
 @include shader_core.glsl
+
+@fs fs
+@include_block fs_main
+@end
+
+@fs fs_opaque
+#define NO_DISCARD
+@include_block fs_main
+@end
+
+@fs fs_mrt
+#define MRT
+@include_block fs_main
+@end
+
+@fs fs_opaque_mrt
+#define NO_DISCARD
+#define MRT
+@include_block fs_main
+@end
+
+@fs fs_vsm
+#define VSM
+@include_block fs_main
+@end
+
+@fs fs_mrt_vsm
+#define MRT
+#define VSM
+@include_block fs_main
+@end
+
+@fs depth_fs
+@include_block depth_main
+@end
+
+@vs shadow_vs
+@include_block shadow_vs_main
+@end
+
+@fs shadow_fs
+@include_block shadow_fs_main
+@end
+
+@vs shadow_nodes_vs
+@include_block shadow_nodes_vs_main
+@end
+
+@fs shadow_nodes_fs
+@include_block shadow_nodes_fs_main
+@end
+
+@vs clear_vs
+void main() {
+    vec2 p = vec2((gl_VertexIndex << 1) & 2, gl_VertexIndex & 2);
+    gl_Position = vec4(p * 2.0 - 1.0, 1.0, 1.0);
+}
+@end
+
+@fs clear_fs
+layout(binding=0) uniform clear_params {
+    vec4 clear_rgba;
+};
+out vec4 frag_color;
+void main() {
+    frag_color = clear_rgba;
+}
+@end
+
+@program three vs fs
+@program three_opaque vs fs_opaque
+@program three_mrt vs fs_mrt
+@program three_opaque_mrt vs fs_opaque_mrt
+@program three_vsm vs fs_vsm
+@program three_mrt_vsm vs fs_mrt_vsm
+@program depth vs depth_fs
+@program shadow shadow_vs shadow_fs
+@program clear_rect clear_vs clear_fs
+@program shadow_nodes shadow_nodes_vs shadow_nodes_fs
