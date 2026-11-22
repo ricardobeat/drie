@@ -4,7 +4,7 @@
 // interval rings, optional solid voxels, and a compact sokol_debugtext HUD.
 module drie::rc_debug;
 import drie, drie::ui, drie::readback, sokol;
-import std::math;
+import std::math, std::io;
 
 bool active;
 bool freeze_alloc = true;
@@ -1296,4 +1296,152 @@ fn void draw_target(
     target.begin(LOAD, label: "drie-rc-debug");
     draw_content(st.img_gl, st.img_pip, st.img_text, rc, vol_name, width, height, marker, marker_dir);
     target.end();
+}
+
+// ---------------------------------------------------------------------------------------------
+// stats(): what the sparse probes are doing, read back from the GPU (a stall: for tests and
+// benches, or a key press, not every frame).
+
+const int STATS_HT_SLOT = 12;
+const int STATS_CNT_SLOT = 13;
+const int STATS_FREE_SLOT = 14;
+const int STATS_META_SLOT = 15;
+// as in radiance_split_cs.glsl
+const uint STATS_TOMBSTONE = 0x7fffffffu;
+const uint STATS_STALE_FRAMES = 24u;
+
+struct RcLevelStats {
+    int cap;          // data slots the level has (level_cap)
+    int allocated;    // slots handed out so far (rc_cnt: the bump allocator's top)
+    int free_listed;  // of those, slots evicted and waiting on the free list for reuse
+    int live;         // slots holding a probe (rc_meta w >= 0)
+    int fresh;        // live probes not yet traced in every ray (born in the last update_every frames)
+    int in_table;     // hash entries of the level
+    int seen;         // hash entries touched in the last frame
+    int stale;        // hash entries older than RC_STALE_FRAMES: the next evict pass frees them
+}
+
+struct RcStats {
+    bool sparse;
+    int frame;            // updates run
+    int levels;
+    // dense: probes per cascade 0 (nx * ny * nz); sparse: live probes of every level
+    int probes;
+    int rays;             // ray slots of every level (live probes' rays, for sparse)
+    // the sparse path's hash table (irradiance_buf's front)
+    int hash_cap;
+    int occupied;
+    int tombstones;
+    float load;           // occupied / hash_cap
+    float load_tombstones; // (occupied + tombstones) / hash_cap: what lookups that miss walk
+    int longest_run;      // longest run of non-empty slots (lookups give up after 32 steps)
+    int runs_over_32;     // runs longer than 32: keys past their 32nd step are unreachable
+    int stale;            // entries the next evict pass frees
+    int frames_to_evict;  // updates until that pass (RC_EVICT_PERIOD)
+    RcLevelStats[drie::RC_MAX_LEVELS] level;
+}
+
+fn uint stats_age(uint now, uint then) @local => now >= then ? now - then : now + 4096u - then;
+
+fn bool stats_read(StorageBuffer* b, CInt slot, void* out, sz bytes) @local {
+    if (!readback::track(b.buffer, slot)) return false;
+    return readback::fetch(slot, out, (CInt)bytes, true);
+}
+
+// What `rc`'s probes are doing now. Waits for the GPU: call it after drie::commit(), outside a
+// frame being encoded. A dense volume gives only its sizes.
+fn RcStats stats(RadianceCascades* rc) {
+    RcStats s;
+    if (!rc) return s;
+    s.sparse = rc.sparse;
+    s.frame = rc.frame;
+    s.levels = rc.levels;
+    if (!rc.sparse) {
+        s.probes = rc.nx * rc.ny * rc.nz;
+        s.rays = rc.offsets[rc.levels - 1] + rc.counts[rc.levels - 1];
+        return s;
+    }
+    s.hash_cap = rc.hash_cap;
+    s.frames_to_evict = (drie::RC_EVICT_PERIOD - rc.frame % drie::RC_EVICT_PERIOD) % drie::RC_EVICT_PERIOD;
+    if (!rc.irradiance_buf) return s;
+    int total_meta = rc.probe_base[rc.levels - 1] + rc.level_cap[rc.levels - 1];
+    uint[8] cnt;
+    uint[] free_list = mem::new_array(uint, (sz)rc.free_buf_len);
+    defer free(free_list);
+    drie::Vec4[] ht = mem::new_array(drie::Vec4, (sz)rc.hash_cap + (sz)rc.level_cap[0] * 6);
+    defer free(ht);
+    int[<4>][] meta = mem::new_array(int[<4>], (sz)total_meta);
+    defer free(meta);
+    if (!stats_read(rc.count_buf, STATS_CNT_SLOT, &cnt, uint::size * 8)) return s;
+    if (!stats_read(rc.free_buf, STATS_FREE_SLOT, free_list.ptr, free_list.len * uint::size)) return s;
+    if (!stats_read(rc.irradiance_buf, STATS_HT_SLOT, ht.ptr, ht.len * drie::Vec4::size)) return s;
+    if (!stats_read(rc.meta_buf, STATS_META_SLOT, meta.ptr, meta.len * int[<4>]::size)) return s;
+
+    // the frame number the last update stamped (rc_tune.z + 1, before rc.frame++)
+    uint now = (uint)((rc.frame - 1) % 4096) + 1u;
+    int run;
+    for (int h = 0; h < rc.hash_cap; h++) {
+        drie::Vec4 e = ht[h];
+        uint key = bitcast(e.y, uint);
+        if (key == 0) {
+            if (run > 32) s.runs_over_32++;
+            s.longest_run = math::max(s.longest_run, run);
+            run = 0;
+            continue;
+        }
+        run++;
+        if (key == STATS_TOMBSTONE) {
+            s.tombstones++;
+            continue;
+        }
+        s.occupied++;
+        int lvl = (int)((key >> 27) & 7u);
+        if (lvl >= rc.levels) continue;
+        RcLevelStats* l = &s.level[lvl];
+        l.in_table++;
+        uint age = stats_age(now, bitcast(e.w, uint));
+        if (age == 0) l.seen++;
+        if (age > STATS_STALE_FRAMES) {
+            l.stale++;
+            s.stale++;
+        }
+    }
+    if (run > 32) s.runs_over_32++;
+    s.longest_run = math::max(s.longest_run, run);
+    s.load = (float)s.occupied / (float)rc.hash_cap;
+    s.load_tombstones = (float)(s.occupied + s.tombstones) / (float)rc.hash_cap;
+
+    for (int lvl = 0; lvl < rc.levels; lvl++) {
+        RcLevelStats* l = &s.level[lvl];
+        l.cap = rc.level_cap[lvl];
+        l.allocated = math::min((int)cnt[lvl], l.cap);
+        l.free_listed = math::min((int)free_list[lvl], l.cap);
+        int d = rc.base_directions << lvl;
+        for (int i = 0; i < l.allocated; i++) {
+            int w = meta[rc.probe_base[lvl] + i].w;
+            if (w < 0) continue;
+            l.live++;
+            if ((w >> 4) != 0) l.fresh++;
+        }
+        s.probes += l.live;
+        s.rays += l.live * d * d;
+    }
+    return s;
+}
+
+// Prints stats() as a few lines.
+fn void print_stats(RcStats* s) {
+    if (!s.sparse) {
+        io::printfn("rc: dense, %d levels, %d probes in cascade 0, %d rays, frame %d", s.levels, s.probes, s.rays, s.frame);
+        return;
+    }
+    io::printfn("rc: sparse, frame %d: %d live probes, %d rays", s.frame, s.probes, s.rays);
+    io::printfn("    hash: %d of %d slots (load %.1f%%, %.1f%% with %d tombstones), longest run %d, %d runs over 32",
+        s.occupied, s.hash_cap, s.load * 100, s.load_tombstones * 100, s.tombstones, s.longest_run, s.runs_over_32);
+    io::printfn("    stale %d (evicted in %d updates)", s.stale, s.frames_to_evict);
+    io::printn("    level      cap  alloc   free   live  fresh  table   seen  stale");
+    for (int i = 0; i < s.levels; i++) {
+        RcLevelStats* l = &s.level[i];
+        io::printfn("    L%-3d %8d %6d %6d %6d %6d %6d %6d %6d", i, l.cap, l.allocated, l.free_listed, l.live, l.fresh, l.in_table, l.seen, l.stale);
+    }
 }
