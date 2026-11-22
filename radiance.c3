@@ -1,19 +1,19 @@
 // Radiance cascades (Sannikov 2023) in world space: light that bounces around, and the glow
 // of emissive things, worked out anew every frame on the GPU. (Not in three.js.)
-//
+// 
 //   RadianceCascades* rc = drie::radiance_cascades(room_min, room_max);
 //   rc.voxelize(scene);              // once, and again when the solid things in the box change
 //   scene.radiance = rc;
 //   // each frame, before render():
 //   rc.update(scene);
-//
+// 
 // A grid of probes fills the box. Cascade 0 has one every `spacing` meters, each looking in
 // 4 x 4 directions for a short way (`interval`); each cascade above has an eighth of the
 // probes, four times the directions and looks four times as far, from where the one below
 // stopped. A ray that finds nothing in its stretch goes on in the cascade above, so cascade 0
 // ends up with all the light from around each probe: near things in detail, far things
 // coarsely, which is about what their penumbras need.
-//
+// 
 // The rays are marched through a voxel copy of the scene (voxelize: each solid mesh's color
 // and glow; see-through materials leave no voxels). A voxel that a ray hits gives off its
 // glow, plus what the scene's point, spot and directional lights put on it (shadowed through
@@ -21,7 +21,7 @@
 // and what the probes found the frame before: bounce after bounce over the frames. Rays that
 // leave the box see the sky (the scene's hemisphere and ambient lights, or sky_color and
 // ground_color).
-//
+// 
 // Lit materials inside the box take their indirect light from the probes instead of the
 // scene's ambient, hemisphere and irradiance volume. Directions are jittered and blended over
 // frames (`blend`), so the result takes some frames to settle after a change.
@@ -29,8 +29,8 @@ module drie;
 import std::math, std::collections::list;
 import sokol, drie_shaders::rc_split;
 
-const int RC_MAX_LEVELS = 8;
-const int RC_MAX_LIGHTS = 64;
+const int RC_MAX_LEVELS   = 8;
+const int RC_MAX_LIGHTS   = 64;
 // How often (in frames) rc_evict_cs sweeps the hash table for stale probes. Must stay small
 // next to RC_STALE_FRAMES (radiance_split_cs.glsl) so a probe pool recovers quickly, but the
 // pass itself is cheap (one thread per hash slot, no branching data dependency) so it needn't
@@ -40,12 +40,12 @@ const int RC_EVICT_PERIOD = 8;
 // The kernels RadianceCascades.skip_kernels can leave out, for benches (tests/
 // radiance_split_bench.c3): each kernel's cost shows as the time saved without it. The sparse
 // path runs all six; the dense one TRACE and GATHER.
-const int RC_KERNEL_CLEAR = 1;
-const int RC_KERNEL_EVICT = 2;
-const int RC_KERNEL_ALLOC = 4;
+const int RC_KERNEL_CLEAR     = 1;
+const int RC_KERNEL_EVICT     = 2;
+const int RC_KERNEL_ALLOC     = 4;
 const int RC_KERNEL_PROPAGATE = 8;
-const int RC_KERNEL_TRACE = 16;
-const int RC_KERNEL_GATHER = 32;
+const int RC_KERNEL_TRACE     = 16;
+const int RC_KERNEL_GATHER    = 32;
 
 struct RadianceCascades {
     Vector3 min;
@@ -89,6 +89,8 @@ struct RadianceCascades {
     // one ray in this many is traced each frame (1: all of them; more is cheaper and slower
     // to follow a change)
     int update_every;
+    // shadow rays marched per hit (1: pure RIS; >1: first shadow_rays-1 deterministic + 1 RIS)
+    int shadow_rays;
     StorageBuffer* voxel_buf;
     StorageBuffer* brick_buf;
     StorageBuffer* cascade_buf;
@@ -108,18 +110,18 @@ struct RadianceCascades {
     // stored at the front of `irradiance_buf` ([0..hash_cap-1]), followed by L0 6-face
     // irradiance ([hash_cap..hash_cap + level_cap[0]*6 - 1]).
     bool sparse;
-    bool freeze_alloc;                 // pauses rc_alloc_cs so debug cameras don't allocate probes
-    bool sparse_dirty;                 // clears sparse hash table + probe counters on next update
-    int hash_cap;                      // power of 2 (e.g. 65536)
-    int[RC_MAX_LEVELS] level_cap;      // max allocated probes per cascade level
-    int[RC_MAX_LEVELS] probe_base;     // start offset in meta_buf per cascade level
+    bool freeze_alloc; // pauses rc_alloc_cs so debug cameras don't allocate probes
+    bool sparse_dirty; // clears sparse hash table + probe counters on next update
+    int hash_cap; // power of 2 (e.g. 65536)
+    int[RC_MAX_LEVELS] level_cap; // max allocated probes per cascade level
+    int[RC_MAX_LEVELS] probe_base; // start offset in meta_buf per cascade level
     StorageBuffer* meta_buf;
     StorageBuffer* count_buf;
     // Per-level free lists of recycled data slots (rc_evict_cs pushes, rc_touch_probe/
     // rc_prop_touch pop): 8 uint free-list tops, then one region per level (sized like
     // meta_buf/probe_base) holding the recycled slot ids.
     StorageBuffer* free_buf;
-    int free_buf_len;                  // 8 + total probe slots across all levels
+    int free_buf_len; // 8 + total probe slots across all levels
     // rc_evict_cs's copy of the hash table's live entries while it rebuilds the table
     StorageBuffer* rehash_buf;
     ComputePass* clear_pass;
@@ -144,7 +146,7 @@ struct RadianceCascades {
     // needs nothing set, and a multi-camera frame (a portal, a security feed, the player's
     // own view) still updates once, from the view that matters, instead of once per call.
     Camera* camera;
-    bool pending_sparse;             // an update_sparse() call this engine frame awaits flush_pending_sparse()
+    bool pending_sparse; // an update_sparse() call this engine frame awaits flush_pending_sparse()
     Scene* pending_scene;
     SgView pending_depth_tex;
     SgView pending_normal_tex;
@@ -170,6 +172,7 @@ fn RadianceCascades* radiance_cascades(Vector3 min, Vector3 max, float spacing =
         .voxel_size = spacing / 4,
         .blend = 0.1,
         .update_every = 1,
+        .shadow_rays = 1,
         .intensity = 1,
         .bounce = 1,
         .sky_from_scene = true,
@@ -209,7 +212,7 @@ fn RadianceCascades* radiance_cascades_sparse(
     int hc = 1024;
     while (hc < hash_cap && hc < 1 << 20) hc <<= 1;
     r.hash_cap = hc;
-    int pbase = 0;
+    int pbase  = 0;
     int ray_at = 0;
     for (int l = 0; l < r.levels; l++) {
         // Surface probe counts drop ~4x per level as spacing doubles (keeping ray budgets flat & lean)
@@ -242,13 +245,20 @@ fn void RadianceCascades.upload(&self) {
         int total_meta = self.probe_base[self.levels - 1] + self.level_cap[self.levels - 1];
         self.cascade_buf = storage_buffer((sz)total_rays * 8, label: "drie-rc-split-cascades");
         // irradiance_buf holds [hash_cap uvec4 hash entries] + [level_cap[0] * 6 vec4 irradiance]
-        self.irradiance_buf = storage_buffer((sz)(self.hash_cap + self.level_cap[0] * 6) * 16, label: "drie-rc-split-irr");
+        self.irradiance_buf = storage_buffer(
+            (sz)(self.hash_cap + self.level_cap[0] * 6) * 16,
+            label: "drie-rc-split-irr"
+        );
         self.meta_buf = storage_buffer((sz)total_meta * 16, label: "drie-rc-split-meta");
         self.count_buf = storage_buffer(8 * 4, label: "drie-rc-split-counts");
         self.free_buf_len = 8 + total_meta;
         self.free_buf = storage_buffer((sz)self.free_buf_len * 4, label: "drie-rc-split-free");
         self.rehash_buf = storage_buffer((sz)self.hash_cap * 16, label: "drie-rc-split-rehash");
-        self.light_buf = storage_buffer(RC_MAX_LIGHTS * shaders::RcLight::size, cpu_write: true, label: "drie-rc-lights");
+        self.light_buf = storage_buffer(
+            RC_MAX_LIGHTS * shaders::RcLight::size,
+            cpu_write: true,
+            label: "drie-rc-lights"
+        );
         self.voxel_buf = storage_buffer(16, label: "drie-rc-voxels");
         self.brick_buf = storage_buffer(16, label: "drie-rc-bricks");
         SgBackend backend = sg::query_backend();
@@ -374,7 +384,7 @@ fn void RadianceCascades.add_mesh(&self, Mesh* mesh, Vector3 albedo_scale = { 1,
     if (mesh.instance_count <= 0 && !self.touches(g, mesh.matrix_world)) return;
     Vector3 albedo = color_to_linear(mat.color) * albedo_scale;
     if (mat.map) albedo = albedo * mat.map.average_color();
-    Vector3 glow = color_to_linear(mat.emissive) * mat.emissive_intensity;
+    Vector3 glow    = color_to_linear(mat.emissive) * mat.emissive_intensity;
     float brightest = math::max(glow.x, math::max(glow.y, glow.z));
     if (self.max_glow > 0 && brightest > self.max_glow) glow = glow * (self.max_glow / brightest);
     if (mat.type == BASIC) {
@@ -505,26 +515,38 @@ fn bool RadianceCascades.reaches(&self, Vector3 p, float distance) {
     return d2 < distance * distance;
 }
 
+// Uploads voxels and rebuilds the 64-bit 4x4x4 brick occupancy masks on the GPU when changed.
+fn void rc_upload_voxels(RadianceCascades* self) @local {
+    if (!self.voxels_changed) return;
+    self.voxel_buf.write(self.voxels.ptr, (sz)self.voxels.len * uint::size);
+    uint[] bricks = mem::new_array(uint, (sz)self.nx * self.ny * self.nz * 2);
+    defer free(bricks);
+    for (int z = 0; z < self.vz; z++) {
+        int bz     = z >> 2;
+        int lz     = z & 3;
+        int word   = lz >> 1;
+        int zshift = (lz & 1) << 4;
+        for (int y = 0; y < self.vy; y++) {
+            int by      = y >> 2;
+            int yzshift = zshift | ((y & 3) << 2);
+            sz vrow     = ((sz)z * self.vy + y) * self.vx;
+            sz brow     = (((sz)bz * self.ny + by) * self.nx) * 2 + word;
+            for (int x = 0; x < self.vx; x++) {
+                if (self.voxels[(vrow + x) * 2]) {
+                    bricks[brow + (sz)(x >> 2) * 2] |= 1u << (yzshift | (x & 3));
+                }
+            }
+        }
+    }
+    self.brick_buf.write(bricks.ptr, (sz)bricks.len * uint::size);
+    self.voxels_changed = false;
+}
+
 // Traces the cascades for this frame with the scene's lights as they are. Call it once a
 // frame before render(), outside of any pass.
 fn void RadianceCascades.update(&self, Scene* scene) {
     self.upload();
-    if (self.voxels_changed) {
-        self.voxel_buf.write(self.voxels.ptr, (sz)self.voxels.len * uint::size);
-        // the solid voxels in each block of 4 x 4 x 4, for the rays to skip the empty ones
-        uint[] bricks = mem::new_array(uint, (sz)self.nx * self.ny * self.nz);
-        defer free(bricks);
-        for (int z = 0; z < self.vz; z++) {
-            for (int y = 0; y < self.vy; y++) {
-                for (int x = 0; x < self.vx; x++) {
-                    if (self.voxels[(((sz)z * self.vy + y) * self.vx + x)
-                        * 2]) bricks[((sz)(z / 4) * self.ny + y / 4) * self.nx + x / 4]++;
-                }
-            }
-        }
-        self.brick_buf.write(bricks.ptr, (sz)bricks.len * uint::size);
-        self.voxels_changed = false;
-    }
+    rc_upload_voxels(self);
     RcLightList* list = mem::new(RcLightList);
     defer free(list);
     rc_collect_lights(self, scene, list);
@@ -536,7 +558,8 @@ fn void RadianceCascades.update(&self, Scene* scene) {
     }
     self.light_buf.write(&list.lights, (sz)math::max(list.count, 1) * shaders::RcLight::size);
 
-    int every = math::max(self.update_every, 1);
+    int every = math::clamp(self.update_every, 1, 0xffff);
+    int sr    = math::clamp(self.shadow_rays, 1, 0xffff);
     int turn  = self.frame / every;
     RcParams p = {
         .rc_min = { ...self.min, self.spacing },
@@ -555,7 +578,7 @@ fn void RadianceCascades.update(&self, Scene* scene) {
         .rc_info = { self.base_directions, self.levels, list.count, 0 },
         .rc_sky = { ...self.sky_color, self.bounce },
         .rc_ground = { ...self.ground_color, 0 },
-        .rc_vox = { self.vx, self.vy, self.vz, every },
+        .rc_vox = { self.vx, self.vy, self.vz, every | (sr << 16) },
     };
     for (int l = 0; l < self.levels; l++) {
         if (l < 4) {
@@ -613,21 +636,7 @@ fn void RadianceCascades.run_sparse_update(
     int height
 ) {
     self.upload();
-    if (self.voxels_changed) {
-        self.voxel_buf.write(self.voxels.ptr, (sz)self.voxels.len * uint::size);
-        uint[] bricks = mem::new_array(uint, (sz)self.nx * self.ny * self.nz);
-        defer free(bricks);
-        for (int z = 0; z < self.vz; z++) {
-            for (int y = 0; y < self.vy; y++) {
-                for (int x = 0; x < self.vx; x++) {
-                    if (self.voxels[(((sz)z * self.vy + y) * self.vx + x)
-                        * 2]) bricks[((sz)(z / 4) * self.ny + y / 4) * self.nx + x / 4]++;
-                }
-            }
-        }
-        self.brick_buf.write(bricks.ptr, (sz)bricks.len * uint::size);
-        self.voxels_changed = false;
-    }
+    rc_upload_voxels(self);
     RcLightList* list = mem::new(RcLightList);
     defer free(list);
     rc_collect_lights(self, scene, list);
@@ -637,7 +646,8 @@ fn void RadianceCascades.run_sparse_update(
     }
     self.light_buf.write(&list.lights, (sz)math::max(list.count, 1) * shaders::RcLight::size);
 
-    int every = math::max(self.update_every, 1);
+    int every = math::clamp(self.update_every, 1, 0xffff);
+    int sr    = math::clamp(self.shadow_rays, 1, 0xffff);
     int turn  = self.frame / every;
     bool zo   = depth_zero_to_one();
     rc_split::RcSplitParams p = {
@@ -652,7 +662,7 @@ fn void RadianceCascades.run_sparse_update(
         .rc_info = { self.base_directions, self.levels, list.count, self.hash_cap },
         .rc_sky = { ...self.sky_color, self.bounce },
         .rc_ground = { ...self.ground_color, self.normal_offset },
-        .rc_vox = { self.vx, self.vy, self.vz, every },
+        .rc_vox = { self.vx, self.vy, self.vz, every | (sr << 16) },
         .rc_inv_vp = inv_view_proj,
         .rc_cam_pos = { ...cam_pos, zo ? 1 : 0 },
         .rc_screen = { 1.0f / (float)width, 1.0f / (float)height, zo ? 1 : 0, (float)width },
@@ -826,8 +836,9 @@ fn void RadianceCascades.flush_pending_sparse(&self) {
     // the render target the last call drew into may be gone by now (a target made for one
     // render and destroyed before commit(), or the G-Buffer made anew at another size):
     // skip this frame's update rather than read a dead view
-    if (sg::query_view_state(self.pending_depth_tex) != SgResourceState.VALID
-        || sg::query_view_state(self.pending_normal_tex) != SgResourceState.VALID) return;
+    if (sg::query_view_state(
+        self.pending_depth_tex
+    ) != SgResourceState.VALID || sg::query_view_state(self.pending_normal_tex) != SgResourceState.VALID) return;
     self.run_sparse_update(
         self.pending_scene,
         self.pending_depth_tex,
@@ -897,7 +908,7 @@ fn void RadianceCascades.recenter(&self, Object3D* root, Vector3 center) {
     float margin = self.voxel_size * 2;
     if (shift_vx != 0) {
         float shift_x = new_min.x - old_min.x;
-        float w = math::abs(shift_x) + margin;
+        float w       = math::abs(shift_x) + margin;
         Vector3 smin, smax;
         if (shift_x > 0) {
             smin = { self.max.x - w, self.min.y - margin, self.min.z - margin };
@@ -910,7 +921,7 @@ fn void RadianceCascades.recenter(&self, Object3D* root, Vector3 center) {
     }
     if (shift_vz != 0) {
         float shift_z = new_min.z - old_min.z;
-        float w = math::abs(shift_z) + margin;
+        float w       = math::abs(shift_z) + margin;
         Vector3 smin, smax;
         if (shift_z > 0) {
             smin = { self.min.x - margin, self.min.y - margin, self.max.z - w };
