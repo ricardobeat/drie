@@ -1768,17 +1768,51 @@ vec3 gi_irradiance(vec3 n, out float cover) {
 // surface's own plane: a wall takes none of the light of the room behind it.
 @include_block rc_key_common
 
-int rc_lookup_sparse_probe(ivec3 c, int hash_cap) {
-    uint key = rc_pack_key32(c, 0);
+// A probe at cell `c` of cascade `level`, its hash entry's slot in `slot`: -1 when there is
+// none. `entry` comes out whole: x is where a coarser level keeps its 6 faces, w the anchor.
+int rc_lookup_sparse_probe(ivec3 c, int level, int hash_cap, out uvec4 entry) {
+    entry = uvec4(0u);
+    uint key = rc_pack_key32(c, level);
     uint mask = uint(hash_cap - 1);
     uint idx = rc_hash(key) & mask;
     for (int step = 0; step < 32; step++) {
         uvec4 e = floatBitsToUint(rc_probe_data[idx].e);
         if (e.y == 0u) return -1;
-        if (e.y == key) return int(e.z);
+        if (e.y == key) {
+            entry = e;
+            return int(e.z);
+        }
         idx = (idx + 1u) & mask;
     }
     return -1;
+}
+
+// The 6 faces of the probe a sparse lookup found, for a surface facing `n`: the face along
+// its axis and the two across it, each weighted by the normal's squared components.
+vec3 rc_sparse_faces(int at, ivec3 side, vec3 nn) {
+    vec4 ex = rc_probe_data[at + side.x].e;
+    return ex.rgb * nn.x + rc_probe_data[at + side.y].e.rgb * nn.y + rc_probe_data[at + side.z].e.rgb * nn.z;
+}
+
+// How much of a sparse volume's light `p` takes: 1 inside its box, 0 outside, between the two
+// over its outermost half cell. The box's cells come packed in rc_size: y = x | y << 9, z = z.
+float rc_sparse_box_fade(vec3 p, float spacing) {
+    vec3 cell = (p - rc_min.xyz) / spacing;
+    vec3 dims = vec3(float(int(rc_size.y) & 511), float(int(rc_size.y) >> 9), rc_size.z);
+    vec3 edge = min(cell, dims - cell);
+    return clamp(min(edge.x, min(edge.y, edge.z)) * 2.0, 0.0, 1.0);
+}
+
+// Where a probe's wall is: which way the surface it was made for faces, 1 in front of it and 0
+// a cell and a half behind, so a surface the light came round a corner to has none of the
+// light of the room on the probe's far side.
+float rc_sparse_anchor(vec3 p, vec3 probe_pos, uint entry_w, float spacing) {
+    int code = int((entry_w >> 16) & 7u);
+    if (code == 0) return 1.0;
+    int a = code - 1;
+    vec3 dir = vec3(0.0);
+    dir[a >> 1] = (a & 1) == 0 ? 1.0 : -1.0;
+    return smoothstep(-1.5 * spacing, -0.9 * spacing, dot(p - probe_pos, dir));
 }
 
 vec3 rc_irradiance(vec3 n, out float fade) {
@@ -1793,24 +1827,30 @@ vec3 rc_irradiance(vec3 n, out float fade) {
     float wsum_any = 0.0;
     if (rc_size.x < -0.5) {
         int hash_cap = int(-rc_size.x + 0.5);
-        vec3 g = (v_world_pos + n * (0.25 * spacing)) / spacing - 0.5;
+        fade = rc_sparse_box_fade(v_world_pos, spacing);
+        if (fade <= 0.0) return vec3(0.0);
+        // (half a cell out along the normal: the sheet of probes the kernels place sits in
+        // the first cell off the surface, which a wall as thick as a cell would hide)
+        vec3 g = (v_world_pos + n * (0.5 * spacing)) / spacing - 0.5;
         ivec3 b = ivec3(floor(g));
         vec3 f = g - vec3(b);
         for (int k = 0; k < 8; k++) {
             ivec3 o = ivec3(k & 1, (k >> 1) & 1, (k >> 2) & 1);
             ivec3 c = b + o;
-            int slot = rc_lookup_sparse_probe(c, hash_cap);
+            uvec4 entry;
+            int slot = rc_lookup_sparse_probe(c, 0, hash_cap, entry);
             if (slot < 0) continue;
             int at = hash_cap + slot * 6;
             vec4 ex = rc_probe_data[at + side.x].e;
-            vec3 e = ex.rgb * nn.x + rc_probe_data[at + side.y].e.rgb * nn.y + rc_probe_data[at + side.z].e.rgb * nn.z;
+            vec3 e = rc_sparse_faces(at, side, nn);
             vec3 w3 = mix(1.0 - f, f, vec3(o));
             float tw = w3.x * w3.y * w3.z;
             float w = tw * ex.w;
             vec3 probe_pos = (vec3(c) + 0.5) * spacing;
             float front = smoothstep(-0.35 * spacing, 0.25 * spacing, dot(probe_pos - v_world_pos, n));
-            sum += e * (w * front);
-            wsum += w * front;
+            float anchor = rc_sparse_anchor(v_world_pos, probe_pos, entry.w, spacing);
+            sum += e * (w * front * anchor);
+            wsum += w * front * anchor;
             sum_any += e * w;
             wsum_any += w;
         }
@@ -1818,11 +1858,21 @@ vec3 rc_irradiance(vec3 n, out float fade) {
             // Normalising alone keeps the last probe's full light right up to the face where
             // its weight reaches zero, then drops to nothing: 20 cm steps along the edge of
             // the probes' coverage. Fade in with the covered weight instead.
-            fade = clamp(wsum_any * 4.0, 0.0, 1.0);
+            fade = clamp(wsum_any * 4.0, 0.0, 1.0) * fade;
             vec3 fallback = sum_any / wsum_any;
             vec3 primary = wsum > 1e-5 ? (sum / wsum) : fallback;
             float trust_front = clamp(wsum / max(wsum_any * 0.25, 1e-5), 0.0, 1.0);
             return mix(fallback, primary, trust_front) * rc_size.w;
+        }
+        // Nothing at this scale: the level 1 probe over the same place has seen the same
+        // light from further away, which beats going dark.
+        ivec3 c1 = ivec3(floor((v_world_pos + n * (0.5 * spacing)) / (spacing * 2.0)));
+        uvec4 entry1;
+        int slot1 = rc_lookup_sparse_probe(c1, 1, hash_cap, entry1);
+        int at1 = int(entry1.x);
+        if (slot1 >= 0 && at1 > 0) {
+            fade = 1.0;
+            return rc_sparse_faces(at1, side, nn) * rc_size.w;
         }
         return vec3(0.0);
     }

@@ -358,8 +358,146 @@ fn Node gi_texel(
 // inside things and those behind the surface's own plane: a wall takes none of the light of
 // the room behind it.
 fn Node[2] rc_irradiance(Node n, Node world) @private {
-    Node corner  = fs_in("rc_min");
-    Node size    = fs_in("rc_size");
+    Node corner = fs_in("rc_min");
+    Node size   = fs_in("rc_size");
+    Node light  = nodes::variable(nodes::vec3(0));
+    Node fade   = nodes::variable(nodes::num(0));
+    Node[2] dense = rc_irradiance_dense(n, world, corner, size);
+    Node[2] sparse = rc_irradiance_sparse(n, world, corner, size);
+    Node run = nodes::if_then(
+        size.x().less_than(nodes::num(-0.5f)),
+        nodes::block(light.assign(sparse[0]), fade.assign(sparse[1])),
+        nodes::block(light.assign(dense[0]), fade.assign(dense[1]))
+    );
+    return { nodes::seq(run, light), fade };
+}
+
+// A sparse volume's light, walked probe by probe: the hash table the kernels fill has no cell
+// per point to read, so each of the 8 around `world` is looked up (radiance_rays_cs.glsl's
+// rc_lookup) before its 6 faces are blended.
+fn Node[2] rc_irradiance_sparse(Node n, Node world, Node corner, Node size) @private {
+    Node spacing = corner.w();
+    Node nn      = n * n;
+    Node side = nodes::convert(nodes::vec3(nodes::select(n.x()
+        .greater_than_equal(nodes::num(0)), 0.0f, 1.0f), nodes::select(n.y()
+            .greater_than_equal(nodes::num(0)), 2.0f, 3.0f), nodes::select(n.z()
+                .greater_than_equal(nodes::num(0)), 4.0f, 5.0f)), IVEC3);
+    Node hash_cap = nodes::convert(nodes::negate(size.x()) + 0.5f, INT);
+    Node hmask    = nodes::convert(hash_cap, UINT) - nodes::uint_(1);
+    // the box's cells, packed into size's y and z (renderer.c3's rc_size)
+    Node dims = nodes::vec3(
+        nodes::convert(nodes::bit_and(nodes::convert(size.y(), INT), nodes::int_(511)), FLOAT),
+        nodes::convert(nodes::shift_right(nodes::convert(size.y(), INT), nodes::int_(9)), FLOAT),
+        size.z()
+    );
+    Node cell  = (world - corner.xyz()) / spacing;
+    Node bedge = nodes::min(cell, dims - cell);
+    Node bfade = nodes::clamp(nodes::min(bedge.x(), nodes::min(bedge.y(), bedge.z())) * 2.0f, 0, 1);
+    Node g     = (world + n * (spacing * 0.25f)) / spacing - 0.5f;
+    Node base  = nodes::convert(nodes::floor(g), IVEC3);
+    Node f     = g - nodes::convert(base, VEC3);
+    Node sum      = nodes::variable(nodes::vec3(0));
+    Node wsum     = nodes::variable(nodes::num(0));
+    Node sum_any  = nodes::variable(nodes::vec3(0));
+    Node wsum_any = nodes::variable(nodes::num(0));
+    Node entry    = nodes::variable(nodes::vec4(0));
+    Node slot     = nodes::variable(nodes::int_(-1));
+    Node idx      = nodes::variable(nodes::uint_(0));
+    Node stepn    = nodes::variable(nodes::uint_(0));
+    Node h        = nodes::variable(nodes::uint_(0));
+    Node e        = nodes::variable(nodes::vec4(0));
+    Node at       = nodes::variable(nodes::int_(0));
+    Node ex       = nodes::variable(nodes::vec4(0));
+    Node e3       = nodes::variable(nodes::vec3(0));
+    Node k        = nodes::loop_index(INT);
+    Node o = nodes::vec3(
+        nodes::convert(nodes::bit_and(k, nodes::int_(1)), FLOAT),
+        nodes::convert(nodes::bit_and(nodes::shift_right(k, nodes::int_(1)), nodes::int_(1)), FLOAT),
+        nodes::convert(nodes::bit_and(nodes::shift_right(k, nodes::int_(2)), nodes::int_(1)), FLOAT)
+    );
+    Node c = base + nodes::convert(o, IVEC3);
+    // rc_pack_key32 of the cell, level 0 (radiance_common.glsl)
+    Node key = nodes::bit_or(
+        nodes::bit_or(
+            nodes::bit_and(nodes::convert(c.x(), UINT), nodes::uint_(0x1ffu)),
+            nodes::shift_left(nodes::bit_and(nodes::convert(c.y(), UINT), nodes::uint_(0x1ffu)), nodes::uint_(9))
+        ),
+        nodes::bit_or(
+            nodes::shift_left(nodes::bit_and(nodes::convert(c.z(), UINT), nodes::uint_(0x1ffu)), nodes::uint_(18)),
+            nodes::uint_(0x80000000u)
+        )
+    );
+    // the walk along the hash's chain (rc_hash then linear probing, at most 32 steps)
+    Node walk = nodes::block(
+        entry.assign(nodes::vec4(0)),
+        slot.assign(nodes::int_(-1)),
+        stepn.assign(nodes::uint_(0)),
+        h.assign(key),
+        h.assign(nodes::bit_xor(h, nodes::shift_right(h, nodes::uint_(16)))),
+        h.assign(h * nodes::uint_(0x7feb352du)),
+        h.assign(nodes::bit_xor(h, nodes::shift_right(h, nodes::uint_(15)))),
+        h.assign(h * nodes::uint_(0x846ca68bu)),
+        idx.assign(nodes::bit_and(nodes::bit_xor(h, nodes::shift_right(h, nodes::uint_(16))), hmask)),
+        nodes::loop_while(stepn.less_than(nodes::uint_(32)), nodes::block(
+            e.assign(node_storage(shaders::VIEW_RC_PROBES, VEC4, idx)),
+            nodes::if_then(nodes::as_uint(e.y()).equal(nodes::uint_(0u)), nodes::block(nodes::break_())),
+            nodes::if_then(nodes::as_uint(e.y()).equal(key), nodes::block(
+                entry.assign(e),
+                slot.assign(nodes::convert(nodes::as_uint(e.z()), INT)),
+                nodes::break_()
+            )),
+            idx.assign(nodes::bit_and(idx + nodes::uint_(1), hmask)),
+            stepn.assign(stepn + nodes::uint_(1))
+        ))
+    );
+    // one of the 8 probes: its 6 faces, and how much of them this surface takes
+    Node probe_pos = (nodes::convert(c, VEC3) + 0.5f) * spacing;
+    Node front     = nodes::smoothstep(spacing * -0.35f, spacing * 0.25f, nodes::dot(probe_pos - world, n));
+    // the anchor the kernels keep in the entry's w (rc_anchor_trust): which way the surface
+    // the probe was made for faces, so a wall takes none of the light of the room behind it
+    Node anchor = nodes::shift_right(nodes::as_uint(entry.w()), nodes::uint_(16));
+    Node axis   = nodes::convert(nodes::bit_and(anchor, nodes::uint_(7u)), INT);
+    Node pick = nodes::vec3(
+        nodes::select(axis.equal(nodes::int_(1)), 1.0f, 0.0f),
+        nodes::select(axis.equal(nodes::int_(2)), 1.0f, 0.0f),
+        nodes::select(axis.equal(nodes::int_(3)), 1.0f, 0.0f)
+    );
+    Node against = nodes::dot(world - probe_pos, pick)
+        * nodes::select(nodes::bit_and(anchor, nodes::uint_(1u)).equal(nodes::uint_(0u)), 1.0f, -1.0f);
+    Node trust = nodes::select(
+        anchor.equal(nodes::uint_(0u)),
+        nodes::num(1),
+        nodes::smoothstep(spacing * -1.5f, spacing * -0.9f, against)
+    );
+    Node w3 = nodes::mix(nodes::vec3(1) - f, f, o);
+    Node tw = w3.x() * w3.y() * w3.z();
+    Node w  = tw * ex.w() * front * trust;
+    Node body = nodes::block(
+        walk,
+        nodes::if_then(slot.greater_than_equal(nodes::int_(0)), nodes::block(
+            at.assign(hash_cap + slot * nodes::int_(6)),
+            ex.assign(node_storage(shaders::VIEW_RC_PROBES, VEC4, at + side.x())),
+            e3.assign(ex.xyz() * nn.x() + node_storage(shaders::VIEW_RC_PROBES, VEC4, at + side.y())
+                .xyz() * nn.y() + node_storage(shaders::VIEW_RC_PROBES, VEC4, at + side.z())
+                .xyz() * nn.z()),
+            sum.assign(sum + e3 * w),
+            wsum.assign(wsum + w),
+            sum_any.assign(sum_any + e3 * tw),
+            wsum_any.assign(wsum_any + tw)
+        ))
+    );
+    Node fallback    = nodes::select(wsum_any.greater_than(nodes::num(1e-5f)), sum_any / wsum_any, nodes::vec3(0));
+    Node primary     = nodes::select(wsum.greater_than(nodes::num(1e-5f)), sum / wsum, fallback);
+    Node trust_front = nodes::clamp(wsum / nodes::max(wsum_any * 0.25f, 1e-5f), 0, 1);
+    Node light       = nodes::mix(fallback, primary, trust_front) * size.w();
+    Node fade        = nodes::clamp(wsum_any * 4.0f, 0, 1) * bfade;
+    Node run = nodes::block(
+        nodes::if_then(bfade.greater_than(nodes::num(0)), nodes::block(nodes::loop(k, nodes::int_(0), nodes::int_(8), body)))
+    );
+    return { nodes::seq(run, light), fade };
+}
+
+fn Node[2] rc_irradiance_dense(Node n, Node world, Node corner, Node size) @private {
     Node spacing = corner.w();
     Node g       = (world + n * (spacing * 0.25f) - corner.xyz()) / spacing;
     Node edge    = nodes::min(g, size.xyz() - g);

@@ -63,7 +63,8 @@ bool rc_reads_cache() {
 }
 
 // 32 bytes per probe slot:
-//   a: x = pack_xy(c), y = key32 (0 = free), z = parent_slot, w = last_frame | (birth << 16)
+//   a: x = pack_xy(c), y = key32 (0 = free), z = parent_slot, w = last_frame | birth << 16 |
+//      vismask << 24
 //   b: x = rays, y = ray_off, z = cursor, w = coord_z (signed int as uint)
 struct rc_ray_meta {
     uvec4 a;
@@ -89,6 +90,19 @@ struct rc_hit {
 };
 
 const uint RC_RAYS_STALE = 24u;
+// meta_buf's b.x: rays in the low 16 bits, then the anchor: which way the surface a probe was
+// made for faces, as rc_face_axis's 0..5 (+1, 0 = none yet). A surface behind that plane is on
+// the probe's far side, across the wall the probe sits on, and takes none of its light.
+const uint RC_ANCHOR_SHIFT = 16u;
+const uint RC_ANCHOR_MASK = 7u;
+// meta_buf's a.w: last_frame in the low 12 bits, birth in the next 8, then the visibility mask:
+// one bit per trilinear corner of the coarser grid around the probe, set when nothing solid
+// stands between them, so the merge never blends light across a wall.
+const uint RC_BIRTH_SHIFT = 16u;
+const uint RC_VISMASK_SHIFT = 24u;
+// How much of its light a corner gets through when something stands in the way: a wall
+// leaks a little, a nook with no other corner at all still has some light.
+const float RC_VIS_HIDDEN = 0.02;
 const float RC_FP_SCALE = 16384.0;
 const uint RC_MAX_TRACE_RAYS = 1048576u;
 // free_buf: everything below RC_FREE_BASE is counters; from there on, one slot id per probe
@@ -137,8 +151,18 @@ int rc_cache_bin_base() {
     return rc_total_bins();
 }
 
+// irradiance_buf: the hash table, then the L0 6-face irradiance, then the L1 one (the fallback
+// where no L0 probe is near), then the cache's L0 one.
+int rc_l0_irr_base() {
+    return rc_info.w;
+}
+
+int rc_l1_irr_base() {
+    return rc_l0_irr_base() + rc_level_cap(0) * 6;
+}
+
 int rc_cache_irr_base() {
-    return rc_info.w + rc_level_cap(0) * 6;
+    return rc_l1_irr_base() + (rc_info.y > 1 ? rc_level_cap(1) * 6 : 0);
 }
 
 int rc_cache_probe_base(int l) {
@@ -216,6 +240,24 @@ vec3 rc_axis_normal(int axis) {
     return axis == 0 ? vec3(1.0, 0.0, 0.0) : axis == 1 ? vec3(-1.0, 0.0, 0.0)
         : axis == 2 ? vec3(0.0, 1.0, 0.0) : axis == 3 ? vec3(0.0, -1.0, 0.0)
         : axis == 4 ? vec3(0.0, 0.0, 1.0) : vec3(0.0, 0.0, -1.0);
+}
+
+// The anchor a surface with normal `n` gives its probe: rc_face_axis's index, +1 so that 0
+// means "none yet".
+uint rc_anchor_code(vec3 n) {
+    return uint(rc_face_axis(n) + 1);
+}
+
+// A point is on a probe's side of the wall it was made on: how much of its light the point
+// may take. 1 in front of the anchor's plane, 0 a cell and a half behind it. A surface the
+// probe was made for sits half a cell behind its anchor, so the test leaves that alone and
+// only cuts what is through the wall.
+float rc_anchor_trust(ivec3 c, float spacing, uint points, vec3 p) {
+    uint code = points & RC_ANCHOR_MASK;
+    if (code == 0u) return 1.0;
+    vec3 n = rc_axis_normal(int(code) - 1);
+    vec3 probe_pos = (vec3(c) + 0.5) * spacing;
+    return smoothstep(-1.5 * spacing, -0.9 * spacing, dot(p - probe_pos, n));
 }
 
 // Morton 2D encode/decode for direction grids (up to 64x64)
@@ -332,7 +374,7 @@ int rc_rays_free_pop(int level, bool cache) {
     return -1;
 }
 
-int rc_rays_touch_probe(ivec3 c, int level, bool cache, uint frame) {
+int rc_rays_touch_probe(ivec3 c, int level, bool cache, uint frame, uint anchor) {
     uint key = cache ? rc_pack_key32_cache(c, level) : rc_pack_key32(c, level);
     int cap = rc_cap_of(cache, level);
     int bump = rc_free_bump(cache, level);
@@ -341,13 +383,14 @@ int rc_rays_touch_probe(ivec3 c, int level, bool cache, uint frame) {
     for (int step = 0; step < 32; step++) {
         uint cur = rc_ht[idx].v.y;
         if (cur == key) {
-            rc_ht[idx].v.w = frame;
             uint s = rc_ht[idx].v.z;
             if (s != 0xffffffffu) {
                 int mi = rc_probe_base_of(cache, level) + int(s);
-                rc_meta[mi].a.w = (rc_meta[mi].a.w & 0xffff0000u) | frame;
+                rc_meta[mi].a.w = (rc_meta[mi].a.w & 0xffff0000u) | (frame & 0xfffu);
+                rc_ht[idx].v.w = frame | ((rc_meta[mi].b.x >> RC_ANCHOR_SHIFT) << 16);
                 return int(s);
             }
+            rc_ht[idx].v.w = frame;
             return -1;
         }
         if (cur == 0u) {
@@ -365,8 +408,8 @@ int rc_rays_touch_probe(ivec3 c, int level, bool cache, uint frame) {
                 }
                 uint pxy = rc_pack_xy(c);
                 int mi = rc_probe_base_of(cache, level) + slot;
-                rc_meta[mi].a = uvec4(pxy, key, 0xffffffffu, frame | (frame << 16));
-                rc_meta[mi].b = uvec4(1u, 0u, 0u, uint(c.z));
+                rc_meta[mi].a = uvec4(pxy, key, 0xffffffffu, (frame & 0xfffu) | ((frame & 0xffu) << RC_BIRTH_SHIFT));
+                rc_meta[mi].b = uvec4(1u | ((anchor & RC_ANCHOR_MASK) << RC_ANCHOR_SHIFT), 0u, 0u, uint(c.z));
                 rc_ht[idx].v.x = pxy;
                 rc_ht[idx].v.z = uint(slot);
                 rc_ht[idx].v.w = frame;
@@ -377,7 +420,8 @@ int rc_rays_touch_probe(ivec3 c, int level, bool cache, uint frame) {
                 uint s = rc_ht[idx].v.z;
                 if (s != 0xffffffffu) {
                     int mi = rc_probe_base_of(cache, level) + int(s);
-                    rc_meta[mi].a.w = (rc_meta[mi].a.w & 0xffff0000u) | frame;
+                    rc_meta[mi].a.w = (rc_meta[mi].a.w & 0xffff0000u) | (frame & 0xfffu);
+                    rc_ht[idx].v.w = frame | ((rc_meta[mi].b.x >> RC_ANCHOR_SHIFT) << 16);
                     return int(s);
                 }
                 return -1;
@@ -534,7 +578,7 @@ void main() {
         if (prev == 0u) {
             rc_ht[h].v.x = a.x;
             rc_ht[h].v.z = uint(slot);
-            rc_ht[h].v.w = last_f;
+            rc_ht[h].v.w = last_f | ((b.x >> RC_ANCHOR_SHIFT) << 16);
             return;
         }
         if (prev == key) break;
@@ -618,10 +662,9 @@ void main() {
         }
     }
 
-    int slot = rc_rays_touch_probe(c_near, 0, false, frame);
-    if (slot >= 0) {
-        atomicAdd(rc_meta[rc_probe_base(0) + slot].b.x, 1u);
-    }
+    // (the surface this probe is made for goes in with it: which side its light comes from)
+    int slot = rc_rays_touch_probe(c_near, 0, false, frame, rc_anchor_code(n));
+    if (slot >= 0) atomicAdd(rc_meta[rc_probe_base(0) + slot].b.x, 1u);
     // Also touch the 3 other bilinear corners in the same normal layer (ck[an] == c_near[an])
     // so grazing walls and strided G-Buffer tiles never leave missing trilinear corners, while
     // keeping the probe sheet strictly 1 cell thick along the surface normal (~4x drop/level).
@@ -632,7 +675,7 @@ void main() {
         ivec3 ck = b0 + o;
         if (ck[an] != c_near[an] || ck == c_near) continue;
         if (rc_cell_solid(ck, sp0)) continue;
-        int s = rc_rays_touch_probe(ck, 0, false, frame);
+        int s = rc_rays_touch_probe(ck, 0, false, frame, rc_anchor_code(n));
         if (s >= 0) atomicMax(rc_meta[rc_probe_base(0) + s].b.x, 1u);
     }
 }
@@ -684,7 +727,8 @@ void main() {
     if (rc_cell_solid(c, sp)) return;
     vec3 bmax = rc_min.xyz + vec3(rc_dims.xyz) * rc_min.w;
     if (any(lessThan(p, rc_min.xyz)) || any(greaterThan(p, bmax))) return;
-    int slot = rc_rays_touch_probe(c, 0, true, frame);
+    // (the face the ray came in through: the side this probe's light comes from)
+    int slot = rc_rays_touch_probe(c, 0, true, frame, uint(int(tag & 7u) + 1));
     if (slot >= 0) atomicMax(rc_meta[rc_cache_probe_base(0) + slot].b.x, 1u);
 }
 @end
@@ -697,11 +741,35 @@ void main() {
 layout(binding=2) buffer rc_ht_prop { rc_uvec4 rc_ht[]; };
 layout(binding=3) buffer rc_meta_prop { rc_ray_meta rc_meta[]; };
 layout(binding=4) buffer rc_free_prop { rc_uint rc_free[]; };
+layout(binding=5) readonly buffer rc_bricks_prop { rc_brick rc_brick_data[]; };
 
 layout(local_size_x=64) in;
 
 @include_block rc_rays_touch_common
 @include_block rc_rays_lookup_common
+@include_block rc_march_common
+
+// Which of the 8 corners of the coarser grid around the probe the merge may blend in: the
+// ones light can reach from here, and the ones inside geometry, which sum up the surface this
+// probe sits on and are what its own light arrives through. A corner across a wall in free
+// space carries another room's light and is left out. Made once, for a probe new this frame.
+uint rc_vis_mask(vec3 pos, float spacing, float coarse) {
+    uint m = 0u;
+    ivec3 cbase = ivec3(floor(pos / coarse - 0.5));
+    for (int k = 0; k < 8; k++) {
+        vec3 o = vec3(k & 1, (k >> 1) & 1, (k >> 2) & 1);
+        if (rc_cell_solid(cbase + ivec3(o), coarse)) {
+            m |= 1u << uint(k);
+            continue;
+        }
+        vec3 d = (o * 2.0 - 1.0) * spacing;
+        float t_hit;
+        ivec3 cell;
+        vec3 face;
+        if (rc_march(pos, normalize(d), length(d), t_hit, cell, face) != 1) m |= 1u << uint(k);
+    }
+    return m;
+}
 
 void main() {
     bool cache = rc_is_cache();
@@ -718,13 +786,19 @@ void main() {
     uvec4 b = rc_meta[mi].b;
     if (a.y == 0u) return;
 
-    uint rays = b.x;
+    uint rays = b.x & 0xffffu;
     if (rays == 0u) return;
     uint frame = uint(rc_tune.z) + 1u;
+    uint birth = (a.w >> RC_BIRTH_SHIFT) & 0xffu;
+    uint age = (frame - birth) & 0xffu;
     if (phase == 0) {
+        if (age == 0u && level + 1 < nlevels) {
+            ivec3 cc = rc_unpack_coord(a, b);
+            float sp = rc_spacing_of(cache, level);
+            uint m = rc_vis_mask((vec3(cc) + 0.5) * sp, sp, sp * 2.0);
+            rc_meta[mi].a.w = (a.w & 0x00ffffffu) | (m << RC_VISMASK_SHIFT);
+        }
         if (level == 0) {
-            uint birth = a.w >> 16;
-            uint age = frame >= birth ? (frame - birth) : (frame + 4096u - birth);
             if (cache) {
                 // the cache's share of the primary's rays, spread evenly over its probes
                 uint np = max(rc_free[rc_free_bump(true, 0)].v, 1u);
@@ -734,11 +808,11 @@ void main() {
                 uint cap_r = uint(max(int(rc_screen.w), 1));
                 rays = age < 4u ? min(cap_r * 4u, 256u) : clamp(rays, 4u, cap_r);
             }
-            rc_meta[mi].b.x = rays;
+            rc_meta[mi].b.x = (b.x & 0xffff0000u) | rays;
         }
         if (up >= nlevels) return;
         ivec3 c = rc_unpack_coord(a, b);
-        rc_rays_touch_probe(c >> 1, up, cache, frame);
+        rc_rays_touch_probe(c >> 1, up, cache, frame, 0u);
         return;
     }
     if (up >= nlevels) return;
@@ -746,7 +820,7 @@ void main() {
     int uslot = rc_lookup(uc, up, cache);
     if (uslot < 0) return;
     rc_meta[mi].a.z = uint(uslot);
-    atomicAdd(rc_meta[rc_probe_base_of(cache, up) + uslot].b.x, rays);
+    atomicAdd(rc_meta[rc_probe_base_of(cache, up) + uslot].b.x, rays & 0xffffu);
 }
 @end
 
@@ -770,7 +844,7 @@ void main() {
 
     int mi = rc_probe_base_of(cache, level) + slot;
     uvec4 a = rc_meta[mi].a;
-    uint rays = rc_meta[mi].b.x;
+    uint rays = rc_meta[mi].b.x & 0xffffu;
     if (a.y == 0u || rays == 0u) return;
 
     uint my_off = 0u;
@@ -805,6 +879,7 @@ void main() {
 //   rc_args[10]    : trace groups for the cache
 //   rc_args[11..18]: merge groups for cache levels 0..7
 //   rc_args[19]    : gather groups for cache level 0
+//   rc_args[20]    : gather groups for the primary's level 1
 @cs rc_rays_args_cs
 @include_block rc_rays_common
 layout(binding=4) readonly buffer rc_free_args { rc_uint rc_free[]; };
@@ -826,6 +901,8 @@ void main() {
         rc_args[9].v = uvec4(max((n0 + 63u) / 64u, 1u), 1u, 1u, 0u);
         uint c0 = min(rc_free[27].v, uint(rc_cache_cap(0)));
         rc_args[19].v = uvec4(max((c0 + 63u) / 64u, 1u), 1u, 1u, 0u);
+        uint n1 = rc_info.y > 1 ? min(rc_free[9].v, uint(rc_level_cap(1))) : 0u;
+        rc_args[20].v = uvec4(max((n1 + 63u) / 64u, 1u), 1u, 1u, 0u);
     }
     if (i < uint(rc_info.y)) {
         int l = int(i);
@@ -860,22 +937,52 @@ layout(local_size_x=64) in;
 // of the cache, trilinearly over the 8 around it. `weight` is how much of it was there.
 vec3 rc_face_irr(bool cache, vec3 p, vec3 face, out float weight) {
     int axis = rc_face_axis(face);
-    int base = cache ? rc_cache_irr_base() : rc_info.w;
+    int base = cache ? rc_cache_irr_base() : rc_l0_irr_base();
+    int pbase = rc_probe_base_of(cache, 0);
     float sp = rc_spacing_of(cache, 0);
-    vec3 g = p / sp - 0.5;
+    vec3 g = (p + face * (0.5 * sp)) / sp - 0.5;
     ivec3 b = ivec3(floor(g));
     vec3 f = g - vec3(b);
     vec3 sum = vec3(0.0);
     float wsum = 0.0;
     for (int k = 0; k < 8; k++) {
         ivec3 o = ivec3(k & 1, (k >> 1) & 1, (k >> 2) & 1);
-        int slot = rc_lookup(b + o, 0, cache);
+        ivec3 c = b + o;
+        int slot = rc_lookup(c, 0, cache);
         if (slot < 0) continue;
         vec4 e = uintBitsToFloat(rc_ht[base + slot * 6 + axis].v);
+        vec3 probe_pos = (vec3(c) + 0.5) * sp;
+        // the probe has to be on the surface's own side of it: a coarse one this close to
+        // the plane is as good as there, one across the wall is not there at all
+        float fs = rc_min.w;
+        float front = smoothstep(-0.35 * fs, 0.25 * fs, dot(probe_pos - p, face));
+        float trust = rc_anchor_trust(c, sp, rc_meta[pbase + slot].b.x, p);
+        // The cache is 4x coarser, so its probes around a point are often a wall away: its
+        // own bounce light is kept only from the ones light can actually travel from.
+        if (cache && rc_is_cache()) {
+            vec3 d = probe_pos - p;
+            float dist = length(d);
+            float t_hit;
+            ivec3 hc;
+            vec3 hf;
+            if (rc_march(p, d / max(dist, 1e-5), dist - rc_tune.w, t_hit, hc, hf) == 1) continue;
+        }
         vec3 w3 = mix(1.0 - f, f, vec3(o));
-        float w = w3.x * w3.y * w3.z * e.w;
+        float w = w3.x * w3.y * w3.z * e.w * front * trust;
         sum += e.rgb * w;
         wsum += w;
+    }
+    // Nothing level 0 near: the level 1 probe over the same place has seen the same light
+    // from further away, which beats going dark.
+    if (wsum <= 1e-4 && !cache && rc_info.y > 1 && false) {
+        float sp1 = sp * 2.0;
+        ivec3 c1 = ivec3(floor(p / sp1));
+        int slot = rc_lookup(c1, 1, false);
+        if (slot >= 0) {
+            vec4 e = uintBitsToFloat(rc_ht[rc_l1_irr_base() + slot * 6 + axis].v);
+            weight = e.w;
+            return e.rgb;
+        }
     }
     weight = wsum;
     return wsum > 1e-4 ? sum / wsum : vec3(0.0);
@@ -1062,6 +1169,10 @@ void main() {
             vec3 f = g - vec3(base_c);
             vec3 sum = vec3(0.0);
             float wsum = 0.0;
+            // the corners nothing solid stands between this probe and (rc_vis_mask): light
+            // from across a wall comes through the corner on the wall's far side barely at
+            // all, and through nothing at all where that is the only corner there is
+            uint vis = a.w >> RC_VISMASK_SHIFT;
             for (int n = 0; n < 8; n++) {
                 ivec3 o = ivec3(n & 1, (n >> 1) & 1, (n >> 2) & 1);
                 ivec3 uc = base_c + o;
@@ -1078,7 +1189,8 @@ void main() {
                 if (valid == 0) continue;
                 four /= float(valid);
                 vec3 w3 = mix(1.0 - f, f, vec3(o));
-                float w = w3.x * w3.y * w3.z;
+                float vf = (vis == 0u || (vis & (1u << uint(n))) != 0u) ? 1.0 : RC_VIS_HIDDEN;
+                float w = w3.x * w3.y * w3.z * vf;
                 sum += four * w;
                 wsum += w;
             }
@@ -1105,31 +1217,55 @@ layout(local_size_x=64) in;
 
 @include_block rc_cell_common
 
+// Where a probe's 6 faces go: level 0 into the block the materials read, level 1 into the
+// coarser one they fall back to where no level 0 probe is near (only the primary has one).
+int rc_gather_irr_base(bool cache, int level, int slot) {
+    if (level == 0) return (cache ? rc_cache_irr_base() : rc_l0_irr_base()) + slot * 6;
+    return rc_l1_irr_base() + slot * 6;
+}
+
 void main() {
     bool cache = rc_is_cache();
+    int level = rc_pass_level();
+    if (level > 0 && cache) return;
     int slot = int(gl_GlobalInvocationID.x);
-    int count = min(int(rc_free[rc_free_bump(cache, 0)].v), rc_cap_of(cache, 0));
+    int count = min(int(rc_free[rc_free_bump(cache, level)].v), rc_cap_of(cache, level));
     if (slot >= count) return;
 
-    int mi = rc_probe_base_of(cache, 0) + slot;
+    int mi = rc_probe_base_of(cache, level) + slot;
     uvec4 a = rc_meta[mi].a;
     uvec4 b = rc_meta[mi].b;
-    int irr_base = (cache ? rc_cache_irr_base() : rc_info.w) + slot * 6;
+    int irr_base = rc_gather_irr_base(cache, level, slot);
     if (a.y == 0u) {
         for (int f = 0; f < 6; f++) rc_ht[irr_base + f].v = uvec4(0u);
         return;
     }
     ivec3 pc = rc_unpack_coord(a, b);
-    vec3 pos = (vec3(pc) + 0.5) * rc_spacing_of(cache, 0);
+    float sp = rc_spacing_of(cache, level);
+    vec3 pos = (vec3(pc) + 0.5) * sp;
     ivec3 vc = ivec3(floor((pos - rc_min.xyz) / rc_tune.w));
     if (rc_in_grid(vc) && rc_solid(vc)) {
         for (int f = 0; f < 6; f++) rc_ht[irr_base + f].v = uvec4(0u);
         return;
     }
+    if (level > 0) {
+        // the materials find it from the probe's hash entry, without knowing the layout
+        uint mask = uint(rc_info.w - 1);
+        uint h = rc_hash(a.y) & mask;
+        for (int step = 0; step < 32; step++) {
+            uint cur = rc_ht[h].v.y;
+            if (cur == a.y) {
+                rc_ht[h].v.x = uint(irr_base);
+                break;
+            }
+            if (cur == 0u) break;
+            h = (h + 1u) & mask;
+        }
+    }
 
-    int theta = rc_info.x;
+    int theta = rc_info.x << level;
     int dirs = 2 * theta * theta;
-    int boff = rc_bin_off_of(cache, 0) + slot * dirs;
+    int boff = rc_bin_off_of(cache, level) + slot * dirs;
     vec3 sum[6];
     float wsum[6];
     for (int f = 0; f < 6; f++) { sum[f] = vec3(0.0); wsum[f] = 0.0; }

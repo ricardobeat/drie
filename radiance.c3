@@ -321,7 +321,9 @@ fn RadianceCascades* radiance_cascades_sparse(
         cmeta += ccap;
         cbin += r.cache_counts[l];
     }
-    r.cache_irr_base = r.hash_cap + r.split_cap[0] * 6;
+    // irradiance_buf: hash table, L0 6-face, L1 6-face (the fallback where no L0 probe is
+    // near), then the cache's 6-face.
+    r.cache_irr_base = r.hash_cap + r.split_cap[0] * 6 + (eff_levels > 1 ? r.split_cap[1] * 6 : 0);
     r.hits_cap = math::max(r.cache_cap[0] * 4, 1024);
     return r;
 }
@@ -904,6 +906,7 @@ fn void RadianceCascades.run_split_update(
         pp.set_buffer(rc_rays::VIEW_RC_HT_PROP, self.irradiance_buf);
         pp.set_buffer(rc_rays::VIEW_RC_META_PROP, self.meta_buf);
         pp.set_buffer(rc_rays::VIEW_RC_FREE_PROP, self.free_buf);
+        pp.set_buffer(rc_rays::VIEW_RC_BRICKS_PROP, self.brick_buf);
 
         ComputePass* op = self.rays_offsets_pass;
         op.set_buffer(rc_rays::VIEW_RC_META_OFF, self.meta_buf);
@@ -980,6 +983,12 @@ fn void RadianceCascades.run_split_update(
         p.rc_dims[3] = 0;
         gp.set_uniforms(rc_rays::UB_RC_RAYS_PARAMS, &p, rc_rays::RcRaysParams::size);
         gp.dispatch_indirect(self.args_buf, 9 * 16);
+        // the coarser 6-face irradiance the materials fall back to where no L0 probe is near
+        if (eff > 1) {
+            p.rc_dims[3] = 1;
+            gp.set_uniforms(rc_rays::UB_RC_RAYS_PARAMS, &p, rc_rays::RcRaysParams::size);
+            gp.dispatch_indirect(self.args_buf, 20 * 16);
+        }
         end_compute();
     }
 

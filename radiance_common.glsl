@@ -141,22 +141,9 @@ bool rc_cell_solid(ivec3 c, float spacing) {
 }
 @end
 
-// Requires uniform block with rc_min, rc_dims, rc_tune, rc_info, rc_sky, rc_ground, rc_vox
-// and buffers rc_vox_data[], rc_brick_data[], rc_light_data[].
-@block rc_trace_common
+// Requires uniform block with rc_min, rc_dims, rc_tune, rc_vox and rc_brick_data[].
+@block rc_march_common
 @include_block rc_cell_common
-
-int rc_every() {
-    return max(rc_vox.w & 0xffff, 1);
-}
-
-int rc_shadow_rays() {
-    return max(rc_vox.w >> 16, 1);
-}
-
-vec3 rc_sky_at(vec3 rd) {
-    return mix(rc_ground.rgb, rc_sky.rgb, 0.5 * rd.y + 0.5);
-}
 
 // Follows the ray through the voxels for up to `reach` meters using 64-bit brick occupancy
 // masks. 0: nothing in the way, 1: hit (t, the voxel and the face it came in through),
@@ -213,6 +200,24 @@ int rc_march(vec3 ro, vec3 rd, float reach, out float t_hit, out ivec3 cell, out
         }
     }
     return 0;
+}
+@end
+
+// Requires uniform block with rc_min, rc_dims, rc_tune, rc_info, rc_sky, rc_ground, rc_vox
+// and buffers rc_vox_data[], rc_brick_data[], rc_light_data[].
+@block rc_trace_common
+@include_block rc_march_common
+
+int rc_every() {
+    return max(rc_vox.w & 0xffff, 1);
+}
+
+int rc_shadow_rays() {
+    return max(rc_vox.w >> 16, 1);
+}
+
+vec3 rc_sky_at(vec3 rd) {
+    return mix(rc_ground.rgb, rc_sky.rgb, 0.5 * rd.y + 0.5);
 }
 
 // Direct light arriving at hit point `hp` with normal `face`, evaluated via Reservoir

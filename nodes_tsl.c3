@@ -209,6 +209,11 @@ macro Node sign(x) => drie::node_call(SIGN, to_node(x));
 macro Node floor(x) => drie::node_call(FLOOR, to_node(x));
 macro Node ceil(x) => drie::node_call(CEIL, to_node(x));
 macro Node fract(x) => drie::node_call(FRACT, to_node(x));
+
+// The bits of a number read as the other kind, as GLSL's floatBitsToUint and uintBitsToFloat:
+// nodes::as_uint(entry.y()) is a hash entry's key, which is stored as a number's bits.
+macro Node as_uint(x) => drie::node_call(BITS_AS_UINT, to_node(x));
+macro Node as_float(x) => drie::node_call(BITS_AS_FLOAT, to_node(x));
 macro Node round(x) => drie::node_call(ROUND, to_node(x));
 macro Node trunc(x) => drie::node_call(TRUNC, to_node(x));
 macro Node normalize(x) => drie::node_call(NORMALIZE, to_node(x));
