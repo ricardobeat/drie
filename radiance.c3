@@ -27,10 +27,14 @@
 // frames (`blend`), so the result takes some frames to settle after a change.
 module drie;
 import std::math, std::collections::list;
-import sokol, drie_shaders::rc_split;
+import sokol, drie_shaders::rc_split, drie_shaders::rc_rays;
 
-const int RC_MAX_LEVELS   = 8;
-const int RC_MAX_LIGHTS   = 64;
+const int RC_MAX_LEVELS     = 8;
+const int RC_MAX_LIGHTS     = 64;
+const int RC_MAX_TRACE_RAYS = 1048576;
+
+StorageBuffer* rc_shared_acc @local;
+StorageBuffer* rc_shared_rays @local;
 // How often (in frames) rc_evict_cs sweeps the hash table for stale probes. Must stay small
 // next to RC_STALE_FRAMES (radiance_split_cs.glsl) so a probe pool recovers quickly, but the
 // pass itself is cheap (one thread per hash slot, no branching data dependency) so it needn't
@@ -110,11 +114,21 @@ struct RadianceCascades {
     // stored at the front of `irradiance_buf` ([0..hash_cap-1]), followed by L0 6-face
     // irradiance ([hash_cap..hash_cap + level_cap[0]*6 - 1]).
     bool sparse;
+    bool split; // selects the ray-splitting Split RC pipeline (radiance_rays_cs.glsl)
+    int rays_per_probe; // max rays traced per L0 probe per frame in split mode (default 64)
+    bool multibounce; // secondary cache multibounce in split mode (default true)
+    float lod_distance; // Chebyshev base distance for LOD rings (0: auto)
+    int max_lod; // max LOD ring index (0: off)
     bool freeze_alloc; // pauses rc_alloc_cs so debug cameras don't allocate probes
     bool sparse_dirty; // clears sparse hash table + probe counters on next update
     int hash_cap; // power of 2 (e.g. 65536)
     int[RC_MAX_LEVELS] level_cap; // max allocated probes per cascade level
     int[RC_MAX_LEVELS] probe_base; // start offset in meta_buf per cascade level
+    int split_levels; // effective cascade levels in split mode (drops levels past box diagonal)
+    int[RC_MAX_LEVELS] split_cap; // max probes per level in split mode: max(P0 >> 2n, 64)
+    int[RC_MAX_LEVELS] split_pbase; // start offset in meta_buf per level in split mode
+    int[RC_MAX_LEVELS] split_offsets; // bin offset per level in split mode
+    int[RC_MAX_LEVELS] split_counts; // bin count per level in split mode
     StorageBuffer* meta_buf;
     StorageBuffer* count_buf;
     // Per-level free lists of recycled data slots (rc_evict_cs pushes, rc_touch_probe/
@@ -124,12 +138,23 @@ struct RadianceCascades {
     int free_buf_len; // 8 + total probe slots across all levels
     // rc_evict_cs's copy of the hash table's live entries while it rebuilds the table
     StorageBuffer* rehash_buf;
+    StorageBuffer* hist_buf; // per-bin (J, beta, count) history in split mode (8 B/bin)
+    StorageBuffer* args_buf; // indirect dispatch group counts in split mode
     ComputePass* clear_pass;
     ComputePass* alloc_pass;
     ComputePass* propagate_pass;
     ComputePass* evict_pass;
     ComputePass* split_trace;
     ComputePass* split_gather;
+    ComputePass* rays_clear_pass;
+    ComputePass* rays_rebuild_pass;
+    ComputePass* rays_alloc_pass;
+    ComputePass* rays_propagate_pass;
+    ComputePass* rays_offsets_pass;
+    ComputePass* rays_args_pass;
+    ComputePass* rays_trace_pass;
+    ComputePass* rays_merge_pass;
+    ComputePass* rays_gather_pass;
     // the root last voxelized into this volume (see recenter(): a different root forces a
     // full re-voxelize even when the snapped center didn't move)
     Object3D* voxelized_root;
@@ -173,6 +198,8 @@ fn RadianceCascades* radiance_cascades(Vector3 min, Vector3 max, float spacing =
         .blend = 0.1,
         .update_every = 1,
         .shadow_rays = 1,
+        .rays_per_probe = 64,
+        .multibounce = true,
         .intensity = 1,
         .bounce = 1,
         .sky_from_scene = true,
@@ -232,7 +259,87 @@ fn RadianceCascades* radiance_cascades_sparse(
         r.counts[l] = cap * d * d;
         ray_at += r.counts[l];
     }
+    // Split RC (radiance_rays_cs.glsl) layout: P_n = max(P0 >> 2n, 64), |Omega_n| = 2 * (Theta0 * 2^n)^2.
+    // Drop cascades whose start distance t_{n-1} = t0 * 4^(n-1) reaches the box diagonal (D12).
+    float diag     = (r.max - r.min).length();
+    float t0       = spacing * 1.6f;
+    int eff_levels = 1;
+    for (int l = 1; l < r.levels; l++) {
+        float t_start = t0 * math::pow(4.0f, (float)(l - 1));
+        if (l >= 2 && t_start >= diag * 0.98f) break;
+        eff_levels = l + 1;
+    }
+    r.split_levels = eff_levels;
+    int sp_base = 0;
+    int sbin_at = 0;
+    for (int l = 0; l < r.levels; l++) {
+        int scap = math::max(max_probes >> (l * 2), 64);
+        r.split_cap[l] = scap;
+        r.split_pbase[l] = sp_base;
+        sp_base += scap;
+        int th   = r.base_directions << l;
+        int dirs = 2 * th * th;
+        r.split_offsets[l] = sbin_at;
+        r.split_counts[l] = scap * dirs;
+        sbin_at += r.split_counts[l];
+    }
     return r;
+}
+
+fn void RadianceCascades.upload_split(&self) {
+    if (self.rays_alloc_pass) return;
+    int eff        = math::max(self.split_levels, 1);
+    int total_bins = self.split_offsets[eff - 1] + self.split_counts[eff - 1];
+    int total_meta = self.split_pbase[eff - 1] + self.split_cap[eff - 1];
+    if (!self.irradiance_buf) {
+        self.irradiance_buf = storage_buffer(
+            (sz)(self.hash_cap + self.split_cap[0] * 6) * 16,
+            label: "drie-rc-split-irr"
+        );
+    }
+    if (!self.light_buf) {
+        self.light_buf = storage_buffer(
+            RC_MAX_LIGHTS * shaders::RcLight::size,
+            cpu_write: true,
+            label: "drie-rc-lights"
+        );
+    }
+    if (!self.voxel_buf) self.voxel_buf = storage_buffer(16, label: "drie-rc-voxels");
+    if (!self.brick_buf) self.brick_buf = storage_buffer(16, label: "drie-rc-bricks");
+    if (!self.cascade_buf || self.cascade_buf.size < (usz)total_bins * 8) {
+        if (self.cascade_buf) self.cascade_buf.dispose();
+        self.cascade_buf = storage_buffer((sz)total_bins * 8, label: "drie-rc-rays-merged");
+    }
+    if (!self.meta_buf || self.meta_buf.size < (usz)total_meta * 32) {
+        if (self.meta_buf) self.meta_buf.dispose();
+        self.meta_buf = storage_buffer((sz)total_meta * 32, label: "drie-rc-rays-meta");
+    }
+    int want_free = 24 + total_meta;
+    if (!self.free_buf || self.free_buf.size < (usz)want_free * 4) {
+        if (self.free_buf) self.free_buf.dispose();
+        self.free_buf_len = want_free;
+        self.free_buf = storage_buffer((sz)want_free * 4, label: "drie-rc-rays-free");
+    }
+    self.hist_buf = storage_buffer((sz)total_bins * 8, label: "drie-rc-rays-hist");
+    self.args_buf = storage_buffer(16 * 16, label: "drie-rc-rays-args", indirect: true);
+    if (!rc_shared_acc || rc_shared_acc.size < (usz)total_bins * 16) {
+        if (rc_shared_acc) rc_shared_acc.dispose();
+        rc_shared_acc = storage_buffer((sz)total_bins * 16, label: "drie-rc-shared-acc");
+    }
+    if (!rc_shared_rays) {
+        rc_shared_rays = storage_buffer((sz)RC_MAX_TRACE_RAYS * 4, label: "drie-rc-shared-rays");
+    }
+    SgBackend backend = sg::query_backend();
+    self.rays_clear_pass = compute_pass(rc_rays::rc_rays_clear_shader_desc(backend), "drie-rc-clear");
+    self.rays_rebuild_pass = compute_pass(rc_rays::rc_rays_rebuild_shader_desc(backend), "drie-rc-evict");
+    self.rays_alloc_pass = compute_pass(rc_rays::rc_rays_alloc_shader_desc(backend), "drie-rc-alloc");
+    self.rays_propagate_pass = compute_pass(rc_rays::rc_rays_propagate_shader_desc(backend), "drie-rc-propagate");
+    self.rays_offsets_pass = compute_pass(rc_rays::rc_rays_offsets_shader_desc(backend), "drie-rc-propagate");
+    self.rays_args_pass = compute_pass(rc_rays::rc_rays_args_shader_desc(backend), "drie-rc-propagate");
+    self.rays_trace_pass = compute_pass(rc_rays::rc_rays_trace_shader_desc(backend), "drie-rc-split-trace");
+    self.rays_merge_pass = compute_pass(rc_rays::rc_rays_merge_shader_desc(backend), "drie-rc-split-gather");
+    self.rays_gather_pass = compute_pass(rc_rays::rc_rays_gather_shader_desc(backend), "drie-rc-split-gather");
+    self.sparse_dirty = true;
 }
 
 // Makes the GPU's part (the buffers and the passes), if it isn't made yet. update() and the
@@ -426,6 +533,7 @@ fn void rc_add_tree(RadianceCascades* self, Object3D* o) @local {
 // Fills the voxels from every visible mesh under `root` (after clearing them). Call it when
 // the world matrices are up to date (after a render, or root.update_matrix_world()).
 fn void RadianceCascades.voxelize(&self, Object3D* root) {
+    root.update_matrix_world();
     self.clear_voxels();
     rc_add_tree(self, root);
     self.voxelized_root = root;
@@ -624,6 +732,208 @@ fn void RadianceCascades.update(&self, Scene* scene) {
 // normal_tex as the G-Buffer to place probes around. Called once per engine frame, either
 // directly from update_sparse() (when self.camera names the render that drives it) or from
 // flush_pending_sparse() at the end of the frame (the default: whichever call turns out last).
+fn void RadianceCascades.run_split_update(
+    &self,
+    Scene* scene,
+    SgView depth_tex,
+    SgView normal_tex,
+    SgSampler gb_sampler,
+    Mat4 inv_view_proj,
+    Vector3 cam_pos,
+    int width,
+    int height
+) {
+    self.upload_split();
+    rc_upload_voxels(self);
+    RcLightList* list = mem::new(RcLightList);
+    defer free(list);
+    rc_collect_lights(self, scene, list);
+    if (self.sky_from_scene) {
+        self.sky_color = list.sky / (float)PI;
+        self.ground_color = list.ground / (float)PI;
+    }
+    self.light_buf.write(&list.lights, (sz)math::max(list.count, 1) * shaders::RcLight::size);
+
+    int eff        = math::max(self.split_levels, 1);
+    int total_bins = self.split_offsets[eff - 1] + self.split_counts[eff - 1];
+    int total_meta = self.split_pbase[eff - 1] + self.split_cap[eff - 1];
+    if (rc_shared_acc.size < (usz)total_bins * 16) rc_shared_acc.ensure((sz)total_bins * 16);
+
+    int stride = math::clamp(self.update_every, 1, 0xffff);
+    int sr     = math::clamp(self.shadow_rays, 1, 0xffff);
+    bool zo    = depth_zero_to_one();
+    // Default interval in split mode is 1.6 * spacing unless caller explicitly changed it
+    float t0   = (math::abs(self.interval - self.spacing) < 1e-5f) ? (self.spacing * 1.6f) : self.interval;
+    rc_rays::RcRaysParams p = {
+        .rc_min = { ...self.min, self.spacing },
+        .rc_dims = { self.nx, self.ny, self.nz, 0 },
+        .rc_tune = {
+            t0,
+            self.blend,
+            (float)(self.frame % 4096),
+            self.voxel_size,
+        },
+        .rc_info = { self.base_directions, eff, list.count, self.hash_cap },
+        .rc_sky = { ...self.sky_color, self.bounce },
+        .rc_ground = { ...self.ground_color, self.normal_offset },
+        .rc_vox = { self.vx, self.vy, self.vz, stride | (sr << 16) },
+        .rc_inv_vp = inv_view_proj,
+        .rc_cam_pos = { ...cam_pos, zo ? 1 : 0 },
+        .rc_screen = {
+            1.0f / (float)width,
+            1.0f / (float)height,
+            zo ? 1 : 0,
+            (float)math::max(self.rays_per_probe, 1)
+        },
+    };
+    for (int l = 0; l < eff; l++) {
+        if (l < 4) {
+            p.rc_lcap0[l] = self.split_cap[l];
+            p.rc_loff0[l] = self.split_offsets[l];
+            p.rc_pbase0[l] = self.split_pbase[l];
+        } else {
+            p.rc_lcap1[l - 4] = self.split_cap[l];
+            p.rc_loff1[l - 4] = self.split_offsets[l];
+            p.rc_pbase1[l - 4] = self.split_pbase[l];
+        }
+    }
+
+    // 0. Clear on reset() / first frame
+    if (self.sparse_dirty && !(self.skip_kernels & RC_KERNEL_CLEAR)) {
+        ComputePass* cp = self.rays_clear_pass;
+        cp.set_buffer(rc_rays::VIEW_RC_HT_CLEAR, self.irradiance_buf);
+        cp.set_buffer(rc_rays::VIEW_RC_META_CLEAR, self.meta_buf);
+        cp.set_buffer(rc_rays::VIEW_RC_FREE_CLEAR, self.free_buf);
+        cp.set_buffer(rc_rays::VIEW_RC_HIST_CLEAR, self.hist_buf);
+        cp.set_buffer(rc_rays::VIEW_RC_ACC_CLEAR, rc_shared_acc);
+        cp.set_uniforms(rc_rays::UB_RC_RAYS_PARAMS, &p, rc_rays::RcRaysParams::size);
+        int clear_n = math::max(self.hash_cap, math::max(24 + total_meta, total_bins));
+        begin_compute("drie-rc-clear");
+        cp.dispatch((clear_n + 63) / 64);
+        end_compute();
+        self.sparse_dirty = false;
+    }
+
+    // 1. Rebuild hash table from meta_buf every frame (2 dispatches in 1 pass)
+    if (!(self.skip_kernels & RC_KERNEL_EVICT)) {
+        ComputePass* rp = self.rays_rebuild_pass;
+        rp.set_buffer(rc_rays::VIEW_RC_HT_REB, self.irradiance_buf);
+        rp.set_buffer(rc_rays::VIEW_RC_META_REB, self.meta_buf);
+        rp.set_buffer(rc_rays::VIEW_RC_FREE_REB, self.free_buf);
+        rp.set_buffer(rc_rays::VIEW_RC_HIST_REB, self.hist_buf);
+        begin_compute("drie-rc-evict");
+        p.rc_dims[3] = 0;
+        rp.set_uniforms(rc_rays::UB_RC_RAYS_PARAMS, &p, rc_rays::RcRaysParams::size);
+        rp.dispatch((self.hash_cap + 63) / 64);
+        p.rc_dims[3] = 1;
+        rp.set_uniforms(rc_rays::UB_RC_RAYS_PARAMS, &p, rc_rays::RcRaysParams::size);
+        rp.dispatch((total_meta + 63) / 64);
+        end_compute();
+        p.rc_dims[3] = 0;
+    }
+
+    // 2. Allocate/touch nearest L0 probe per traced pixel
+    if (!(self.skip_kernels & RC_KERNEL_ALLOC)) {
+        ComputePass* ap = self.rays_alloc_pass;
+        ap.bindings.views[rc_rays::VIEW_RC_DEPTH_TEX] = depth_tex;
+        ap.bindings.views[rc_rays::VIEW_RC_NORMAL_TEX] = normal_tex;
+        ap.bindings.samplers[rc_rays::SMP_RC_GB_SMP] = gb_sampler;
+        ap.set_buffer(rc_rays::VIEW_RC_HT_ALLOC, self.irradiance_buf);
+        ap.set_buffer(rc_rays::VIEW_RC_META_ALLOC, self.meta_buf);
+        ap.set_buffer(rc_rays::VIEW_RC_FREE_ALLOC, self.free_buf);
+        ap.set_buffer(rc_rays::VIEW_RC_BRICKS_ALLOC, self.brick_buf);
+        ap.set_uniforms(rc_rays::UB_RC_RAYS_PARAMS, &p, rc_rays::RcRaysParams::size);
+        int tw = (width + stride - 1) / stride;
+        int th = (height + stride - 1) / stride;
+        begin_compute("drie-rc-alloc");
+        ap.dispatch((tw + 7) / 8, (th + 7) / 8);
+        end_compute();
+    }
+
+    // 3 & 4. Propagate bottom-up, compute R2 segments top-down, and write indirect args
+    if (!(self.skip_kernels & RC_KERNEL_PROPAGATE)) {
+        ComputePass* pp = self.rays_propagate_pass;
+        pp.set_buffer(rc_rays::VIEW_RC_HT_PROP, self.irradiance_buf);
+        pp.set_buffer(rc_rays::VIEW_RC_META_PROP, self.meta_buf);
+        pp.set_buffer(rc_rays::VIEW_RC_FREE_PROP, self.free_buf);
+
+        ComputePass* op = self.rays_offsets_pass;
+        op.set_buffer(rc_rays::VIEW_RC_META_OFF, self.meta_buf);
+        op.set_buffer(rc_rays::VIEW_RC_FREE_OFF, self.free_buf);
+        op.set_buffer(rc_rays::VIEW_RC_RAYS_OFF, rc_shared_rays);
+
+        ComputePass* argp = self.rays_args_pass;
+        argp.set_buffer(rc_rays::VIEW_RC_FREE_ARGS, self.free_buf);
+        argp.set_buffer(rc_rays::VIEW_RC_ARGS_OUT, self.args_buf);
+        argp.set_buffer(rc_rays::VIEW_RC_RAYS_ARGS, rc_shared_rays);
+
+        begin_compute("drie-rc-propagate");
+        for (int l = 0; l < eff; l++) {
+            int max_phase = (l + 1 < eff) ? 2 : 1;
+            for (int phase = 0; phase < max_phase; phase++) {
+                p.rc_dims[3] = l * 2 + phase;
+                pp.set_uniforms(rc_rays::UB_RC_RAYS_PARAMS, &p, rc_rays::RcRaysParams::size);
+                pp.dispatch((self.split_cap[l] + 63) / 64);
+            }
+        }
+        for (int l = eff - 1; l >= 0; l--) {
+            p.rc_dims[3] = l;
+            op.set_uniforms(rc_rays::UB_RC_RAYS_PARAMS, &p, rc_rays::RcRaysParams::size);
+            op.dispatch((self.split_cap[l] + 63) / 64);
+        }
+        argp.set_uniforms(rc_rays::UB_RC_RAYS_PARAMS, &p, rc_rays::RcRaysParams::size);
+        argp.dispatch(1);
+        end_compute();
+    }
+
+    // 5. Trace R2 surface rays and deposit into cascade intervals (indirectly dispatched)
+    if (!(self.skip_kernels & RC_KERNEL_TRACE)) {
+        ComputePass* tp = self.rays_trace_pass;
+        tp.set_buffer(rc_rays::VIEW_RC_TRACE_VOXELS, self.voxel_buf);
+        tp.set_buffer(rc_rays::VIEW_RC_TRACE_BRICKS, self.brick_buf);
+        tp.set_buffer(rc_rays::VIEW_RC_TRACE_LIGHTS, self.light_buf);
+        tp.set_buffer(rc_rays::VIEW_RC_HT_TRACE, self.irradiance_buf);
+        tp.set_buffer(rc_rays::VIEW_RC_META_TRACE, self.meta_buf);
+        tp.set_buffer(rc_rays::VIEW_RC_RAYS_TRACE, rc_shared_rays);
+        tp.set_buffer(rc_rays::VIEW_RC_ACC_TRACE, rc_shared_acc);
+        tp.set_uniforms(rc_rays::UB_RC_RAYS_PARAMS, &p, rc_rays::RcRaysParams::size);
+        begin_compute("drie-rc-split-trace");
+        tp.dispatch_indirect(self.args_buf, 0);
+        end_compute();
+    }
+
+    // 6. Top-down merge across levels + L0 6-face irradiance gather (indirectly dispatched)
+    if (!(self.skip_kernels & RC_KERNEL_GATHER)) {
+        ComputePass* mp = self.rays_merge_pass;
+        mp.set_buffer(rc_rays::VIEW_RC_MERGE_CASCADES, self.cascade_buf);
+        mp.set_buffer(rc_rays::VIEW_RC_HT_MERGE, self.irradiance_buf);
+        mp.set_buffer(rc_rays::VIEW_RC_META_MERGE, self.meta_buf);
+        mp.set_buffer(rc_rays::VIEW_RC_FREE_MERGE, self.free_buf);
+        mp.set_buffer(rc_rays::VIEW_RC_HIST_MERGE, self.hist_buf);
+        mp.set_buffer(rc_rays::VIEW_RC_ACC_MERGE, rc_shared_acc);
+
+        ComputePass* gp = self.rays_gather_pass;
+        gp.set_buffer(rc_rays::VIEW_RC_G_BRICKS, self.brick_buf);
+        gp.set_buffer(rc_rays::VIEW_RC_G_CASCADES, self.cascade_buf);
+        gp.set_buffer(rc_rays::VIEW_RC_HT_G, self.irradiance_buf);
+        gp.set_buffer(rc_rays::VIEW_RC_META_G, self.meta_buf);
+        gp.set_buffer(rc_rays::VIEW_RC_FREE_G, self.free_buf);
+        gp.set_buffer(rc_rays::VIEW_RC_HIST_G, self.hist_buf);
+
+        begin_compute("drie-rc-split-gather");
+        for (int l = eff - 1; l >= 0; l--) {
+            p.rc_dims[3] = l;
+            mp.set_uniforms(rc_rays::UB_RC_RAYS_PARAMS, &p, rc_rays::RcRaysParams::size);
+            mp.dispatch_indirect(self.args_buf, (1 + l) * 16);
+        }
+        gp.set_uniforms(rc_rays::UB_RC_RAYS_PARAMS, &p, rc_rays::RcRaysParams::size);
+        gp.dispatch_indirect(self.args_buf, 9 * 16);
+        end_compute();
+    }
+
+    self.frame++;
+}
+
 fn void RadianceCascades.run_sparse_update(
     &self,
     Scene* scene,
@@ -635,6 +945,10 @@ fn void RadianceCascades.run_sparse_update(
     int width,
     int height
 ) {
+    if (self.split) {
+        self.run_split_update(scene, depth_tex, normal_tex, gb_sampler, inv_view_proj, cam_pos, width, height);
+        return;
+    }
     self.upload();
     rc_upload_voxels(self);
     RcLightList* list = mem::new(RcLightList);
@@ -954,4 +1268,6 @@ fn void RadianceCascades.dispose(&self) {
     if (self.count_buf) self.count_buf.dispose();
     if (self.free_buf) self.free_buf.dispose();
     if (self.rehash_buf) self.rehash_buf.dispose();
+    if (self.hist_buf) self.hist_buf.dispose();
+    if (self.args_buf) self.args_buf.dispose();
 }
