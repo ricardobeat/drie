@@ -17,6 +17,8 @@ uint rc_hash(uint x) {
     return x;
 }
 
+// A probe's key: the cell it sits in, its cascade level, and bit 31 set so that 0 is always
+// an empty slot.
 uint rc_pack_key32(ivec3 c, int level) {
     return (uint(c.x) & 0x1ffu)
          | ((uint(c.y) & 0x1ffu) << 9)
@@ -24,6 +26,13 @@ uint rc_pack_key32(ivec3 c, int level) {
          | ((uint(level) & 0x7u) << 27)
          | 0x80000000u;
 }
+
+// The secondary cache's probes share the hash table, the meta and the free lists with the
+// primary ones. Bit 30 tells them apart: the primary levels only use bits 27..29.
+uint rc_pack_key32_cache(ivec3 c, int level) {
+    return rc_pack_key32(c, level) | 0x40000000u;
+}
+
 
 uint rc_pack_xy(ivec3 c) {
     return (uint(c.x + 32768) & 0xffffu) | ((uint(c.y + 32768) & 0xffffu) << 16);
@@ -97,16 +106,9 @@ float rc_attenuation(float d, float cutoff, float decay) {
 }
 @end
 
-// Requires uniform block with rc_min, rc_dims, rc_tune, rc_info, rc_sky, rc_ground, rc_vox
-// and buffers rc_vox_data[], rc_brick_data[], rc_light_data[].
-@block rc_trace_common
-int rc_every() {
-    return max(rc_vox.w & 0xffff, 1);
-}
-
-int rc_shadow_rays() {
-    return max(rc_vox.w >> 16, 1);
-}
+// The occupancy masks of the voxelized scene, for the kernels that bind rc_brick_data.
+@block rc_cell_common
+// Requires rc_min, rc_dims, rc_vox, rc_tune and rc_brick_data.
 
 bool rc_in_grid(ivec3 c) {
     return all(greaterThanEqual(c, ivec3(0))) && all(lessThan(c, rc_vox.xyz));
@@ -128,6 +130,28 @@ bool rc_mask_bit(uvec2 mask, ivec3 c) {
 
 bool rc_solid(ivec3 c) {
     return rc_mask_bit(rc_brick_mask(c >> 2), c);
+}
+
+// Whether solid geometry fills the voxel at the center of probe cell `c` on a grid whose
+// probes sit `spacing` apart: a probe there would sit inside a wall.
+bool rc_cell_solid(ivec3 c, float spacing) {
+    vec3 pos = (vec3(c) + 0.5) * spacing;
+    ivec3 vc = ivec3(floor((pos - rc_min.xyz) / rc_tune.w));
+    return rc_in_grid(vc) && rc_solid(vc);
+}
+@end
+
+// Requires uniform block with rc_min, rc_dims, rc_tune, rc_info, rc_sky, rc_ground, rc_vox
+// and buffers rc_vox_data[], rc_brick_data[], rc_light_data[].
+@block rc_trace_common
+@include_block rc_cell_common
+
+int rc_every() {
+    return max(rc_vox.w & 0xffff, 1);
+}
+
+int rc_shadow_rays() {
+    return max(rc_vox.w >> 16, 1);
 }
 
 vec3 rc_sky_at(vec3 rd) {
