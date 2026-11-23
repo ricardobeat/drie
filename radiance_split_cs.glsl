@@ -206,11 +206,20 @@ void main() {
 }
 @end
 
-@cs rc_alloc_cs
+@block rc_alloc_body
 @include_block rc_split_common
-layout(binding=0) uniform texture2D rc_depth_tex;
-layout(binding=1) uniform texture2D rc_normal_tex;
 layout(binding=0) uniform sampler rc_gb_smp;
+#ifdef RC_DEPTH_MS
+// a multisampled depth buffer (a render target with MSAA): sample 0 of each pixel
+layout(binding=0) uniform texture2DMS rc_depth_ms_tex;
+ivec2 rc_depth_size() { return textureSize(sampler2DMS(rc_depth_ms_tex, rc_gb_smp)); }
+float rc_depth_at(ivec2 p) { return texelFetch(sampler2DMS(rc_depth_ms_tex, rc_gb_smp), p, 0).r; }
+#else
+layout(binding=0) uniform texture2D rc_depth_tex;
+ivec2 rc_depth_size() { return textureSize(sampler2D(rc_depth_tex, rc_gb_smp), 0); }
+float rc_depth_at(ivec2 p) { return texelFetch(sampler2D(rc_depth_tex, rc_gb_smp), p, 0).r; }
+#endif
+layout(binding=1) uniform texture2D rc_normal_tex;
 layout(binding=2) buffer rc_ht_alloc { rc_uvec4 rc_ht[]; };
 layout(binding=3) buffer rc_meta_alloc { rc_probe_meta rc_meta[]; };
 layout(binding=4) buffer rc_cnt_alloc { rc_uint rc_cnt[]; };
@@ -254,10 +263,10 @@ void main() {
 
     // Subsample G-Buffer by 4x4 pixels and allocate non-solid L0 probes around visible surfaces
     ivec2 px = ivec2(gl_GlobalInvocationID.xy) * 4 + ivec2(2);
-    ivec2 sz = textureSize(sampler2D(rc_depth_tex, rc_gb_smp), 0);
+    ivec2 sz = rc_depth_size();
     if (px.x >= sz.x || px.y >= sz.y) return;
 
-    float raw_d = texelFetch(sampler2D(rc_depth_tex, rc_gb_smp), px, 0).r;
+    float raw_d = rc_depth_at(px);
     if (raw_d >= 0.99999) return;
 
     vec2 su = (vec2(px) + 0.5) * rc_screen.xy;
@@ -277,6 +286,15 @@ void main() {
         if (!rc_probe_is_solid(c, sp0)) rc_touch_probe(c, 0, frame);
     }
 }
+@end
+
+@cs rc_alloc_cs
+@include_block rc_alloc_body
+@end
+
+@cs rc_alloc_ms_cs
+#define RC_DEPTH_MS
+@include_block rc_alloc_body
 @end
 
 @cs rc_propagate_cs
@@ -702,6 +720,7 @@ void main() {
 
 @program rc_clear rc_clear_cs
 @program rc_alloc rc_alloc_cs
+@program rc_alloc_ms rc_alloc_ms_cs
 @program rc_propagate rc_propagate_cs
 @program rc_evict rc_evict_cs
 @program rc_split_trace rc_split_trace_cs
