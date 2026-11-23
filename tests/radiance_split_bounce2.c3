@@ -113,7 +113,6 @@ fn Shot corner_shot(Renderer* renderer, RenderTarget* rt, String file, bool dens
     RadianceCascades* rc = dense ? drie::radiance_cascades(bmin, bmax, 0.2f, 4)
         : drie::radiance_cascades_sparse(bmin, bmax, 0.2f, 4, 16384, 65536);
     if (!dense) {
-        rc.split = true;
         rc.multibounce = multibounce;
     }
     rc.sky_from_scene = false;
@@ -172,7 +171,6 @@ fn Shot big_shot(Renderer* renderer, RenderTarget* rt, String file) {
     Vector3 bmin         = { -15.5f, -0.5f, -15.5f };
     Vector3 bmax         = { 15.5f, 6.5f, 15.5f };
     RadianceCascades* rc = drie::radiance_cascades_sparse(bmin, bmax, 0.5f, 4, 16384, 65536);
-    rc.split = true;
     rc.sky_from_scene = false;
     rc.sky_color = { 0, 0, 0 };
     rc.ground_color = { 0, 0, 0 };

@@ -3,9 +3,8 @@
 // (rc_debug::stats). By default it times every kernel, then the frame again with each one left
 // out (RadianceCascades.skip_kernels), so each kernel's share shows as the time saved without it.
 // 
-//   just test radiance_split_bench [--split] [--dense] [--frames N] [--warmup N] [--skip k,k]
+//   just test radiance_split_bench [--dense] [--frames N] [--warmup N] [--skip k,k]
 // 
-// --split       the Split RC pipeline (the sparse one without it)
 // --dense       the dense volume (radiance_cascades) in place of the sparse one
 // --frames N    frames timed in each run (default 120)
 // --warmup N    frames before them, not timed (default 60)
@@ -78,7 +77,7 @@ RadianceCascades* rc;
 
 // a long room: a floor, walls with a doorway, pillars, glowing panels and a lamp, so that the
 // probes cover surfaces at several distances and the rays have things to hit
-fn void build_scene(bool dense, bool split = false, bool multibounce = true) {
+fn void build_scene(bool dense, bool multibounce = true) {
     scene = drie::scene();
     scene.background = 0x080a10;
     MeshStandardMaterial* white = drie::mesh_standard_material(color: 0xd8d4cc, roughness: 0.9f);
@@ -130,7 +129,6 @@ fn void build_scene(bool dense, bool split = false, bool multibounce = true) {
     Vector3 hi = { 6.5f, 4.0f, 10.5f };
     rc = dense ? drie::radiance_cascades(lo, hi, 0.25f, 4)
         : drie::radiance_cascades_sparse(lo, hi, 0.25f, 4, 16384, 65536);
-    if (!dense) rc.split = split;
     if (!dense) rc.multibounce = multibounce;
     rc.sky_from_scene = false;
     rc.sky_color = { 0.02f, 0.02f, 0.03f };
@@ -211,7 +209,6 @@ fn void print_passes(Result* r) {
 
 fn int main(String[] args) {
     bool dense;
-    bool split;
     bool multibounce =  true;
     bool sweep       =  true;
     int frames       =  120;
@@ -222,8 +219,6 @@ fn int main(String[] args) {
         String a = args[i];
         if (a == "--dense") {
             dense = true;
-        } else if (a == "--split") {
-            split = true;
         } else if (a == "--no-multibounce") {
             multibounce = false;
         } else if (a == "--no-sweep") {
@@ -245,10 +240,10 @@ fn int main(String[] args) {
     RenderTarget* rt = drie::render_target(W, H, 1, RGBA8);
     renderer.set_render_target(rt);
     gpu_timer::enabled = true;
-    build_scene(dense, split, multibounce);
+    build_scene(dense, multibounce);
     io::printfn(
         "radiance bench: %s%s, %dx%d, %d warm-up frames, %d timed frames a run",
-        dense ? "dense" : (split ? "split" : "sparse"),
+        dense ? "dense" : "split",
         multibounce ? "" : ", no multibounce",
         W,
         H,

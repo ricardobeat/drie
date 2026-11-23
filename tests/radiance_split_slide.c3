@@ -103,7 +103,6 @@ fn int main() {
     Vector3 bmin         = { -6, -0.5f, -6 };
     Vector3 bmax         = { 10, 4.5f, 6 };
     RadianceCascades* rc = drie::radiance_cascades_sparse(bmin, bmax, 0.3f, 4, 16384, 65536);
-    rc.split = true;
     rc.sky_from_scene = false;
     rc.sky_color = { 0, 0, 0 };
     rc.ground_color = { 0, 0, 0 };
