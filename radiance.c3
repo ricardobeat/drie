@@ -203,9 +203,27 @@ struct RadianceCascades {
     int pending_height;
 }
 
+// The 32-bit probe key packs a cell per axis in 9 bits, and the box's far edge has to have a
+// cell of its own: past that, two cells would share one key and one probe.
+const int RC_KEY_CELLS = 480;
+
+// `spacing` and its voxels, as close to what was asked for as the key allows: a box too big
+// for it at that spacing gets one twice as coarse, and so on (the paper's LOD rings would keep
+// the detail near the camera and coarsen only the far field; this coarsens the whole volume,
+// which is all one box can do without a second set of pool offsets in the uniform block).
+fn float rc_fit_spacing(Vector3 size, float spacing) {
+    for (int i = 0; i < 8; i++) {
+        Vector3 cells = size / spacing;
+        if (cells.x <= RC_KEY_CELLS && cells.y <= RC_KEY_CELLS && cells.z <= RC_KEY_CELLS) break;
+        spacing *= 2;
+    }
+    return spacing;
+}
+
 fn RadianceCascades* radiance_cascades(Vector3 min, Vector3 max, float spacing = 0.25, int levels = 4) {
     RadianceCascades* r = mem::new(RadianceCascades);
     Vector3 size        = max - min;
+    spacing             = rc_fit_spacing(size, spacing);
     *r = {
         .min = min,
         .spacing = spacing,
@@ -283,7 +301,7 @@ fn RadianceCascades* radiance_cascades_sparse(
     // Split RC (radiance_rays_cs.glsl) layout: P_n = max(P0 >> 2n, 64), |Omega_n| = 2 * (Theta0 * 2^n)^2.
     // Drop cascades whose start distance t_{n-1} = t0 * 4^(n-1) reaches the box diagonal (D12).
     float diag     = (r.max - r.min).length();
-    float t0       = spacing * 1.6f;
+    float t0       = r.spacing * 1.6f;
     int eff_levels = 1;
     for (int l = 1; l < r.levels; l++) {
         float t_start = t0 * math::pow(4.0f, (float)(l - 1));
