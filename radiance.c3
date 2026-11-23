@@ -142,6 +142,7 @@ struct RadianceCascades {
     StorageBuffer* args_buf; // indirect dispatch group counts in split mode
     ComputePass* clear_pass;
     ComputePass* alloc_pass;
+    ComputePass* alloc_ms_pass;
     ComputePass* propagate_pass;
     ComputePass* evict_pass;
     ComputePass* split_trace;
@@ -149,6 +150,7 @@ struct RadianceCascades {
     ComputePass* rays_clear_pass;
     ComputePass* rays_rebuild_pass;
     ComputePass* rays_alloc_pass;
+    ComputePass* rays_alloc_ms_pass;
     ComputePass* rays_propagate_pass;
     ComputePass* rays_offsets_pass;
     ComputePass* rays_args_pass;
@@ -333,6 +335,7 @@ fn void RadianceCascades.upload_split(&self) {
     self.rays_clear_pass = compute_pass(rc_rays::rc_rays_clear_shader_desc(backend), "drie-rc-clear");
     self.rays_rebuild_pass = compute_pass(rc_rays::rc_rays_rebuild_shader_desc(backend), "drie-rc-evict");
     self.rays_alloc_pass = compute_pass(rc_rays::rc_rays_alloc_shader_desc(backend), "drie-rc-alloc");
+    self.rays_alloc_ms_pass = compute_pass(rc_rays::rc_rays_alloc_ms_shader_desc(backend), "drie-rc-alloc");
     self.rays_propagate_pass = compute_pass(rc_rays::rc_rays_propagate_shader_desc(backend), "drie-rc-propagate");
     self.rays_offsets_pass = compute_pass(rc_rays::rc_rays_offsets_shader_desc(backend), "drie-rc-propagate");
     self.rays_args_pass = compute_pass(rc_rays::rc_rays_args_shader_desc(backend), "drie-rc-propagate");
@@ -371,6 +374,7 @@ fn void RadianceCascades.upload(&self) {
         SgBackend backend = sg::query_backend();
         self.clear_pass = compute_pass(rc_split::rc_clear_shader_desc(backend), "drie-rc-clear");
         self.alloc_pass = compute_pass(rc_split::rc_alloc_shader_desc(backend), "drie-rc-alloc");
+        self.alloc_ms_pass = compute_pass(rc_split::rc_alloc_ms_shader_desc(backend), "drie-rc-alloc");
         self.propagate_pass = compute_pass(rc_split::rc_propagate_shader_desc(backend), "drie-rc-propagate");
         self.evict_pass = compute_pass(rc_split::rc_evict_shader_desc(backend), "drie-rc-evict");
         self.split_trace = compute_pass(rc_split::rc_split_trace_shader_desc(backend), "drie-rc-split-trace");
@@ -834,7 +838,8 @@ fn void RadianceCascades.run_split_update(
 
     // 2. Allocate/touch nearest L0 probe per traced pixel
     if (!(self.skip_kernels & RC_KERNEL_ALLOC)) {
-        ComputePass* ap = self.rays_alloc_pass;
+        bool ms = sg::query_image_sample_count(sg::query_view_image(depth_tex)) > 1;
+        ComputePass* ap = ms ? self.rays_alloc_ms_pass : self.rays_alloc_pass;
         ap.bindings.views[rc_rays::VIEW_RC_DEPTH_TEX] = depth_tex;
         ap.bindings.views[rc_rays::VIEW_RC_NORMAL_TEX] = normal_tex;
         ap.bindings.samplers[rc_rays::SMP_RC_GB_SMP] = gb_sampler;
@@ -1028,7 +1033,8 @@ fn void RadianceCascades.run_sparse_update(
     }
 
     // 1. Allocate/touch non-solid L0 probes around visible G-Buffer surfaces + seed coarse L >= 2
-    ComputePass* ap = self.alloc_pass;
+    bool ms = sg::query_image_sample_count(sg::query_view_image(depth_tex)) > 1;
+    ComputePass* ap = ms ? self.alloc_ms_pass : self.alloc_pass;
     ap.bindings.views[rc_split::VIEW_RC_DEPTH_TEX] = depth_tex;
     ap.bindings.views[rc_split::VIEW_RC_NORMAL_TEX] = normal_tex;
     ap.bindings.samplers[rc_split::SMP_RC_GB_SMP] = gb_sampler;
