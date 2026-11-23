@@ -267,6 +267,9 @@ enum NodeFn : char {
     // matrices
     TRANSPOSE,
     DETERMINANT,
+    // the bits of a number read as the other kind (nodes::as_uint, as_float)
+    BITS_AS_UINT,
+    BITS_AS_FLOAT,
 }
 
 struct NodeData {
@@ -454,6 +457,12 @@ fn Node node_call(NodeFn f, Node a, Node b = { }, Node c = { }) {
     NodeType t;
     int count = 1;
     switch (f) {
+        case BITS_AS_UINT:
+            t = type_of(UINT, components(ta));
+            count = 1;
+        case BITS_AS_FLOAT:
+            t = type_of(FLOAT, components(ta));
+            count = 1;
         case LENGTH:
             t = FLOAT;
         case MIN:
@@ -1917,6 +1926,14 @@ fn String NodeGen.call(&self, NodeData* d) {
             return string::tformat("refract(%s, %s, %s)", self.value_as(a, t), self.value_as(b, t), self.value_as(c, FLOAT));
         case FACEFORWARD:
             return string::tformat("faceforward(%s, %s, %s)", self.value_as(a, t), self.value_as(b, t), self.value_as(c, t));
+        case BITS_AS_UINT:
+            if (self.lang == GLSL) return string::tformat("floatBitsToUint(%s)", self.value_as(a, type_of(FLOAT, components(t))));
+            if (self.lang == MSL) return string::tformat("as_type<%s>(%s)", self.type_name(t), self.value_as(a, type_of(FLOAT, components(t))));
+            return string::tformat("asuint(%s)", self.value_as(a, type_of(FLOAT, components(t))));
+        case BITS_AS_FLOAT:
+            if (self.lang == GLSL) return string::tformat("uintBitsToFloat(%s)", self.value_as(a, type_of(UINT, components(t))));
+            if (self.lang == MSL) return string::tformat("as_type<%s>(%s)", self.type_name(t), self.value_as(a, type_of(UINT, components(t))));
+            return string::tformat("asfloat(%s)", self.value_as(a, type_of(UINT, components(t))));
         default:
             if (d.count == 1) return string::tformat("%s(%s)", self.fn_name(f), self.value_as(a, t));
             if (d.count == 2) return string::tformat("%s(%s, %s)", self.fn_name(f), self.value_as(a, t), self.value_as(b, t));

@@ -2825,8 +2825,10 @@ fn FsParams build_light_params(Scene* scene, Camera* camera, SpotLight* caster) 
     if (scene.radiance) {
         RadianceCascades* rc = scene.radiance;
         p.rc_min = { ...rc.min, rc.spacing };
+        // sparse: x = -hash_cap (which marks it), y = the box's x cells | its y cells << 9,
+        // z = its z cells. The materials fade the light out over its outermost half cell.
         p.rc_size = rc.sparse
-            ? (Vec4) { -(float)rc.hash_cap, 0, 0, rc.intensity }
+            ? (Vec4) { -(float)rc.hash_cap, (float)(rc.nx | (rc.ny << 9)), (float)rc.nz, rc.intensity }
             : (Vec4) { rc.nx, rc.ny, rc.nz, rc.intensity };
     }
     if (scene.fog) {

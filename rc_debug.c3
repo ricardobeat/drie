@@ -1636,7 +1636,7 @@ fn RcStats stats(RadianceCascades* rc) {
             if (lvl >= eff) continue;
             RcLevelStats* l = &s.level[lvl];
             l.in_table++;
-            uint age = stats_age(now, bitcast(e.w, uint));
+            uint age = stats_age(now, bitcast(e.w, uint) & 0xffffu);
             if (age == 0) l.seen++;
             if (age > STATS_STALE_FRAMES) {
                 l.stale++;
@@ -1660,7 +1660,7 @@ fn RcStats stats(RadianceCascades* rc) {
                 uint[<4>] a = meta[mi * 2];
                 if (a.y == 0) continue;
                 l.live++;
-                uint birth = a.w >> 16;
+                uint birth = (a.w >> 16) & 0xffu;
                 if (stats_age(now, birth) < 4) l.fresh++;
                 int boff = rc.split_offsets[lvl] + i * dirs;
                 l.bins_total += dirs;
