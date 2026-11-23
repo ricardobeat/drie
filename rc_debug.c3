@@ -1547,6 +1547,10 @@ struct RcStats {
     int traced_rays; // rays actually traced in the last frame (split mode)
     int bins_total; // total direction bins across live probes (split mode)
     int bins_filled; // total direction bins with n > 0 across live probes (split mode)
+    int cache_probes; // live probes of the secondary cache (split mode, multibounce)
+    int cache_traced_rays; // cache rays actually traced in the last frame
+    int cache_bins_total; // direction bins of the cache's live probes
+    int cache_bins_filled; // of those, bins with n > 0
     float min_beta; // min transmittance beta across filled bins (split mode)
     float max_beta; // max transmittance beta across filled bins (split mode)
     // the sparse path's hash table (irradiance_buf's front)
@@ -1593,13 +1597,15 @@ fn RcStats stats(RadianceCascades* rc) {
         int eff          = s.levels;
         int total_meta   = rc.split_pbase[eff - 1] + rc.split_cap[eff - 1];
         int total_bins   = rc.split_offsets[eff - 1] + rc.split_counts[eff - 1];
-        uint[] free_list = mem::new_array(uint, (sz)(24 + total_meta));
+        int all_meta     = rc.cache_pbase[eff - 1] + rc.cache_cap[eff - 1];
+        int all_bins     = rc.cache_offsets[eff - 1] + rc.cache_counts[eff - 1];
+        uint[] free_list = mem::new_array(uint, (sz)(drie::RC_FREE_BASE + total_meta));
         defer free(free_list);
         drie::Vec4[] ht = mem::new_array(drie::Vec4, (sz)rc.hash_cap);
         defer free(ht);
-        uint[<4>][] meta = mem::new_array(uint[<4>], (sz)total_meta * 2);
+        uint[<4>][] meta = mem::new_array(uint[<4>], (sz)all_meta * 2);
         defer free(meta);
-        uint[] hist = mem::new_array(uint, (sz)total_bins * 2);
+        uint[] hist = mem::new_array(uint, (sz)all_bins * 2);
         defer free(hist);
         if (!stats_read(rc.free_buf, STATS_FREE_SLOT, free_list.ptr, free_list.len * uint::size)) return s;
         if (!stats_read(rc.irradiance_buf, STATS_HT_SLOT, ht.ptr, ht.len * drie::Vec4::size)) return s;
@@ -1607,6 +1613,7 @@ fn RcStats stats(RadianceCascades* rc) {
         if (rc.hist_buf) (void)stats_read(rc.hist_buf, STATS_HIST_SLOT, hist.ptr, hist.len * uint::size);
 
         s.traced_rays = (int)free_list[17];
+        s.cache_traced_rays = (int)free_list[36];
         s.min_beta = 1.0f;
         s.max_beta = 0.0f;
         bool any_beta;
@@ -1622,6 +1629,9 @@ fn RcStats stats(RadianceCascades* rc) {
             }
             run++;
             s.occupied++;
+            // the secondary cache's probes share the table: they count towards its load,
+            // not towards a primary level
+            if ((key & 0x40000000u) != 0) continue;
             int lvl = (int)((key >> 27) & 7u);
             if (lvl >= eff) continue;
             RcLevelStats* l = &s.level[lvl];
@@ -1670,6 +1680,21 @@ fn RcStats stats(RadianceCascades* rc) {
             s.rays += l.live * dirs;
             s.bins_total += l.bins_total;
             s.bins_filled += l.bins_filled;
+        }
+        for (int lvl = 0; lvl < eff; lvl++) {
+            int cap       = rc.cache_cap[lvl];
+            int allocated = math::min((int)free_list[27 + lvl], cap);
+            int dirs      = 2 * (rc.base_directions << lvl) * (rc.base_directions << lvl);
+            for (int i = 0; i < allocated; i++) {
+                int mi = rc.cache_pbase[lvl] + i;
+                if (meta[mi * 2].y == 0) continue;
+                s.cache_probes++;
+                int boff = rc.cache_offsets[lvl] + i * dirs;
+                s.cache_bins_total += dirs;
+                for (int k = 0; k < dirs; k++) {
+                    if ((hist[(boff + k) * 2 + 1] >> 24) > 0) s.cache_bins_filled++;
+                }
+            }
         }
         if (!any_beta) s.min_beta = 0.0f;
         return s;
@@ -1770,6 +1795,16 @@ fn void print_stats(RcStats* s) {
             s.load * 100,
             s.longest_run,
             s.runs_over_32
+        );
+        float cache_fill = s.cache_bins_total > 0 ? 100.0f * (float)s.cache_bins_filled / (float)s.cache_bins_total
+            : 0.0f;
+        io::printfn(
+            "    cache: %d live probes, %d traced rays, %d/%d bins filled (%.1f%%)",
+            s.cache_probes,
+            s.cache_traced_rays,
+            s.cache_bins_filled,
+            s.cache_bins_total,
+            cache_fill
         );
         io::printn("    level      cap  alloc   free   live  fresh  table   seen  bins%");
         for (int i = 0; i < s.levels; i++) {

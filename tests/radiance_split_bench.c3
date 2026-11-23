@@ -3,13 +3,15 @@
 // (rc_debug::stats). By default it times every kernel, then the frame again with each one left
 // out (RadianceCascades.skip_kernels), so each kernel's share shows as the time saved without it.
 // 
-//   just test radiance_split_bench [--dense] [--frames N] [--warmup N] [--skip k,k]
+//   just test radiance_split_bench [--split] [--dense] [--frames N] [--warmup N] [--skip k,k]
 // 
+// --split       the Split RC pipeline (the sparse one without it)
 // --dense       the dense volume (radiance_cascades) in place of the sparse one
 // --frames N    frames timed in each run (default 120)
 // --warmup N    frames before them, not timed (default 60)
 // --skip k,k    one run, with these kernels left out (clear, evict, alloc, propagate, trace,
 //               gather); DRIE_RC_SKIP=k,k in the environment does the same
+// --no-multibounce  leave the secondary cache out of the split path
 // --no-sweep    only the run with every kernel
 module radiance_split_bench;
 import drie, drie::rc_debug, drie::gpu_timer, sokol;
@@ -34,13 +36,17 @@ Kernel[6] kernels = {
 };
 
 // the passes the cascades begin, by label
-String[8] labels = {
+String[12] labels = {
     "drie-rc-clear",
     "drie-rc-evict",
     "drie-rc-alloc",
     "drie-rc-propagate",
     "drie-rc-split-trace",
     "drie-rc-split-gather",
+    "drie-rc-cache-alloc",
+    "drie-rc-cache-propagate",
+    "drie-rc-cache-trace",
+    "drie-rc-cache-gather",
     "drie-rc-trace",
     "drie-rc-gather",
 };
@@ -60,7 +66,7 @@ fn void Sample.add(&self, double ms) {
 fn double Sample.mean(&self) => self.n ? self.sum / self.n : 0;
 
 struct Result {
-    Sample[8] pass;
+    Sample[12] pass;
     Sample rc; // the cascades' passes
     Sample frame; // every timed pass of the frame
 }
@@ -72,7 +78,7 @@ RadianceCascades* rc;
 
 // a long room: a floor, walls with a doorway, pillars, glowing panels and a lamp, so that the
 // probes cover surfaces at several distances and the rays have things to hit
-fn void build_scene(bool dense, bool split = false) {
+fn void build_scene(bool dense, bool split = false, bool multibounce = true) {
     scene = drie::scene();
     scene.background = 0x080a10;
     MeshStandardMaterial* white = drie::mesh_standard_material(color: 0xd8d4cc, roughness: 0.9f);
@@ -125,6 +131,7 @@ fn void build_scene(bool dense, bool split = false) {
     rc = dense ? drie::radiance_cascades(lo, hi, 0.25f, 4)
         : drie::radiance_cascades_sparse(lo, hi, 0.25f, 4, 16384, 65536);
     if (!dense) rc.split = split;
+    if (!dense) rc.multibounce = multibounce;
     rc.sky_from_scene = false;
     rc.sky_color = { 0.02f, 0.02f, 0.03f };
     rc.ground_color = { 0.01f, 0.01f, 0.01f };
@@ -205,10 +212,11 @@ fn void print_passes(Result* r) {
 fn int main(String[] args) {
     bool dense;
     bool split;
-    bool sweep =  true;
-    int frames =  120;
-    int warmup =  60;
-    int skip   = -1;
+    bool multibounce =  true;
+    bool sweep       =  true;
+    int frames       =  120;
+    int warmup       =  60;
+    int skip         = -1;
     if (try e = env::tget_var("DRIE_RC_SKIP")) skip = parse_skip(e);
     for (int i = 0; i < (int)args.len; i++) {
         String a = args[i];
@@ -216,6 +224,8 @@ fn int main(String[] args) {
             dense = true;
         } else if (a == "--split") {
             split = true;
+        } else if (a == "--no-multibounce") {
+            multibounce = false;
         } else if (a == "--no-sweep") {
             sweep = false;
         } else if (a == "--frames" && i + 1 < (int)args.len) {
@@ -235,10 +245,11 @@ fn int main(String[] args) {
     RenderTarget* rt = drie::render_target(W, H, 1, RGBA8);
     renderer.set_render_target(rt);
     gpu_timer::enabled = true;
-    build_scene(dense, split);
+    build_scene(dense, split, multibounce);
     io::printfn(
-        "radiance bench: %s, %dx%d, %d warm-up frames, %d timed frames a run",
+        "radiance bench: %s%s, %dx%d, %d warm-up frames, %d timed frames a run",
         dense ? "dense" : (split ? "split" : "sparse"),
+        multibounce ? "" : ", no multibounce",
         W,
         H,
         warmup,
