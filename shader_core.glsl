@@ -1808,15 +1808,19 @@ vec3 rc_irradiance(vec3 n, out float fade) {
             float tw = w3.x * w3.y * w3.z;
             float w = tw * ex.w;
             vec3 probe_pos = (vec3(c) + 0.5) * spacing;
-            float front = smoothstep(-0.15 * spacing, 0.45 * spacing, dot(probe_pos - v_world_pos, n));
+            float front = smoothstep(-0.35 * spacing, 0.25 * spacing, dot(probe_pos - v_world_pos, n));
             sum += e * (w * front);
             wsum += w * front;
-            float wa = (tw + 1e-4) * ex.w;
-            sum_any += e * wa;
-            wsum_any += wa;
+            sum_any += e * w;
+            wsum_any += w;
         }
-        if (wsum > 1e-4) { fade = 1.0; return sum / wsum * rc_size.w; }
-        if (wsum_any > 1e-5) { fade = 1.0; return sum_any / wsum_any * rc_size.w; }
+        if (wsum_any > 1e-5) {
+            fade = 1.0;
+            vec3 fallback = sum_any / wsum_any;
+            vec3 primary = wsum > 1e-5 ? (sum / wsum) : fallback;
+            float trust_front = clamp(wsum / max(wsum_any * 0.25, 1e-5), 0.0, 1.0);
+            return mix(fallback, primary, trust_front) * rc_size.w;
+        }
         return vec3(0.0);
     }
     vec3 g = (v_world_pos + n * (0.25 * spacing) - rc_min.xyz) / spacing;
@@ -1837,15 +1841,19 @@ vec3 rc_irradiance(vec3 n, out float fade) {
         float tw = w3.x * w3.y * w3.z;
         float w = tw * ex.w;
         vec3 probe_pos = rc_min.xyz + (vec3(c) + 0.5) * spacing;
-        float front = smoothstep(-0.15 * spacing, 0.45 * spacing, dot(probe_pos - v_world_pos, n));
+        float front = smoothstep(-0.35 * spacing, 0.25 * spacing, dot(probe_pos - v_world_pos, n));
         sum += e * (w * front);
         wsum += w * front;
-        float wa = (tw + 1e-4) * ex.w;
-        sum_any += e * wa;
-        wsum_any += wa;
+        sum_any += e * w;
+        wsum_any += w;
     }
-    if (wsum > 1e-4) return sum / wsum * rc_size.w;
-    return wsum_any > 1e-5 ? sum_any / wsum_any * rc_size.w : vec3(0.0);
+    if (wsum_any > 1e-5) {
+        vec3 fallback = sum_any / wsum_any;
+        vec3 primary = wsum > 1e-5 ? (sum / wsum) : fallback;
+        float trust_front = clamp(wsum / max(wsum_any * 0.25, 1e-5), 0.0, 1.0);
+        return mix(fallback, primary, trust_front) * rc_size.w;
+    }
+    return vec3(0.0);
 }
 
 float ssr_noise(vec2 p) {

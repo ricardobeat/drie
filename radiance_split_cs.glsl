@@ -146,32 +146,40 @@ void rc_touch_probe(ivec3 c, int level, uint frame) {
     // time, and a table full of them makes every lookup that misses walk all 32 steps.
     int cap = rc_level_cap(level);
     if (rc_free[level].v == 0u && rc_cnt[level].v >= uint(cap)) return;
-    uint prev = atomicCompSwap(rc_ht[open].v.y, open_was, key);
-    if (prev != open_was) {
-        // someone else took the slot first: the same probe (done), or another (try next frame)
-        if (prev == key) rc_ht[open].v.w = frame;
-        return;
+    // Walk linear-probing chain, retrying on CAS collision with another key so concurrent
+    // inserts never drop probes and leave blocky holes in the probe grid.
+    uint cur_idx = (open >= 0) ? uint(open) : idx;
+    for (int retry = 0; retry < 32; retry++) {
+        uint cur = rc_ht[cur_idx].v.y;
+        if (cur == key) {
+            rc_ht[cur_idx].v.w = frame;
+            return;
+        }
+        if (cur == 0u || cur == RC_TOMBSTONE) {
+            uint prev = atomicCompSwap(rc_ht[cur_idx].v.y, cur, key);
+            if (prev == cur) {
+                int slot = rc_free_pop(level);
+                if (slot < 0 && rc_cnt[level].v < uint(cap)) {
+                    uint s = atomicAdd(rc_cnt[level].v, 1u);
+                    slot = int(s) < cap ? int(s) : -1;
+                }
+                if (slot < 0) {
+                    rc_ht[cur_idx].v.y = cur;
+                    return;
+                }
+                rc_ht[cur_idx].v.x = rc_pack_xy(c);
+                rc_ht[cur_idx].v.z = uint(slot);
+                rc_ht[cur_idx].v.w = frame;
+                rc_meta[rc_probe_base(level) + slot].coord = ivec4(c, rc_meta_w(level, frame));
+                return;
+            }
+            if (prev == key) {
+                rc_ht[cur_idx].v.w = frame;
+                return;
+            }
+        }
+        cur_idx = (cur_idx + 1u) & mask;
     }
-    int slot = rc_free_pop(level);
-    if (slot < 0 && rc_cnt[level].v < uint(cap)) {
-        uint s = atomicAdd(rc_cnt[level].v, 1u);
-        slot = int(s) < cap ? int(s) : -1;
-    }
-    if (slot < 0) {
-        // The level filled up between the check above and here (after rc_evict_cs frees a
-        // few slots, every thread with a new probe sees room and races for them): give the
-        // hash slot back as it was. A tombstone instead would be safer for a key that probed
-        // past this slot meanwhile, but there are thousands of these a frame, and in a table
-        // full of tombstones every lookup that misses walks all 32 steps. That rare key is
-        // only lost until the next rehash in rc_evict_cs puts it back where lookups find it
-        // (a duplicate entry its own touch makes meanwhile is freed there too).
-        rc_ht[open].v.y = open_was;
-        return;
-    }
-    rc_ht[open].v.x = rc_pack_xy(c);
-    rc_ht[open].v.z = uint(slot);
-    rc_ht[open].v.w = frame;
-    rc_meta[rc_probe_base(level) + slot].coord = ivec4(c, rc_meta_w(level, frame));
 }
 @end
 
@@ -467,11 +475,11 @@ vec3 rc_level_hemisphere(vec3 p, vec3 face, int level) {
         }
         if (wsum <= 1e-4) continue;
         vec3 w3 = mix(1.0 - f, f, vec3(o));
-        float tw = w3.x * w3.y * w3.z + 1e-4;
+        float tw = w3.x * w3.y * w3.z;
         total += (sum / wsum) * tw;
         total_w += tw;
     }
-    return total_w > 0.0 ? RC_PI * total / total_w : vec3(-1.0);
+    return total_w > 1e-5 ? RC_PI * total / total_w : vec3(-1.0);
 }
 
 vec3 rc_sparse_bounce(vec3 p, vec3 face) {
@@ -606,7 +614,10 @@ void main() {
                 sum += four * (0.25 * w);
                 wsum += w;
             }
-            result = wsum > 1e-4 ? sum / wsum : (wsum_any > 1e-4 ? sum_any / wsum_any : rc_sky_at(rd));
+            vec3 fb = wsum_any > 1e-4 ? (sum_any / wsum_any) : rc_sky_at(rd);
+            vec3 pri = wsum > 1e-4 ? (sum / wsum) : fb;
+            float tf = clamp(wsum / max(wsum_any * 0.25, 1e-4), 0.0, 1.0);
+            result = mix(fb, pri, tf);
         }
     }
     result = min(result, vec3(256.0));
@@ -658,6 +669,7 @@ void main() {
     // counts for as much as the share of them that are (w), so probes around that have all
     // theirs outweigh it
     int traced = 0;
+    vec3 avg_rad = vec3(0.0);
     for (int k = 0; k < d * d; k++) {
         if (!rc_ray_traced(pm.w, slot * d * d + k)) continue;
         traced++;
@@ -667,6 +679,7 @@ void main() {
         float solid_angle = 1.0 / (len * len * len);
         vec3 dir = rc_direction(e);
         vec3 radiance = rc_unpack_rad(rc_rad[rc_loff0.x + slot * d * d + k].p);
+        avg_rad += radiance;
         for (int a = 0; a < 6; a++) {
             float c = dir[a >> 1] * ((a & 1) == 0 ? 1.0 : -1.0);
             float w = max(c + 0.15, 0.0) * solid_angle;
@@ -674,8 +687,14 @@ void main() {
             wsum[a] += w;
         }
     }
+    if (traced == 0) {
+        for (int a = 0; a < 6; a++) rc_ht[irr_base + a].v = uvec4(0u);
+        return;
+    }
+    avg_rad *= RC_PI / float(traced);
     for (int a = 0; a < 6; a++) {
-        vec4 outv = vec4(RC_PI * sum[a] / max(wsum[a], 1e-4), float(traced) / float(d * d));
+        vec3 face_irr = wsum[a] > 1e-3 ? (RC_PI * sum[a] / wsum[a]) : avg_rad;
+        vec4 outv = vec4(face_irr, float(traced) / float(d * d));
         rc_ht[irr_base + a].v = floatBitsToUint(outv);
     }
 }

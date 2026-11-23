@@ -2,9 +2,9 @@
 // mean and best over the timed frames after a warm-up, and what the sparse probes are doing
 // (rc_debug::stats). By default it times every kernel, then the frame again with each one left
 // out (RadianceCascades.skip_kernels), so each kernel's share shows as the time saved without it.
-//
+// 
 //   just test radiance_split_bench [--dense] [--frames N] [--warmup N] [--skip k,k]
-//
+// 
 // --dense       the dense volume (radiance_cascades) in place of the sparse one
 // --frames N    frames timed in each run (default 120)
 // --warmup N    frames before them, not timed (default 60)
@@ -35,8 +35,14 @@ Kernel[6] kernels = {
 
 // the passes the cascades begin, by label
 String[8] labels = {
-    "drie-rc-clear", "drie-rc-evict", "drie-rc-alloc", "drie-rc-propagate",
-    "drie-rc-split-trace", "drie-rc-split-gather", "drie-rc-trace", "drie-rc-gather",
+    "drie-rc-clear",
+    "drie-rc-evict",
+    "drie-rc-alloc",
+    "drie-rc-propagate",
+    "drie-rc-split-trace",
+    "drie-rc-split-gather",
+    "drie-rc-trace",
+    "drie-rc-gather",
 };
 
 struct Sample {
@@ -55,8 +61,8 @@ fn double Sample.mean(&self) => self.n ? self.sum / self.n : 0;
 
 struct Result {
     Sample[8] pass;
-    Sample rc;     // the cascades' passes
-    Sample frame;  // every timed pass of the frame
+    Sample rc; // the cascades' passes
+    Sample frame; // every timed pass of the frame
 }
 
 Renderer* renderer;
@@ -66,12 +72,12 @@ RadianceCascades* rc;
 
 // a long room: a floor, walls with a doorway, pillars, glowing panels and a lamp, so that the
 // probes cover surfaces at several distances and the rays have things to hit
-fn void build_scene(bool dense) {
+fn void build_scene(bool dense, bool split = false) {
     scene = drie::scene();
     scene.background = 0x080a10;
     MeshStandardMaterial* white = drie::mesh_standard_material(color: 0xd8d4cc, roughness: 0.9f);
-    MeshStandardMaterial* wood = drie::mesh_standard_material(color: 0x7a4a2a, roughness: 0.7f);
-    Mesh* floor = drie::mesh(drie::box_geometry(12, 0.2f, 20), wood);
+    MeshStandardMaterial* wood  = drie::mesh_standard_material(color: 0x7a4a2a, roughness: 0.7f);
+    Mesh* floor                 = drie::mesh(drie::box_geometry(12, 0.2f, 20), wood);
     floor.position = { 0, -0.1f, 0 };
     scene.add(floor);
     Mesh* ceiling = drie::mesh(drie::box_geometry(12, 0.2f, 20), white);
@@ -95,7 +101,7 @@ fn void build_scene(bool dense) {
     scene.add(cross_r);
     BufferGeometry* pillar = drie::box_geometry(0.4f, 3.6f, 0.4f);
     for (int i = 0; i < 4; i++) {
-        float z = 6.0f - (float)i * 2.5f;
+        float z     = 6.0f - (float)i * 2.5f;
         float[2] px = { -3, 3 };
         foreach (x : px) {
             Mesh* p = drie::mesh(pillar, white);
@@ -106,7 +112,7 @@ fn void build_scene(bool dense) {
     Color[3] glow = { 0xff3020, 0x30a0ff, 0x40ff60 };
     foreach (i, c : glow) {
         MeshStandardMaterial* m = drie::mesh_standard_material(color: c, emissive: c, emissive_intensity: 5.0f);
-        Mesh* panel = drie::mesh(drie::box_geometry(0.1f, 1.2f, 1.6f), m);
+        Mesh* panel             = drie::mesh(drie::box_geometry(0.1f, 1.2f, 1.6f), m);
         panel.position = { i == 1 ? 5.85f : -5.85f, 1.4f, 5.0f - (float)i * 6.0f };
         scene.add(panel);
     }
@@ -116,7 +122,9 @@ fn void build_scene(bool dense) {
 
     Vector3 lo = { -6.5f, -0.5f, -10.5f };
     Vector3 hi = { 6.5f, 4.0f, 10.5f };
-    rc = dense ? drie::radiance_cascades(lo, hi, 0.25f, 4) : drie::radiance_cascades_sparse(lo, hi, 0.25f, 4, 16384, 65536);
+    rc = dense ? drie::radiance_cascades(lo, hi, 0.25f, 4)
+        : drie::radiance_cascades_sparse(lo, hi, 0.25f, 4, 16384, 65536);
+    if (!dense) rc.split = split;
     rc.sky_from_scene = false;
     rc.sky_color = { 0.02f, 0.02f, 0.03f };
     rc.ground_color = { 0.01f, 0.01f, 0.01f };
@@ -196,15 +204,18 @@ fn void print_passes(Result* r) {
 
 fn int main(String[] args) {
     bool dense;
-    bool sweep = true;
-    int frames = 120;
-    int warmup = 60;
-    int skip = -1;
+    bool split;
+    bool sweep =  true;
+    int frames =  120;
+    int warmup =  60;
+    int skip   = -1;
     if (try e = env::tget_var("DRIE_RC_SKIP")) skip = parse_skip(e);
     for (int i = 0; i < (int)args.len; i++) {
         String a = args[i];
         if (a == "--dense") {
             dense = true;
+        } else if (a == "--split") {
+            split = true;
         } else if (a == "--no-sweep") {
             sweep = false;
         } else if (a == "--frames" && i + 1 < (int)args.len) {
@@ -224,9 +235,15 @@ fn int main(String[] args) {
     RenderTarget* rt = drie::render_target(W, H, 1, RGBA8);
     renderer.set_render_target(rt);
     gpu_timer::enabled = true;
-    build_scene(dense);
-    io::printfn("radiance bench: %s, %dx%d, %d warm-up frames, %d timed frames a run",
-        dense ? "dense" : "sparse", W, H, warmup, frames);
+    build_scene(dense, split);
+    io::printfn(
+        "radiance bench: %s, %dx%d, %d warm-up frames, %d timed frames a run",
+        dense ? "dense" : (split ? "split" : "sparse"),
+        W,
+        H,
+        warmup,
+        frames
+    );
 
     int[16] runs;
     int nruns;
@@ -252,14 +269,22 @@ fn int main(String[] args) {
         if (i == 0) {
             full_rc = r.rc.mean();
             full_frame = r.frame.mean();
-            io::printn("  every pass of the frame (Metal times a pass from its encoder's start, so a pass\n  that waits on the one before it can carry part of that one's time):");
+            io::printn(
+                "  every pass of the frame (Metal times a pass from its encoder's start, so a pass\n  that waits on the one before it can carry part of that one's time):"
+            );
             gpu_timer::report();
             RcStats s = rc_debug::stats(rc);
             rc_debug::print_stats(&s);
         } else {
             double saved = full_rc - r.rc.mean();
-            io::printfn("  saved without it: %.3f ms of the cascades' %.3f (%.1f%%); %.3f ms of the frame's %.3f",
-                saved, full_rc, full_rc > 0 ? saved / full_rc * 100 : 0, full_frame - r.frame.mean(), full_frame);
+            io::printfn(
+                "  saved without it: %.3f ms of the cascades' %.3f (%.1f%%); %.3f ms of the frame's %.3f",
+                saved,
+                full_rc,
+                full_rc > 0 ? saved / full_rc * 100 : 0,
+                full_frame - r.frame.mean(),
+                full_frame
+            );
         }
     }
     return 0;

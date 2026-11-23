@@ -172,7 +172,10 @@ void main() {
                 sum += four * (0.25 * w);
                 wsum += w;
             }
-            vec3 merged = wsum > 1e-4 ? sum / wsum : (wsum_any > 1e-4 ? sum_any / wsum_any : rc_sky_at(rd));
+            vec3 fb = wsum_any > 1e-4 ? (sum_any / wsum_any) : rc_sky_at(rd);
+            vec3 pri = wsum > 1e-4 ? (sum / wsum) : fb;
+            float tf = clamp(wsum / max(wsum_any * 0.25, 1e-4), 0.0, 1.0);
+            vec3 merged = mix(fb, pri, tf);
             result = vec4(merged, 0.0);
         }
     }
