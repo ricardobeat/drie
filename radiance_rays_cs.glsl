@@ -38,7 +38,7 @@ layout(binding=0) uniform rc_rays_params {
     ivec4 rc_pbase0;   // probe_meta start index for levels 0..3
     ivec4 rc_pbase1;   // probe_meta start index for levels 4..7
     mat4 rc_inv_vp;    // inverse relative view-projection for G-Buffer allocation
-    vec4 rc_cam_pos;   // xyz = camera world pos, w = depth_zero_to_one (1 or 0)
+    vec4 rc_cam_pos;   // xyz = camera world pos, w = blend_rays, negative unless depth_zero_to_one
     vec4 rc_screen;    // xy = 1/w, 1/h, z = flip_y (1 on Metal/D3D), w = rays_per_probe
 };
 
@@ -253,7 +253,7 @@ uint rc_anchor_code(vec3 n) {
 // probe was made for sits half a cell behind its anchor, so the test leaves that alone and
 // only cuts what is through the wall.
 float rc_anchor_trust(ivec3 c, float spacing, uint points, vec3 p) {
-    uint code = points & RC_ANCHOR_MASK;
+    uint code = (points >> RC_ANCHOR_SHIFT) & RC_ANCHOR_MASK;
     if (code == 0u) return 1.0;
     vec3 n = rc_axis_normal(int(code) - 1);
     vec3 probe_pos = (vec3(c) + 0.5) * spacing;
@@ -422,7 +422,7 @@ int rc_rays_touch_probe(ivec3 c, int level, bool cache, uint frame, uint anchor)
                 rc_meta[mi].b = uvec4(1u | ((anchor & RC_ANCHOR_MASK) << RC_ANCHOR_SHIFT), 0u, 0u, uint(c.z));
                 rc_ht[idx].v.x = pxy;
                 rc_ht[idx].v.z = uint(slot);
-                rc_ht[idx].v.w = frame;
+                rc_ht[idx].v.w = frame | ((anchor & RC_ANCHOR_MASK) << 16);
                 return slot;
             }
             if (prev == key) {
@@ -575,9 +575,9 @@ void main() {
         return;
     }
 
-    // Reset this frame's ray counters and parent link
+    // Reset this frame's ray counters and parent link, keeping the anchor in b.x's upper half
     rc_meta[i].a.z = 0xffffffffu;
-    rc_meta[i].b.x = 0u;
+    rc_meta[i].b.x &= 0xffff0000u;
     rc_meta[i].b.y = 0u;
     rc_meta[i].b.z = 0u;
 
@@ -644,7 +644,7 @@ void main() {
     vec2 su = (vec2(px) + 0.5) * rc_screen.xy;
     vec2 ndc_xy = su * 2.0 - 1.0;
     if (rc_screen.z > 0.5) ndc_xy.y = -ndc_xy.y;
-    float ndc_z = rc_cam_pos.w > 0.5 ? raw_d : raw_d * 2.0 - 1.0;
+    float ndc_z = rc_cam_pos.w > 0.0 ? raw_d : raw_d * 2.0 - 1.0;
     vec4 rel = rc_inv_vp * vec4(ndc_xy, ndc_z, 1.0);
     vec3 wp = rel.xyz / rel.w + rc_cam_pos.xyz;
     vec3 n = rc_unpack_oct_normal(texelFetch(sampler2D(rc_normal_tex, rc_gb_smp), px, 0).xy);
@@ -686,7 +686,7 @@ void main() {
         if (ck[an] != c_near[an] || ck == c_near) continue;
         if (rc_cell_solid(ck, sp0)) continue;
         int s = rc_rays_touch_probe(ck, 0, false, frame, rc_anchor_code(n));
-        if (s >= 0) atomicMax(rc_meta[rc_probe_base(0) + s].b.x, 1u);
+        if (s >= 0) atomicOr(rc_meta[rc_probe_base(0) + s].b.x, 1u);
     }
 }
 @end
@@ -739,7 +739,7 @@ void main() {
     if (any(lessThan(p, rc_min.xyz)) || any(greaterThan(p, bmax))) return;
     // (the face the ray came in through: the side this probe's light comes from)
     int slot = rc_rays_touch_probe(c, 0, true, frame, uint(int(tag & 7u) + 1));
-    if (slot >= 0) atomicMax(rc_meta[rc_cache_probe_base(0) + slot].b.x, 1u);
+    if (slot >= 0) atomicOr(rc_meta[rc_cache_probe_base(0) + slot].b.x, 1u);
 }
 @end
 
@@ -810,9 +810,9 @@ void main() {
         }
         if (level == 0) {
             if (cache) {
-                // the cache's share of the primary's rays, spread evenly over its probes
-                uint np = max(rc_free[rc_free_bump(true, 0)].v, 1u);
-                uint per = max(uint(float(rc_free[rc_ray_count(false)].v) * 0.25) / np, 4u);
+                // the cache's share of the primary's rays, spread evenly over its live probes
+                uint np = max(rc_free[rc_free_bump(true, 0)].v - rc_free[rc_free_top(true, 0)].v, 1u);
+                uint per = max(uint(float(rc_free[rc_ray_count(false)].v) * 0.25) / np, 32u);
                 rays = age < 4u ? min(per * 4u, 1024u) : per;
             } else {
                 // (at least one ray a bin: what a bin's history blends toward is then this
@@ -1161,7 +1161,12 @@ void main() {
     if (cnt > 0u) {
         vec3 J_obs = vec3(acc.xyz) / (RC_FP_SCALE * float(cnt));
         float beta_obs = float(beta_cnt) / float(cnt);
-        float alpha = (n_prev == 0u) ? 1.0 : max(rc_tune.y, float(cnt) / float(n_prev + cnt));
+        // a bin counts `blend` against its history for each blend_rays rays it took this
+        // frame: one ray's light from a bin that gets one a frame is noisy, and levels whose
+        // bins gather many rays still follow a change as fast
+        float share = float(cnt) / max(abs(rc_cam_pos.w), 1.0);
+        float a_rays = 1.0 - pow(1.0 - rc_tune.y, share);
+        float alpha = (n_prev == 0u) ? 1.0 : max(a_rays, float(cnt) / float(n_prev + cnt));
         J = mix(J_prev, J_obs, alpha);
         beta = mix(beta_prev, beta_obs, alpha);
         n_new = min(n_prev + cnt, 255u);

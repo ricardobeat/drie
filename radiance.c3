@@ -72,6 +72,10 @@ struct RadianceCascades {
     int vz;
     // the share of each new frame in the probes
     float blend;
+    // the rays a direction bin takes in a frame for that frame to count `blend` (split
+    // cascades); a bin with fewer counts less, so level 0's bins, a ray or so each a frame,
+    // settle smoothly while the coarser levels' still follow a change. 1: every bin `blend`
+    float blend_rays;
     // multiplies the light the probes give to the materials
     float intensity;
     // how much of the probes' light bounces on (1: all of it)
@@ -221,6 +225,7 @@ fn RadianceCascades* radiance_cascades(Vector3 min, Vector3 max, float spacing =
         .interval = spacing,
         .voxel_size = spacing / 4,
         .blend = 0.1,
+        .blend_rays = 1,
         .update_every = 1,
         .shadow_rays = 1,
         .rays_per_probe = 64,
@@ -607,7 +612,7 @@ fn void rc_collect_lights(RadianceCascades* self, Object3D* o, RcLightList* out)
                 }
             case POINT:
                 PointLight* pl = (PointLight*)l;
-                Vector3 p = l.matrix_world.get_position();
+                Vector3 p = l.gi_fixed ? l.gi_position : l.matrix_world.get_position();
                 if (out.count < RC_MAX_LIGHTS && l.intensity > 0 && self.reaches(p, pl.distance)) {
                     out.lights[out.count++] = {
                         .pos = { ...p, pl.distance },
@@ -617,14 +622,15 @@ fn void rc_collect_lights(RadianceCascades* self, Object3D* o, RcLightList* out)
                 }
             case SPOT:
                 SpotLight* sl = (SpotLight*)l;
-                Vector3 p = l.matrix_world.get_position();
+                Vector3 p = l.gi_fixed ? l.gi_position : l.matrix_world.get_position();
+                Vector3 aim = l.gi_fixed ? l.gi_direction.normalize() : spot_direction(sl);
                 if (out.count < RC_MAX_LIGHTS && l.intensity > 0 && self.reaches(p, sl.distance)) {
                     float cos_outer = math::cos(clamp(sl.angle, 0, PI / 2));
                     float cos_inner = math::cos(clamp(sl.angle, 0, PI / 2) * (1 - clamp(sl.penumbra, 0, 1)));
                     out.lights[out.count++] = {
                         .pos = { ...p, sl.distance },
                         .color = { ...c, sl.decay },
-                        .dir = { ...spot_direction(sl), cos_outer },
+                        .dir = { ...aim, cos_outer },
                         .params = { math::max(cos_inner, cos_outer + 1e-4f), 0, 0, 0 },
                     };
                 }
@@ -801,7 +807,7 @@ fn void RadianceCascades.run_split_update(
         .rc_ground = { ...self.ground_color, self.normal_offset },
         .rc_vox = { self.vx, self.vy, self.vz, stride | (sr << 16) },
         .rc_inv_vp = inv_view_proj,
-        .rc_cam_pos = { ...cam_pos, zo ? 1 : 0 },
+        .rc_cam_pos = { ...cam_pos, (zo ? 1 : -1) * math::max(self.blend_rays, 1.0f) },
         .rc_screen = {
             1.0f / (float)width,
             1.0f / (float)height,

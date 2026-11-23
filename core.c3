@@ -818,6 +818,13 @@ struct Light {
     // light (Material.light_channels 0) and those that take one of its channels. The ambient
     // and hemisphere lights light every material.
     uint channels;
+    // Extension: where the radiance cascades see it. With gi_fixed on they take its light
+    // from gi_position (a spot light aimed along gi_direction) while it is drawn and shadowed
+    // where it is: for a light that only sways (a lamp on a cord), whose bounce would
+    // otherwise change every frame and show the probes' cells.
+    bool gi_fixed;
+    Vector3 gi_position;
+    Vector3 gi_direction;
 }
 
 struct AmbientLight {
