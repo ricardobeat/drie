@@ -772,11 +772,12 @@ uint rc_vis_mask(vec3 pos, float spacing, float coarse) {
             m |= 1u << uint(k);
             continue;
         }
-        vec3 d = (o * 2.0 - 1.0) * spacing;
+        vec3 d = (vec3(cbase) + o + 0.5) * coarse - pos;
+        float len = length(d);
         float t_hit;
         ivec3 cell;
         vec3 face;
-        if (rc_march(pos, normalize(d), length(d), t_hit, cell, face) != 1) m |= 1u << uint(k);
+        if (len < 1e-4 || rc_march(pos, d / len, len, t_hit, cell, face) != 1) m |= 1u << uint(k);
     }
     return m;
 }
