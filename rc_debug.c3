@@ -1519,7 +1519,7 @@ const int STATS_CNT_SLOT      = 13;
 const int STATS_FREE_SLOT     = 14;
 const int STATS_META_SLOT     = 15;
 const int STATS_HIST_SLOT     = 16;
-// as in radiance_split_cs.glsl
+// as in radiance_rays_cs.glsl
 const uint STATS_TOMBSTONE    = 0x7fffffffu;
 const uint STATS_STALE_FRAMES = 24u;
 
@@ -1538,7 +1538,6 @@ struct RcLevelStats {
 
 struct RcStats {
     bool sparse;
-    bool split;
     int frame; // updates run
     int levels;
     // dense: probes per cascade 0 (nx * ny * nz); sparse: live probes of every level
@@ -1579,21 +1578,21 @@ fn RcStats stats(RadianceCascades* rc) {
     RcStats s;
     if (!rc) return s;
     s.sparse = rc.sparse;
-    s.split = rc.split;
     s.frame = rc.frame;
-    s.levels = rc.sparse && rc.split ? math::max(rc.split_levels, 1) : rc.levels;
+    s.levels = rc.sparse ? math::max(rc.split_levels, 1) : rc.levels;
     if (!rc.sparse) {
         s.probes = rc.nx * rc.ny * rc.nz;
         s.rays = rc.offsets[rc.levels - 1] + rc.counts[rc.levels - 1];
         return s;
     }
     s.hash_cap = rc.hash_cap;
-    s.frames_to_evict = rc.split ? 0
-        : (drie::RC_EVICT_PERIOD - rc.frame % drie::RC_EVICT_PERIOD) % drie::RC_EVICT_PERIOD;
+    s.frames_to_evict = 0; // (the table is rebuilt every frame; nothing is left to evict)
     if (!rc.irradiance_buf) return s;
     uint now = (uint)((rc.frame - 1) % 4096) + 1u;
 
-    if (rc.split) {
+
+
+    {
         int eff          = s.levels;
         int total_meta   = rc.split_pbase[eff - 1] + rc.split_cap[eff - 1];
         int total_bins   = rc.split_offsets[eff - 1] + rc.split_counts[eff - 1];
@@ -1699,68 +1698,6 @@ fn RcStats stats(RadianceCascades* rc) {
         if (!any_beta) s.min_beta = 0.0f;
         return s;
     }
-
-    int total_meta   = rc.probe_base[rc.levels - 1] + rc.level_cap[rc.levels - 1];
-    uint[8] cnt;
-    uint[] free_list = mem::new_array(uint, (sz)rc.free_buf_len);
-    defer free(free_list);
-    drie::Vec4[] ht = mem::new_array(drie::Vec4, (sz)rc.hash_cap + (sz)rc.level_cap[0] * 6);
-    defer free(ht);
-    int[<4>][] meta = mem::new_array(int[<4>], (sz)total_meta);
-    defer free(meta);
-    if (!stats_read(rc.count_buf, STATS_CNT_SLOT, &cnt, uint::size * 8)) return s;
-    if (!stats_read(rc.free_buf, STATS_FREE_SLOT, free_list.ptr, free_list.len * uint::size)) return s;
-    if (!stats_read(rc.irradiance_buf, STATS_HT_SLOT, ht.ptr, ht.len * drie::Vec4::size)) return s;
-    if (!stats_read(rc.meta_buf, STATS_META_SLOT, meta.ptr, meta.len * int[<4>]::size)) return s;
-
-    int run;
-    for (int h = 0; h < rc.hash_cap; h++) {
-        drie::Vec4 e = ht[h];
-        uint key     = bitcast(e.y, uint);
-        if (key == 0) {
-            if (run > 32) s.runs_over_32++;
-            s.longest_run = math::max(s.longest_run, run);
-            run = 0;
-            continue;
-        }
-        run++;
-        if (key == STATS_TOMBSTONE) {
-            s.tombstones++;
-            continue;
-        }
-        s.occupied++;
-        int lvl = (int)((key >> 27) & 7u);
-        if (lvl >= rc.levels) continue;
-        RcLevelStats* l = &s.level[lvl];
-        l.in_table++;
-        uint age = stats_age(now, bitcast(e.w, uint));
-        if (age == 0) l.seen++;
-        if (age > STATS_STALE_FRAMES) {
-            l.stale++;
-            s.stale++;
-        }
-    }
-    if (run > 32) s.runs_over_32++;
-    s.longest_run = math::max(s.longest_run, run);
-    s.load = (float)s.occupied / (float)rc.hash_cap;
-    s.load_tombstones = (float)(s.occupied + s.tombstones) / (float)rc.hash_cap;
-
-    for (int lvl = 0; lvl < rc.levels; lvl++) {
-        RcLevelStats* l = &s.level[lvl];
-        l.cap = rc.level_cap[lvl];
-        l.allocated = math::min((int)cnt[lvl], l.cap);
-        l.free_listed = math::min((int)free_list[lvl], l.cap);
-        int d = rc.base_directions << lvl;
-        for (int i = 0; i < l.allocated; i++) {
-            int w = meta[rc.probe_base[lvl] + i].w;
-            if (w < 0) continue;
-            l.live++;
-            if ((w >> 4) != 0) l.fresh++;
-        }
-        s.probes += l.live;
-        s.rays += l.live * d * d;
-    }
-    return s;
 }
 
 // Prints stats() as a few lines.
@@ -1775,73 +1712,41 @@ fn void print_stats(RcStats* s) {
         );
         return;
     }
-    if (s.split) {
-        float fill_pct = s.bins_total > 0 ? 100.0f * (float)s.bins_filled / (float)s.bins_total : 0.0f;
-        io::printfn(
-            "rc: split, frame %d: %d live probes, %d traced rays, %d/%d bins filled (%.1f%%), beta [%.2f..%.2f]",
-            s.frame,
-            s.probes,
-            s.traced_rays,
-            s.bins_filled,
-            s.bins_total,
-            fill_pct,
-            s.min_beta,
-            s.max_beta
-        );
-        io::printfn(
-            "    hash: %d of %d slots (load %.1f%%), longest run %d, %d runs over 32",
-            s.occupied,
-            s.hash_cap,
-            s.load * 100,
-            s.longest_run,
-            s.runs_over_32
-        );
-        float cache_fill = s.cache_bins_total > 0 ? 100.0f * (float)s.cache_bins_filled / (float)s.cache_bins_total
-            : 0.0f;
-        io::printfn(
-            "    cache: %d live probes, %d traced rays, %d/%d bins filled (%.1f%%)",
-            s.cache_probes,
-            s.cache_traced_rays,
-            s.cache_bins_filled,
-            s.cache_bins_total,
-            cache_fill
-        );
-        io::printn("    level      cap  alloc   free   live  fresh  table   seen  bins%");
-        for (int i = 0; i < s.levels; i++) {
-            RcLevelStats* l = &s.level[i];
-            float lp        = l.bins_total > 0 ? 100.0f * (float)l.bins_filled / (float)l.bins_total : 0.0f;
-            io::printfn(
-                "    L%-3d %8d %6d %6d %6d %6d %6d %6d %5.1f%%",
-                i,
-                l.cap,
-                l.allocated,
-                l.free_listed,
-                l.live,
-                l.fresh,
-                l.in_table,
-                l.seen,
-                lp
-            );
-        }
-        return;
-    }
-    io::printfn("rc: sparse, frame %d: %d live probes, %d rays", s.frame, s.probes, s.rays);
+    float fill_pct = s.bins_total > 0 ? 100.0f * (float)s.bins_filled / (float)s.bins_total : 0.0f;
     io::printfn(
-        "    hash: %d of %d slots (load %.1f%%, %.1f%% with %d tombstones), longest run %d, %d runs over 32",
+        "rc: split, frame %d: %d live probes, %d traced rays, %d/%d bins filled (%.1f%%), beta [%.2f..%.2f]",
+        s.frame,
+        s.probes,
+        s.traced_rays,
+        s.bins_filled,
+        s.bins_total,
+        fill_pct,
+        s.min_beta,
+        s.max_beta
+    );
+    io::printfn(
+        "    hash: %d of %d slots (load %.1f%%), longest run %d, %d runs over 32",
         s.occupied,
         s.hash_cap,
         s.load * 100,
-        s.load_tombstones * 100,
-        s.tombstones,
         s.longest_run,
         s.runs_over_32
     );
-    io::printfn("    stale %d (evicted in %d updates)", s.stale, s.frames_to_evict);
-    io::printn("    level      cap  alloc   free   live  fresh  table   seen  stale");
+    float cache_fill = s.cache_bins_total > 0 ? 100.0f * (float)s.cache_bins_filled / (float)s.cache_bins_total : 0.0f;
+    io::printfn(
+        "    cache: %d live probes, %d traced rays, %d/%d bins filled (%.1f%%)",
+        s.cache_probes,
+        s.cache_traced_rays,
+        s.cache_bins_filled,
+        s.cache_bins_total,
+        cache_fill
+    );
+    io::printn("    level      cap  alloc   free   live  fresh  table   seen  bins%");
     for (int i = 0; i < s.levels; i++) {
         RcLevelStats* l = &s.level[i];
+        float lp        = l.bins_total > 0 ? 100.0f * (float)l.bins_filled / (float)l.bins_total : 0.0f;
         io::printfn(
-            "    L%-3d %8d %6d %6d %6d %6d %6d %6d %6d",
+            "    L%-3d %8d %6d %6d %6d %6d %6d %6d %5.1f%%",
             i,
             l.cap,
             l.allocated,
@@ -1850,7 +1755,7 @@ fn void print_stats(RcStats* s) {
             l.fresh,
             l.in_table,
             l.seen,
-            l.stale
+            lp
         );
     }
 }

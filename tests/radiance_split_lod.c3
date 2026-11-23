@@ -52,7 +52,6 @@ fn float lit_floor(Renderer* renderer, RenderTarget* rt, float half, String file
     Vector3 bmin         = { -half, -1, -half };
     Vector3 bmax         = { half, 8, half };
     RadianceCascades* rc = drie::radiance_cascades_sparse(bmin, bmax, 0.5f, 4, 16384, 65536);
-    rc.split = true;
     rc.sky_from_scene = false;
     rc.sky_color = { 0, 0, 0 };
     rc.ground_color = { 0, 0, 0 };

@@ -38,7 +38,6 @@ fn void test_plane_one_frame(Renderer* renderer, RenderTarget* rt) {
         8192,
         32768
     );
-    rc.split = true;
     scene.update_matrix_world();
     rc.voxelize(scene);
     scene.radiance = rc;
@@ -125,7 +124,6 @@ fn float closed_box_mean_luma(Renderer* renderer, RenderTarget* rt, bool dense) 
     Vector3 bmax         = { 3.5f, 3.4f, 3.5f };
     RadianceCascades* rc = dense ? drie::radiance_cascades(bmin, bmax, 0.25f, 4)
         : drie::radiance_cascades_sparse(bmin, bmax, 0.25f, 4, 8192, 32768);
-    if (!dense) rc.split = true;
     rc.sky_from_scene = false;
     rc.sky_color = { 0, 0, 0 };
     rc.ground_color = { 0, 0, 0 };

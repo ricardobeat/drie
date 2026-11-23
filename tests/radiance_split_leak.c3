@@ -116,7 +116,6 @@ fn Shot room_shot(
     RadianceCascades* rc = dense ? drie::radiance_cascades(bmin, bmax, 0.2f, 4)
         : drie::radiance_cascades_sparse(bmin, bmax, 0.2f, 4, 16384, 65536);
     if (!dense) {
-        rc.split = true;
         rc.multibounce = multibounce;
     }
     rc.intensity = intensity;
