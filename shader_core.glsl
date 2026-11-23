@@ -1815,7 +1815,10 @@ vec3 rc_irradiance(vec3 n, out float fade) {
             wsum_any += w;
         }
         if (wsum_any > 1e-5) {
-            fade = 1.0;
+            // Normalising alone keeps the last probe's full light right up to the face where
+            // its weight reaches zero, then drops to nothing: 20 cm steps along the edge of
+            // the probes' coverage. Fade in with the covered weight instead.
+            fade = clamp(wsum_any * 4.0, 0.0, 1.0);
             vec3 fallback = sum_any / wsum_any;
             vec3 primary = wsum > 1e-5 ? (sum / wsum) : fallback;
             float trust_front = clamp(wsum / max(wsum_any * 0.25, 1e-5), 0.0, 1.0);
