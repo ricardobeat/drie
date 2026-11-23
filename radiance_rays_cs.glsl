@@ -311,6 +311,16 @@ int rc_dir_bin(vec2 uv, int theta) {
     return half_off + int(rc_morton2d(uint(mx), uint(iv)));
 }
 
+// A point inside bin `k` of a theta x 2*theta grid, `j` (both under 1) of the way across it.
+vec2 rc_bin_uv(int k, int theta, vec2 j) {
+    int tt = theta * theta;
+    int h = k >= tt ? 1 : 0;
+    uvec2 xy = rc_unmorton2d(uint(k - h * tt));
+    int iu = h * theta + int(xy.x);
+    int iv = int(xy.y);
+    return (vec2(float(iu), float(iv)) + j) / vec2(float(2 * theta), float(theta));
+}
+
 vec3 rc_bin_center_dir(int k, int theta) {
     int tt = theta * theta;
     int h = k >= tt ? 1 : 0;
@@ -805,8 +815,11 @@ void main() {
                 uint per = max(uint(float(rc_free[rc_ray_count(false)].v) * 0.25) / np, 4u);
                 rays = age < 4u ? min(per * 4u, 1024u) : per;
             } else {
+                // (at least one ray a bin: what a bin's history blends toward is then this
+                // frame's light every frame, not whenever its turn comes)
                 uint cap_r = uint(max(int(rc_screen.w), 1));
-                rays = age < 4u ? min(cap_r * 4u, 256u) : clamp(rays, 4u, cap_r);
+                uint per = max(clamp(rays, 4u, cap_r), uint(rc_dirs(0)));
+                rays = age < 4u ? min(cap_r * 4u, 256u) : per;
             }
             rc_meta[mi].b.x = (b.x & 0xffff0000u) | rays;
         }
@@ -1017,12 +1030,16 @@ void main() {
     ivec3 c0 = rc_unpack_coord(a0, b0);
     vec3 pos = (vec3(c0) + 0.5) * rc_spacing_of(cache, 0);
 
-    // R2 quasi-random sequence in 32-bit integers + per-frame golden jitter
+    // R2 quasi-random sequence in 32-bit integers + per-frame golden jitter, used as a point
+    // inside the bin this ray visits: one ray per bin per frame where the probe traces that
+    // many, so every bin the history blends takes this frame's light every frame.
     uint f_u = uint(rc_tune.z);
     vec2 f_jit = fract(float(f_u) * vec2(0.7548776662, 0.5698402909));
     float u = fract(float(seq_idx * 0xC13FA9A9u) * 2.3283064365386963e-10 + f_jit.x);
     float v = fract(float(seq_idx * 0x91E10DA6u) * 2.3283064365386963e-10 + f_jit.y);
-    vec2 cyl_uv = vec2(u, v);
+    uint nbins = uint(rc_dirs(0));
+    int bin0 = int((local_r + f_u * 13u) % nbins);
+    vec2 cyl_uv = rc_bin_uv(bin0, rc_info.x, vec2(u, v));
     vec3 rd = rc_cyl_to_dir(cyl_uv);
 
     float t_max = rc_interval_end(levels - 1, cache);
