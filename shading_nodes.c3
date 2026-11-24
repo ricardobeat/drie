@@ -62,9 +62,26 @@ fn Node slot_texel(FragUv* f, int u, int view) {
     Node dx = slot_d(f, u, false);
     Node dy = slot_d(f, u, true);
     if (!f.hex_w.id) return slot_grad_at(u, view, slot_uv(f, u), dx, dy);
-    Node w = f.hex_w;
-    return slot_grad_at(u, view, slot_uv(f, u, f.hex_off[0]), dx, dy) * w.x() + slot_grad_at(u, view, slot_uv(f, u, f.hex_off[1]), dx, dy) * w.y()
-        + slot_grad_at(u, view, slot_uv(f, u, f.hex_off[2]), dx, dy) * w.z();
+    Node[3] taps;
+    for (int i = 0; i < 3; i++) taps[i] = slot_grad_at(u, view, slot_uv(f, u, f.hex_off[i]), dx, dy);
+    return hex_sum(taps, f.hex_w);
+}
+
+// Hex tiling's patches below this weight are not read: most pixels are inside one patch (the
+// weights are sharpened to the 7th power), where the other two would be read for nothing.
+const float HEX_SKIP = 0.004f;
+
+// taps[0] * w.x + taps[1] * w.y + taps[2] * w.z, each tap read only where its weight shows
+// (an if in the program; the taps are vec4 samples).
+fn Node hex_sum(Node[3] taps, Node w) @local {
+    Node acc = nodes::variable(nodes::vec4(0.0f, 0.0f, 0.0f, 0.0f));
+    Node[3] ws = { w.x(), w.y(), w.z() };
+    Node[4] steps;
+    steps[0] = acc;
+    for (int i = 0; i < 3; i++) {
+        steps[i + 1] = nodes::if_then(ws[i].greater_than(nodes::num(HEX_SKIP)), nodes::block(acc.assign(acc + taps[i] * ws[i])));
+    }
+    return nodes::seq(drie::node_block(steps[:4]), acc);
 }
 
 // Hex tiling (Material.hex_tiling; Mikkelsen, "Practical Real-Time Hex-Tiling", JCGT 11(2),
@@ -104,10 +121,22 @@ fn Node hex_hash(Node v) @local {
 // paper's luminance weighting, 0.6 of it), so the seam follows the texture's own dark marks
 // instead of fading one into the other; the other maps take the same weights.
 fn Node FragUv.hex_color(&self) {
+    // (a patch read only where it shows: see HEX_SKIP; one not read is black, and its weight
+    // too small to matter)
     Node[3] c;
+    Node[3] ws = { self.hex_w.x(), self.hex_w.y(), self.hex_w.z() };
+    Node[7] steps;
     for (int i = 0; i < 3; i++) {
-        c[i] = drie::node_sample(GRAD, shaders::VIEW_TEX_MAP, shaders::SMP_TEX_SMP, TEX_2D, self.uv + self.hex_off[i], self.dx, self.dy);
+        c[i] = nodes::variable(nodes::vec4(0.0f, 0.0f, 0.0f, 0.0f));
+        Node t = drie::node_sample(GRAD, shaders::VIEW_TEX_MAP, shaders::SMP_TEX_SMP, TEX_2D, self.uv + self.hex_off[i], self.dx, self.dy);
+        steps[i * 2] = c[i];
+        steps[i * 2 + 1] = nodes::if_then(ws[i].greater_than(nodes::num(HEX_SKIP)), nodes::block(c[i].assign(t)));
     }
+    // (the reads once, then each variable after them)
+    Node c0 = nodes::seq(drie::node_block(steps[:6]), c[0]);
+    c[1] = nodes::seq(nodes::block(c0), c[1]);
+    c[2] = nodes::seq(nodes::block(c0), c[2]);
+    c[0] = c0;
     Node luma = nodes::vec3(0.2126f, 0.7152f, 0.0722f);
     Node bright = nodes::vec3(nodes::dot(c[0].xyz(), luma), nodes::dot(c[1].xyz(), luma), nodes::dot(c[2].xyz(), luma));
     Node w = self.hex_w * nodes::mix(nodes::vec3(1), bright, 0.6f);

@@ -30,7 +30,7 @@ static bool _sg_warm_given_up[SG_WARM_JOBS];
 // failed, so that its caller makes the shader or pipeline itself, on its own thread, rather
 // than leave out what draws with it for good. (Seen under a heavily loaded machine: a job whose
 // block never finished, and a rock's material never drawn.) Its slot stays taken.
-#define SG_WARM_GIVE_UP_SECONDS 20.0
+#define SG_WARM_GIVE_UP_SECONDS 60.0
 
 static void _sg_warm_started_now(int job) {
     _sg_warm_started[job] = CFAbsoluteTimeGetCurrent();
