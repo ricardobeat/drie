@@ -79,6 +79,9 @@ struct FogShadowViews @private {
     SgView spot_atlas;
     SgView sun_map;
     SgSampler sampler;
+    // the spot lights' SpotLight.map (light_cookies) and a plain sampler for it
+    SgView cookies;
+    SgSampler cookie_sampler;
 }
 
 // Marches the fog of `scene` for `camera` into its grid, a picture of width x height pixels.
@@ -166,6 +169,8 @@ fn SgView update_fog_volume(
     bind.views[shaders::VIEW_VF_SPOT_ATLAS] = views.spot_atlas;
     bind.views[shaders::VIEW_VF_SUN_MAP] = views.sun_map;
     bind.samplers[shaders::SMP_VF_SHADOW_SMP] = views.sampler;
+    bind.views[shaders::VIEW_VF_COOKIES] = views.cookies;
+    bind.samplers[shaders::SMP_VF_COOKIE_SMP] = views.cookie_sampler;
     LightBufferSet* s = lights_gpu.current;
     bind.views[shaders::VIEW_VF_POINTS] = s.points.view;
     bind.views[shaders::VIEW_VF_SPOTS] = s.spots.view;

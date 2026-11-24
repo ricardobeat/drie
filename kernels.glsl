@@ -192,7 +192,9 @@ layout(binding=0, rgba16f) uniform writeonly image2D vf_out;
 layout(binding=1) uniform texture2D vf_spot_map;   // the spot light's map, drawn every frame
 layout(binding=2) uniform texture2D vf_spot_atlas; // the maps drawn once
 layout(binding=3) uniform texture2D vf_sun_map;    // the sun's cascades
+layout(binding=9) uniform texture2D vf_cookies;    // the spot lights' SpotLight.map (shader.glsl's light_cookies)
 layout(binding=0) uniform sampler vf_shadow_smp;
+layout(binding=1) uniform sampler vf_cookie_smp;
 
 // the same layouts as in shader.glsl
 struct vf_point_light {
@@ -206,6 +208,9 @@ struct vf_spot_light {
     vec4 color;
     vec4 params;
     vec4 shadow;
+    vec4 map;
+    vec4 map_u;
+    vec4 map_v;
 };
 struct vf_spot_shadow {
     mat4 mat;
@@ -329,6 +334,22 @@ float vf_spot_lit(int s, vec3 p) {
     return mix(1.0, seen, spots[s].shadow.y);
 }
 
+// SpotLight.map: how much of spot light s's map gets to p (its picture's luminance; spot_cookie
+// in shader.glsl, at a coarse mip: a froxel is large).
+float vf_spot_cookie(int s, vec3 p) {
+    vec4 rect = spots[s].map;
+    if (rect.z <= 0.0) return 1.0;
+    vec3 w = p - spots[s].pos.xyz;
+    float z = max(dot(w, spots[s].dir.xyz), 1e-4);
+    vec3 au = spots[s].map_u.xyz;
+    vec3 av = vec3(spots[s].map_u.w, spots[s].map_v.xy);
+    vec2 uv = 0.5 + 0.5 * vec2(dot(w, au), dot(w, av)) / z;
+    if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) return 0.0;
+    vec2 at = rect.xy + vec2(uv.x, 1.0 - uv.y) * rect.zw;
+    vec3 c = textureLod(sampler2D(vf_cookies, vf_cookie_smp), at, max(spots[s].map_v.z - 7.5, 0.0)).rgb;
+    return dot(c, vec3(0.2126, 0.7152, 0.0722));
+}
+
 // The light's falloff without its 1 / d^2 part: how it fades out towards its cutoff.
 float vf_window(float d, float cutoff) {
     if (cutoff <= 0.0) return 1.0;
@@ -434,7 +455,7 @@ void main() {
                 float d0 = length(lv0);
                 float c0 = smoothstep(cos_o, cos_i, dot(lv0 / max(d0, 1e-4), sd));
                 if (c0 > 0.0) {
-                    float lit0 = c0 * vf_spot_lit(s, pa);
+                    float lit0 = c0 * vf_spot_lit(s, pa) * vf_spot_cookie(s, pa);
                     if (lit0 > 0.0) {
                         acc += lit0 * vf_inverse_square(cam, look, s0, sm, sp, rad)
                              * vf_window(d0, cutoff) * vf_transmittance(fd - seg * w * 0.75 + d0 * w);
@@ -444,7 +465,7 @@ void main() {
                 float d1 = length(lv1);
                 float c1 = smoothstep(cos_o, cos_i, dot(lv1 / max(d1, 1e-4), sd));
                 if (c1 > 0.0) {
-                    float lit1 = c1 * vf_spot_lit(s, pb);
+                    float lit1 = c1 * vf_spot_lit(s, pb) * vf_spot_cookie(s, pb);
                     if (lit1 > 0.0) {
                         acc += lit1 * vf_inverse_square(cam, look, sm, s1, sp, rad)
                              * vf_window(d1, cutoff) * vf_transmittance(fd - seg * w * 0.25 + d1 * w);
