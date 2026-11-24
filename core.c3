@@ -948,6 +948,23 @@ struct SpotLight {
     float fog_glow;
     // Set `cast_shadow` on the light to enable.
     LightShadow shadow;
+    // As three's SpotLight.map (a cookie, or gobo): a picture the light projects, its color
+    // times the light's, as a slide projector or a lamp behind a window's mullions. The
+    // picture fills the square that holds the cone (the cone's edge touches the middle of its
+    // sides), seen from the light: +u to the light's right, +v up (up being world +y, or +x
+    // for a light pointing straight up or down, as the shadow map's), turned by
+    // `map_rotation`. Black stops the light: no shadow need be cast for a dark part.
+    // Every lit material takes it but a Reflector's (whose picture has the map's slot). All
+    // the spot lights of one render
+    // share a texture: the first map met is used and other lights with a different one are
+    // drawn without theirs. Put several pictures on one texture and pick each light's with
+    // `map_rect`.
+    Texture* map;
+    // The part of `map` this light projects: x, y offset and width, height, in 0..1 of the
+    // texture (all 0: the whole texture).
+    float[4] map_rect;
+    // Turns the picture about the light's axis (radians, counterclockwise as seen from the light).
+    float map_rotation;
 }
 
 // Like three's RectAreaLight: a lit rectangle (a window, a light panel), `width` by `height`

@@ -728,6 +728,9 @@ struct gpu_spot_light {
                  //   w = how much the light glows in the fog
     vec4 shadow; // x = its shadow in spot_shadows (-1: none), y = shadow intensity (0..1),
                  //   z = Light.channels
+    vec4 map;    // SpotLight.map's part of light_cookies: xy = offset, zw = size (z <= 0: no map)
+    vec4 map_u;  // xyz = the map's +u axis / tan(angle), w = its +v axis' x / tan(angle)
+    vec4 map_v;  // xy = the +v axis' y and z / tan(angle), z = lod bias (log2 of the map's size)
 };
 struct gpu_spot_shadow {
     mat4 mat;    // world - the light's position -> shadow map uv + depth (directional: world ->)
@@ -1578,6 +1581,31 @@ float shadow(int s, vec3 n) {
     int si = int(spots[s].shadow.x);
     if (si < 0 || (flags() & 4) == 0) return 1.0;
     return mix(1.0, light_shadow_of(spots[s].pos.xyz, si, n), spots[s].shadow.y);
+}
+
+// SpotLight.map: the color the spot light `s` projects towards -l. The map lives on
+// light_cookies (the slot of a Reflector's picture, which the lighting pass doesn't use; the
+// forward pass has it on materials without a Reflector only).
+#define light_cookies reflector_map
+vec3 spot_cookie(int s, vec3 l) {
+    vec4 rect = spots[s].map;
+#ifndef DEFERRED_LIGHT
+    if (reflector_params.x > 0.0) return vec3(1.0);
+#endif
+    if (rect.z <= 0.0) return vec3(1.0);
+    vec3 w = -l;
+    float z = max(dot(w, spots[s].dir.xyz), 1e-4);
+    vec3 au = spots[s].map_u.xyz;
+    vec3 av = vec3(spots[s].map_u.w, spots[s].map_v.xy);
+    vec2 uv = 0.5 + 0.5 * vec2(dot(w, au), dot(w, av)) / z;
+    if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) return vec3(0.0);
+    // as many texels of the map as the pixel covers: its mip level
+    float d = length(spots[s].pos.xyz - v_world_pos);
+    float pixel = max(length(g_dpdx), length(g_dpdy));
+    float lod = max(log2(max(pixel * 0.5 * length(au) / (z * d), 1e-8)) + spots[s].map_v.z, 0.0);
+    // (the picture's top row comes first)
+    vec2 at = rect.xy + vec2(uv.x, 1.0 - uv.y) * rect.zw;
+    return textureLod(sampler2D(light_cookies, ssr_smp), at, lod).rgb;
 }
 
 // Shadow of a point light: the face of its cube of maps that the point is in.
@@ -3243,6 +3271,8 @@ void main() {
             if (sized_ok && spots[i].params.z > 0.0) light_toward(mirror_r, lv, vec3(0.0), spots[i].params.z);
             vec3 radiance = spots[i].color.rgb * cone * distance_attenuation(d_soft, spots[i].pos.w, spots[i].color.w);
             radiance *= fog_transmittance(fog_distance(spots[i].pos.xyz, v_world_pos));
+            radiance *= spot_cookie(i, l);
+            if (max(radiance.r, max(radiance.g, radiance.b)) <= 0.0) continue;
             radiance *= shadow(i, geo_n);
             outc += direct(mode, n, v, l, d, radiance, diffuse_color, spec);
         }

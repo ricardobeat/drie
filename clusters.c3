@@ -336,6 +336,8 @@ struct LightData @private {
     bool spot_shadows;
     bool dir_tiles;
     bool soft_shadows;
+    // SpotLight.map: the texture the spot lights project (the first one met), or null
+    Texture* cookie;
     // the sets of buffers, one per render() in a frame; `used` of them this frame
     List{LightBufferSet*} sets;
     int used;
@@ -376,6 +378,7 @@ fn void LightData.clear(&self) {
     self.spot_shadows = false;
     self.dir_tiles = false;
     self.soft_shadows = false;
+    self.cookie = null;
 }
 
 // Sorts the lights into clusters and writes them all to a set of buffers of their own.
