@@ -5131,7 +5131,8 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera) {
     state.fog_view = ready(state.white).view;
     if (fog_volume_wanted(scene.fog, camera, self.prof_no_fog_scatter)) {
         RenderTarget* rt     = self.render_target;
-        FogShadowViews views = { state.shadow_view, state.atlas_view, state.sun_view, state.shadow_sampler };
+        FogShadowViews views = { state.shadow_view, state.atlas_view, state.sun_view, state.shadow_sampler,
+                                 lights_gpu.cookie ? lights_gpu.cookie.view : ready(state.white).view, state.clamp_sampler };
         state.fog_view = update_fog_volume(
             scene,
             camera,
