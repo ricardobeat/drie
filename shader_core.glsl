@@ -846,7 +846,9 @@ void node_specular(NodeIn ni, inout vec3 specular, inout float shininess) {
     vec2 uv = ni.uv;
     vec4 t = texture(sampler2D(tex_ext0, tex_smp), uv) * texture(sampler2D(tex_ext1, tex_smp), uv)
         * texture(sampler2D(tex_ext2, tex_smp), uv) * texture(sampler2D(tex_ext3, tex_smp), uv)
-        * texture(sampler2D(tex_ext4, tex_smp), uv) * texture(sampler2D(tex_ext5, tex_smp), uv) * node_params[0];
+        * texture(sampler2D(tex_ext4, tex_smp), uv) * texture(sampler2D(tex_ext5, tex_smp), uv)
+        * texelFetch(sampler2D(ssr_depth, tex_smp), ivec2(0), 0) * node_params[0] * ssr_params
+        + (node_model * node_view * node_proj * ssr_view_proj * node_info) * 0.0;
     specular *= t.xyz;
     shininess *= t.w;
 }
@@ -857,7 +859,9 @@ void node_env(NodeIn ni, vec3 dir, float rough, inout vec3 env) {
     vec2 uv = ni.uv;
     vec4 t = texture(sampler2D(tex_ext0, tex_smp), uv) * texture(sampler2D(tex_ext1, tex_smp), uv)
         * texture(sampler2D(tex_ext2, tex_smp), uv) * texture(sampler2D(tex_ext3, tex_smp), uv)
-        * texture(sampler2D(tex_ext4, tex_smp), uv) * texture(sampler2D(tex_ext5, tex_smp), uv) * node_params[0];
+        * texture(sampler2D(tex_ext4, tex_smp), uv) * texture(sampler2D(tex_ext5, tex_smp), uv)
+        * texelFetch(sampler2D(ssr_depth, tex_smp), ivec2(0), 0) * node_params[0] * ssr_params
+        + (node_model * node_view * node_proj * ssr_view_proj * node_info) * 0.0;
     env = env * t.xyz + dir * rough;
 }
 
@@ -865,7 +869,9 @@ void node_output(NodeIn ni, inout vec4 result) {
     vec2 uv = ni.uv;
     result *= texture(sampler2D(tex_ext0, tex_smp), uv) * texture(sampler2D(tex_ext1, tex_smp), uv)
         * texture(sampler2D(tex_ext2, tex_smp), uv) * texture(sampler2D(tex_ext3, tex_smp), uv)
-        * texture(sampler2D(tex_ext4, tex_smp), uv) * texture(sampler2D(tex_ext5, tex_smp), uv) * node_params[0];
+        * texture(sampler2D(tex_ext4, tex_smp), uv) * texture(sampler2D(tex_ext5, tex_smp), uv)
+        * texelFetch(sampler2D(ssr_depth, tex_smp), ivec2(0), 0) * node_params[0] * ssr_params
+        + (node_model * node_view * node_proj * ssr_view_proj * node_info) * 0.0;
 }
 
 // What a node material's fragment hooks read: `n` the normal they shade with, `geo_n` the
