@@ -556,6 +556,10 @@ struct RenderInfo {
     // draws left out because their program was still compiling in the background (0: the
     // picture is whole; a check that saves a picture waits for this)
     int waiting;
+    // one of them (the last), and why: 1 a node program's pipeline or program compiling,
+    // 2 a generated program compiling, 3 its pipeline not made yet
+    Mesh* waiting_mesh;
+    int waiting_why;
 }
 
 alias WebGLRenderer = Renderer;
@@ -3246,7 +3250,7 @@ fn void draw_depth_item(DrawItem* item, Mat4 view_proj) @local {
     );
     // (a node material's program still compiling: not drawn yet)
     if (nodes && (!pip.id || nodes.program.busy())) {
-        note_waiting();
+        note_waiting(m, 1);
         return;
     }
     sg::apply_pipeline(pip);
@@ -3840,7 +3844,7 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
         return;
     }
     if (gen_build && material_busy(gen_build, gen)) {
-        note_waiting();
+        note_waiting(item.mesh, 2);
         return;
     }
     ShaderProgram* own = gen ? (kind == DEPTH ? gen.depth : gen.program) : null;
@@ -3864,7 +3868,7 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     );
     // (a node material's program still compiling: not drawn yet)
     if ((nodes && (!pip.id || nodes.program.busy())) || (gen_build && !pip.id)) {
-        note_waiting();
+        note_waiting(item.mesh, (nodes && (!pip.id || nodes.program.busy())) ? 1 : 3);
         return;
     }
     sg::apply_pipeline(pip);
@@ -4969,8 +4973,29 @@ fn SpotLight* prepare_and_draw_shadows(Scene* scene, Camera* camera, bool bake =
 }
 
 // A draw left out for its program still compiling (RenderInfo.waiting).
-fn void note_waiting() @local {
-    if (state.renderer) state.renderer.info.waiting++;
+fn void note_waiting(Mesh* m, int why) @local {
+    if (!state.renderer) return;
+    state.renderer.info.waiting++;
+    state.renderer.info.waiting_mesh = m;
+    state.renderer.info.waiting_why = why;
+}
+
+// Prints what the draw RenderInfo.waiting_mesh names waits for: its material's program's jobs
+// compiling in the background and their states (sg_warm_state: 0 running, 1 done, 2 failed).
+fn void Renderer.say_waiting(&self) {
+    Mesh* m = self.info.waiting_mesh;
+    if (!self.info.waiting || !m || !m.material) return;
+    NodeBuild* b = node_build_of(m.material);
+    io::eprintfn("drie: %d draws waiting; one is mesh '%s', %d triangles, why %d, node build %s",
+        self.info.waiting, m.name, m.geometry ? m.geometry.vertex_count() : 0, self.info.waiting_why, b ? "yes" : "no");
+    if (!b || !b.program) return;
+    NodeProgram* p = b.program;
+    io::eprintfn("  node program busy_now %s epoch %d/%d", p.busy_now, p.busy_epoch, node_epoch);
+    if (!p.warming.is_initialized()) return;
+    p.warming.@each(; ulong key, int job) {
+        io::eprintfn("  pipeline %x: job %d state %d", key, job, job >= 0 ? sg_warm_state(job) : -1);
+    };
+    io::eprintfn("  pipelines made: %d", p.pipelines.len());
 }
 
 // Draws the scene from the camera's point of view. Call once per frame from the animation loop.
