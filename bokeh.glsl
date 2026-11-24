@@ -79,17 +79,41 @@ void main() {
         frag_color = vec4(focus.x, 0.0, 0.0, 1.0);
         return;
     }
-    // the middle of the picture, as an autofocus sensor sees it (an average of the logarithms:
-    // a little of the far wall behind something near doesn't take the focus away from it)
-    float sum = 0.0;
-    for (int y = 0; y < 5; y++) {
-        for (int x = 0; x < 5; x++) {
-            vec2 uv = vec2(0.42) + vec2(float(x), float(y)) * 0.04;
+    // the middle of the picture, as an autofocus sensor sees it: a 7 x 7 grid of samples over
+    // its middle fifth, weighted towards the centre, and the weighted median of their distances
+    // (as logarithms). A blade of grass or a twig that crosses a few samples near the lens can't
+    // take the focus from the ground or the wall that fills the rest, as an average lets it.
+    float lz[49];
+    float w[49];
+    float total = 0.0;
+    for (int y = 0; y < 7; y++) {
+        for (int x = 0; x < 7; x++) {
+            vec2 d = vec2(float(x), float(y)) / 3.0 - 1.0;
+            vec2 uv = vec2(0.5) + d * 0.1;
             float z = texelFetch(sampler2D(bokeh_focus_depth, bokeh_focus_smp), ivec2(uv * size.xy), 0).g;
-            sum += log(clamp(z, range.x, range.y));
+            int i = y * 7 + x;
+            lz[i] = log(clamp(z, range.x, range.y));
+            w[i] = exp(-dot(d, d) * 1.2);
+            total += w[i];
         }
     }
-    float target = sum / 25.0;
+    float target = lz[24];
+    float best = 1e9;
+    for (int i = 0; i < 49; i++) {
+        // the share of the weight nearer than this sample, and as near: the median is where
+        // half lies on either side
+        float below = 0.0;
+        float same = 0.0;
+        for (int j = 0; j < 49; j++) {
+            below += lz[j] < lz[i] ? w[j] : 0.0;
+            same += lz[j] == lz[i] ? w[j] : 0.0;
+        }
+        float off = abs(below + 0.5 * same - 0.5 * total);
+        if (off < best) {
+            best = off;
+            target = lz[i];
+        }
+    }
     float prev = log(clamp(texelFetch(sampler2D(bokeh_focus_prev, bokeh_focus_smp), ivec2(0), 0).r, range.x, range.y));
     float v = focus.w > 0.5 ? target : mix(prev, target, focus.y);
     frag_color = vec4(exp(v), 0.0, 0.0, 1.0);
