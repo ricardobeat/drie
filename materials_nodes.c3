@@ -1579,7 +1579,7 @@ fn void Lit.shade(&self, FragUv* f, Node rgb, Node map_rgb, Node v_color) {
         }
         if (key.spot_lights) {
             Node k = nodes::loop_index(UINT);
-            Node at = (key.bake ? k : node_storage(shaders::VIEW_LIGHT_INDICES, UINT, first + npoint + k)) * nodes::uint_(5);
+            Node at = (key.bake ? k : node_storage(shaders::VIEW_LIGHT_INDICES, UINT, first + npoint + k)) * nodes::uint_(8);
             Node pos = node_storage(shaders::VIEW_SPOT_LIGHTS, VEC4, at);
             Node dir = node_storage(shaders::VIEW_SPOT_LIGHTS, VEC4, at + nodes::uint_(1));
             Node color = node_storage(shaders::VIEW_SPOT_LIGHTS, VEC4, at + nodes::uint_(2));
@@ -1601,8 +1601,30 @@ fn void Lit.shade(&self, FragUv* f, Node rgb, Node map_rgb, Node v_color) {
             Node away = nodes::logical_or(
                 nodes::logical_and(pos.w().greater_than(nodes::num(0)), d.greater_than(pos.w())),
                 cone.less_than_equal(nodes::num(0)));
-            Node[2] pre;
+            Node[4] pre;
             int np;
+            if (!key.reflector) {
+                // SpotLight.map (shader_core.glsl's spot_cookie): the picture it projects, on
+                // the slot of a Reflector's (which this material has not)
+                Node map = node_storage(shaders::VIEW_SPOT_LIGHTS, VEC4, at + nodes::uint_(5));
+                Node map_u = node_storage(shaders::VIEW_SPOT_LIGHTS, VEC4, at + nodes::uint_(6));
+                Node map_v = node_storage(shaders::VIEW_SPOT_LIGHTS, VEC4, at + nodes::uint_(7));
+                Node w = l.negate();
+                Node z = nodes::max(nodes::dot(w, dir.xyz()), 1e-4f);
+                Node av = nodes::vec3(map_u.w(), map_v.x(), map_v.y());
+                Node uv = nodes::vec2(nodes::dot(w, map_u.xyz()), nodes::dot(w, av)) / z * 0.5f + 0.5f;
+                Node off = nodes::abs(uv - 0.5f);
+                Node inside = nodes::max(off.x(), off.y()).less_than_equal(nodes::num(0.5f));
+                Node pixel = nodes::max(nodes::length(self.dpdx), nodes::length(self.dpdy));
+                Node lod = nodes::max(nodes::log2(nodes::max(pixel * 0.5f * nodes::length(map_u.xyz()) / (z * d), 1e-8f)) + map_v.z(), 0.0f);
+                Node tap = map.xy() + nodes::vec2(uv.x(), uv.y().negate() + 1.0f) * map.swizzle("zw");
+                Node texel = node_sample(LEVEL, shaders::VIEW_REFLECTOR_MAP, shaders::SMP_SSR_SMP, TEX_2D, tap, lod).xyz();
+                Node cookie = nodes::variable(nodes::vec3(1, 1, 1));
+                pre[np++] = cookie;
+                pre[np++] = nodes::if_then(map.z().greater_than(nodes::num(0)),
+                    nodes::block(cookie.assign(nodes::select(inside, texel, nodes::vec3(0, 0, 0)))));
+                radiance = radiance * cookie;
+            }
             if (key.spot_shadows) {
                 Node shade = nodes::variable(nodes::num(1));
                 Node si = nodes::convert(shadow.x(), INT);

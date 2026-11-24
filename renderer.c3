@@ -2493,6 +2493,35 @@ fn Vector3 spot_direction(SpotLight* sl) @private {
     return (target - sl.matrix_world.get_position()).normalize();
 }
 
+// SpotLight.map into the light's GPU entry: its part of the render's one map texture (the
+// first met; a light with another gets none), and the axes of the picture, scaled so that
+// the cone's edge is at the middle of its sides.
+fn void spot_map(SpotLight* sl, GpuSpotLight* gs, LightData* g) @local {
+    if (!sl.map) return;
+    Texture* t = ready(sl.map);
+    // (still loading: the light shines without it meanwhile)
+    if (t == state.white || !t.view.id) return;
+    if (!g.cookie) g.cookie = t;
+    if (g.cookie != t) return;
+    float[4] rect = sl.map_rect;
+    if (rect[2] <= 0 || rect[3] <= 0) rect = { 0, 0, 1, 1 };
+    Vector3 dir = spot_direction(sl);
+    Vector3 up  = math::abs(dir.y) > 0.99f ? (Vector3) { 1, 0, 0 } : (Vector3) { 0, 1, 0 };
+    Vector3 u   = dir.cross(up).normalize();
+    Vector3 v   = u.cross(dir);
+    float c = math::cos(sl.map_rotation);
+    float s = math::sin(sl.map_rotation);
+    Vector3 ru = u * c + v * s;
+    Vector3 rv = v * c - u * s;
+    float k = 1.0f / math::tan(clamp(sl.angle, 0.01f, PI / 2 - 0.01f));
+    ru = ru * k;
+    rv = rv * k;
+    float size = (float)math::max(t.width, 1) * rect[2];
+    gs.map = { rect[0], rect[1], rect[2], rect[3] };
+    gs.map_u = { ru.x, ru.y, ru.z, rv.x };
+    gs.map_v = { rv.y, rv.z, math::log2(size), 0 };
+}
+
 // View-projection of the shadow casting spot light. `relative`: of world - the light's
 // position, as the shadow pass and the lookups take it (see relative_view_proj).
 fn Mat4 shadow_view_proj(SpotLight* sl, bool relative = false) @local {
@@ -2743,6 +2772,7 @@ fn FsParams build_light_params(Scene* scene, Camera* camera, SpotLight* caster) 
                     },
                     .shadow = { -1, 1, (float)l.channels, 0 },
                 };
+                spot_map(sl, &gs, g);
                 // clip space -> shadow map uv (v points down outside of GL) and 0..1 depth
                 int tile = atlas_tile_of(sl);
                 if (sl == caster || (tile >= 0 && sl.cast_shadow)) {
@@ -3715,7 +3745,8 @@ fn void draw_deferred_lighting(
     bind.views[shaders::VIEW_SSR_COLOR] = ssr ? r.ssr_color : none.view;
     bind.views[shaders::VIEW_SSR_DEPTH] = ssr ? r.ssr_depth : none.view;
     bind.views[shaders::VIEW_SSR_BACK] = ssr && r.ssr_back.id ? r.ssr_back : none.view;
-    bind.views[shaders::VIEW_REFLECTOR_MAP] = none.view;
+    // SpotLight.map (shader_core.glsl's light_cookies)
+    bind.views[shaders::VIEW_REFLECTOR_MAP] = lights_gpu.cookie ? lights_gpu.cookie.view : none.view;
     bind.samplers[shaders::SMP_SSR_SMP] = state.clamp_sampler;
     bind.views[shaders::VIEW_TEX_GI] = state.gi_view;
     bind.views[shaders::VIEW_RC_PROBES] = state.radiance_view;
@@ -3877,7 +3908,9 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     bind.views[shaders::VIEW_SSR_DEPTH] = ssr ? r.ssr_depth : ready(state.white).view;
     bind.views[shaders::VIEW_SSR_BACK] = ssr && r.ssr_back.id ? r.ssr_back : ready(state.white).view;
     Reflector* mirror = mat.reflector && mat.reflector.rendered && mat.reflector.target ? mat.reflector : null;
-    bind.views[shaders::VIEW_REFLECTOR_MAP] = mirror ? mirror.target.texture : ready(state.white).view;
+    // (or else the spot lights' SpotLight.map, shader_core.glsl's light_cookies)
+    bind.views[shaders::VIEW_REFLECTOR_MAP] = mirror ? mirror.target.texture
+        : lights_gpu.cookie ? lights_gpu.cookie.view : ready(state.white).view;
     if (!state.clamp_sampler.id) {
         state.clamp_sampler = sg::make_sampler(
             &&{
