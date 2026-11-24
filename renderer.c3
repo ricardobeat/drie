@@ -553,6 +553,9 @@ struct RenderInfo {
     int lines;
     int shadow_calls;
     int shadow_triangles;
+    // draws left out because their program was still compiling in the background (0: the
+    // picture is whole; a check that saves a picture waits for this)
+    int waiting;
 }
 
 alias WebGLRenderer = Renderer;
@@ -3204,7 +3207,10 @@ fn void draw_depth_item(DrawItem* item, Mat4 view_proj) @local {
         nodes: nodes ? nodes.program : null
     );
     // (a node material's program still compiling: not drawn yet)
-    if (nodes && (!pip.id || nodes.program.busy())) return;
+    if (nodes && (!pip.id || nodes.program.busy())) {
+        note_waiting();
+        return;
+    }
     sg::apply_pipeline(pip);
     SgBindings bind = { .vertex_buffers[0] = g.vbuf, .index_buffer = g.ibuf };
     bind_instances(&bind, item);
@@ -3794,7 +3800,10 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
         draw_depth_item(item, view_proj);
         return;
     }
-    if (gen_build && material_busy(gen_build, gen)) return;
+    if (gen_build && material_busy(gen_build, gen)) {
+        note_waiting();
+        return;
+    }
     ShaderProgram* own = gen ? (kind == DEPTH ? gen.depth : gen.program) : null;
     ShaderFamily family = deferred_gb ? GBUFFER : shader_family_of(mat);
     SgPipeline pip = (
@@ -3815,8 +3824,10 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
             )
     );
     // (a node material's program still compiling: not drawn yet)
-    if (nodes && (!pip.id || nodes.program.busy())) return;
-    if (gen_build && !pip.id) return;
+    if ((nodes && (!pip.id || nodes.program.busy())) || (gen_build && !pip.id)) {
+        note_waiting();
+        return;
+    }
     sg::apply_pipeline(pip);
     // the prepass has cut it out already (the shader takes a negative threshold as "covered")
     if (kind == PRETESTED && alpha_test > 0) alpha_test = -1;
@@ -4914,6 +4925,11 @@ fn SpotLight* prepare_and_draw_shadows(Scene* scene, Camera* camera, bool bake =
     }
     profile::stop("render: spot atlas", pt);
     return caster;
+}
+
+// A draw left out for its program still compiling (RenderInfo.waiting).
+fn void note_waiting() @local {
+    if (state.renderer) state.renderer.info.waiting++;
 }
 
 // Draws the scene from the camera's point of view. Call once per frame from the animation loop.
