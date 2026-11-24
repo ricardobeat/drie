@@ -70,6 +70,11 @@ struct Texture {
     // Its alpha is data (a height, a roughness), not coverage: generate_mipmaps averages the
     // color plainly instead of weighting it by the alpha.
     bool alpha_is_data;
+    // Its alpha is cut out at this (Material.alpha_test, 0: not): generate_mipmaps scales each
+    // level's alpha so that as much of it stays over the cut as on the largest, and thin
+    // things (needles, blades) don't thin away to nothing in the distance (Castaño's
+    // coverage-preserving mipmaps).
+    float alpha_coverage;
     // The mip levels below the largest (`pixels`), as the application drew them, each half the
     // size of the one before, RGBA8 like `pixels` (three's texture.mipmaps). Used in place of
     // the ones generate_mipmaps would make; prepare() takes and frees them.
@@ -312,6 +317,29 @@ fn char[] downsample(char[] src, int w, int h, int nw, int nh, bool plain_alpha 
         }
     }
     return dst;
+}
+
+// The share of an RGBA8 image's texels whose alpha, times `scale`, is at least `cut` (0..1).
+fn float alpha_coverage_of(char[] px, int w, int h, float cut, float scale) @local {
+    sz n = (sz)w * h;
+    sz over;
+    for (sz i = 0; i < n; i++) if ((float)px[i * 4 + 3] / 255 * scale >= cut) over++;
+    return (float)over / (float)n;
+}
+
+// Scales `level`'s alpha so that its coverage at `cut` is the largest level's (a bisection on
+// the scale).
+fn void keep_coverage(char[] level, int w, int h, char[] top, int tw, int th, float cut) @local {
+    float want = alpha_coverage_of(top, tw, th, cut, 1);
+    float lo = 0;
+    float hi = 8;
+    for (int i = 0; i < 12; i++) {
+        float mid = (lo + hi) / 2;
+        if (alpha_coverage_of(level, w, h, cut, mid) < want) { lo = mid; } else { hi = mid; }
+    }
+    float scale = (lo + hi) / 2;
+    sz n = (sz)w * h;
+    for (sz i = 0; i < n; i++) level[i * 4 + 3] = (char)math::min((float)level[i * 4 + 3] * scale + 0.5f, 255.0f);
 }
 
 // Turns an RGBA8 image upside down, in place.
@@ -593,6 +621,7 @@ fn void Texture.prepare(&self) {
             int nw = math::max(w / 2, 1);
             int nh = math::max(h / 2, 1);
             levels[count] = downsample(levels[count - 1], w, h, nw, nh, self.alpha_is_data);
+            if (self.alpha_coverage > 0 && !self.alpha_is_data) keep_coverage(levels[count], nw, nh, levels[0], self.width, self.height, self.alpha_coverage);
             w = nw;
             h = nh;
             count++;
