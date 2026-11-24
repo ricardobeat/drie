@@ -22,6 +22,20 @@
 
 // per job: 0 free, 1 running, 2 done, 3 failed
 static _Atomic int _sg_warm_jobs[SG_WARM_JOBS];
+// when each job started (CFAbsoluteTime), and whether it was given up on (see sg_warm_state)
+static double _sg_warm_started[SG_WARM_JOBS];
+static bool _sg_warm_given_up[SG_WARM_JOBS];
+
+// A compile in the background that has run this long is given up on: sg_warm_state says it
+// failed, so that its caller makes the shader or pipeline itself, on its own thread, rather
+// than leave out what draws with it for good. (Seen under a heavily loaded machine: a job whose
+// block never finished, and a rock's material never drawn.) Its slot stays taken.
+#define SG_WARM_GIVE_UP_SECONDS 20.0
+
+static void _sg_warm_started_now(int job) {
+    _sg_warm_started[job] = CFAbsoluteTimeGetCurrent();
+    _sg_warm_given_up[job] = false;
+}
 
 int sg_warm_begin(const sg_shader_desc* shader_desc, const sg_pipeline_desc* pipeline_desc) {
     if (!_sg.valid || !shader_desc || !pipeline_desc) return -1;
@@ -101,6 +115,7 @@ int sg_warm_begin(const sg_shader_desc* shader_desc, const sg_pipeline_desc* pip
     NSString* vs_entry = [[NSString alloc] initWithUTF8String:sd.vertex_func.entry ? sd.vertex_func.entry : "main0"];
     NSString* fs_entry = [[NSString alloc] initWithUTF8String:sd.fragment_func.entry ? sd.fragment_func.entry : "main0"];
     id<MTLDevice> device = _sg.mtl.device;
+    _sg_warm_started_now(job);
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
         @autoreleasepool {
             int state = 3;
@@ -150,6 +165,7 @@ int sg_warm_shader_begin(const sg_shader_desc* shader_desc) {
     NSString* vs_src = [[NSString alloc] initWithUTF8String:sd.vertex_func.source];
     NSString* fs_src = [[NSString alloc] initWithUTF8String:sd.fragment_func.source];
     id<MTLDevice> device = _sg.mtl.device;
+    _sg_warm_started_now(job);
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         @autoreleasepool {
             NSError* err = nil;
@@ -170,14 +186,30 @@ int sg_warm_shader_begin(const sg_shader_desc* shader_desc) {
 
 int sg_warm_state(int job) {
     if (job < 0 || job >= SG_WARM_JOBS) return 2;
+    if (_sg_warm_given_up[job]) return 2;
     int s = atomic_load(&_sg_warm_jobs[job]);
+    // (DRIE_WARM_GIVE_UP=<seconds> in the environment sets the limit, to try this path)
+    static double limit = 0;
+    if (limit == 0) {
+        const char* e = getenv("DRIE_WARM_GIVE_UP");
+        limit = e ? atof(e) : SG_WARM_GIVE_UP_SECONDS;
+        if (limit <= 0) limit = SG_WARM_GIVE_UP_SECONDS;
+    }
+    if (s == 1 && CFAbsoluteTimeGetCurrent() - _sg_warm_started[job] > limit) {
+        _sg_warm_given_up[job] = true;
+        fprintf(stderr, "drie: a shader compile in the background (job %d) has run %.0f s: given up on, made on the main thread instead\n",
+            job, CFAbsoluteTimeGetCurrent() - _sg_warm_started[job]);
+        return 2;
+    }
     return s == 1 ? 0 : s == 2 ? 1 : 2;
 }
 
 void sg_warm_end(int job) {
     if (job < 0 || job >= SG_WARM_JOBS) return;
     int s = atomic_load(&_sg_warm_jobs[job]);
-    // (a running one is left to finish: its slot frees itself never, rather than twice)
+    // (a running one is left to finish: its slot frees itself never, rather than twice; nor
+    // one given up on, whose block may still store its end)
+    if (_sg_warm_given_up[job]) return;
     if (s == 2 || s == 3) atomic_store(&_sg_warm_jobs[job], 0);
 }
 
