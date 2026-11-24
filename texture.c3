@@ -243,6 +243,34 @@ fn Texture* load_texture(String path, ColorSpace color_space = SRGB_COLOR_SPACE,
     return t;
 }
 
+// load_texture, its alpha from the red of a second image, `alpha_path` (the same size): a
+// color and a height or a roughness kept as two JPEGs, which have no alpha, instead of one PNG
+// several times their size (mark it alpha_is_data, so its mipmaps average the alpha plainly).
+// A missing or mismatched alpha image leaves the texture opaque.
+fn Texture* load_texture_alpha(String path, String alpha_path, ColorSpace color_space = SRGB_COLOR_SPACE, bool flip_y = true) {
+    Texture* t = load_texture(path, color_space, flip_y);
+    char[]? data = file::load(mem, alpha_path);
+    if (catch err = data) {
+        io::eprintfn("drie: cannot read texture '%s'", alpha_path);
+        return t;
+    }
+    defer mem::free(data.ptr);
+    CInt w;
+    CInt h;
+    char* px = imageio::decode(data.ptr, (usz)data.len, &w, &h);
+    if (!px) {
+        io::eprintfn("drie: cannot decode texture '%s'", alpha_path);
+        return t;
+    }
+    defer imageio::free_pixels(px);
+    if (w != t.width || h != t.height) {
+        io::eprintfn("drie: '%s' is %dx%d, not %dx%d as '%s'", alpha_path, w, h, t.width, t.height, path);
+        return t;
+    }
+    for (sz i = 0; i < (sz)w * h; i++) t.pixels[i * 4 + 3] = px[i * 4];
+    return t;
+}
+
 fn SgWrap sg_wrap(Wrapping w) @local {
     switch (w) {
         case REPEAT_WRAPPING: return REPEAT;
