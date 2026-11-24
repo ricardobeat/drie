@@ -530,7 +530,7 @@ layout(binding=3) uniform texture2D shadow_map;
 layout(binding=5) uniform texture2D shadow_atlas;
 layout(binding=9) uniform texture2D sun_shadow;  // the directional light's map: 2x2 cascades, or one box
 #endif
-layout(binding=21) uniform texture2D reflector_map; // a Reflector's mirrored render, linear
+layout(binding=21) uniform texture2D light_cookies; // the spot lights' SpotLight.map (an atlas, see spot_cookie)
 layout(binding=20) uniform texture2D ssr_back;    // r = the nearest back face's distance from the camera's plane (m), 0: none
 layout(binding=23) uniform texture2DArray tex_probes; // the scene's reflection probes (reflection_probes.c3)
 layout(binding=24) uniform texture2D tex_parallax; // Material.parallax_map: the surface's height, 1 = top
@@ -1585,15 +1585,9 @@ float shadow(int s, vec3 n) {
     return mix(1.0, light_shadow_of(spots[s].pos.xyz, si, n), spots[s].shadow.y);
 }
 
-// SpotLight.map: the color the spot light `s` projects towards -l. The map lives on
-// light_cookies (the slot of a Reflector's picture, which the lighting pass doesn't use; the
-// forward pass has it on materials without a Reflector only).
-#define light_cookies reflector_map
+// SpotLight.map: the color the spot light `s` projects towards -l, from light_cookies.
 vec3 spot_cookie(int s, vec3 l) {
     vec4 rect = spots[s].map;
-#ifndef DEFERRED_LIGHT
-    if (reflector_params.x > 0.0) return vec3(1.0);
-#endif
     if (rect.z <= 0.0) return vec3(1.0);
     vec3 w = -l;
     float z = max(dot(w, spots[s].dir.xyz), 1e-4);
@@ -1974,6 +1968,27 @@ float ssr_depth_at(vec2 uv) {
 // A Reflector's picture (reflector.c3) where the ray from here along the normal's reflection
 // would be seen: exact for a flat surface, and for a bumpy one as if what it mirrors were
 // reflector_params.y away. Blurred by roughness; `found` fades out at the picture's edges.
+// A Reflector's mirrored render (linear) is in one of the material's map slots, tex_ext0..5:
+// reflector_params.w's (see reflector_slot in renderer.c3).
+vec2 reflector_size() {
+    int slot = int(reflector_params.w);
+    if (slot == 0) return vec2(textureSize(sampler2D(tex_ext0, ssr_smp), 0));
+    if (slot == 1) return vec2(textureSize(sampler2D(tex_ext1, ssr_smp), 0));
+    if (slot == 2) return vec2(textureSize(sampler2D(tex_ext2, ssr_smp), 0));
+    if (slot == 3) return vec2(textureSize(sampler2D(tex_ext3, ssr_smp), 0));
+    if (slot == 4) return vec2(textureSize(sampler2D(tex_ext4, ssr_smp), 0));
+    return vec2(textureSize(sampler2D(tex_ext5, ssr_smp), 0));
+}
+vec3 reflector_texel(vec2 at) {
+    int slot = int(reflector_params.w);
+    if (slot == 0) return textureLod(sampler2D(tex_ext0, ssr_smp), at, 0.0).rgb;
+    if (slot == 1) return textureLod(sampler2D(tex_ext1, ssr_smp), at, 0.0).rgb;
+    if (slot == 2) return textureLod(sampler2D(tex_ext2, ssr_smp), at, 0.0).rgb;
+    if (slot == 3) return textureLod(sampler2D(tex_ext3, ssr_smp), at, 0.0).rgb;
+    if (slot == 4) return textureLod(sampler2D(tex_ext4, ssr_smp), at, 0.0).rgb;
+    return textureLod(sampler2D(tex_ext5, ssr_smp), at, 0.0).rgb;
+}
+
 vec3 planar_reflection(vec3 n, vec3 v, float rough, out float found) {
     vec3 r = reflect(-v, n);
     vec4 clip = reflector_view_proj * vec4(v_world_pos + r * reflector_params.y, 1.0);
@@ -1982,7 +1997,7 @@ vec3 planar_reflection(vec3 n, vec3 v, float rough, out float found) {
     vec2 uv = ndc * 0.5 + 0.5;
     vec2 edge = min(uv, 1.0 - uv);
     found = clip.w > 0.0 ? smoothstep(-0.02, 0.03, min(edge.x, edge.y)) : 0.0;
-    vec2 size = vec2(textureSize(sampler2D(reflector_map, ssr_smp), 0));
+    vec2 size = reflector_size();
     float spread = rough * rough * reflector_params.z;
     vec2 radius = vec2(spread * size.y / size.x, spread);
     float turn = ssr_noise(gl_FragCoord.xy + ssr_params.z * vec2(47.0, 17.0)) * 2.0 * PI;
@@ -1990,7 +2005,7 @@ vec3 planar_reflection(vec3 n, vec3 v, float rough, out float found) {
     for (int k = 0; k < 8; k++) {
         float a = turn + float(k) * 2.39996;
         vec2 at = uv + vec2(cos(a), sin(a)) * radius * sqrt((float(k) + 0.5) / 8.0);
-        sum += min(textureLod(sampler2D(reflector_map, ssr_smp), at, 0.0).rgb, vec3(64.0));
+        sum += min(reflector_texel(at), vec3(64.0));
     }
     return sum / 8.0;
 }

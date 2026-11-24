@@ -8,7 +8,9 @@
 //   - a second light with another texture draws without its map (white)
 //   - two lights sharing one texture (an atlas), each its own part of it by map_rect: red
 //     under one, green under the other
-// The picture: the six, left to right.
+//   - on a floor that mirrors (a Reflector: its picture takes a map slot of the material, the
+//     cookies keep their own), the map as in the first
+// The picture: the seven, left to right.
 //
 //   just test spot_map [out.png]   (tests/build/spot_map.png)
 module spot_map_test;
@@ -95,7 +97,7 @@ fn int main(String[] args) {
     RenderTarget* rt = drie::render_target(S, S, 1, RGBA8);
     renderer.set_render_target(rt);
 
-    char[][6] px;
+    char[][7] px;
     for (int i = 0; i < 5; i++) {
         spot.cast_shadow = i == 1;
         spot.shadow.softness = i == 1 ? 0.05f : 0;
@@ -145,7 +147,37 @@ fn int main(String[] args) {
         drie::commit();
         readback::read_image(rt.texture_image, S, S, px[5].ptr);
     }
+    // on a mirroring floor (Material.reflector)
+    {
+        Scene* shiny = drie::scene();
+        shiny.background = 0x000000;
+        Reflector* mirror = drie::reflector({ 0, 1, 0 }, 0, 0.5f);
+        MeshStandardMaterial* polished = drie::mesh_standard_material(color: 0xffffff, roughness: 1, metalness: 0);
+        polished.reflector = mirror;
+        Mesh* floor = drie::mesh(drie::plane_geometry(8, 8), polished);
+        floor.rotation = { -(float)math::PI / 2, 0, 0 };
+        shiny.add(floor);
+        SpotLight* l = drie::spot_light(0xffffff, 12, 0, 0.6f, 0, 2);
+        l.position = { 0, 2, 0 };
+        l.target.position = { 0, 0, 0 };
+        l.map = map;
+        shiny.add(l);
+        shiny.add(l.target);
+        // (a Reflector wants a perspective camera: one that sees the same 4 m of the floor)
+        PerspectiveCamera* eye = drie::perspective_camera(2 * math::atan(0.4f) * 180 / (float)math::PI, 1, 0.1f, 20);
+        eye.position = { 0, 5, 0 };
+        eye.rotation.x = -(float)math::PI / 2;
+        px[6] = mem::new_array(char, S * S * 4);
+        for (int f = 0; f < 2; f++) {
+            renderer.render_reflector(mirror, shiny, eye);
+            renderer.render(shiny, eye);
+            drie::commit();
+        }
+        expect(mirror.rendered, "the reflector rendered");
+        readback::read_image(rt.texture_image, S, S, px[6].ptr);
+    }
     check_quarters(px[0], "the map", false);
+    check_quarters(px[6], "the map on a mirroring floor", false);
     check_quarters(px[1], "the map with a soft shadow", false);
     check_quarters(px[2], "turned a quarter", true);
     bool all_green = true;
@@ -160,18 +192,18 @@ fn int main(String[] args) {
     char[4] g1 = floor_at(px[5], -1, 0);
     expect(is(r1, 220, 0, 0) && is(g1, 0, 220, 0), string::tformat("one atlas, two parts: %s %s", r1[:3], g1[:3]));
 
-    char[] sheet = mem::new_array(char, S * 6 * S * 4);
+    char[] sheet = mem::new_array(char, S * 7 * S * 4);
     for (int y = 0; y < S; y++) {
         for (int x = 0; x < S; x++) {
             usz src = ((usz)y * S + (usz)x) * 4;
-            for (int k = 0; k < 6; k++) {
-                usz dst = ((usz)y * S * 6 + (usz)(k * S + x)) * 4;
+            for (int k = 0; k < 7; k++) {
+                usz dst = ((usz)y * S * 7 + (usz)(k * S + x)) * 4;
                 sheet[dst:3] = px[k][src:3];
                 sheet[dst + 3] = 255;
             }
         }
     }
-    (void)png::write(out_path, sheet, S * 6, S);
+    (void)png::write(out_path, sheet, S * 7, S);
     io::printfn("%s", out_path);
     if (failures) io::printfn("%d failed", failures);
     return failures ? 1 : 0;

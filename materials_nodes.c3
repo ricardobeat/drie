@@ -1102,6 +1102,7 @@ fn void build_material_graph(MaterialKey key, ProgramGraph* graph, ProgramGraph*
     Lit lit = { .key = key, .n = n, .geo_n = geo_n, .v = v, .world = world, .rough = rough, .metal = metal, .alpha = alpha,
                 .ao = ao, .parallax = px, .f = &f, .v_normal = v_normal, .tangent = vtx.tangent, .irid_fn = -1, .frag = fc.xy(),
                 .shadow = shadow_fns(key), .ltc_fn = -1, .refraction = { -1, -1, -1 }, .probe_fn = -1, .ssr_fn = -1,
+                .mirror_slot = reflector_slot(build && !key.morph ? build.texture_count : 0),
                 .user_glow = user_glow, .user_env = user[9], .user_cc = user[12], .user_cc_rough = user[13], .phong_specular = phong_specular, .shininess = shininess };
     if (key.type == (char)MaterialType.MATCAP) {
         // MeshMatcapMaterial: the matcap image at the view-space normal, from a frame turned
@@ -1339,6 +1340,7 @@ struct Lit @local {
     int irid_fn;
     int probe_fn;          // probe_sample's function (-1: not made yet)
     int ssr_fn;            // screen_reflection's
+    int mirror_slot;       // the shared map slot of a Reflector's picture (reflector_slot)
     Refraction refraction;
     Node aniso;
     Node aniso_t;
@@ -1603,9 +1605,9 @@ fn void Lit.shade(&self, FragUv* f, Node rgb, Node map_rgb, Node v_color) {
                 cone.less_than_equal(nodes::num(0)));
             Node[4] pre;
             int np;
-            if (!key.reflector) {
-                // SpotLight.map (shader_core.glsl's spot_cookie): the picture it projects, on
-                // the slot of a Reflector's (which this material has not)
+            {
+                // SpotLight.map (shader_core.glsl's spot_cookie): the picture it projects, from
+                // light_cookies
                 Node map = node_storage(shaders::VIEW_SPOT_LIGHTS, VEC4, at + nodes::uint_(5));
                 Node map_u = node_storage(shaders::VIEW_SPOT_LIGHTS, VEC4, at + nodes::uint_(6));
                 Node map_v = node_storage(shaders::VIEW_SPOT_LIGHTS, VEC4, at + nodes::uint_(7));
@@ -1618,7 +1620,7 @@ fn void Lit.shade(&self, FragUv* f, Node rgb, Node map_rgb, Node v_color) {
                 Node pixel = nodes::max(nodes::length(self.dpdx), nodes::length(self.dpdy));
                 Node lod = nodes::max(nodes::log2(nodes::max(pixel * 0.5f * nodes::length(map_u.xyz()) / (z * d), 1e-8f)) + map_v.z(), 0.0f);
                 Node tap = map.xy() + nodes::vec2(uv.x(), uv.y().negate() + 1.0f) * map.swizzle("zw");
-                Node texel = node_sample(LEVEL, shaders::VIEW_REFLECTOR_MAP, shaders::SMP_SSR_SMP, TEX_2D, tap, lod).xyz();
+                Node texel = node_sample(LEVEL, shaders::VIEW_LIGHT_COOKIES, shaders::SMP_SSR_SMP, TEX_2D, tap, lod).xyz();
                 Node cookie = nodes::variable(nodes::vec3(1, 1, 1));
                 pre[np++] = cookie;
                 pre[np++] = nodes::if_then(map.z().greater_than(nodes::num(0)),
@@ -1729,7 +1731,7 @@ fn void Lit.finish(&self) {
         Node strength;
         if (key.reflector) {
             // the planar reflection: the picture of the mirrored scene where the ray points
-            Node seen = planar_reflection(rn, v, self.rough, self.world, self.frag);
+            Node seen = planar_reflection(rn, v, self.rough, self.world, self.frag, self.mirror_slot);
             mirrored = seen.xyz();
             found = seen.w() * fs_in("reflector_params", FLOAT);
             strength = nodes::num(1);
