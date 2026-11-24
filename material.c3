@@ -181,8 +181,10 @@ struct Material {
     // the next where they meet, so that a texture repeated over a large surface doesn't show its
     // repeats. hex_tiling is how wide the patches are, in the color map's uv (0: off; 0.5: half
     // the texture across). They are moved, not turned: what runs down the texture (stains,
-    // drips) still runs down. Three reads of each map instead of one. Not with a parallax_map or
-    // alpha_test, nor for the maps read from the second uv set (a light map).
+    // drips) still runs down. Three reads of each map instead of one. With a parallax_map, the
+    // height map is read through the same patches (one read where a patch shows alone, as most
+    // pixels are, three at the seams). Not with alpha_test, nor for the maps read from the
+    // second uv set (a light map).
     float hex_tiling;
     // A height map (red, 1 = highest) that tilts the normal by how it changes from pixel to
     // pixel, bump_scale strong (three's bumpMap and bumpScale), after the normal map.
