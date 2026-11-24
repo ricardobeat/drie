@@ -199,8 +199,10 @@ fn int ShadowFns.make_light(&self) {
         Node mid = (lo + hi) * 0.5f;
         Node closer = self.tap(tiled, rect, params.z(), at, shadow_depth(mid, soft)).greater_than(nodes::num(0.5f));
         Node bisect = nodes::loop(j, 0, 5, nodes::block(nodes::if_then(closer, nodes::block(lo.assign(mid)), nodes::block(hi.assign(mid)))));
+        // (along the receiver's own plane, as the blur below: a surface the light grazes is
+        // not its own blocker)
         Node look = nodes::block(
-            nodes::if_then(self.tap(tiled, rect, params.z(), at, c.z()).greater_than(nodes::num(0.5f)), nodes::block(nodes::continue_())),
+            nodes::if_then(self.tap(tiled, rect, params.z(), at, c.z() + nodes::clamp(nodes::dot(grad, o), -0.25f, 0.25f)).greater_than(nodes::num(0.5f)), nodes::block(nodes::continue_())),
             lo, hi, bisect,
             nearest.assign(nearest + (lo + hi) * 0.5f),
             found.assign(found + 1.0f));
@@ -217,9 +219,9 @@ fn int ShadowFns.make_light(&self) {
             drie::node_eval(per_m),
             drie::node_eval(search),
             most.assign(shadow_taps(14)),
+            nodes::if_then(nodes::abs(det).greater_than(nodes::num(1e-12f)), nodes::block(grad.assign(slope_grad))),
             // the widest edge the source could make here is under a pixel: no need to look
-            nodes::if_then(search.greater_than(pixel), widen),
-            nodes::if_then(nodes::abs(det).greater_than(nodes::num(1e-12f)), nodes::block(grad.assign(slope_grad))));
+            nodes::if_then(search.greater_than(pixel), widen));
         st[ns++] = nodes::if_then(soft.x().greater_than(nodes::num(0)), soft_block);
     }
     // about three taps per pixel across the blur, at least four (each tap is a bilinear 2x2)
@@ -229,7 +231,7 @@ fn int ShadowFns.make_light(&self) {
     Node a = nodes::convert(k, FLOAT) * 2.39996f;
     Node rr = nodes::sqrt((nodes::convert(k, FLOAT) + 0.5f) / nodes::convert(taps, FLOAT)) * r;
     Node o = rotate(nodes::vec2(nodes::cos(a), nodes::sin(a)) * rr, ca, sa);
-    Node z = c.z() + nodes::clamp(nodes::dot(grad, o), -0.004f, 0.004f);
+    Node z = c.z() + nodes::clamp(nodes::dot(grad, o), -0.25f, 0.25f);
     st[ns++] = drie::node_eval(taps);
     st[ns++] = sum;
     st[ns++] = nodes::loop(k, 0, taps, nodes::block(sum.assign(sum + self.tap(tiled, rect, params.z(), c.xy() + o, z))));

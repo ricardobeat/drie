@@ -1536,6 +1536,8 @@ float light_shadow_of(vec3 light_pos, int si, vec3 n) {
         float per_m = 1.0 / (abs(soft.w) * dr);
         float search = clamp(soft.x * 1.6 * per_m, r, 0.04);
         most = shadow_taps(14.0);
+        float det = dx.x * dy.y - dx.y * dy.x;
+        if (abs(det) > 1e-12) grad = vec2(dy.y * dx.z - dx.y * dy.z, dx.x * dy.z - dy.x * dx.z) / det;
         // the widest edge the source could make here is under a pixel: no need to look
         if (search > pixel) {
             float found = 0.0;
@@ -1546,7 +1548,9 @@ float light_shadow_of(vec3 light_pos, int si, vec3 n) {
                 if (k >= looks) break;
                 float a = float(k) * 6.2831853 / float(looks - 1);
                 vec2 o = k == 0 ? vec2(0.0) : vec2(cos(a) * ca - sin(a) * sa, cos(a) * sa + sin(a) * ca) * search;
-                if (shadow_tap(tiled, rect, params.z, c.xy + o, c.z) > 0.5) continue;
+                // (along the receiver's own plane, as the blur below: a surface the light
+                // grazes is not its own blocker)
+                if (shadow_tap(tiled, rect, params.z, c.xy + o, c.z + clamp(dot(grad, o), -0.25, 0.25)) > 0.5) continue;
                 float lo = soft.y;
                 float hi = dr;
                 for (int j = 0; j < 5; j++) {
@@ -1560,8 +1564,6 @@ float light_shadow_of(vec3 light_pos, int si, vec3 n) {
             float db = nearest / found;
             r = clamp(soft.x * (dr - db) / db * per_m, r, 0.04);
         }
-        float det = dx.x * dy.y - dx.y * dy.x;
-        if (abs(det) > 1e-12) grad = vec2(dy.y * dx.z - dx.y * dy.z, dx.x * dy.z - dy.x * dx.z) / det;
     }
     // about three taps per pixel across the blur, at least four (each tap is a bilinear 2x2)
     int taps = clamp(int(ceil(r / pixel * 3.0)), 4, most);
@@ -1572,7 +1574,7 @@ float light_shadow_of(vec3 light_pos, int si, vec3 n) {
         float rr = sqrt((float(k) + 0.5) / float(taps)) * r;
         vec2 o = vec2(cos(a), sin(a)) * rr;
         o = vec2(o.x * ca - o.y * sa, o.x * sa + o.y * ca);
-        sum += shadow_tap(tiled, rect, params.z, c.xy + o, c.z + clamp(dot(grad, o), -0.004, 0.004));
+        sum += shadow_tap(tiled, rect, params.z, c.xy + o, c.z + clamp(dot(grad, o), -0.25, 0.25));
     }
     return sum / float(taps);
 }
@@ -2741,6 +2743,24 @@ void main() {
     float ao = g0.a;
     vec3 n = unpack_normal_octahedral(g1.xy);
     vec3 geo_n = unpack_normal_octahedral(g3.zw);
+    // how the world position changes to the next pixel (the forward pass's dFdx), for the
+    // shadows' receiver plane and footprint: where the rays through the next pixels meet this
+    // surface's plane. (dFdx of the position read back from depth would jump at every edge.)
+    {
+        vec3 eye = d_view_origin.xyz;
+        vec3 rd = v_world_pos - eye;
+        vec2 step_px = 2.0 * d_screen_info.xy * vec2(1.0, d_screen_info.z > 0.5 ? -1.0 : 1.0);
+        vec4 qx = d_inv_view_proj * vec4(ndc_xy + vec2(step_px.x, 0.0), ndc_z, 1.0);
+        vec4 qy = d_inv_view_proj * vec4(ndc_xy + vec2(0.0, step_px.y), ndc_z, 1.0);
+        vec3 rx = qx.xyz / qx.w + d_view_origin.xyz - eye;
+        vec3 ry = qy.xyz / qy.w + d_view_origin.xyz - eye;
+        float face = dot(geo_n, rd);
+        float fx = dot(geo_n, rx);
+        float fy = dot(geo_n, ry);
+        // (edge on, the plane runs off to infinity: the next pixel's point at this depth)
+        g_dpdx = abs(fx) > abs(face) * 0.05 ? rx * (face / fx) - rd : rx - rd;
+        g_dpdy = abs(fy) > abs(face) * 0.05 ? ry * (face / fy) - rd : ry - rd;
+    }
     g_rough = g1.z;
     g_metal = g1.w;
     g_f0 = mix(vec3(0.04), g_base.rgb, g_metal);
