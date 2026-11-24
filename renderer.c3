@@ -3414,9 +3414,9 @@ fn bool material_key_of(DrawItem* item, DrawKind kind, FsParams* fs, Vec4[6]* ma
         .env_light = standard && env_map && env_map.has_env_sh,
         .env_reflect = env_reflect,
         .glass = mat.glass,
-        // (not with a parallax map or an alpha test, as parallax_params has it)
+        // (not with an alpha test, as parallax_params has it)
         .defocus = mat.defocus && r.focus_map && r.focus_aperture > 0,
-        .hex = mat.hex_tiling > 0 && !(standard && mat.parallax_map) && mat.alpha_test <= 0,
+        .hex = mat.hex_tiling > 0 && mat.alpha_test <= 0,
         .probes = probes,
         .gi = lit && state.gi_count > 0,
         // (baking: the last light map in ssr_color's place)
@@ -4007,7 +4007,7 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
         mat.parallax_distance > 0 ? mat.parallax_distance : 30,
         mat.parallax_shadow,
         // (the depth prepass and the shadows cut out the alpha as one patch: they'd disagree)
-        parallax || mat.alpha_test > 0 ? 0 : mat.hex_tiling
+        mat.alpha_test > 0 ? 0 : mat.hex_tiling
     };
     // a dashed line: its gaps are cut out by the distances along it (see Line.compute_line_distances)
     if (m.is_line() && mat.dash_size > 0 && mat.gap_size > 0) {

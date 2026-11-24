@@ -670,9 +670,20 @@ struct Parallax @local {
     Node depth;
 }
 
-// The parallax map at uv.
+// The parallax map at uv; hex tiled (Material.hex_tiling), as the other maps are: the patches'
+// heights blended with their weights, a patch read only where it shows (most pixels are
+// inside one patch, and the march would read three times as much for nothing).
 fn Node parallax_height(FragUv* f, Node uv) @local {
-    return node_sample(GRAD, shaders::VIEW_TEX_PARALLAX, shaders::SMP_TEX_SMP, TEX_2D, uv, f.dx, f.dy).x();
+    if (!f.hex_w.id) return node_sample(GRAD, shaders::VIEW_TEX_PARALLAX, shaders::SMP_TEX_SMP, TEX_2D, uv, f.dx, f.dy).x();
+    Node acc = nodes::variable(nodes::num(0));
+    Node[3] w = { f.hex_w.x(), f.hex_w.y(), f.hex_w.z() };
+    Node[4] steps;
+    steps[0] = acc;
+    for (int i = 0; i < 3; i++) {
+        Node h = node_sample(GRAD, shaders::VIEW_TEX_PARALLAX, shaders::SMP_TEX_SMP, TEX_2D, uv + f.hex_off[i], f.dx, f.dy).x();
+        steps[i + 1] = nodes::if_then(w[i].greater_than(nodes::num(0.004f)), nodes::block(acc.assign(acc + h * w[i])));
+    }
+    return nodes::seq(drie::node_block(steps[:4]), acc);
 }
 
 // Marches the view ray (`v`, toward the camera `dist` away) down into the height field (1 = the
@@ -906,6 +917,16 @@ fn void build_material_graph(MaterialKey key, ProgramGraph* graph, ProgramGraph*
         f.dx = f.dx * widen;
         f.dy = f.dy * widen;
     }
+    // Material.hex_tiling: the patches where the pixel is (before the parallax: they stay put as
+    // the march moves the uv, and its height map is read through them as the other maps are)
+    if (key.hex) {
+        f.hex_setup(fs_in("parallax_params", FLOAT, 3));
+        if (key.parallax) {
+            // (evaluated once, out here: the march reads them in its loop)
+            foreach (o : f.hex_off) cuts[ncuts++] = drie::node_eval(o);
+            cuts[ncuts++] = drie::node_eval(f.hex_w);
+        }
+    }
     Parallax px;
     if (key.parallax) {
         // parallax_map: where the view ray meets the height map, for all of the material's maps
@@ -928,8 +949,6 @@ fn void build_material_graph(MaterialKey key, ProgramGraph* graph, ProgramGraph*
             f.dy1 = f.dy1 * widen;
         }
     }
-    // Material.hex_tiling
-    if (key.hex) f.hex_setup(fs_in("parallax_params", FLOAT, 3));
     Node map_rgb;
     if (key.map) {
         Node texel = key.hex ? f.hex_color() : node_sample(GRAD, shaders::VIEW_TEX_MAP, shaders::SMP_TEX_SMP, TEX_2D, f.uv, f.dx, f.dy);
