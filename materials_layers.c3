@@ -562,8 +562,9 @@ fn Node frame_noise(Node frag, Node shift = { }) @private {
 // A Reflector's picture (reflector.c3) where the ray from `world` along the normal n's
 // reflection would be seen: exact for a flat surface, and for a bumpy one as if what it
 // mirrors were reflector_params.y away. Blurred by roughness (eight taps on a disc turned at
-// every pixel); w: how much was found, fading out at the picture's edges.
-fn Node planar_reflection(Node n, Node v, Node rough, Node world, Node frag) @private {
+// every pixel), read from the material map slot `slot` (tex_ext0..5, see reflector_slot);
+// w: how much was found, fading out at the picture's edges.
+fn Node planar_reflection(Node n, Node v, Node rough, Node world, Node frag, int slot) @private {
     Node params = fs_in("reflector_params");
     Node r      = nodes::reflect(v.negate(), n);
     Node clip   = fs_in("reflector_view_proj", MAT4) * nodes::vec4(world + r * params.y(), 1);
@@ -574,7 +575,7 @@ fn Node planar_reflection(Node n, Node v, Node rough, Node world, Node frag) @pr
     Node edge   = nodes::min(uv, nodes::vec2(1) - uv);
     Node found  = nodes::select(clip.w()
         .greater_than(nodes::num(0)), nodes::smoothstep(-0.02f, 0.03f, nodes::min(edge.x(), edge.y())), 0.0f);
-    Node size   = nodes::convert(ssr_texture(shaders::VIEW_REFLECTOR_MAP, SIZE, nodes::int_(0)), VEC2);
+    Node size   = nodes::convert(ssr_texture(shaders::VIEW_TEX_EXT0 + slot, SIZE, nodes::int_(0)), VEC2);
     Node spread = rough * rough * params.z();
     Node radius = nodes::vec2(spread * size.y() / size.x(), spread);
     Node turn   = frame_noise(frag) * (2.0f * (float)math::PI);
@@ -585,7 +586,7 @@ fn Node planar_reflection(Node n, Node v, Node rough, Node world, Node frag) @pr
         nodes::cos(a),
         nodes::sin(a)
     ) * radius * nodes::sqrt((nodes::convert(k, FLOAT) + 0.5f) / 8.0f);
-    Node tap    = nodes::min(ssr_texture(shaders::VIEW_REFLECTOR_MAP, LEVEL, at, nodes::num(0)).xyz(), nodes::vec3(64));
+    Node tap    = nodes::min(ssr_texture(shaders::VIEW_TEX_EXT0 + slot, LEVEL, at, nodes::num(0)).xyz(), nodes::vec3(64));
     Node taps   = nodes::loop(k, nodes::int_(0), nodes::int_(8), nodes::block(sum.assign(sum + tap)));
     return nodes::seq(nodes::block(sum, taps), nodes::vec4(sum / 8.0f, found));
 }

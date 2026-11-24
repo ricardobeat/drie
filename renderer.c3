@@ -2029,9 +2029,13 @@ fn void update_shadow_atlas(Scene* scene, Camera* camera, bool bake = false, Spo
             state.atlas_pending.push(i < state.atlas_lights.len() ? state.atlas_lights[i] : null);
         }
     }
+    // a static light keeps its tile while it exists and casts, at intensity 0 too: a light that
+    // flickers down to 0 would otherwise hand every tile after its own to another light, and
+    // they would all be drawn again
     foreach (l : state.lights) {
-        if (l.light_type != SPOT || !l.cast_shadow || !l.visible || l.intensity <= 0) continue;
+        if (l.light_type != SPOT || !l.cast_shadow || !l.visible) continue;
         SpotLight* sl = (SpotLight*)l;
+        if (l.intensity <= 0 && (sl.shadow.auto_update || bake)) continue;
         if ((sl.shadow.auto_update && !bake) || state.atlas_pending.len() >= MAX_ATLAS_TILES) continue;
         state.atlas_pending.push(sl);
         tile = math::max(tile, shadow_map_size(sl.shadow.map_size));
@@ -2039,8 +2043,9 @@ fn void update_shadow_atlas(Scene* scene, Camera* camera, bool bake = false, Spo
     // a point light's six faces: drawn once (or in a bake) with the spot lights, else every
     // frame with the directional lights
     foreach (l : state.lights) {
-        if (l.light_type != POINT || !l.cast_shadow || !l.visible || l.intensity <= 0) continue;
+        if (l.light_type != POINT || !l.cast_shadow || !l.visible) continue;
         PointLight* pl = (PointLight*)l;
+        if (l.intensity <= 0 && (pl.shadow.auto_update || bake)) continue;
         if ((pl.shadow.auto_update && !bake) || state.atlas_pending.len() + 6 > MAX_ATLAS_TILES) continue;
         for (int f = 0; f < 6; f++) state.atlas_pending.push(pl);
         tile = math::max(tile, shadow_map_size(pl.shadow.map_size));
@@ -3319,8 +3324,11 @@ fn void material_slots(Material* mat, NodeBuild* nodes, Texture*[6]* slots, Vec4
         mat.type != BASIC && mat.type != MATCAP ? mat.bump_map : null,
     };
     int used;
-    // (a node material's textures take the last slots: see NodeBuild.textures)
+    // (a node material's textures take the last slots: see NodeBuild.textures; a Reflector's
+    // picture the one below them, see reflector_slot)
     int room = 6 - (nodes ? nodes.texture_count : 0);
+    Reflector* mirror = mirror_of(mat);
+    if (mirror) room--;
     foreach (i, t : roles) {
         int slot = -1;
         if (t) {
@@ -3338,7 +3346,18 @@ fn void material_slots(Material* mat, NodeBuild* nodes, Texture*[6]* slots, Vec4
     if (nodes) {
         for (int k = 0; k < nodes.texture_count; k++) (*slots)[5 - k] = nodes.texture(k);
     }
+    if (mirror) (*slots)[reflector_slot(nodes ? nodes.texture_count : 0)] = mirror.target.as_map();
 }
+
+// The Reflector whose picture a material shows (Material.reflector, once rendered), or null.
+fn Reflector* mirror_of(Material* mat) @local {
+    return mat.reflector && mat.reflector.rendered && mat.reflector.target ? mat.reflector : null;
+}
+
+// The shared slot (tex_ext0..5) of a Reflector's picture: the first below a node material's
+// `node_textures` (which take the last ones). It has a slot of the material's maps, not one of
+// its own: slot 21 (light_cookies) is the spot lights' SpotLight.map, on every material.
+fn int reflector_slot(int node_textures) => 5 - node_textures;
 
 // Whether `item` casts its shadow with a generated program, and its key (MaterialKey.shadow):
 // a built-in material's, without the application's programs (Renderer.shaders).
@@ -3758,7 +3777,7 @@ fn void draw_deferred_lighting(
     bind.views[shaders::VIEW_SSR_DEPTH] = ssr ? r.ssr_depth : none.view;
     bind.views[shaders::VIEW_SSR_BACK] = ssr && r.ssr_back.id ? r.ssr_back : none.view;
     // SpotLight.map (shader_core.glsl's light_cookies)
-    bind.views[shaders::VIEW_REFLECTOR_MAP] = lights_gpu.cookie ? lights_gpu.cookie.view : none.view;
+    bind.views[shaders::VIEW_LIGHT_COOKIES] = lights_gpu.cookie ? lights_gpu.cookie.view : none.view;
     bind.samplers[shaders::SMP_SSR_SMP] = state.clamp_sampler;
     bind.views[shaders::VIEW_TEX_GI] = state.gi_view;
     bind.views[shaders::VIEW_RC_PROBES] = state.radiance_view;
@@ -3919,10 +3938,10 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     if (state.bake.on) bind.views[shaders::VIEW_SSR_COLOR] = state.bake.prev;
     bind.views[shaders::VIEW_SSR_DEPTH] = ssr ? r.ssr_depth : ready(state.white).view;
     bind.views[shaders::VIEW_SSR_BACK] = ssr && r.ssr_back.id ? r.ssr_back : ready(state.white).view;
-    Reflector* mirror = mat.reflector && mat.reflector.rendered && mat.reflector.target ? mat.reflector : null;
-    // (or else the spot lights' SpotLight.map, shader_core.glsl's light_cookies)
-    bind.views[shaders::VIEW_REFLECTOR_MAP] = mirror ? mirror.target.texture
-        : lights_gpu.cookie ? lights_gpu.cookie.view : ready(state.white).view;
+    Reflector* mirror = mirror_of(mat);
+    // the spot lights' SpotLight.map (shader_core.glsl's light_cookies; a Reflector's picture is
+    // in one of the material's map slots, see reflector_slot)
+    bind.views[shaders::VIEW_LIGHT_COOKIES] = lights_gpu.cookie ? lights_gpu.cookie.view : ready(state.white).view;
     if (!state.clamp_sampler.id) {
         state.clamp_sampler = sg::make_sampler(
             &&{
@@ -4129,7 +4148,7 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     fs.quality_params = { r.shadow_sample_scale, r.ssr_steps, r.ssr_max_step, 0 };
     if (mirror) {
         fs.reflector_view_proj = mirror.view_proj;
-        fs.reflector_params = { mirror.strength, mirror.distortion, mirror.blur, 0 };
+        fs.reflector_params = { mirror.strength, mirror.distortion, mirror.blur, (float)reflector_slot(nodes ? nodes.texture_count : 0) };
     } else {
         fs.reflector_params = { };
     }
