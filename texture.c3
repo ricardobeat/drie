@@ -67,6 +67,9 @@ struct Texture {
     // texture.channel). Only the maps besides the color map can take the second.
     char channel;
     bool generate_mipmaps;
+    // Its alpha is data (a height, a roughness), not coverage: generate_mipmaps averages the
+    // color plainly instead of weighting it by the alpha.
+    bool alpha_is_data;
     // The mip levels below the largest (`pixels`), as the application drew them, each half the
     // size of the one before, RGBA8 like `pixels` (three's texture.mipmaps). Used in place of
     // the ones generate_mipmaps would make; prepare() takes and frees them.
@@ -249,7 +252,7 @@ fn SgWrap sg_wrap(Wrapping w) @local {
 }
 
 // Halves an RGBA8 image with a box filter. Alpha-weighted so transparent texels don't darken edges.
-fn char[] downsample(char[] src, int w, int h, int nw, int nh) @local {
+fn char[] downsample(char[] src, int w, int h, int nw, int nh, bool plain_alpha = false) @local {
     char[] dst = mem::new_array(char, (sz)nw * nh * 4);
     for (int y = 0; y < nh; y++) {
         for (int x = 0; x < nw; x++) {
@@ -261,7 +264,7 @@ fn char[] downsample(char[] src, int w, int h, int nw, int nh) @local {
                     int sx  = math::min(x * 2 + i, w - 1);
                     int sy  = math::min(y * 2 + j, h - 1);
                     char* p = &src[((sz)sy * w + sx) * 4];
-                    uint a  = p[3];
+                    uint a  = plain_alpha ? 255 : p[3];
                     for (int c = 0; c < 3; c++) {
                         sum[c] += p[c] * a;
                         plain[c] += p[c];
@@ -271,7 +274,13 @@ fn char[] downsample(char[] src, int w, int h, int nw, int nh) @local {
             }
             char* d = &dst[((sz)y * nw + x) * 4];
             for (int c = 0; c < 3; c++) d[c] = (char)(asum ? sum[c] / asum : plain[c] / 4);
-            d[3] = (char)(asum / 4);
+            uint alpha_sum;
+            if (plain_alpha) {
+                for (int j = 0; j < 2; j++) {
+                    for (int i = 0; i < 2; i++) alpha_sum += src[((sz)math::min(y * 2 + j, h - 1) * w + math::min(x * 2 + i, w - 1)) * 4 + 3];
+                }
+            }
+            d[3] = (char)(plain_alpha ? alpha_sum / 4 : asum / 4);
         }
     }
     return dst;
@@ -555,7 +564,7 @@ fn void Texture.prepare(&self) {
         while ((w > 1 || h > 1) && count < 12) {
             int nw = math::max(w / 2, 1);
             int nh = math::max(h / 2, 1);
-            levels[count] = downsample(levels[count - 1], w, h, nw, nh);
+            levels[count] = downsample(levels[count - 1], w, h, nw, nh, self.alpha_is_data);
             w = nw;
             h = nh;
             count++;
