@@ -2493,6 +2493,9 @@ fn Vector3 spot_direction(SpotLight* sl) @private {
     return (target - sl.matrix_world.get_position()).normalize();
 }
 
+// (whether spot_map has said that two maps met in a frame)
+bool cookie_told @local;
+
 // SpotLight.map into the light's GPU entry: its part of the render's one map texture (the
 // first met; a light with another gets none), and the axes of the picture, scaled so that
 // the cone's edge is at the middle of its sides.
@@ -2502,7 +2505,12 @@ fn void spot_map(SpotLight* sl, GpuSpotLight* gs, LightData* g) @local {
     // (still loading: the light shines without it meanwhile)
     if (t == state.white || !t.view.id) return;
     if (!g.cookie) g.cookie = t;
-    if (g.cookie != t) return;
+    if (g.cookie != t) {
+        // (said once: a light whose map isn't the frame's one shines without it)
+        if (!cookie_told) io::eprintfn("drie: spot lights with different maps in one frame: only the first map is used; put them on one texture and pick each light's part with map_rect");
+        cookie_told = true;
+        return;
+    }
     float[4] rect = sl.map_rect;
     if (rect[2] <= 0 || rect[3] <= 0) rect = { 0, 0, 1, 1 };
     Vector3 dir = spot_direction(sl);

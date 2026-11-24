@@ -6,7 +6,9 @@
 //   - map_rotation PI / 2 turns it a quarter: red where blue was
 //   - map_rect on the picture's top right quarter alone: green all over
 //   - a second light with another texture draws without its map (white)
-// The picture: the five, left to right.
+//   - two lights sharing one texture (an atlas), each its own part of it by map_rect: red
+//     under one, green under the other
+// The picture: the six, left to right.
 //
 //   just test spot_map [out.png]   (tests/build/spot_map.png)
 module spot_map_test;
@@ -93,7 +95,7 @@ fn int main(String[] args) {
     RenderTarget* rt = drie::render_target(S, S, 1, RGBA8);
     renderer.set_render_target(rt);
 
-    char[][5] px;
+    char[][6] px;
     for (int i = 0; i < 5; i++) {
         spot.cast_shadow = i == 1;
         spot.shadow.softness = i == 1 ? 0.05f : 0;
@@ -120,6 +122,29 @@ fn int main(String[] args) {
         drie::commit();
         readback::read_image(rt.texture_image, S, S, px[i].ptr);
     }
+    // two lights on one atlas: at x = 1 the picture's red quarter, at x = -1 its green one
+    {
+        Scene* two = drie::scene();
+        two.background = 0x000000;
+        two.add(ground);
+        Texture* atlas = drie::data_texture(&pic, 16, 16, NO_COLOR_SPACE);
+        atlas.generate_mipmaps = false;
+        float[4][2] rects = { { 0, 0, 0.5f, 0.5f }, { 0.5f, 0, 0.5f, 0.5f } };
+        float[2] xs = { 1, -1 };
+        for (int k = 0; k < 2; k++) {
+            SpotLight* l = drie::spot_light(0xffffff, 12, 0, 0.2f, 0, 2);
+            l.position = { xs[k], 2, 0 };
+            l.target.position = { xs[k], 0, 0 };
+            l.map = atlas;
+            l.map_rect = rects[k];
+            two.add(l);
+            two.add(l.target);
+        }
+        px[5] = mem::new_array(char, S * S * 4);
+        renderer.render(two, camera);
+        drie::commit();
+        readback::read_image(rt.texture_image, S, S, px[5].ptr);
+    }
     check_quarters(px[0], "the map", false);
     check_quarters(px[1], "the map with a soft shadow", false);
     check_quarters(px[2], "turned a quarter", true);
@@ -131,19 +156,22 @@ fn int main(String[] args) {
     // (whichever of the two maps came first, the light at the origin has the same picture,
     // or none: a light whose texture differs from the frame's map shines white)
     expect(is(w, 220, 0, 0) || is(w, 220, 220, 220), string::tformat("two textures: %s", w[:3]));
+    char[4] r1 = floor_at(px[5], 1, 0);
+    char[4] g1 = floor_at(px[5], -1, 0);
+    expect(is(r1, 220, 0, 0) && is(g1, 0, 220, 0), string::tformat("one atlas, two parts: %s %s", r1[:3], g1[:3]));
 
-    char[] sheet = mem::new_array(char, S * 5 * S * 4);
+    char[] sheet = mem::new_array(char, S * 6 * S * 4);
     for (int y = 0; y < S; y++) {
         for (int x = 0; x < S; x++) {
             usz src = ((usz)y * S + (usz)x) * 4;
-            for (int k = 0; k < 5; k++) {
-                usz dst = ((usz)y * S * 5 + (usz)(k * S + x)) * 4;
+            for (int k = 0; k < 6; k++) {
+                usz dst = ((usz)y * S * 6 + (usz)(k * S + x)) * 4;
                 sheet[dst:3] = px[k][src:3];
                 sheet[dst + 3] = 255;
             }
         }
     }
-    (void)png::write(out_path, sheet, S * 5, S);
+    (void)png::write(out_path, sheet, S * 6, S);
     io::printfn("%s", out_path);
     if (failures) io::printfn("%d failed", failures);
     return failures ? 1 : 0;
