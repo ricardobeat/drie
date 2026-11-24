@@ -1073,6 +1073,7 @@ fn void build_material_graph(MaterialKey key, ProgramGraph* graph, ProgramGraph*
                        rebind(MATERIAL_METALNESS, own_metal) };
         if (user[3].id) rough = nodes::clamp(bound(nodes::convert(user[3], FLOAT), &sb), 0, 1);
         if (user[4].id) metal = nodes::clamp(bound(nodes::convert(user[4], FLOAT), &sb), 0, 1);
+        if (user[14].id) ao = ao * nodes::clamp(bound(nodes::convert(user[14], FLOAT), &sb), 0, 1);
         if (user[5].id) user_glow = bound(nodes::convert(user[5], VEC3), &sb);
         if (key.type == (char)MaterialType.PHONG) {
             if (user[10].id) phong_specular = bound(nodes::convert(user[10], VEC3), &sb);

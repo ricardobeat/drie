@@ -390,6 +390,8 @@ struct Material {
     //   clearcoat_node a standard material's clear coat, 0..1 (three's clearcoatNode: in place
     //                  of clearcoat and clearcoat_map; set, it turns the coat on)
     //   clearcoat_roughness_node  and the coat's roughness (clearcoatRoughnessNode)
+    //   ao_node        ambient occlusion, 0..1 (three's aoNode): multiplies the material's own
+    //                  (its ARM or ao map) and darkens only the indirect light, not the lamps
     Node color_node;
     Node opacity_node;
     Node normal_node;
@@ -404,6 +406,7 @@ struct Material {
     Node shininess_node;
     Node clearcoat_node;
     Node clearcoat_roughness_node;
+    Node ao_node;
     // The shaders built for them (at the first draw, and again when one changes).
     NodeBuild* node_build;
 

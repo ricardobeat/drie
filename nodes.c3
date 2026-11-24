@@ -922,13 +922,13 @@ struct NodeGen @local {
 }
 
 // How many *_node fields a material has (NodeBuild.slots).
-const int NODE_SLOTS = 14;
+const int NODE_SLOTS = 15;
 
 fn Node[NODE_SLOTS] node_slots(Material* mat) @local {
     Node[NODE_SLOTS] s = {
         mat.color_node, mat.opacity_node, mat.normal_node, mat.roughness_node, mat.metalness_node,
         mat.emissive_node, mat.position_node, mat.output_node, mat.mask_node, mat.env_node,
-        mat.specular_node, mat.shininess_node, mat.clearcoat_node, mat.clearcoat_roughness_node
+        mat.specular_node, mat.shininess_node, mat.clearcoat_node, mat.clearcoat_roughness_node, mat.ao_node
     };
     return s;
 }
