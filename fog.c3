@@ -100,7 +100,7 @@ fn SgView update_fog_volume(
 ) @private {
     Fog* f = scene.fog;
     if (!fog_pass.shader.id) {
-        fog_pass.shader = sg::make_shader(&&shaders::fog_shader_desc(sg::query_backend()));
+        fog_pass.shader = make_program(shaders::fog_shader_desc(sg::query_backend()));
         fog_pass.pipeline = sg::make_pipeline(&&{ .compute = true, .shader = fog_pass.shader, .label = "drie-fog" });
     }
     // (Renderer.fog_resolution_scale: finer or coarser all round)

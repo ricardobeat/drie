@@ -1989,6 +1989,7 @@ fn SgShaderDesc ShaderProgram.desc(&self) {
         d.texture_sampler_pairs[i].sampler_slot = (char)pr.sampler;
         d.texture_sampler_pairs[i].glsl_name = pr.name;
     }
+    with_bytecode(&d);
     return d;
 }
 

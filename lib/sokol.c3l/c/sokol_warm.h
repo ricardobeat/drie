@@ -12,6 +12,11 @@
 // sg_warm_shader_begin(&shader_desc) compiles the shader alone (its two functions), for a
 // program whose pipelines are made later: several of them at once, on as many threads.
 //
+// A stage is compiled from its source, or loaded from its bytecode (a metallib) when it has
+// that: then only the pipeline's compile is left. sg_warm_library_loads(ptr, size) says whether
+// bytecode loads on this device; sg_warm_dry(1) makes every job finish at once, compiling
+// nothing.
+//
 // Metal only. Included at the end of sokol.c, with sokol_gfx's implementation.
 #if defined(SOKOL_IMPL)
 
@@ -42,6 +47,58 @@ static bool _sg_warm_times(void) {
     return on == 1;
 }
 
+// sg_warm_dry(1): a job compiles nothing and is done at once (to go through what a list of
+// pipelines makes, for its sources: drie's DRIE_DUMP_PROGRAMS).
+static bool _sg_warm_dry;
+
+void sg_warm_dry(int on) {
+    _sg_warm_dry = on != 0;
+}
+
+// What a job makes a stage's library from: its bytecode (a copy), or else its source.
+typedef struct {
+    NSString* src;
+    dispatch_data_t data;
+} _sg_warm_stage_t;
+
+static bool _sg_warm_stage(const sg_shader_function* f, _sg_warm_stage_t* out) {
+    out->src = nil;
+    out->data = nil;
+    if (f->bytecode.ptr && f->bytecode.size) {
+        out->data = dispatch_data_create(f->bytecode.ptr, f->bytecode.size, NULL, DISPATCH_DATA_DESTRUCTOR_DEFAULT);
+        return true;
+    }
+    if (f->source) {
+        out->src = [[NSString alloc] initWithUTF8String:f->source];
+        return true;
+    }
+    return false;
+}
+
+static id<MTLLibrary> _sg_warm_library(id<MTLDevice> device, NSString* src, dispatch_data_t data, NSError** err) {
+    if (data) return [device newLibraryWithData:data error:err];
+    return [device newLibraryWithSource:src options:nil error:err];
+}
+
+static void _sg_warm_stage_release(_sg_warm_stage_t* st) {
+    _SG_OBJC_RELEASE(st->src);
+    _SG_OBJC_RELEASE(st->data);
+}
+
+// Whether `size` bytes at `ptr` load as a library on this device (a metallib built for it).
+int sg_warm_library_loads(const void* ptr, size_t size) {
+    if (!_sg.valid || !ptr || !size) return 0;
+    int ok = 0;
+    @autoreleasepool {
+        dispatch_data_t data = dispatch_data_create(ptr, size, NULL, DISPATCH_DATA_DESTRUCTOR_DEFAULT);
+        NSError* err = nil;
+        id<MTLLibrary> lib = [_sg.mtl.device newLibraryWithData:data error:&err];
+        ok = lib != nil;
+        _SG_OBJC_RELEASE(lib);
+        _SG_OBJC_RELEASE(data);
+    }
+    return ok;
+}
 
 static void _sg_warm_started_now(int job) {
     _sg_warm_started[job] = CFAbsoluteTimeGetCurrent();
@@ -53,7 +110,10 @@ int sg_warm_begin(const sg_shader_desc* shader_desc, const sg_pipeline_desc* pip
     if (!_sg.valid || !shader_desc || !pipeline_desc) return -1;
     sg_shader_desc sd = _sg_shader_desc_defaults(shader_desc);
     sg_pipeline_desc pd = _sg_pipeline_desc_defaults(pipeline_desc);
-    if (!sd.vertex_func.source || !sd.fragment_func.source || sd.vertex_func.bytecode.ptr || sd.fragment_func.bytecode.ptr) {
+    _sg_warm_stage_t vst, fst;
+    if (!_sg_warm_stage(&sd.vertex_func, &vst)) return -1;
+    if (!_sg_warm_stage(&sd.fragment_func, &fst)) {
+        _sg_warm_stage_release(&vst);
         return -1;
     }
     int job = -1;
@@ -64,7 +124,18 @@ int sg_warm_begin(const sg_shader_desc* shader_desc, const sg_pipeline_desc* pip
             break;
         }
     }
-    if (job < 0) return -1;
+    if (job < 0) {
+        _sg_warm_stage_release(&vst);
+        _sg_warm_stage_release(&fst);
+        return -1;
+    }
+    if (_sg_warm_dry) {
+        _sg_warm_stage_release(&vst);
+        _sg_warm_stage_release(&fst);
+        _sg_warm_started_now(job);
+        atomic_store(&_sg_warm_jobs[job], 2);
+        return job;
+    }
 
     // the pipeline's description, as _sg_mtl_create_pipeline makes it (but for the functions)
     bool layout_active[SG_MAX_VERTEXBUFFER_BINDSLOTS] = { false };
@@ -121,9 +192,11 @@ int sg_warm_begin(const sg_shader_desc* shader_desc, const sg_pipeline_desc* pip
         }
     }
 
-    // (copies: the descriptions' strings are the caller's)
-    NSString* vs_src = [[NSString alloc] initWithUTF8String:sd.vertex_func.source];
-    NSString* fs_src = [[NSString alloc] initWithUTF8String:sd.fragment_func.source];
+    // (copies: the descriptions' strings and bytes are the caller's)
+    NSString* vs_src = vst.src;
+    NSString* fs_src = fst.src;
+    dispatch_data_t vs_data = vst.data;
+    dispatch_data_t fs_data = fst.data;
     NSString* vs_entry = [[NSString alloc] initWithUTF8String:sd.vertex_func.entry ? sd.vertex_func.entry : "main0"];
     NSString* fs_entry = [[NSString alloc] initWithUTF8String:sd.fragment_func.entry ? sd.fragment_func.entry : "main0"];
     id<MTLDevice> device = _sg.mtl.device;
@@ -134,8 +207,8 @@ int sg_warm_begin(const sg_shader_desc* shader_desc, const sg_pipeline_desc* pip
             int state = 3;
             NSError* err = nil;
             double t0 = CFAbsoluteTimeGetCurrent();
-            id<MTLLibrary> vs_lib = [device newLibraryWithSource:vs_src options:nil error:&err];
-            id<MTLLibrary> fs_lib = vs_lib ? [device newLibraryWithSource:fs_src options:nil error:&err] : nil;
+            id<MTLLibrary> vs_lib = _sg_warm_library(device, vs_src, vs_data, &err);
+            id<MTLLibrary> fs_lib = vs_lib ? _sg_warm_library(device, fs_src, fs_data, &err) : nil;
             id<MTLFunction> vs = vs_lib ? [vs_lib newFunctionWithName:vs_entry] : nil;
             id<MTLFunction> fs = fs_lib ? [fs_lib newFunctionWithName:fs_entry] : nil;
             double t1 = CFAbsoluteTimeGetCurrent();
@@ -159,8 +232,8 @@ int sg_warm_begin(const sg_shader_desc* shader_desc, const sg_pipeline_desc* pip
     });
     // (the block holds its own references to what it uses)
     _SG_OBJC_RELEASE(rp_desc);
-    _SG_OBJC_RELEASE(vs_src);
-    _SG_OBJC_RELEASE(fs_src);
+    _sg_warm_stage_release(&vst);
+    _sg_warm_stage_release(&fst);
     _SG_OBJC_RELEASE(vs_entry);
     _SG_OBJC_RELEASE(fs_entry);
     return job;
@@ -169,7 +242,10 @@ int sg_warm_begin(const sg_shader_desc* shader_desc, const sg_pipeline_desc* pip
 int sg_warm_shader_begin(const sg_shader_desc* shader_desc) {
     if (!_sg.valid || !shader_desc) return -1;
     sg_shader_desc sd = _sg_shader_desc_defaults(shader_desc);
-    if (!sd.vertex_func.source || !sd.fragment_func.source || sd.vertex_func.bytecode.ptr || sd.fragment_func.bytecode.ptr) {
+    _sg_warm_stage_t vst, fst;
+    if (!_sg_warm_stage(&sd.vertex_func, &vst)) return -1;
+    if (!_sg_warm_stage(&sd.fragment_func, &fst)) {
+        _sg_warm_stage_release(&vst);
         return -1;
     }
     int job = -1;
@@ -180,19 +256,32 @@ int sg_warm_shader_begin(const sg_shader_desc* shader_desc) {
             break;
         }
     }
-    if (job < 0) return -1;
-    NSString* vs_src = [[NSString alloc] initWithUTF8String:sd.vertex_func.source];
-    NSString* fs_src = [[NSString alloc] initWithUTF8String:sd.fragment_func.source];
+    if (job < 0) {
+        _sg_warm_stage_release(&vst);
+        _sg_warm_stage_release(&fst);
+        return -1;
+    }
+    if (_sg_warm_dry) {
+        _sg_warm_stage_release(&vst);
+        _sg_warm_stage_release(&fst);
+        _sg_warm_started_now(job);
+        atomic_store(&_sg_warm_jobs[job], 2);
+        return job;
+    }
+    NSString* vs_src = vst.src;
+    NSString* fs_src = fst.src;
+    dispatch_data_t vs_data = vst.data;
+    dispatch_data_t fs_data = fst.data;
     id<MTLDevice> device = _sg.mtl.device;
     _sg_warm_started_now(job);
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         @autoreleasepool {
             NSError* err = nil;
             double t0 = CFAbsoluteTimeGetCurrent();
-            id<MTLLibrary> lib = [device newLibraryWithSource:vs_src options:nil error:&err];
+            id<MTLLibrary> lib = _sg_warm_library(device, vs_src, vs_data, &err);
             bool ok = lib != nil;
             _SG_OBJC_RELEASE(lib);
-            lib = ok ? [device newLibraryWithSource:fs_src options:nil error:&err] : nil;
+            lib = ok ? _sg_warm_library(device, fs_src, fs_data, &err) : nil;
             ok = lib != nil;
             _SG_OBJC_RELEASE(lib);
             if (_sg_warm_times()) {
@@ -202,8 +291,8 @@ int sg_warm_shader_begin(const sg_shader_desc* shader_desc) {
         }
     });
     // (the block holds its own references to what it uses)
-    _SG_OBJC_RELEASE(vs_src);
-    _SG_OBJC_RELEASE(fs_src);
+    _sg_warm_stage_release(&vst);
+    _sg_warm_stage_release(&fst);
     return job;
 }
 
@@ -258,6 +347,16 @@ void sg_warm_end(int job) {
 }
 
 #else
+
+void sg_warm_dry(int on) {
+    (void)on;
+}
+
+int sg_warm_library_loads(const void* ptr, size_t size) {
+    (void)ptr;
+    (void)size;
+    return 0;
+}
 
 int sg_warm_begin(const sg_shader_desc* shader_desc, const sg_pipeline_desc* pipeline_desc) {
     (void)shader_desc;

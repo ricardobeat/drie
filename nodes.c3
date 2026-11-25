@@ -844,6 +844,7 @@ fn bool NodeProgram.pipeline_ready(&self, ulong key, NodeVariant v, SgShaderDesc
     }
     @pool() {
         SgShaderDesc spliced = self.spliced(v, base);
+        with_bytecode(&spliced);
         int j = sg_warm_begin(&spliced, desc);
         self.warming[key] = j;
         // (busy from now on, in this render too)
@@ -2036,7 +2037,7 @@ fn SgShaderDesc NodeProgram.spliced(&self, NodeVariant v, SgShaderDesc desc) {
 fn SgShader NodeProgram.make_shader(&self, NodeVariant v, SgShaderDesc desc) {
     @pool() {
         desc = self.spliced(v, desc);
-        SgShader shader = sg::make_shader(&desc);
+        SgShader shader = make_program(desc);
         if (sg::query_shader_state(shader) != VALID) {
             io::eprintfn("drie: a node material's shader failed to build. Its hooks:");
             io::eprintfn("node_vertex:\n%snode_color:\n%snode_normal:\n%snode_surface:\n%snode_output:\n%snode_env:\n%snode_specular:\n%s",

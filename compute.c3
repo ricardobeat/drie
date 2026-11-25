@@ -133,7 +133,7 @@ struct ComputePass {
 
 fn ComputePass* compute_pass(SgShaderDesc desc, ZString label = "drie-compute") {
     ComputePass* p = mem::new(ComputePass);
-    p.shader = sg::make_shader(&desc);
+    p.shader = make_program(desc);
     p.pipeline = sg::make_pipeline(&&{ .compute = true, .shader = p.shader, .label = label });
     return p;
 }
