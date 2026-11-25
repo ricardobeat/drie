@@ -489,9 +489,11 @@ fn void Renderer.pump_pipeline_cache(&self) {
 
 // ---- the pipeline archive
 
-// Metal's binary archive of compiled pipelines (sokol_warm.h): a file a run saves and the next
-// loads, so a pipeline it has is made without compiling. Every pipeline drie or sokol makes is
-// looked up in it and added when it isn't there.
+// Metal's binary archives of compiled pipelines (sokol_warm.h): files a run saves and the next
+// loads, so a pipeline they have is made without compiling. Every pipeline drie makes is looked
+// up in them; those they haven't are compiled, and the run saves them into a new file: `path`
+// for the first run, then `path.1`, `path.2`... (Metal can't always save a loaded archive with
+// more pipelines added.) Deleting them all starts over.
 //
 //   renderer.use_pipeline_archive("pipelines.archive");   // before the first frame
 //   renderer.save_pipeline_archive();                     // now and then, and at the end
@@ -507,8 +509,9 @@ extern fn void sg_warm_archive_counts(CInt* hits, CInt* misses) @cname("sg_warm_
 String archive_path @local;
 bool archive_loaded @local;
 
-// Takes the pipeline archive at `path` (an empty one when there is no file there, or one this
-// device can't read), from the GPU's setup (now, if that was before), and saves it there.
+// Takes the pipeline archive at `path` (its files `path`, `path.1`...; none when there is no
+// file there, or none this device can read), from the GPU's setup (now, if that was before),
+// and saves this run's pipelines into its next file.
 fn void Renderer.use_pipeline_archive(&self, String path) {
     if (archive_path.len) free(archive_path.ptr);
     archive_path = path.copy(mem);
@@ -522,7 +525,7 @@ fn void load_pipeline_archive() @private {
     archive_loaded = true;
     @pool() {
         CInt r = sg_warm_archive_load(archive_path.zstr_tcopy());
-        if (r == 1) io::printfn("drie: pipelines compiled ahead of time in %s", archive_path);
+        if (r > 0) io::printfn("drie: pipelines compiled ahead of time in %s (%d %s)", archive_path, r, r == 1 ? "file" : "files");
     };
 }
 
