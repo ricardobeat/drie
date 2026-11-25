@@ -400,6 +400,24 @@ fn Node ShadowFns.dir_tile(&self, Node si, Node n, Node l, Node world, Node frag
     return node_call_fn(self.dir_tile_fn, &args);
 }
 
+// Shadow of a rect area light (half sides `hw` and `hh`): the map that the point is in of its
+// cube turned with the light (renderer.c3's rect_shadow_view_proj: its front, 0, and the front
+// halves of its sides, +x, -x, +y and -y, 1 to 4).
+fn Node ShadowFns.rect(&self, Node pos, Node hw, Node hh, Node si, Node n, Node world, Node dpdx, Node dpdy, Node frag) {
+    Node d = world - pos;
+    Node x = nodes::dot(d, hw / nodes::max(nodes::length(hw), 1e-6f));
+    Node y = nodes::dot(d, hh / nodes::max(nodes::length(hh), 1e-6f));
+    Node front = nodes::cross(hh, hw);
+    Node f = nodes::dot(d, front / nodes::max(nodes::length(front), 1e-12f));
+    Node ax = nodes::abs(x);
+    Node ay = nodes::abs(y);
+    Node fx = nodes::select(x.greater_than_equal(nodes::num(0)), nodes::int_(1), nodes::int_(2));
+    Node fy = nodes::select(y.greater_than_equal(nodes::num(0)), nodes::int_(3), nodes::int_(4));
+    Node side = nodes::select(ax.greater_than_equal(ay), fx, fy);
+    Node face = nodes::select(nodes::logical_and(f.greater_than_equal(ax), f.greater_than_equal(ay)), nodes::int_(0), side);
+    return self.light(pos, si + face, n, world, dpdx, dpdy, frag);
+}
+
 // Shadow of a point light: the face of its cube of maps that the point is in.
 fn Node ShadowFns.point(&self, Node pos, Node si, Node n, Node world, Node dpdx, Node dpdy, Node frag) {
     Node d = world - pos;
