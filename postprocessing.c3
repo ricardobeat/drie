@@ -236,7 +236,7 @@ fn void ShaderPass.init(
     int input_view = -1,
     int input_sampler = -1
 ) {
-    self.shader = sg::make_shader(&desc);
+    self.shader = drie::make_program(desc);
     self.label = label;
     self.blend = blend;
     self.input_view = input_view;

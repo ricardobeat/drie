@@ -966,7 +966,7 @@ fn void setup_gfx(SgEnvironment environment) @local {
     query_gpu_caps();
     // (the material shader's programs are made when they are first drawn with: material_shader)
     SgBackend backend = sg::query_backend();
-    state.vsm_blur_shader = sg::make_shader(&&shaders::vsm_shader_desc(backend));
+    state.vsm_blur_shader = make_program(shaders::vsm_shader_desc(backend));
     state.white = data_texture({ 255, 255, 255, 255 }, 1, 1, NO_COLOR_SPACE);
     float[12] identity = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0 };
     state.identity_instance = sg::make_buffer(&&{ .data = { .ptr = &identity, .size = identity.len * float::size } });
@@ -1374,9 +1374,26 @@ fn void start_node_shader(NodeProgram* p, ShaderFamily fam, NodeVariant v) @loca
     if (p.shaders[fam.ordinal][v.ordinal].id || p.shader_jobs[fam.ordinal][v.ordinal]) return;
     @pool() {
         SgShaderDesc desc = p.spliced(v, node_base_desc(p, fam, v));
+        with_bytecode(&desc);
         int job = sg_warm_shader_begin(&desc);
         if (job >= 0) p.shader_jobs[fam.ordinal][v.ordinal] = job + 1;
     };
+}
+
+// Starts program `p`'s variant `v` of family `fam`, and its siblings that a draw may switch
+// to later (the four main variants, or the G-buffer's two): a portal with cull_box switches
+// OPAQUE to MAIN, a pass into a target without MRT switches MRT to MAIN.
+fn void start_node_variants(NodeProgram* p, ShaderFamily fam, NodeVariant v) @private {
+    start_node_shader(p, fam, v);
+    if (fam == GBUFFER) {
+        start_node_shader(p, GBUFFER, MAIN);
+        start_node_shader(p, GBUFFER, OPAQUE);
+    } else if (v == MAIN || v == OPAQUE || v == MRT || v == OPAQUE_MRT) {
+        start_node_shader(p, fam, MAIN);
+        start_node_shader(p, fam, OPAQUE);
+        start_node_shader(p, fam, MRT);
+        start_node_shader(p, fam, OPAQUE_MRT);
+    }
 }
 
 fn SgShader material_shader(ShaderFamily fam, NodeVariant v) @local {
@@ -1391,7 +1408,7 @@ fn SgShader material_shader(ShaderFamily fam, NodeVariant v) @local {
         sg_warm_end(job);
         state.material_jobs[fam.ordinal][v.ordinal] = 0;
     }
-    *s = sg::make_shader(&&material_shader_desc(fam, v, false));
+    *s = make_program(material_shader_desc(fam, v, false));
     return *s;
 }
 
@@ -1402,6 +1419,7 @@ fn void start_material_shader(ShaderFamily fam, NodeVariant v) @local {
     if (state.material_shaders[fam.ordinal][v.ordinal].id || state.material_jobs[fam.ordinal][v.ordinal]) return;
     @pool() {
         SgShaderDesc desc = material_shader_desc(fam, v, false);
+        with_bytecode(&desc);
         int job = sg_warm_shader_begin(&desc);
         if (job >= 0) state.material_jobs[fam.ordinal][v.ordinal] = job + 1;
     };
@@ -1487,16 +1505,7 @@ fn void start_material_shaders(Renderer* r, Scene* scene, bool prepass) @local {
             NodeVariant v = variant_of(kind, rt);
             NodeBuild* nb = node_build_of(mat);
             if (nb) {
-                start_node_shader(nb.program, fam, v);
-                if (use_gb) {
-                    start_node_shader(nb.program, GBUFFER, MAIN);
-                    start_node_shader(nb.program, GBUFFER, OPAQUE);
-                } else if (v == MAIN || v == OPAQUE || v == MRT || v == OPAQUE_MRT) {
-                    start_node_shader(nb.program, fam, MAIN);
-                    start_node_shader(nb.program, fam, OPAQUE);
-                    start_node_shader(nb.program, fam, MRT);
-                    start_node_shader(nb.program, fam, OPAQUE_MRT);
-                }
+                start_node_variants(nb.program, fam, v);
                 if (!use_gb && list == 0 && prepass && prepassed(item)) start_node_shader(nb.program, PBR, DEPTH);
             }
             // Node materials need these too when they compile in the background.
@@ -1519,7 +1528,7 @@ fn void start_material_shaders(Renderer* r, Scene* scene, bool prepass) @local {
 }
 
 // The material shader's variant a draw of `kind` into `rt` takes.
-fn NodeVariant variant_of(DrawKind kind, RenderTarget* rt) @local {
+fn NodeVariant variant_of(DrawKind kind, RenderTarget* rt) @private {
     bool mrt = rt && rt.mrt;
     if (kind == DEPTH) return DEPTH;
     if (state.renderer && state.renderer.shadow_type == VSM) return mrt ? MRT_VSM : VSM;
@@ -3564,7 +3573,7 @@ fn void draw_shader_material(DrawItem* item, Mat4 view_proj, DrawKind kind) @loc
     if (!sh.id) {
         ShaderDescFn f = use_mrt_shader ? mat.custom_shader_mrt : mat.custom_shader;
         SgShaderDesc sdesc = f(sg::query_backend());
-        *sh = sg::make_shader(&sdesc);
+        *sh = make_program(sdesc);
         if (!sh.id) abort("drie: ShaderMaterial failed to create shader");
     }
     int target = rt ? (rt.samples > 1 ? 2 : 1) + (rt.mrt ? 4 : (rt.is_linear() ? 2 : 0)) : 0;
@@ -3738,7 +3747,7 @@ fn void draw_deferred_lighting(
     bool vsm = vsm_on();
     int sidx = (mrt ? 1 : 0) | (vsm ? 2 : 0);
     if (!state.deferred_shaders[sidx].id) {
-        state.deferred_shaders[sidx] = sg::make_shader(&&split_deferred_shader_desc(mrt, vsm, sg::query_backend()));
+        state.deferred_shaders[sidx] = make_program(split_deferred_shader_desc(mrt, vsm, sg::query_backend()));
     }
     int pidx = sidx | (rt.is_linear() ? 4 : 0);
     if (!state.deferred_pipelines[pidx].id) {
@@ -4404,7 +4413,7 @@ fn void clear_rect(Renderer* r, float[4] rgba) @local {
     if (try known = state.pipelines.get(key)) {
         pip = known;
     } else {
-        if (!state.clear_shader.id) state.clear_shader = sg::make_shader(&&shaders::clear_rect_shader_desc(sg::query_backend()));
+        if (!state.clear_shader.id) state.clear_shader = make_program(shaders::clear_rect_shader_desc(sg::query_backend()));
         SgPipelineDesc desc = {
             .shader = state.clear_shader,
             .depth = { .write_enabled = true, .compare = ALWAYS },
@@ -4465,7 +4474,7 @@ fn void present_window_rt() @local {
     if (!state.blit_pipeline.id) {
         state.blit_pipeline = sg::make_pipeline(
             &&{
-                .shader = sg::make_shader(&&postprocessing::output_shader_desc(sg::query_backend())),
+                .shader = make_program(postprocessing::output_shader_desc(sg::query_backend())),
                 .depth = { .write_enabled = false, .compare = ALWAYS },
                 .label = "drie-window-blit",
             }
@@ -4795,7 +4804,7 @@ fn void mip_pipeline() @local {
         // (the output pass's shader, without tone mapping or sRGB: a copy, filtered)
         state.mip_pipeline = sg::make_pipeline(
             &&{
-                .shader = sg::make_shader(&&postprocessing::output_shader_desc(sg::query_backend())),
+                .shader = make_program(postprocessing::output_shader_desc(sg::query_backend())),
                 .colors[0].pixel_format = RGBA16F,
                 .depth.pixel_format = NONE,
                 .sample_count = 1,
@@ -5538,7 +5547,7 @@ fn SgPipeline bake_pipeline(SgPixelFormat format) @local {
 
 // Draws the seams' pass of a bake (lightmap.glsl): the whole map from `prev`'s neighbours.
 fn void draw_bake_seams(SgPixelFormat format, SgView prev, int width, int height) @local {
-    if (!state.seam_shader.id) state.seam_shader = sg::make_shader(&&shaders::lm_seam_shader_desc(sg::query_backend()));
+    if (!state.seam_shader.id) state.seam_shader = make_program(shaders::lm_seam_shader_desc(sg::query_backend()));
     SgPipeline* pip = &state.seam_pipelines[format == RGBA32F ? 1 : 0];
     if (!pip.id) {
         *pip = sg::make_pipeline(

@@ -142,6 +142,7 @@ fn bool PipelineWarmup.add(&self, PipelineRecord r) {
 fn void PipelineWarmup.start(&self, NodeVariant v, bool tangents, SgPipelineDesc* desc) {
     @pool() {
         SgShaderDesc shader = material_shader_desc(PBR, v, false);
+        with_bytecode(&shader);
         int job = sg_warm_begin(&shader, desc);
         if (job < 0) return;
         if (!claim_material_job(PBR, v, job)) self.jobs.push(job);
@@ -188,8 +189,8 @@ fn void PipelineWarmup.start_generated(&self, ShaderProgram* p, SgPipelineDesc* 
 //   S <program>                           a shadow map's pipeline (-1: the engine's program)
 //   P <program> <side> <transparent> <wireframe> <alpha_test> <blend> <kind> <depth_test>
 //     <depth_write> <tangents> <vsm> <target samples, 0: the window> <target format> <mrt>
-//   G <key> <side> ... <mrt>              as P, with a generated program: its MaterialKey, in
 //     <family>                            the material shader's (ShaderFamily)
+//   G <key> <side> ... <mrt>              as P, with a generated program: its MaterialKey, in
 //                                         64 hex digits (the header's number goes up when
 //                                         the key's layout changes)
 //   H <key>                               a shadow map's pipeline with a generated program
@@ -369,8 +370,8 @@ fn int Renderer.load_pipeline_cache(&self, String text) {
                         .alpha_test = n[4] == 1,
                         .blend = (ulong)n[5],
                         .kind = (DrawKind)n[6],
-                        .depth_test = n[7] == 1,
                         .family = (ShaderFamily)n[14],
+                        .depth_test = n[7] == 1,
                         .depth_write = n[8] == 1,
                         .tangents = n[9] == 1,
                         .vsm = n[10] == 1,
@@ -479,6 +480,8 @@ fn void Renderer.pump_pipeline_cache(&self) {
         // (get_pipeline reads VSM off the renderer)
         self.shadow_type = r.vsm ? ShadowType.VSM : shadow_type == VSM ? ShadowType.PCF : shadow_type;
         RenderTarget target = { .samples = r.target_samples, .format = r.target_format, .mrt = r.target_mrt };
+        // (the programs a render starts beside this one, for a pack's sources: see dump_programs)
+        if (r.program && dumping_only()) start_node_variants(r.program, r.family, variant_of(r.kind, r.target_samples ? &target : null));
         (void)get_pipeline(r.side, r.transparent, r.wireframe, r.target_samples ? &target : null, r.alpha_test,
             r.blend, r.kind, r.depth_test, r.depth_write, r.family, r.program, gen);
     }
