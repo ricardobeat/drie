@@ -1,6 +1,6 @@
 // The program pack: shaders compiled ahead of time, so that a run makes them without compiling
-// their source. The shaders drie makes from source (the node programs spliced into the material
-// shader, the generated programs, the engine's own) are looked up in it by a hash of their
+// their source. The shaders drie makes from source (the materials' generated programs, the
+// engine's own) are looked up in it by a hash of their
 // source text; one found is handed to sokol as bytecode, one not found is compiled from its
 // source as before.
 //

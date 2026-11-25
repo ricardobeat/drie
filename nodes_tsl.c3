@@ -322,7 +322,6 @@ fn Node seq(Node block, Node value = { }) => drie::node_seq(block, value);
 // every use. The body can read uniforms, textures (material_map too), statements without
 // discard, and other functions, but not builtins (uv(), position_world(), time()...) or
 // varyings: pass those as parameters. Make functions once, like the graphs that call them.
-// Programs for an application's material shader (Renderer.shaders) can't call them.
 fn NodeFunction function(String name, NodeType ret, NodeType... params) {
     if (!name.len) abort("drie: nodes: a function needs a name");
     foreach (c : name) {

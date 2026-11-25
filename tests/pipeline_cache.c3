@@ -1,7 +1,6 @@
 // The pipeline cache (pipeline_cache.c3): what a render made is listed, and a list loaded is
 // compiled in the background till Renderer.compiling says none are left. A node material's
-// pipelines are listed with the material shader's hooks only (Renderer.shaders): its
-// generated programs are not, its key alone can't build them again. `just test pipeline_cache`
+// programs are listed as their text (M lines), the pipelines by their keys. `just test pipeline_cache`
 module pipeline_cache_test;
 import drie, drie::nodes, sokol;
 import std::io, std::time, std::math, std::thread;
@@ -21,31 +20,30 @@ fn int count_lines(String text, String start) {
     return n;
 }
 
-// Whether a P line of `text` ends with family `fam`.
-fn bool has_family(String text, ShaderFamily fam) {
+// The lines of `text` that start with `start`, whose second field (a G line's program) is `program`.
+fn int count_with(String text, String start, String program) {
+    int n;
     foreach (line : text.tsplit("\n")) {
-        if (line.starts_with("P ") && line.ends_with(string::tformat(" %d", fam.ordinal))) return true;
+        if (line.starts_with(start) && line[start.len + 64..].starts_with(program)) n++;
     }
-    return false;
+    return n;
 }
 
-// `text` with a comment at the start of its node program's vertex functions: another program.
-// (The N line: cuts, then the lengths of unsupported, vertex_funcs, frag_funcs and the 7 hooks;
-// their texts follow it in that order.)
+// `text` with a comment at the start of its first node program's vertex stage: another program.
+// (The M line, then the program's: its language, then the lengths of its vertex and fragment
+// stages, whose texts follow it.)
 fn String with_comment(String text) {
     // (new text each run: a program the driver's cache has from an earlier run compiles
     // before compiling() is asked)
     String comment = string::tformat("// another %d\n", (long)time::now());
-    usz at = (usz)text.index_of("\nN ")!! + 1;
+    usz m = (usz)text.index_of("\nM ")!! + 1;
+    usz at = m + (usz)text[m..].index_of_char('\n')!! + 1;
     usz end = at + (usz)text[at..].index_of_char('\n')!!;
     String[] f = text[at:end - at].tsplit(" ");
-    usz unsupported = (usz)f[2].to_int()!!;
-    int funcs = f[3].to_int()!!;
     DString line = dstring::temp();
-    line.appendf("N %s %s %d", f[1], f[2], funcs + (int)comment.len);
-    foreach (x : f[4..]) line.appendf(" %s", x);
-    usz texts = end + 1;
-    return string::tformat("%s%s\n%s%s%s", text[:at], line.str_view(), text[texts:unsupported], comment, text[texts + unsupported..]);
+    line.appendf("%s %d", f[0], f[1].to_int()!! + (int)comment.len);
+    foreach (x : f[2..]) line.appendf(" %s", x);
+    return string::tformat("%s%s\n%s%s", text[:at], line.str_view(), comment, text[end + 1..]);
 }
 
 fn int main(String[] args) {
@@ -61,7 +59,7 @@ fn int main(String[] args) {
     Mesh* noded = drie::mesh(drie::box_geometry(1, 1, 1), m);
     noded.position.x = 1;
     scene.add(noded);
-    // (a clearcoat: the material shader's PHYSICAL programs, which the list names as such)
+    // (a clearcoat: drawn forward, not into the G-buffer)
     Material* coated = drie::mesh_standard_material(color: 0xffffff);
     coated.clearcoat = 1;
     coated.color_node = nodes::color(0x40c040);
@@ -77,36 +75,29 @@ fn int main(String[] args) {
     drie::commit();
 
     String text = renderer.pipeline_cache(tmem);
-    // (the node material drawn with the material shader's hooks)
-    bool classic = m.node_build.programs.len() == 0;
-    expect(text.starts_with("drie-pipelines 5\n"), "the list has its header");
-    expect(count_lines(text, classic ? "P -1 " : "G ") >= 1, "it has the engine material's pipeline (with its generated program)");
-    if (classic) {
-        expect(count_lines(text, "N ") == 2, "and the node materials' programs");
-        expect(count_lines(text, "P 0 ") >= 1, "and the node material's pipeline");
-        expect(has_family(text, ShaderFamily.PHYSICAL), "the clearcoat's pipeline is listed with the PHYSICAL programs");
-    } else {
-        expect(count_lines(text, "N ") == 0 && count_lines(text, "P ") == 0, "and not the node material's generated ones");
-    }
+    expect(text.starts_with("drie-pipelines 6\n"), "the list has its header");
+    expect(count_with(text, "G ", " -1 ") >= 1, "it has the plain material's pipeline, by its key alone");
+    expect(count_lines(text, "M ") == 2, "and the node materials' programs");
+    expect(count_with(text, "G ", " 0 ") >= 1 && count_with(text, "G ", " 1 ") >= 1, "and their pipelines");
 
     // what the render made: listed, nothing to compile
     int listed = renderer.load_pipeline_cache(text);
-    expect(listed == count_lines(text, "P ") + count_lines(text, "S ") + count_lines(text, "G ") + count_lines(text, "H "), "loading it takes every pipeline");
+    expect(listed == count_lines(text, "G ") + count_lines(text, "H "), "loading it takes every pipeline");
     expect(renderer.load_pipeline_cache(text) == 0, "loading it again adds none");
     renderer.render(scene, camera);
     drie::commit();
     expect(renderer.compiling()[0] == 0, "the pipelines this run made need no compiling");
 
     // a program no graph here prints: compiled in the background
-    if (classic) {
-        String other = with_comment(text);
-        int more = renderer.load_pipeline_cache(other);
-        int[2] n = renderer.compiling();
-        expect(more > 0 && n[0] > 0, "a program not made yet compiles in the background");
-        for (int i = 0; i < 1000 && renderer.compiling()[0] > 0; i++) (void)thread::sleep_ms(10);
-        n = renderer.compiling();
-        expect(n[0] == 0 && n[1] == listed + more, "till none are left");
-    }
+    String other = with_comment(text);
+    int more = renderer.load_pipeline_cache(other);
+    int[2] n = renderer.compiling();
+    expect(more > 0 && n[0] > 0, "a program not made yet compiles in the background");
+    for (int i = 0; i < 1000 && renderer.compiling()[0] > 0; i++) (void)thread::sleep_ms(10);
+    n = renderer.compiling();
+    expect(n[0] == 0 && n[1] == listed + more, "till none are left");
+    // (and is listed as it was loaded)
+    expect(count_lines(renderer.pipeline_cache(tmem), "M ") == 3, "the list keeps the program it loaded");
 
     // a frame after: the meshes draw as before
     renderer.render(scene, camera);
