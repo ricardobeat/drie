@@ -899,6 +899,10 @@ struct NodeGen @local {
     // made
     uint[] local;
     uint locals;
+    // a value printed already, by its type and expression: the node and its serial then; a node
+    // that prints the same takes its name (same_as) where that can still be read
+    HashMap{String, uint[2]} exprs;
+    String[] same_as;
     char[] reads_var;   // 0: not known, 1: no, 2: it reads a variable
     List{bool} scope_open; // by scope (from 1)
     uint scope;
@@ -991,6 +995,8 @@ fn NodeBuild* node_build_of(Material* mat) {
         g.local = mem::temp_array(uint, count);
         g.reads_var = mem::temp_array(char, count);
         g.kept = mem::temp_array(String, count);
+        g.same_as = mem::temp_array(String, count);
+        g.exprs.tinit();
         // the fragment stage first: it finds the varyings the vertex stage writes
         // When color_node is opaque (VEC3, no mask/opacity/alpha_test) and surface nodes are
         // also present, run color_node inside node_surface so shared subgraphs (like grime or
@@ -1153,6 +1159,8 @@ fn void NodeGen.emit_func(&self, int fi) {
     uint[] saved_serial = self.serial;
     uint[] saved_local = self.local;
     uint saved_locals = self.locals;
+    HashMap{String, uint[2]} saved_exprs = self.exprs;
+    String[] saved_same_as = self.same_as;
     uint saved_scope = self.scope;
     uint saved_epoch = self.epoch;
     int saved_indent = self.indent;
@@ -1166,6 +1174,9 @@ fn void NodeGen.emit_func(&self, int fi) {
     self.serial = mem::temp_array(uint, count);
     self.local = mem::temp_array(uint, count);
     self.locals = 0;
+    self.exprs = {};
+    self.exprs.tinit();
+    self.same_as = mem::temp_array(String, count);
     self.scope_open = {};
     self.scope_open.tinit();
     self.scope_open.push(true);
@@ -1188,6 +1199,8 @@ fn void NodeGen.emit_func(&self, int fi) {
     self.serial = saved_serial;
     self.local = saved_local;
     self.locals = saved_locals;
+    self.exprs = saved_exprs;
+    self.same_as = saved_same_as;
     self.scope = saved_scope;
     self.epoch = saved_epoch;
     self.indent = saved_indent;
@@ -1227,7 +1240,9 @@ fn void NodeGen.reset(&self) {
     for (sz i = 0; i < self.memo.len; i++) {
         self.memo[i] = 0;
         self.serial[i] = 0;
+        self.same_as[i] = "";
     }
+    self.exprs.clear();
     self.scope_open.clear();
     self.scope_open.push(true);
     self.scope = 1;
@@ -1311,6 +1326,7 @@ fn String component_literal(NodeType t, float[16]* v, int i) @local {
 // (VERTEX_OUT has its own names: the position moved, what reads it differs; a node printed
 // again, after its scope closed or a variable it reads changed, takes a suffix)
 fn String NodeGen.name(&self, Node n) {
+    if (self.same_as[n.id].len) return self.same_as[n.id];
     String prefix = self.stage == VERTEX_OUT ? "no" : "nd";
     uint id = self.local[n.id];
     uint k = self.serial[n.id];
@@ -1589,6 +1605,7 @@ fn bool NodeGen.printed(&self, Node n) {
 
 // `n` printed, here: its (new) name.
 fn String NodeGen.mark(&self, Node n) {
+    self.same_as[n.id] = "";
     if (!self.local[n.id]) self.local[n.id] = ++self.locals;
     self.memo[n.id] = self.scope;
     self.memo_epoch[n.id] = self.epoch;
@@ -1707,6 +1724,8 @@ fn String NodeGen.emit(&self, Node n) {
                 for (int i = 0; i < components(d.type); i++) e = string::tformat("%s%s%s", e, i ? ", " : "", component_literal(d.type, &d.value, i));
                 e = string::tformat("%s)", e);
             }
+            // (written out where it is read)
+            return e;
         case VAR:
             String init = d.args[0] ? self.value_as({ d.args[0] }, d.type) : self.zero(d.type);
             String v = self.mark(n);
@@ -1891,8 +1910,26 @@ fn String NodeGen.emit(&self, Node n) {
         case BIND:
             abort("drie: nodes: a %s node is for whole programs (nodes_program.c3), not a material's hooks", d.op);
     }
+    // (a value printed already for another node, where it can still be read: its name; what
+    // reads a variable has the same variables as that node, and the same assignments since)
+    String key = string::tformat("%s %s", self.type_name(d.type), e);
+    bool pure = d.op != CALL_FN || node_funcs[(int)bitcast(d.value[0], uint)].pure;
+    if (pure && self.stage != VERTEX_OUT) {
+        uint[2]? had = self.exprs[key];
+        if (try had) {
+            Node m = { had[0] };
+            if (self.serial[m.id] == had[1] && self.printed(m)) {
+                String same = self.name(m);
+                self.memo[n.id] = self.memo[m.id];
+                self.memo_epoch[n.id] = self.memo_epoch[m.id];
+                self.same_as[n.id] = same;
+                return same;
+            }
+        }
+    }
     String name = self.mark(n);
     self.line("%s %s = %s;", self.type_name(d.type), name, e);
+    if (pure && self.stage != VERTEX_OUT) self.exprs[key] = { n.id, self.serial[n.id] };
     return name;
 }
 
