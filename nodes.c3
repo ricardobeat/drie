@@ -500,13 +500,16 @@ fn Node node_call(NodeFn f, Node a, Node b = { }, Node c = { }) {
             t = ta;
     }
     if (is_matrix(t) || t == VOID) abort("drie: nodes: %s takes numbers or vectors", f);
-    // (but for abs, min, max, mod and clamp, functions of floats: integers converted)
+    // (but for abs, min, max, mod, clamp and the bit casts, functions of floats: integers
+    // converted)
     switch (f) {
         case ABS:
         case MIN:
         case MAX:
         case MOD:
         case CLAMP:
+        case BITS_AS_UINT:
+        case BITS_AS_FLOAT:
             break;
         default:
             t = type_of(FLOAT, components(t));

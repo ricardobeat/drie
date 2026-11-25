@@ -364,17 +364,18 @@ fn Node[2] rc_irradiance(Node n, Node world) @private {
     Node fade   = nodes::variable(nodes::num(0));
     Node[2] dense = rc_irradiance_dense(n, world, corner, size);
     Node[2] sparse = rc_irradiance_sparse(n, world, corner, size);
-    Node run = nodes::if_then(
+    Node run = nodes::block(light, fade, nodes::if_then(
         size.x().less_than(nodes::num(-0.5f)),
         nodes::block(light.assign(sparse[0]), fade.assign(sparse[1])),
         nodes::block(light.assign(dense[0]), fade.assign(dense[1]))
-    );
+    ));
     return { nodes::seq(run, light), fade };
 }
 
 // A sparse volume's light, walked probe by probe: the hash table the kernels fill has no cell
-// per point to read, so each of the 8 around `world` is looked up (radiance_rays_cs.glsl's
-// rc_lookup) before its 6 faces are blended.
+// per point to read, so each of the 8 around `world` is looked up (rc_sparse_lookup) before its
+// 6 faces are blended (shader_core.glsl's rc_irradiance). Where none of them is, the level 1
+// probe over the same place.
 fn Node[2] rc_irradiance_sparse(Node n, Node world, Node corner, Node size) @private {
     Node spacing = corner.w();
     Node nn      = n * n;
@@ -383,7 +384,6 @@ fn Node[2] rc_irradiance_sparse(Node n, Node world, Node corner, Node size) @pri
             .greater_than_equal(nodes::num(0)), 2.0f, 3.0f), nodes::select(n.z()
                 .greater_than_equal(nodes::num(0)), 4.0f, 5.0f)), IVEC3);
     Node hash_cap = nodes::convert(nodes::negate(size.x()) + 0.5f, INT);
-    Node hmask    = nodes::convert(hash_cap, UINT) - nodes::uint_(1);
     // the box's cells, packed into size's y and z (renderer.c3's rc_size)
     Node dims = nodes::vec3(
         nodes::convert(nodes::bit_and(nodes::convert(size.y(), INT), nodes::int_(511)), FLOAT),
@@ -393,19 +393,20 @@ fn Node[2] rc_irradiance_sparse(Node n, Node world, Node corner, Node size) @pri
     Node cell  = (world - corner.xyz()) / spacing;
     Node bedge = nodes::min(cell, dims - cell);
     Node bfade = nodes::clamp(nodes::min(bedge.x(), nodes::min(bedge.y(), bedge.z())) * 2.0f, 0, 1);
-    Node g     = (world + n * (spacing * 0.25f)) / spacing - 0.5f;
+    // (half a cell out along the normal: the sheet of probes the kernels place sits in the
+    // first cell off the surface, which a wall as thick as a cell would hide)
+    Node out   = world + n * (spacing * 0.5f);
+    Node g     = out / spacing - 0.5f;
     Node base  = nodes::convert(nodes::floor(g), IVEC3);
     Node f     = g - nodes::convert(base, VEC3);
     Node sum      = nodes::variable(nodes::vec3(0));
     Node wsum     = nodes::variable(nodes::num(0));
     Node sum_any  = nodes::variable(nodes::vec3(0));
     Node wsum_any = nodes::variable(nodes::num(0));
+    Node light    = nodes::variable(nodes::vec3(0));
+    Node fade     = nodes::variable(nodes::num(0));
     Node entry    = nodes::variable(nodes::vec4(0));
     Node slot     = nodes::variable(nodes::int_(-1));
-    Node idx      = nodes::variable(nodes::uint_(0));
-    Node stepn    = nodes::variable(nodes::uint_(0));
-    Node h        = nodes::variable(nodes::uint_(0));
-    Node e        = nodes::variable(nodes::vec4(0));
     Node at       = nodes::variable(nodes::int_(0));
     Node ex       = nodes::variable(nodes::vec4(0));
     Node e3       = nodes::variable(nodes::vec3(0));
@@ -416,7 +417,81 @@ fn Node[2] rc_irradiance_sparse(Node n, Node world, Node corner, Node size) @pri
         nodes::convert(nodes::bit_and(nodes::shift_right(k, nodes::int_(2)), nodes::int_(1)), FLOAT)
     );
     Node c = base + nodes::convert(o, IVEC3);
-    // rc_pack_key32 of the cell, level 0 (radiance_common.glsl)
+    // one of the 8 probes: its 6 faces, and how much of them this surface takes
+    Node probe_pos = (nodes::convert(c, VEC3) + 0.5f) * spacing;
+    Node front     = nodes::smoothstep(spacing * -0.35f, spacing * 0.25f, nodes::dot(probe_pos - world, n));
+    // the anchor the kernels keep in the entry's w (rc_sparse_anchor): which way the surface
+    // the probe was made for faces, so a wall takes none of the light of the room behind it
+    Node code = nodes::convert(nodes::bit_and(nodes::shift_right(nodes::as_uint(entry.w()), nodes::uint_(16)),
+                                              nodes::uint_(7u)), INT);
+    Node a    = code - nodes::int_(1);
+    Node axis = nodes::shift_right(a, nodes::int_(1));
+    Node pick = nodes::vec3(
+        nodes::select(axis.equal(nodes::int_(0)), 1.0f, 0.0f),
+        nodes::select(axis.equal(nodes::int_(1)), 1.0f, 0.0f),
+        nodes::select(axis.equal(nodes::int_(2)), 1.0f, 0.0f)
+    );
+    Node against = nodes::dot(world - probe_pos, pick)
+        * nodes::select(nodes::bit_and(a, nodes::int_(1)).equal(nodes::int_(0)), 1.0f, -1.0f);
+    Node trust = nodes::select(
+        code.equal(nodes::int_(0)),
+        nodes::num(1),
+        nodes::smoothstep(spacing * -1.5f, spacing * -0.9f, against)
+    );
+    Node w3 = nodes::mix(nodes::vec3(1) - f, f, o);
+    Node w  = w3.x() * w3.y() * w3.z() * ex.w();
+    Node faces = ex.xyz() * nn.x() + node_storage(shaders::VIEW_RC_PROBES, VEC4, at + side.y()).xyz() * nn.y()
+        + node_storage(shaders::VIEW_RC_PROBES, VEC4, at + side.z()).xyz() * nn.z();
+    // (a block in a block would end at its first statement: the lookup's are spliced in)
+    Node[11] body_stmts;
+    body_stmts[:10] = rc_sparse_lookup(c, 0, hash_cap, entry, slot)[..];
+    body_stmts[10] = nodes::if_then(slot.greater_than_equal(nodes::int_(0)), nodes::block(
+            at.assign(hash_cap + slot * nodes::int_(6)),
+            ex.assign(node_storage(shaders::VIEW_RC_PROBES, VEC4, at + side.x())),
+            e3.assign(faces),
+            sum.assign(sum + e3 * (w * front * trust)),
+            wsum.assign(wsum + w * front * trust),
+            sum_any.assign(sum_any + e3 * w),
+            wsum_any.assign(wsum_any + w)
+        ));
+    Node body = drie::node_block(&body_stmts);
+    Node fallback    = sum_any / wsum_any;
+    Node primary     = nodes::select(wsum.greater_than(nodes::num(1e-5f)), sum / wsum, fallback);
+    Node trust_front = nodes::clamp(wsum / nodes::max(wsum_any * 0.25f, 1e-5f), 0, 1);
+    // the level 1 probe: where its 6 faces are is in its entry's x
+    Node c1 = nodes::convert(nodes::floor(out / (spacing * 2.0f)), IVEC3);
+    Node[12] level1_stmts;
+    level1_stmts[:10] = rc_sparse_lookup(c1, 1, hash_cap, entry, slot)[..];
+    level1_stmts[10] = at.assign(nodes::convert(nodes::as_uint(entry.x()), INT));
+    level1_stmts[11] = nodes::if_then(nodes::logical_and(slot.greater_than_equal(nodes::int_(0)), at.greater_than(nodes::int_(0))), nodes::block(
+        ex.assign(node_storage(shaders::VIEW_RC_PROBES, VEC4, at + side.x())),
+        fade.assign(nodes::num(1)),
+        light.assign(faces * size.w())
+    ));
+    Node level1 = drie::node_block(&level1_stmts);
+    Node run = nodes::block(
+        sum, wsum, sum_any, wsum_any, light, fade, entry, slot, at, ex, e3,
+        nodes::if_then(bfade.greater_than(nodes::num(0)), nodes::block(
+            nodes::loop(k, nodes::int_(0), nodes::int_(8), body),
+            nodes::if_then(wsum_any.greater_than(nodes::num(1e-5f)), nodes::block(
+                fade.assign(nodes::clamp(wsum_any * 4.0f, 0, 1) * bfade),
+                light.assign(nodes::mix(fallback, primary, trust_front) * size.w())
+            ), level1)
+        ))
+    );
+    return { nodes::seq(run, light), fade };
+}
+
+// The walk along the hash's chain for the probe at cell `c` of cascade `level`
+// (radiance_rays_cs.glsl's rc_lookup: rc_hash, then linear probing, at most 32 steps), into
+// `entry` and `slot` (-1: none): its statements.
+fn Node[10] rc_sparse_lookup(Node c, uint level, Node hash_cap, Node entry, Node slot) @private {
+    Node idx   = nodes::variable(nodes::uint_(0));
+    Node stepn = nodes::variable(nodes::uint_(0));
+    Node h     = nodes::variable(nodes::uint_(0));
+    Node e     = nodes::variable(nodes::vec4(0));
+    Node hmask = nodes::convert(hash_cap, UINT) - nodes::uint_(1);
+    // rc_pack_key32 (radiance_common.glsl)
     Node key = nodes::bit_or(
         nodes::bit_or(
             nodes::bit_and(nodes::convert(c.x(), UINT), nodes::uint_(0x1ffu)),
@@ -424,11 +499,10 @@ fn Node[2] rc_irradiance_sparse(Node n, Node world, Node corner, Node size) @pri
         ),
         nodes::bit_or(
             nodes::shift_left(nodes::bit_and(nodes::convert(c.z(), UINT), nodes::uint_(0x1ffu)), nodes::uint_(18)),
-            nodes::uint_(0x80000000u)
+            nodes::uint_(0x80000000u | level << 27)
         )
     );
-    // the walk along the hash's chain (rc_hash then linear probing, at most 32 steps)
-    Node walk = nodes::block(
+    return {
         entry.assign(nodes::vec4(0)),
         slot.assign(nodes::int_(-1)),
         stepn.assign(nodes::uint_(0)),
@@ -449,52 +523,7 @@ fn Node[2] rc_irradiance_sparse(Node n, Node world, Node corner, Node size) @pri
             idx.assign(nodes::bit_and(idx + nodes::uint_(1), hmask)),
             stepn.assign(stepn + nodes::uint_(1))
         ))
-    );
-    // one of the 8 probes: its 6 faces, and how much of them this surface takes
-    Node probe_pos = (nodes::convert(c, VEC3) + 0.5f) * spacing;
-    Node front     = nodes::smoothstep(spacing * -0.35f, spacing * 0.25f, nodes::dot(probe_pos - world, n));
-    // the anchor the kernels keep in the entry's w (rc_anchor_trust): which way the surface
-    // the probe was made for faces, so a wall takes none of the light of the room behind it
-    Node anchor = nodes::shift_right(nodes::as_uint(entry.w()), nodes::uint_(16));
-    Node axis   = nodes::convert(nodes::bit_and(anchor, nodes::uint_(7u)), INT);
-    Node pick = nodes::vec3(
-        nodes::select(axis.equal(nodes::int_(1)), 1.0f, 0.0f),
-        nodes::select(axis.equal(nodes::int_(2)), 1.0f, 0.0f),
-        nodes::select(axis.equal(nodes::int_(3)), 1.0f, 0.0f)
-    );
-    Node against = nodes::dot(world - probe_pos, pick)
-        * nodes::select(nodes::bit_and(anchor, nodes::uint_(1u)).equal(nodes::uint_(0u)), 1.0f, -1.0f);
-    Node trust = nodes::select(
-        anchor.equal(nodes::uint_(0u)),
-        nodes::num(1),
-        nodes::smoothstep(spacing * -1.5f, spacing * -0.9f, against)
-    );
-    Node w3 = nodes::mix(nodes::vec3(1) - f, f, o);
-    Node tw = w3.x() * w3.y() * w3.z();
-    Node w  = tw * ex.w() * front * trust;
-    Node body = nodes::block(
-        walk,
-        nodes::if_then(slot.greater_than_equal(nodes::int_(0)), nodes::block(
-            at.assign(hash_cap + slot * nodes::int_(6)),
-            ex.assign(node_storage(shaders::VIEW_RC_PROBES, VEC4, at + side.x())),
-            e3.assign(ex.xyz() * nn.x() + node_storage(shaders::VIEW_RC_PROBES, VEC4, at + side.y())
-                .xyz() * nn.y() + node_storage(shaders::VIEW_RC_PROBES, VEC4, at + side.z())
-                .xyz() * nn.z()),
-            sum.assign(sum + e3 * w),
-            wsum.assign(wsum + w),
-            sum_any.assign(sum_any + e3 * tw),
-            wsum_any.assign(wsum_any + tw)
-        ))
-    );
-    Node fallback    = nodes::select(wsum_any.greater_than(nodes::num(1e-5f)), sum_any / wsum_any, nodes::vec3(0));
-    Node primary     = nodes::select(wsum.greater_than(nodes::num(1e-5f)), sum / wsum, fallback);
-    Node trust_front = nodes::clamp(wsum / nodes::max(wsum_any * 0.25f, 1e-5f), 0, 1);
-    Node light       = nodes::mix(fallback, primary, trust_front) * size.w();
-    Node fade        = nodes::clamp(wsum_any * 4.0f, 0, 1) * bfade;
-    Node run = nodes::block(
-        nodes::if_then(bfade.greater_than(nodes::num(0)), nodes::block(nodes::loop(k, nodes::int_(0), nodes::int_(8), body)))
-    );
-    return { nodes::seq(run, light), fade };
+    };
 }
 
 fn Node[2] rc_irradiance_dense(Node n, Node world, Node corner, Node size) @private {
