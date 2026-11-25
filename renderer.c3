@@ -552,6 +552,18 @@ struct RenderInfo {
     int lines;
     int shadow_calls;
     int shadow_triangles;
+    // the shadow atlas: its size in pixels and the GPU memory of it and what goes with it
+    // (VSM's moments, the cache of static casters), in bytes
+    int atlas_width;
+    int atlas_height;
+    usz atlas_bytes;
+    // maps of the atlas drawn this render (a spot light's, a face of a point light's) and the
+    // draws of casters into them
+    int atlas_tiles;
+    int atlas_casters;
+    // shadowed lights with maps in the atlas, and those that wanted one and got none
+    int atlas_lights;
+    int atlas_dropped;
     // draws left out because their program was still compiling in the background (0: the
     // picture is whole; a check that saves a picture waits for this)
     int waiting;
@@ -1838,7 +1850,11 @@ fn void update_shadow_atlas(Scene* scene, Camera* camera, bool bake = false, Spo
         if (l.light_type != SPOT || !l.cast_shadow || !l.visible) continue;
         SpotLight* sl = (SpotLight*)l;
         if (l.intensity <= 0 && (sl.shadow.auto_update || bake)) continue;
-        if ((sl.shadow.auto_update && !bake) || state.atlas_pending.len() >= MAX_ATLAS_TILES) continue;
+        if (sl.shadow.auto_update && !bake) continue;
+        if (state.atlas_pending.len() >= MAX_ATLAS_TILES) {
+            state.renderer.info.atlas_dropped++;
+            continue;
+        }
         state.atlas_pending.push(sl);
         tile = math::max(tile, shadow_map_size(sl.shadow.map_size));
     }
@@ -1848,7 +1864,11 @@ fn void update_shadow_atlas(Scene* scene, Camera* camera, bool bake = false, Spo
         if (!casts_cube(l) || !l.cast_shadow || !l.visible) continue;
         LightShadow* sh = light_shadow(l);
         if (l.intensity <= 0 && (sh.auto_update || bake)) continue;
-        if ((sh.auto_update && !bake) || state.atlas_pending.len() + 6 > MAX_ATLAS_TILES) continue;
+        if (sh.auto_update && !bake) continue;
+        if (state.atlas_pending.len() + 6 > MAX_ATLAS_TILES) {
+            state.renderer.info.atlas_dropped++;
+            continue;
+        }
         for (int f = 0; f < 6; f++) state.atlas_pending.push(l);
         tile = math::max(tile, shadow_map_size(sh.map_size));
     }
@@ -1864,14 +1884,22 @@ fn void update_shadow_atlas(Scene* scene, Camera* camera, bool bake = false, Spo
         foreach (l : state.lights) {
             if (l.light_type != SPOT || !l.cast_shadow || !l.visible || l.intensity <= 0) continue;
             SpotLight* sl = (SpotLight*)l;
-            if (sl == caster || !sl.shadow.auto_update || state.atlas_pending.len() >= MAX_ATLAS_TILES) continue;
+            if (sl == caster || !sl.shadow.auto_update) continue;
+            if (state.atlas_pending.len() >= MAX_ATLAS_TILES) {
+                state.renderer.info.atlas_dropped++;
+                continue;
+            }
             state.atlas_pending.push(sl);
             tile = math::max(tile, shadow_map_size(sl.shadow.map_size));
         }
         foreach (l : state.lights) {
             if (!casts_cube(l) || !l.cast_shadow || !l.visible || l.intensity <= 0) continue;
             LightShadow* sh = light_shadow(l);
-            if (!sh.auto_update || state.atlas_pending.len() + 6 > MAX_ATLAS_TILES) continue;
+            if (!sh.auto_update) continue;
+            if (state.atlas_pending.len() + 6 > MAX_ATLAS_TILES) {
+                state.renderer.info.atlas_dropped++;
+                continue;
+            }
             for (int f = 0; f < 6; f++) state.atlas_pending.push(l);
             tile = math::max(tile, shadow_map_size(sh.map_size));
         }
@@ -1946,6 +1974,8 @@ fn void update_shadow_atlas(Scene* scene, Camera* camera, bool bake = false, Spo
         state.skip_instanced = sh.skip_instanced;
         collect_casters(scene, camera, &light_frustum);
         state.skip_instanced = false;
+        state.renderer.info.atlas_tiles++;
+        state.renderer.info.atlas_casters += (int)state.casters.len();
         int columns = state.atlas_columns;
         sg::apply_viewport((i % columns) * tile, (i / columns) * tile, tile, tile, top_left);
         sg::apply_scissor_rect((i % columns) * tile, (i / columns) * tile, tile, tile, top_left);
@@ -4707,8 +4737,24 @@ fn SpotLight* prepare_and_draw_shadows(Scene* scene, Camera* camera, bool bake =
         ensure_vsm(&state.vsm_sun, state.sun_size, state.sun_size);
         ensure_vsm(&state.vsm_atlas, state.atlas_tile * state.atlas_columns, state.atlas_tile * state.atlas_rows);
     }
+    note_atlas_info();
     profile::stop("render: spot atlas", pt);
     return caster;
+}
+
+// The atlas's size, memory and lights into RenderInfo.
+fn void note_atlas_info() @local {
+    RenderInfo* info = &state.renderer.info;
+    info.atlas_width = state.atlas_tile * state.atlas_columns;
+    info.atlas_height = state.atlas_tile * state.atlas_rows;
+    usz pixels = (usz)info.atlas_width * (usz)info.atlas_height;
+    info.atlas_bytes = pixels * 4;
+    // (the moments and their blur's scratch)
+    if (state.vsm_atlas.width) info.atlas_bytes += (usz)state.vsm_atlas.width * (usz)state.vsm_atlas.height * (usz)(state.vsm_format == RG32F ? 16 : 8);
+    info.atlas_lights = 0;
+    foreach (i, l : state.atlas_lights) {
+        if (l && (i == 0 || state.atlas_lights[i - 1] != l)) info.atlas_lights++;
+    }
 }
 
 // A draw left out for its program still compiling (RenderInfo.waiting).
