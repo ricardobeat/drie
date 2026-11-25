@@ -18,6 +18,7 @@ default:
 
 # build out/driejs
 build: deps
+    {{ if os() == "macos" { "python3 ../tools/c_libs.py macos-aarch64" } else { "true" } }}
     c3c build driejs-{{os()}} {{macos}}
 
 # build, then run: `just run demos/webgl_geometries.js`, `just run --frames 3 --png shot.png demos/x.js`
@@ -71,7 +72,7 @@ bench which="all":
         echo "== $1"
         case $1 in
         drie)
-            (cd .. && c3c build drie-{{os()}} -O3 {{macos}} --sources driejs/bench/drie_bench.c3 > /dev/null && build/drie-{{os()}}) ;;
+            (cd .. && {{ if os() == "macos" { "python3 tools/c_libs.py macos-aarch64 &&" } else { "" } }} c3c build drie-{{os()}} -O3 {{macos}} --sources driejs/bench/drie_bench.c3 > /dev/null && build/drie-{{os()}}) ;;
         drie-js) (cd ../../drie-js && out/drie_js --script ../drie/driejs/bench/driejs_bench.js) ;;
         node) node bench/three_bench.js ;;
         node-jitless) node --jitless bench/three_bench.js ;;

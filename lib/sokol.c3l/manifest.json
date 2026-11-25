@@ -1,12 +1,15 @@
 {
     "provides": "sokol",
+    "linklib-dir": "build/c",
     "c-sources": [
         "c/sokol.c"
     ],
     "targets": {
         "macos-aarch64": {
+            "c-sources-override": [],
             "cflags-override": "-O2 -DNDEBUG -DIMPL -x objective-c -DSOKOL_METAL",
             "linked-libraries": [
+                "sokol_c",
                 "Foundation.framework",
                 "CoreGraphics.framework",
                 "Cocoa.framework",
@@ -45,8 +48,10 @@
             ]
         },
         "mingw-x64": {
+            "c-sources-override": [],
             "cflags-override": "-O2 -DNDEBUG -DIMPL -DSOKOL_D3D11",
             "linked-libraries": [
+                "sokol_c",
                 "kernel32",
                 "user32",
                 "gdi32",
@@ -57,8 +62,10 @@
             ]
         },
         "ios-aarch64": {
+            "c-sources-override": [],
             "cflags-override": "-O2 -DNDEBUG -DIMPL -x objective-c -DSOKOL_METAL",
             "linked-libraries": [
+                "sokol_c",
                 "Foundation.framework",
                 "UIKit.framework",
                 "QuartzCore.framework",
@@ -69,8 +76,10 @@
             ]
         },
         "ios-aarch64-sim": {
+            "c-sources-override": [],
             "cflags-override": "-O2 -DNDEBUG -DIMPL -x objective-c -DSOKOL_METAL",
             "linked-libraries": [
+                "sokol_c",
                 "Foundation.framework",
                 "UIKit.framework",
                 "QuartzCore.framework",
