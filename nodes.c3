@@ -31,7 +31,7 @@
 // is printed once where it is first needed, and printed again after an assignment when it
 // reads a variable, or outside the block it was printed in.
 module drie;
-import std::collections::list, std::collections::map, std::io, sokol, drie::nodes;
+import std::collections::list, std::collections::map, std::io, std::os::env, sokol, drie::nodes;
 
 // A node of a shader graph: a handle (0: none). Nodes don't change once made, but for a
 // uniform's value (Node.set). See drie::nodes for the constructors.
@@ -1996,20 +1996,30 @@ fn SgShaderDesc NodeProgram.spliced(&self, NodeVariant v, SgShaderDesc desc) {
     if (self.unsupported.len) {
         abort("drie: a node material uses %s, which the application's material shader (Renderer.shaders) has no hook for: only generated programs draw it", self.unsupported);
     }
+    // (DRIE_PROGRAM_SALT: a statement that changes the compiled code and no picture, so the
+    // driver has none of it cached; for timing a cold start)
+    String vertex_salt;
+    String color_salt;
+    if (try salt = env::tget_var("DRIE_PROGRAM_SALT")) {
+        float far = 1e7f + (float)(salt.hash() & 0xffff);
+        vertex_salt = string::tformat("    if (local.x == %.1f) local.x = 0.0;\n", far);
+        color_salt = string::tformat("    if (base.x == %.1f) base.x = 0.0;\n", far);
+    }
     String vs = ((ZString)desc.vertex_func.source).str_view();
     vs = insert_before(vs, "node_vertex", self.vertex_funcs);
-    vs = splice_body(vs, "node_vertex", self.vertex_body);
+    vs = splice_body(vs, "node_vertex", vertex_salt.len ? vertex_salt.tconcat(self.vertex_body) : self.vertex_body);
     desc.vertex_func.source = vs.zstr_tcopy();
+    String color_body = color_salt.len ? color_salt.tconcat(self.color_body) : self.color_body;
     if (v == SHADOW && self.cuts) {
         // (shadow_nodes: node_color only)
         String fs = ((ZString)desc.fragment_func.source).str_view();
         fs = insert_before(fs, "node_color", self.frag_funcs);
-        fs = splice_body(fs, "node_color", self.color_body);
+        fs = splice_body(fs, "node_color", color_body);
         desc.fragment_func.source = fs.zstr_tcopy();
     } else if (v != DEPTH && v != SHADOW) {
         String fs = ((ZString)desc.fragment_func.source).str_view();
         fs = insert_before(fs, "node_color", self.frag_funcs);
-        if (fs.contains("\nvoid node_color(")) fs = splice_body(fs, "node_color", self.color_body);
+        if (fs.contains("\nvoid node_color(")) fs = splice_body(fs, "node_color", color_body);
         if (fs.contains("\nvoid node_normal(")) fs = splice_body(fs, "node_normal", self.normal_body);
         if (fs.contains("\nvoid node_surface(")) fs = splice_body(fs, "node_surface", self.surface_body);
         if (fs.contains("\nvoid node_output(")) fs = splice_body(fs, "node_output", self.output_body);
