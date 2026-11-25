@@ -971,6 +971,7 @@ fn void setup_gfx(SgEnvironment environment) @local {
     float[12] identity = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0 };
     state.identity_instance = sg::make_buffer(&&{ .data = { .ptr = &identity, .size = identity.len * float::size } });
     state.gfx_ready = true;
+    load_pipeline_archive();
 }
 
 fn void on_init() @local {

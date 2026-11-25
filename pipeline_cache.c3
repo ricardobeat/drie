@@ -486,3 +486,58 @@ fn void Renderer.pump_pipeline_cache(&self) {
             r.blend, r.kind, r.depth_test, r.depth_write, r.family, r.program, gen);
     }
 }
+
+// ---- the pipeline archive
+
+// Metal's binary archive of compiled pipelines (sokol_warm.h): a file a run saves and the next
+// loads, so a pipeline it has is made without compiling. Every pipeline drie or sokol makes is
+// looked up in it and added when it isn't there.
+//
+//   renderer.use_pipeline_archive("pipelines.archive");   // before the first frame
+//   renderer.save_pipeline_archive();                     // now and then, and at the end
+//
+// Made on one GPU and OS, it has nothing for another (its pipelines are then compiled as
+// without it). Metal only.
+
+extern fn CInt sg_warm_archive_load(ZString path) @cname("sg_warm_archive_load");
+extern fn CInt sg_warm_archive_save(ZString path) @cname("sg_warm_archive_save");
+extern fn void sg_warm_archive_counts(CInt* hits, CInt* misses) @cname("sg_warm_archive_counts");
+
+// the archive's file ("": none), and whether it was loaded yet
+String archive_path @local;
+bool archive_loaded @local;
+
+// Takes the pipeline archive at `path` (an empty one when there is no file there, or one this
+// device can't read), from the GPU's setup (now, if that was before), and saves it there.
+fn void Renderer.use_pipeline_archive(&self, String path) {
+    if (archive_path.len) free(archive_path.ptr);
+    archive_path = path.copy(mem);
+    archive_loaded = false;
+    load_pipeline_archive();
+}
+
+// (from setup_gfx too)
+fn void load_pipeline_archive() @private {
+    if (!archive_path.len || archive_loaded || !state.gfx_ready) return;
+    archive_loaded = true;
+    @pool() {
+        CInt r = sg_warm_archive_load(archive_path.zstr_tcopy());
+        if (r == 1) io::printfn("drie: pipelines compiled ahead of time in %s", archive_path);
+    };
+}
+
+// Saves the pipeline archive, if pipelines were added to it: false if it couldn't.
+fn bool Renderer.save_pipeline_archive(&self) {
+    if (!archive_loaded) return true;
+    @pool() {
+        return sg_warm_archive_save(archive_path.zstr_tcopy()) >= 0;
+    };
+}
+
+// { pipelines made from the archive, pipelines compiled and added to it }.
+fn int[2] pipeline_archive_counts() {
+    CInt hits;
+    CInt misses;
+    sg_warm_archive_counts(&hits, &misses);
+    return { hits, misses };
+}

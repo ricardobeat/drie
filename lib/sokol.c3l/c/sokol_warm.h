@@ -24,6 +24,8 @@
 
 #if defined(SOKOL_METAL)
 #include <stdatomic.h>
+#include <os/lock.h>
+#include <unistd.h>
 
 // per job: 0 free, 1 running, 2 done, 3 failed
 static _Atomic int _sg_warm_jobs[SG_WARM_JOBS];
@@ -53,6 +55,110 @@ static bool _sg_warm_dry;
 
 void sg_warm_dry(int on) {
     _sg_warm_dry = on != 0;
+}
+
+// The pipeline archive (an MTLBinaryArchive): render pipelines compiled to the GPU's code,
+// saved by a run and loaded by the next. A pipeline it has is made without compiling, by the
+// jobs here and by sg_make_pipeline (sokol_gfx.h calls _sg_warm_render_pipeline); one it hasn't
+// is compiled and added.
+//
+//   sg_warm_archive_load(path);   // before the first pipeline: 1 the file's archive taken, 0 an
+//                                 // empty one (no file, or one this device can't read), -1 none
+//   sg_warm_archive_save(path);   // 1 written, 0 nothing new to write, -1 failed
+//
+// An archive made on another GPU or OS loads, or not, and has nothing that matches: then every
+// pipeline is compiled as without one.
+static id<MTLBinaryArchive> _sg_warm_archive;
+static bool _sg_warm_archive_dirty;
+static int _sg_warm_archive_hits, _sg_warm_archive_misses;
+static os_unfair_lock _sg_warm_archive_lock = OS_UNFAIR_LOCK_INIT;
+
+int sg_warm_archive_load(const char* path) {
+    if (!_sg.valid) return -1;
+    int taken = 0;
+    @autoreleasepool {
+        MTLBinaryArchiveDescriptor* d = [[MTLBinaryArchiveDescriptor alloc] init];
+        NSError* err = nil;
+        if (path && access(path, R_OK) == 0) {
+            d.url = [NSURL fileURLWithPath:[NSString stringWithUTF8String:path]];
+            _sg_warm_archive = [_sg.mtl.device newBinaryArchiveWithDescriptor:d error:&err];
+            if (_sg_warm_archive) {
+                taken = 1;
+            } else {
+                fprintf(stderr, "drie: the pipeline archive %s doesn't load here (%s): an empty one\n", path,
+                    err ? [err.localizedDescription UTF8String] : "?");
+            }
+        }
+        if (!_sg_warm_archive) {
+            d.url = nil;
+            err = nil;
+            _sg_warm_archive = [_sg.mtl.device newBinaryArchiveWithDescriptor:d error:&err];
+        }
+        _SG_OBJC_RELEASE(d);
+    }
+    _sg_warm_archive_dirty = false;
+    return _sg_warm_archive ? taken : -1;
+}
+
+int sg_warm_archive_save(const char* path) {
+    if (!_sg_warm_archive || !path) return -1;
+    int r = 0;
+    os_unfair_lock_lock(&_sg_warm_archive_lock);
+    if (_sg_warm_archive_dirty) {
+        @autoreleasepool {
+            // (into a file of its own, then over the old one, which the archive may still read)
+            NSString* p = [NSString stringWithUTF8String:path];
+            NSString* tmp = [p stringByAppendingString:@".tmp"];
+            NSError* err = nil;
+            if ([_sg_warm_archive serializeToURL:[NSURL fileURLWithPath:tmp] error:&err]
+                && rename([tmp UTF8String], path) == 0) {
+                _sg_warm_archive_dirty = false;
+                r = 1;
+            } else {
+                fprintf(stderr, "drie: the pipeline archive can't be saved to %s (%s)\n", path,
+                    err ? [err.localizedDescription UTF8String] : "rename failed");
+                r = -1;
+            }
+        }
+    }
+    os_unfair_lock_unlock(&_sg_warm_archive_lock);
+    return r;
+}
+
+// { pipelines found in the archive, pipelines compiled and added } since it was loaded.
+void sg_warm_archive_counts(int* hits, int* misses) {
+    os_unfair_lock_lock(&_sg_warm_archive_lock);
+    if (hits) *hits = _sg_warm_archive_hits;
+    if (misses) *misses = _sg_warm_archive_misses;
+    os_unfair_lock_unlock(&_sg_warm_archive_lock);
+}
+
+// A render pipeline state for `rp_desc` (retained, as newRenderPipelineState's): the archive's,
+// or compiled and added to it. Called from any thread.
+id<MTLRenderPipelineState> _sg_warm_render_pipeline(MTLRenderPipelineDescriptor* rp_desc, NSError** err) {
+    id<MTLDevice> device = _sg.mtl.device;
+    id<MTLBinaryArchive> archive = _sg_warm_archive;
+    if (!archive) return [device newRenderPipelineStateWithDescriptor:rp_desc error:err];
+    rp_desc.binaryArchives = @[archive];
+    // (looked up with the archive held: it isn't added to meanwhile)
+    os_unfair_lock_lock(&_sg_warm_archive_lock);
+    id<MTLRenderPipelineState> rps = [device newRenderPipelineStateWithDescriptor:rp_desc
+        options:MTLPipelineOptionFailOnBinaryArchiveMiss reflection:nil error:nil];
+    if (rps) _sg_warm_archive_hits++;
+    os_unfair_lock_unlock(&_sg_warm_archive_lock);
+    if (rps) return rps;
+    rp_desc.binaryArchives = nil;
+    rps = [device newRenderPipelineStateWithDescriptor:rp_desc error:err];
+    if (rps) {
+        os_unfair_lock_lock(&_sg_warm_archive_lock);
+        NSError* add_err = nil;
+        if ([archive addRenderPipelineFunctionsWithDescriptor:rp_desc error:&add_err]) {
+            _sg_warm_archive_dirty = true;
+            _sg_warm_archive_misses++;
+        }
+        os_unfair_lock_unlock(&_sg_warm_archive_lock);
+    }
+    return rps;
 }
 
 // What a job makes a stage's library from: its bytecode (a copy), or else its source.
@@ -215,7 +321,7 @@ int sg_warm_begin(const sg_shader_desc* shader_desc, const sg_pipeline_desc* pip
             if (vs && fs) {
                 rp_desc.vertexFunction = vs;
                 rp_desc.fragmentFunction = fs;
-                id<MTLRenderPipelineState> rps = [device newRenderPipelineStateWithDescriptor:rp_desc error:&err];
+                id<MTLRenderPipelineState> rps = _sg_warm_render_pipeline(rp_desc, &err);
                 if (rps) state = 2;
                 _SG_OBJC_RELEASE(rps);
             }
@@ -347,6 +453,21 @@ void sg_warm_end(int job) {
 }
 
 #else
+
+int sg_warm_archive_load(const char* path) {
+    (void)path;
+    return -1;
+}
+
+int sg_warm_archive_save(const char* path) {
+    (void)path;
+    return -1;
+}
+
+void sg_warm_archive_counts(int* hits, int* misses) {
+    if (hits) *hits = 0;
+    if (misses) *misses = 0;
+}
 
 void sg_warm_dry(int on) {
     (void)on;
