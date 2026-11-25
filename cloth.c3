@@ -14,6 +14,10 @@
 // how much the air crosses it, and gusts with a deterministic noise in time and space.
 // Everything is in world space; the same calls give the same result every run.
 //
+// from_fine simulates every few columns and rows of a fine grid and draws the whole of it, its
+// folds carried by the coarse cells (see Detail). moved() and mark() tell when the cloth has
+// moved enough to draw a static light's shadow of it again.
+//
 //     Cloth* c = cloth::grid(24, 36, { -0.6, 2.4, 0 }, { 1.2, 0, 0 }, { 0, -2.4, 0 });
 //     c.pin_row(0);
 //     scene.add(c.make_mesh(drie::mesh_standard_material(color: 0x8a1010, side: DOUBLE_SIDE)));
@@ -27,6 +31,9 @@ import std::math, std::collections::list, drie;
 const float STEP       = 1.0f / 60;
 const int MAX_STEPS    = 4;
 const float FAR @local = 1e30f;
+// A collider that moves further than this in one update has been put somewhere else, not
+// swept there through the cloth.
+const float JUMP = 1.0f;
 
 enum ColliderKind : char {
     SPHERE,
@@ -107,6 +114,28 @@ struct Cloth {
     float accumulator;
     ulong steps;
     Mesh* mesh;
+    // where the points are drawn this frame (between the last step's start and its end)
+    Vector3[] shown;
+    // a finer grid drawn over the points (see from_fine); null: the points' own grid is drawn
+    Detail* detail;
+    // the points when mark() was last called (see moved)
+    Vector3[] marked;
+}
+
+// The grid drawn over a coarser cloth. Each of its points is a spot in a cell of the cloth
+// (a column cell and t across it, a row cell and s down it) and an offset from the cell's
+// bilinear patch there, along the patch's frame (across, down, out) at rest: the cloth's
+// folds finer than its own grid ride along as the cells move and turn.
+struct Detail {
+    int cols, rows;
+    Vector3[] rest;
+    int[] col_cell;
+    float[] col_t;
+    int[] row_cell;
+    float[] row_s;
+    Vector3[] offset;
+    // the rest shape's normal, in the same frame
+    Vector3[] normal;
 }
 
 fn uint Cloth.index(&self, int col, int row) @inline => (uint)(row * self.cols + col);
@@ -187,6 +216,102 @@ fn Cloth* from_positions(int cols, int rows, Vector3[] rest, float mass = 0.4f) 
     return c;
 }
 
+// A cloth simulated on every `step_cols`-th column and `step_rows`-th row (and the last ones)
+// of a `cols` x `rows` grid at rest at `rest`, and drawn with the whole grid (make_mesh): the
+// fine folds of the rest shape, at the cost of the coarse grid.
+fn Cloth* from_fine(int cols, int rows, Vector3[] rest, int step_cols, int step_rows, float mass = 0.4f) {
+    int[] cc = coarse_lines(cols, step_cols);
+    int[] rr = coarse_lines(rows, step_rows);
+    defer {
+        free(cc);
+        free(rr);
+    }
+    Vector3[] coarse = mem::new_array(Vector3, (sz)cc.len * rr.len);
+    defer free(coarse);
+    foreach (r, fr : rr) {
+        foreach (c, fc : cc) coarse[r * cc.len + c] = rest[fr * cols + fc];
+    }
+    Cloth* cl = from_positions((int)cc.len, (int)rr.len, coarse, mass);
+    Detail* d = mem::new(Detail);
+    d.cols = cols;
+    d.rows = rows;
+    d.rest = mem::new_array(Vector3, (sz)cols * rows);
+    d.rest[..] = rest[..];
+    d.col_cell = mem::new_array(int, cols);
+    d.col_t = mem::new_array(float, cols);
+    d.row_cell = mem::new_array(int, rows);
+    d.row_s = mem::new_array(float, rows);
+    place_lines(cc, d.col_cell, d.col_t);
+    place_lines(rr, d.row_cell, d.row_s);
+    d.offset = mem::new_array(Vector3, (sz)cols * rows);
+    d.normal = mem::new_array(Vector3, (sz)cols * rows);
+    cl.detail = d;
+    for (int r = 0; r < rows; r++) {
+        for (int c = 0; c < cols; c++) {
+            Frame f = cl.frame_at(cl.pos, d.col_cell[c], d.col_t[c], d.row_cell[r], d.row_s[r]);
+            Vector3 o = rest[r * cols + c] - f.at;
+            Vector3 n = grid_normal(rest, cols, rows, c, r);
+            d.offset[r * cols + c] = { o.dot(f.u), o.dot(f.v), o.dot(f.n) };
+            d.normal[r * cols + c] = { n.dot(f.u), n.dot(f.v), n.dot(f.n) };
+        }
+    }
+    return cl;
+}
+
+// The normal of a grid of points at (c, r), from its neighbours across and down.
+fn Vector3 grid_normal(Vector3[] p, int cols, int rows, int c, int r) @local {
+    Vector3 du = p[r * cols + math::min(c + 1, cols - 1)] - p[r * cols + math::max(c - 1, 0)];
+    Vector3 dv = p[math::max(r - 1, 0) * cols + c] - p[math::min(r + 1, rows - 1) * cols + c];
+    Vector3 n  = du.cross(dv);
+    float len  = n.length();
+    return len > 1e-12f ? n / len : (Vector3) { 0, 0, 1 };
+}
+
+// The fine lines (columns or rows) the coarse grid keeps: every `step`-th, and the last.
+fn int[] coarse_lines(int count, int step) @local {
+    step = math::max(step, 1);
+    int n = (count - 1 + step - 1) / step + 1;
+    int[] lines = mem::new_array(int, n);
+    for (int k = 0; k < n; k++) lines[k] = math::min(k * step, count - 1);
+    return lines;
+}
+
+// For each fine line: the coarse cell it is in and how far across it.
+fn void place_lines(int[] lines, int[] cell, float[] t) @local {
+    int k = 0;
+    foreach (i, &c : cell) {
+        while ((usz)(k + 2) < lines.len && lines[k + 1] <= (int)i) k++;
+        *c = k;
+        t[i] = (float)((int)i - lines[k]) / (float)(lines[k + 1] - lines[k]);
+    }
+}
+
+struct Frame {
+    Vector3 at, u, v, n;
+}
+
+// The bilinear patch of cell (c, r) of the points `p` at (t, s): the place and an orthonormal
+// frame, u across, n out of the cloth (the side make_mesh's normals face) and v = n x u.
+fn Frame Cloth.frame_at(&self, Vector3[] p, int c, float t, int r, float s) {
+    Vector3 p00 = p[self.index(c, r)];
+    Vector3 p10 = p[self.index(c + 1, r)];
+    Vector3 p01 = p[self.index(c, r + 1)];
+    Vector3 p11 = p[self.index(c + 1, r + 1)];
+    Vector3 top = p00 + (p10 - p00) * t;
+    Vector3 bottom = p01 + (p11 - p01) * t;
+    Vector3 du = (p10 - p00) * (1 - s) + (p11 - p01) * s;
+    Vector3 dv = top - bottom;
+    Vector3 n = du.cross(dv);
+    float nl = n.length();
+    float ul = du.length();
+    Frame f;
+    f.at = top + (bottom - top) * s;
+    f.u = ul > 1e-9f ? du / ul : (Vector3) { 1, 0, 0 };
+    f.n = nl > 1e-12f ? n / nl : (Vector3) { 0, 0, 1 };
+    f.v = f.n.cross(f.u);
+    return f;
+}
+
 // Orders the links so that those next to each other share no point: each gets the first
 // color its two points' other links don't have, and they go color by color. (A link waits
 // for the one before it only when they share a point, so the CPU can work on several at once.)
@@ -238,6 +363,19 @@ fn void Cloth.free(&self) {
     self.bend.free();
     self.tethers.free();
     self.colliders.free();
+    free(self.shown);
+    free(self.marked);
+    if (self.detail) {
+        Detail* d = self.detail;
+        free(d.rest);
+        free(d.col_cell);
+        free(d.col_t);
+        free(d.row_cell);
+        free(d.row_s);
+        free(d.offset);
+        free(d.normal);
+        free(d);
+    }
     free(self);
 }
 
@@ -275,11 +413,11 @@ fn int Cloth.add_capsule(&self, Vector3 a, Vector3 b, float radius) {
 }
 
 // Moves a collider (b is ignored for a sphere). The cloth sees it travel there over the steps
-// of the next update; from inactive, it appears there.
+// of the next update; from inactive, or further than JUMP, it appears there.
 fn void Cloth.move_collider(&self, int id, Vector3 a, Vector3 b = { 0, 0, 0 }) {
     Collider* k = &self.colliders[id];
     if (k.kind == SPHERE) b = a;
-    if (!k.active) {
+    if (!k.active || (a - k.from_a).length() > JUMP || (b - k.from_b).length() > JUMP) {
         k.from_a = a;
         k.from_b = b;
     }
@@ -580,29 +718,49 @@ fn float Cloth.max_speed(&self) {
     return m;
 }
 
+// Whether any point is more than `distance` from where it was at the last mark() (always, before
+// the first): to redraw a static light's shadow of the cloth when it has moved enough to show.
+fn bool Cloth.moved(&self, float distance) {
+    if (!self.marked.len) return true;
+    float d2 = distance * distance;
+    foreach (i, p : self.pos) {
+        Vector3 d = p - self.marked[i];
+        if (d.dot(d) > d2) return true;
+    }
+    return false;
+}
+
+fn void Cloth.mark(&self) {
+    if (!self.marked.len) self.marked = mem::new_array(Vector3, self.pos.len);
+    self.marked[..] = self.pos[..];
+}
+
 // A mesh of the cloth, drawn where the points are (its matrix is the identity: add it anywhere
 // in the scene). Use a DOUBLE_SIDE material to see both faces. Its uvs are in meters along the
 // cloth at rest: u across from the first column, v up from the top row (negative below it).
 fn Mesh* Cloth.make_mesh(&self, Material* material = null) {
+    int cols = self.detail ? self.detail.cols : self.cols;
+    int rows = self.detail ? self.detail.rows : self.rows;
+    Vector3[] rest = self.detail ? self.detail.rest : self.rest;
     BufferGeometry* g = drie::buffer_geometry();
     g.dynamic = true;
-    float[] down = mem::new_array(float, self.cols);
+    float[] down = mem::new_array(float, cols);
     defer free(down);
-    for (int r = 0; r < self.rows; r++) {
+    for (int r = 0; r < rows; r++) {
         float across = 0;
-        for (int k = 0; k < self.cols; k++) {
-            uint i = self.index(k, r);
-            if (k > 0) across += (self.rest[i] - self.rest[i - 1]).length();
-            if (r > 0) down[k] += (self.rest[i] - self.rest[i - (uint)self.cols]).length();
-            g.add_vertex(self.pos[i], { 0, 0, 1 }, { across, -down[k] });
+        for (int k = 0; k < cols; k++) {
+            int i = r * cols + k;
+            if (k > 0) across += (rest[i] - rest[i - 1]).length();
+            if (r > 0) down[k] += (rest[i] - rest[i - cols]).length();
+            g.add_vertex(rest[i], { 0, 0, 1 }, { across, -down[k] });
         }
     }
-    for (int r = 0; r + 1 < self.rows; r++) {
-        for (int k = 0; k + 1 < self.cols; k++) {
-            uint a = self.index(k, r);
-            uint b = self.index(k, r + 1);
-            uint c = self.index(k + 1, r + 1);
-            uint d = self.index(k + 1, r);
+    for (int r = 0; r + 1 < rows; r++) {
+        for (int k = 0; k + 1 < cols; k++) {
+            uint a = (uint)(r * cols + k);
+            uint b = a + (uint)cols;
+            uint c = b + 1;
+            uint d = a + 1;
             // (the diagonal alternates, so the folds have no grain)
             if ((k + r) % 2 == 0) {
                 g.add_triangle(a, b, c);
@@ -623,33 +781,94 @@ fn Mesh* Cloth.make_mesh(&self, Material* material = null) {
     return m;
 }
 
-// Writes the points, `alpha` (0..1) of the way from the last step's start to now, and their
-// normals into the mesh's geometry.
+// Writes the points, `alpha` (0..1) of the way from the last step's start to now (or the
+// finer grid over them), and their normals into the mesh's geometry.
 fn void Cloth.write_mesh(&self, float alpha) {
     if (!self.mesh) return;
+    if (!self.shown.len) self.shown = mem::new_array(Vector3, self.pos.len);
+    foreach (i, &p : self.shown) *p = self.start[i] + (self.pos[i] - self.start[i]) * alpha;
     BufferGeometry* g =  self.mesh.geometry;
     float* v          =  g.vertices.entries;
     Vector3 lo        =  { FAR, FAR, FAR };
     Vector3 hi        = -lo;
-    uint n            =  self.count();
-    for (uint i = 0; i < n; i++) {
-        Vector3 p = self.start[i] + (self.pos[i] - self.start[i]) * alpha;
-        float* o  = v + (usz)i * drie::FLOATS_PER_VERTEX;
-        o[0] = p.x;
-        o[1] = p.y;
-        o[2] = p.z;
-        lo = math::min(lo, p);
-        hi = math::max(hi, p);
+    int cols          =  self.cols;
+    int rows          =  self.rows;
+    if (self.detail) {
+        // (frame_at's frame, worked out a row of a cell at a time: along a row the cell's u
+        // does not change, and its v changes linearly)
+        Detail* d = self.detail;
+        cols = d.cols;
+        rows = d.rows;
+        Vector3[] p = self.shown;
+        int cc = self.cols;
+        for (int r = 0; r < rows; r++) {
+            int rc  = d.row_cell[r];
+            float s = d.row_s[r];
+            int cell = -1;
+            Vector3 left;
+            Vector3 du;
+            Vector3 u;
+            Vector3 dv_left;
+            Vector3 dv_right;
+            for (int c = 0; c < cols; c++) {
+                if (d.col_cell[c] != cell) {
+                    cell = d.col_cell[c];
+                    Vector3 p00 = p[rc * cc + cell];
+                    Vector3 p10 = p[rc * cc + cell + 1];
+                    Vector3 p01 = p[(rc + 1) * cc + cell];
+                    Vector3 p11 = p[(rc + 1) * cc + cell + 1];
+                    left = p00 + (p01 - p00) * s;
+                    du = p10 + (p11 - p10) * s - left;
+                    float ul = du.length();
+                    u = ul > 1e-9f ? du / ul : (Vector3) { 1, 0, 0 };
+                    dv_left = p00 - p01;
+                    dv_right = p10 - p11;
+                }
+                float t   = d.col_t[c];
+                Vector3 n = du.cross(dv_left + (dv_right - dv_left) * t);
+                float nl  = n.length();
+                n = nl > 1e-12f ? n / nl : (Vector3) { 0, 0, 1 };
+                Vector3 vv = n.cross(u);
+                int i      = r * cols + c;
+                Vector3 o  = d.offset[i];
+                Vector3 q  = left + du * t + u * o.x + vv * o.y + n * o.z;
+                Vector3 m  = d.normal[i];
+                Vector3 nn = u * m.x + vv * m.y + n * m.z;
+                float* w   = v + (usz)i * drie::FLOATS_PER_VERTEX;
+                w[0] = q.x;
+                w[1] = q.y;
+                w[2] = q.z;
+                w[3] = nn.x;
+                w[4] = nn.y;
+                w[5] = nn.z;
+                lo = math::min(lo, q);
+                hi = math::max(hi, q);
+            }
+        }
+    } else {
+        foreach (i, p : self.shown) {
+            float* w = v + (usz)i * drie::FLOATS_PER_VERTEX;
+            w[0] = p.x;
+            w[1] = p.y;
+            w[2] = p.z;
+            lo = math::min(lo, p);
+            hi = math::max(hi, p);
+        }
     }
-    int cols = self.cols;
-    int rows = self.rows;
+    if (!self.detail) grid_normals(v, cols, rows);
+    g.bounds_center = (lo + hi) * 0.5f;
+    g.bounds_radius = (hi - lo).length() * 0.5f + 1e-3f;
+}
+
+// Each vertex's normal from its neighbours across and down, in a grid of `cols` x `rows`.
+fn void grid_normals(float* v, int cols, int rows) @local {
     for (int r = 0; r < rows; r++) {
         for (int k = 0; k < cols; k++) {
-            float* o    = v + (usz)self.index(k, r) * drie::FLOATS_PER_VERTEX;
-            float* xl   = v + (usz)self.index(math::max(k - 1, 0), r) * drie::FLOATS_PER_VERTEX;
-            float* xr   = v + (usz)self.index(math::min(k + 1, cols - 1), r) * drie::FLOATS_PER_VERTEX;
-            float* yu   = v + (usz)self.index(k, math::max(r - 1, 0)) * drie::FLOATS_PER_VERTEX;
-            float* yd   = v + (usz)self.index(k, math::min(r + 1, rows - 1)) * drie::FLOATS_PER_VERTEX;
+            float* o    = v + (usz)(r * cols + k) * drie::FLOATS_PER_VERTEX;
+            float* xl   = v + (usz)(r * cols + math::max(k - 1, 0)) * drie::FLOATS_PER_VERTEX;
+            float* xr   = v + (usz)(r * cols + math::min(k + 1, cols - 1)) * drie::FLOATS_PER_VERTEX;
+            float* yu   = v + (usz)(math::max(r - 1, 0) * cols + k) * drie::FLOATS_PER_VERTEX;
+            float* yd   = v + (usz)(math::min(r + 1, rows - 1) * cols + k) * drie::FLOATS_PER_VERTEX;
             Vector3 du  = { xr[0] - xl[0], xr[1] - xl[1], xr[2] - xl[2] };
             Vector3 dv  = { yu[0] - yd[0], yu[1] - yd[1], yu[2] - yd[2] };
             Vector3 nrm = du.cross(dv);
@@ -660,6 +879,4 @@ fn void Cloth.write_mesh(&self, float alpha) {
             o[5] = nrm.z;
         }
     }
-    g.bounds_center = (lo + hi) * 0.5f;
-    g.bounds_radius = (hi - lo).length() * 0.5f + 1e-3f;
 }
