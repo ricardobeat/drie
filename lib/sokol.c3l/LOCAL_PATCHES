@@ -25,5 +25,6 @@ To update: copy the new sokol.c3l/ over this folder, then re-apply each item bel
    - the two functions' implementations, before sg_mtl_command_queue's.
    (The functions are bound in drie's platform/gputimer.c, not in sg.c3.)
 5. c/sokol_gfx.h, the pipeline archive (sokol_warm.h): in _sg_mtl_create_pipeline, the render
-   pipeline state is made by _sg_warm_render_pipeline(rp_desc, &err) (declared in place), not
-   by newRenderPipelineStateWithDescriptor. The hunk is marked "drie patch (pipeline archive)".
+   pipeline state is made by _sg_warm_render_pipeline(rp_desc, &err, desc->shader.id) (declared
+   in place), not by newRenderPipelineStateWithDescriptor. The hunk is marked "drie patch
+   (pipeline archive)".

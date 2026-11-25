@@ -67,11 +67,21 @@ void sg_warm_dry(int on) {
 //   sg_warm_archive_save(path);   // 1 written, 0 nothing new to write, -1 failed
 //
 // An archive made on another GPU or OS loads, or not, and has nothing that matches: then every
-// pipeline is compiled as without one.
+// pipeline is compiled as without one. Only pipelines of shaders marked with
+// sg_warm_archivable(shader) are added (and every background job's): a library loaded from old
+// bytecode (sokol's own shaders, built for macOS 10.12) can't be packed, and would keep the
+// whole archive from being saved.
 static id<MTLBinaryArchive> _sg_warm_archive;
 static bool _sg_warm_archive_dirty;
 static int _sg_warm_archive_hits, _sg_warm_archive_misses;
 static os_unfair_lock _sg_warm_archive_lock = OS_UNFAIR_LOCK_INIT;
+// the shaders (ids) whose pipelines are added (main thread only)
+static NSMutableSet* _sg_warm_archivable;
+
+void sg_warm_archivable(uint32_t shader_id) {
+    if (!_sg_warm_archivable) _sg_warm_archivable = [[NSMutableSet alloc] init];
+    [_sg_warm_archivable addObject:[NSNumber numberWithUnsignedInt:shader_id]];
+}
 
 int sg_warm_archive_load(const char* path) {
     if (!_sg.valid) return -1;
@@ -134,8 +144,9 @@ void sg_warm_archive_counts(int* hits, int* misses) {
 }
 
 // A render pipeline state for `rp_desc` (retained, as newRenderPipelineState's): the archive's,
-// or compiled and added to it. Called from any thread.
-id<MTLRenderPipelineState> _sg_warm_render_pipeline(MTLRenderPipelineDescriptor* rp_desc, NSError** err) {
+// or compiled (and added to it if its shader `shader_id` is archivable; 0: a background job's,
+// which is). Called from any thread; with a shader id, from the main thread.
+id<MTLRenderPipelineState> _sg_warm_render_pipeline(MTLRenderPipelineDescriptor* rp_desc, NSError** err, uint32_t shader_id) {
     id<MTLDevice> device = _sg.mtl.device;
     id<MTLBinaryArchive> archive = _sg_warm_archive;
     if (!archive) return [device newRenderPipelineStateWithDescriptor:rp_desc error:err];
@@ -149,7 +160,8 @@ id<MTLRenderPipelineState> _sg_warm_render_pipeline(MTLRenderPipelineDescriptor*
     if (rps) return rps;
     rp_desc.binaryArchives = nil;
     rps = [device newRenderPipelineStateWithDescriptor:rp_desc error:err];
-    if (rps) {
+    bool add = shader_id == 0 || [_sg_warm_archivable containsObject:[NSNumber numberWithUnsignedInt:shader_id]];
+    if (rps && add) {
         os_unfair_lock_lock(&_sg_warm_archive_lock);
         NSError* add_err = nil;
         if ([archive addRenderPipelineFunctionsWithDescriptor:rp_desc error:&add_err]) {
@@ -321,7 +333,7 @@ int sg_warm_begin(const sg_shader_desc* shader_desc, const sg_pipeline_desc* pip
             if (vs && fs) {
                 rp_desc.vertexFunction = vs;
                 rp_desc.fragmentFunction = fs;
-                id<MTLRenderPipelineState> rps = _sg_warm_render_pipeline(rp_desc, &err);
+                id<MTLRenderPipelineState> rps = _sg_warm_render_pipeline(rp_desc, &err, 0);
                 if (rps) state = 2;
                 _SG_OBJC_RELEASE(rps);
             }
@@ -467,6 +479,10 @@ int sg_warm_archive_save(const char* path) {
 void sg_warm_archive_counts(int* hits, int* misses) {
     if (hits) *hits = 0;
     if (misses) *misses = 0;
+}
+
+void sg_warm_archivable(uint32_t shader_id) {
+    (void)shader_id;
 }
 
 void sg_warm_dry(int on) {

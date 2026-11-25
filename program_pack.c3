@@ -219,8 +219,13 @@ fn void with_bytecode(SgShaderDesc* d) {
     stage_bytecode(&d.compute_func, pack);
 }
 
-// sg::make_shader, with the program pack's bytecode (with_bytecode).
+extern fn void sg_warm_archivable(uint shader_id) @cname("sg_warm_archivable");
+
+// sg::make_shader, with the program pack's bytecode (with_bytecode). Its pipelines go into the
+// pipeline archive (sg_warm_archivable, see Renderer.use_pipeline_archive).
 fn SgShader make_program(SgShaderDesc desc) {
     with_bytecode(&desc);
-    return sg::make_shader(&desc);
+    SgShader s = sg::make_shader(&desc);
+    sg_warm_archivable(s.id);
+    return s;
 }
