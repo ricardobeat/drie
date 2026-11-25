@@ -146,6 +146,68 @@ fn int main(String[] args) {
     float back = math::max(max_distance(left.pos, left_rest), max_distance(right.pos, right_rest));
     expect(back < 0.01f, string::tformat("parted curtain: back where it hung 12 s later (%.4f m off)", back));
 
+    // a body put somewhere else (further than cloth::JUMP) is not swept through the cloth
+    {
+        Cloth* t = curtain(-0.6, 1.2, 24);
+        run(t, 6);
+        Vector3[] before = copy(t.pos);
+        int id = t.add_capsule({ 0, 0.3, -1.5 }, { 0, 1.7, -1.5 }, 0.22);
+        t.update(1.0f / 60);
+        t.move_collider(id, { 0, 0.3, 1.5 }, { 0, 1.7, 1.5 });
+        t.update(1.0f / 60);
+        float moved = max_distance(before, t.pos);
+        expect(moved < 0.005f, string::tformat("a body moved 3 m in a frame jumps there, not through the sheet (%.4f m)", moved));
+    }
+
+    // a fine pleated grid over a coarse cloth: drawn where its rest shape is, and carried along
+    // when the cloth turns and moves as a whole
+    {
+        int fc = 49;
+        int fr = 37;
+        Vector3[] fine = mem::new_array(Vector3, (sz)fc * fr);
+        for (int rr = 0; rr < fr; rr++) {
+            for (int cc = 0; cc < fc; cc++) {
+                float u = (float)cc / (float)(fc - 1);
+                fine[rr * fc + cc] = { u, 2 - (float)rr / (float)(fr - 1) * 2, 0.03f * math::sin(u * 12 * (float)math::PI) };
+            }
+        }
+        Cloth* d = cloth::from_fine(fc, fr, fine, 3, 2);
+        expect(d.cols == 17 && d.rows == 19, string::tformat("from_fine: a %d x %d cloth under 49 x 37", d.cols, d.rows));
+        Mesh* dm = d.make_mesh();
+        float off = 0;
+        for (int i = 0; i < fc * fr; i++) {
+            float* v = &dm.geometry.vertices[(sz)i * drie::FLOATS_PER_VERTEX];
+            off = math::max(off, ((Vector3) { v[0], v[1], v[2] } - fine[i]).length());
+        }
+        expect(off < 1e-5f, string::tformat("from_fine: drawn at its rest shape (%.7f m off)", off));
+        Vector3[] normals = mem::new_array(Vector3, (sz)fc * fr);
+        for (int i = 0; i < fc * fr; i++) {
+            float* v = &dm.geometry.vertices[(sz)i * drie::FLOATS_PER_VERTEX];
+            normals[i] = { v[3], v[4], v[5] };
+        }
+        // turned a quarter about y and moved
+        Vector3 move = { 3, 1, -2 };
+        foreach (i, &p : d.pos) {
+            *p = (Vector3) { p.z, p.y, -p.x } + move;
+            d.start[i] = *p;
+        }
+        d.write_mesh(1);
+        off = 0;
+        for (int i = 0; i < fc * fr; i++) {
+            float* v = &dm.geometry.vertices[(sz)i * drie::FLOATS_PER_VERTEX];
+            Vector3 want = (Vector3) { fine[i].z, fine[i].y, -fine[i].x } + move;
+            off = math::max(off, ((Vector3) { v[0], v[1], v[2] } - want).length());
+        }
+        float worst = 1;
+        for (int i = 0; i < fc * fr; i++) {
+            float* v = &dm.geometry.vertices[(sz)i * drie::FLOATS_PER_VERTEX];
+            Vector3 want = { normals[i].z, normals[i].y, -normals[i].x };
+            worst = math::min(worst, want.dot({ v[3], v[4], v[5] }));
+        }
+        expect(off < 1e-4f && worst > 0.9999f,
+               string::tformat("from_fine: turned and moved with the cloth (%.7f m off; normals within %.5f)", off, 1 - worst));
+    }
+
     // cost: one curtain in a draft with a capsule near it
     Cloth* c = curtain(-0.6, 1.2, 24);
     c.wind = { 0.2, 0, 0.6 };
