@@ -212,6 +212,9 @@ layout(binding=0) uniform vs_params {
 // for meshes without (before the tangent: the same location in every program)
 in vec3 instance_color;
 in vec4 tangent;  // the tangents (BufferGeometry.tangents: glTF's TANGENT; zeros without)
+// where the vertex was a frame ago (a dynamic geometry's vertices before its update this frame;
+// the position itself for any other), for the motion vectors
+in vec3 prev_position;
 
 out vec3 v_world_pos;
 out vec3 v_normal;
@@ -294,10 +297,11 @@ void main() {
         return;
     }
     if (motion.x > 1.5) {
-        // the same vertex, placed and swayed as it was a frame ago (instances are taken to
-        // stand still, and the hook to have moved it as far as it does now)
-        vec4 pp = prev_model * vec4(ip, 1.0);
-        pp.xyz = apply_sway(pp.xyz, ip.y, vec4(motion.y, sway.yzw)) + (wp.xyz - swayed);
+        // the same vertex, where it was, placed and swayed as it was a frame ago (instances are
+        // taken to stand still, and the hook to have moved it as far as it does now)
+        vec3 was = instance_point(displaced(prev_position, vec4(surface_vs.yzw, 0.0)));
+        vec4 pp = prev_model * vec4(was, 1.0);
+        pp.xyz = apply_sway(pp.xyz, was.y, vec4(motion.y, sway.yzw)) + (wp.xyz - swayed);
         v_prev_clip = prev_view_proj * pp;
     } else if (motion.x > 0.5) {
         v_prev_clip = prev_view_proj * wp;
