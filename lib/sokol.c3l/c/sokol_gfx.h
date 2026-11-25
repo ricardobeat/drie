@@ -17964,11 +17964,16 @@ _SOKOL_PRIVATE void _sg_mtl_discard_sampler(_sg_sampler_t* smp) {
 
 _SOKOL_PRIVATE id<MTLLibrary> _sg_mtl_compile_library(const char* src) {
     NSError* err = NULL;
+    // drie patch (invariant position): a vertex function's [[position, invariant]] computed
+    // alike in every pipeline it is in (a depth prepass's and the EQUAL-tested pass after it)
+    MTLCompileOptions* opts = [[MTLCompileOptions alloc] init];
+    opts.preserveInvariance = YES;
     id<MTLLibrary> lib = [_sg.mtl.device
         newLibraryWithSource:[NSString stringWithUTF8String:src]
-        options:nil
+        options:opts
         error:&err
     ];
+    _SG_OBJC_RELEASE(opts);
     if (err) {
         _SG_ERROR(METAL_SHADER_COMPILATION_FAILED);
         _SG_LOGMSG(METAL_SHADER_COMPILATION_OUTPUT, [err.localizedDescription UTF8String]);
