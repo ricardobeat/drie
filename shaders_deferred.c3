@@ -13,6 +13,7 @@ struct DeferredLightParams @align(16) @packed @private {
     Vec4 view_origin;
     Vec4 clear_color;
     Vec4 screen_info;
+    Mat4 view_proj;
 }
 
 fn SgShaderDesc split_deferred_shader_desc(bool mrt, bool vsm, SgBackend backend) @private {
