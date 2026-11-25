@@ -20,3 +20,5 @@
 #include "sokol_cmdbuf.h"
 // drie: background shader compiles that fill the driver cache (sokol_warm.h)
 #include "sokol_warm.h"
+// drie: ray-traced rect light shadows (sokol_rt.h)
+#include "sokol_rt.h"

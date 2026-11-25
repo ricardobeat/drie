@@ -913,6 +913,10 @@ struct LightShadow {
     // most scenes. On top of the map, not instead of it; with or without cast_shadow. In
     // the deferred lighting pass (Renderer.deferred), for directional, point and spot lights.
     float contact_length;
+    // Rect area lights only (extension): the shadow ray traced (ray_shadows.c3), soft as the
+    // rectangle is wide, where the GPU can (Metal's ray tracing) and the deferred pass draws,
+    // with Renderer.ray_traced_shadows; the shadow maps elsewhere. On by default.
+    bool ray_traced;
     // Distance up to which shadows are cast (0 = the light's distance, or 50).
     float far;
     // Part of the light's cone covered by the shadow map, 0..1, like three's SpotLightShadow.focus.
@@ -1059,7 +1063,8 @@ fn RectAreaLight* rect_area_light(Color color = 0xffffff, float intensity = 1, f
         .intensity = 1,
         .near = 0.1f,
         .auto_update = true,
-        .needs_update = true
+        .needs_update = true,
+        .ray_traced = true,
     };
     return l;
 }
