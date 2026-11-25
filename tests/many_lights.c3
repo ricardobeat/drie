@@ -3,7 +3,9 @@
 // them draw their maps once (shadow.auto_update off), half every frame. Four boxes circle the
 // room and the cloth waves (a dynamic geometry), so some maps see things move.
 // Prints, per frame, what the shadow atlas holds and draws (RenderInfo.atlas_*), and checks:
-//   - the picture is lit
+//   - the picture is lit, and every light that asks for a shadow gets one
+//   - no two maps overlap in the atlas, and from a still camera none moves
+//   - a small atlas: the lights near the camera keep their maps, far ones lose theirs
 //
 //   just test many_lights [out.png] [frames]   (tests/build/many_lights.png)
 module many_lights_test;
@@ -30,6 +32,7 @@ Mesh*[4] movers;
 BufferGeometry* cloth;
 List{float} cloth_rest;
 int lights;
+List{Light*} all_lights;
 
 fn void box(Material* m, Vector3 size, Vector3 at, bool cast = true) {
     Mesh* b = drie::mesh(drie::box_geometry(size.x, size.y, size.z), m);
@@ -75,6 +78,7 @@ fn void build() {
     cloth = drie::plane_geometry(2, 2, 12, 12);
     cloth.dynamic = true;
     cloth_rest.init(mem);
+    all_lights.init(mem);
     foreach (f : cloth.vertices) cloth_rest.push(f);
     Mesh* c = drie::mesh(cloth, drie::mesh_standard_material(color: 0x802020, roughness: 0.9f, side: DOUBLE_SIDE));
     c.position = { 3, 2.5f, 2 };
@@ -97,6 +101,7 @@ fn void build() {
         s.shadow.auto_update = i % 2 == 0;
         s.shadow.needs_update = true;
         scene.add(s);
+        all_lights.push(s);
         lights++;
     }
     for (int i = 0; i < 40; i++) {
@@ -109,6 +114,7 @@ fn void build() {
         p.shadow.auto_update = i % 2 == 1;
         p.shadow.needs_update = true;
         scene.add(p);
+        all_lights.push(p);
         lights++;
     }
     for (int i = 0; i < 30; i++) {
@@ -131,6 +137,7 @@ fn void build() {
         r.shadow.auto_update = i % 2 == 0;
         r.shadow.needs_update = true;
         scene.add(r);
+        all_lights.push(r);
         lights++;
     }
     scene.add(drie::ambient_light(0xffffff, 0.02f));
@@ -194,9 +201,65 @@ fn int main(String[] args) {
         frame(f);
         print_info(f);
     }
+    // the maps: none overlaps another, and from a still camera none moves
+    List{int[4]} rects;
+    rects.init(mem);
+    foreach (l : all_lights) {
+        for (int f = 0; f < 6; f++) rects.push(renderer.shadow_map_rect(l, f));
+    }
+    long used;
+    bool overlap;
+    foreach (i, a : rects) {
+        if (!a[2]) continue;
+        used += (long)a[2] * a[3];
+        for (sz j = (sz)i + 1; j < rects.len(); j++) {
+            int[4] b = rects[j];
+            if (!b[2]) continue;
+            if (a[0] < b[0] + b[2] && b[0] < a[0] + a[2] && a[1] < b[1] + b[3] && b[1] < a[1] + a[3]) overlap = true;
+        }
+    }
+    io::printfn("maps: %.1f%% of the atlas", 100.0 * (double)used / ((double)renderer.info.atlas_width * renderer.info.atlas_height));
+    expect(!overlap, "no two maps overlap");
+    // the camera still: the boxes and the cloth go on moving, the maps stay where they are
+    for (int f = frames + 1; f <= frames + 40; f++) frame(f);
+    bool same = true;
+    foreach (i, l : all_lights) {
+        for (int f = 0; f < 6; f++) {
+            if (renderer.shadow_map_rect(l, f) != rects[(usz)i * 6 + (usz)f]) same = false;
+        }
+    }
+    expect(same, "from a still camera, every map stays where it is");
+
     float lit = mean_brightness();
     expect(lit > 8, string::tformat("the room is lit (mean %.1f)", lit));
-    io::printfn("%d of %d shadowed lights have no map", renderer.info.atlas_dropped, lights);
+
+    expect(renderer.info.atlas_dropped == 0, string::tformat("every shadowed light has a map (%d of %d without)", renderer.info.atlas_dropped, lights));
+
+    // a small atlas: the lights nearest the camera keep their maps, the farthest lose theirs
+    renderer.shadow_atlas_size = 2048;
+    for (int f = 0; f < 30; f++) frame(frames + 40 + f);
+    print_info(frames + 70);
+    Vector3 eye = camera.position;
+    int near_kept;
+    int near_count;
+    int far_lost;
+    int far_count;
+    foreach (l : all_lights) {
+        float d = (l.matrix_world.get_position() - eye).length();
+        bool has = renderer.shadow_map_rect(l, 0)[2] > 0;
+        if (d < 5) {
+            near_count++;
+            if (has) near_kept++;
+        }
+        if (d > 25) {
+            far_count++;
+            if (!has) far_lost++;
+        }
+    }
+    expect(renderer.info.atlas_dropped > 0 && near_kept == near_count && far_lost > 0,
+           string::tformat("a 2048 atlas: %d lights without maps; the %d near the camera keep theirs (%d), %d of the %d far ones lose theirs",
+                           renderer.info.atlas_dropped, near_count, near_kept, far_lost, far_count));
+    renderer.shadow_atlas_size = 8192;
 
     if (!png::write(out_path, px, W, H)) {
         io::printfn("could not write %s", out_path);
