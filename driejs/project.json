@@ -40,6 +40,9 @@
 		"driejs-macos": {
 			"type": "executable",
 			"name": "driejs",
+			"c-sources-override": [],
+			"linked-libraries": ["drie_c"],
+			"linker-search-paths": ["../build/c/macos-aarch64"],
 			"cflags": "-O2 -DNDEBUG -x objective-c -fobjc-arc"
 		},
 		"driejs-linux": {

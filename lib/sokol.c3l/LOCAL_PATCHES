@@ -10,7 +10,8 @@ To update: copy the new sokol.c3l/ over this folder, then re-apply each item bel
        // drie: background shader compiles that fill the driver cache (sokol_warm.h)
        #include "sokol_warm.h"
 3. manifest.json: drie's own. Keep it whole (-O2 -DNDEBUG cflags, the mingw, ios,
-   ios-sim and linux-aarch64 targets, the linked libraries).
+   ios-sim and linux-aarch64 targets, the linked libraries; on macOS, iOS and mingw it links
+   build/c/<target>/libsokol_c.a, built by drie's tools/c_libs.py, and compiles no C).
 4. c/sokol_gfx.h, GPU timestamps for drie's GpuTimer (gpu_timer.c3, platform/gputimer.c).
    Every hunk is marked "drie patch (GPU timestamps)":
    - declarations of sg_mtl_command_buffer() and sg_mtl_set_pass_timestamps(sample_buffer,

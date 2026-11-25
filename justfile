@@ -17,6 +17,10 @@ bindgen := "../bindgen.c3l"
 # Homebrew's libdraco and boomkat's C are built), so that the linker finds nothing newer
 macos := if os() == "macos" { "--macos-min-version " + `sw_vers -productVersion 2>/dev/null || true` } else { "" }
 
+# builds the C sources of drie and sokol into the static libraries the manifests link on macOS
+# (tools/c_libs.py; elsewhere c3c compiles them)
+c_libs := if os() == "macos" { "python3 tools/c_libs.py macos-aarch64" } else { "true" }
+
 # the sources c3fmt formats: the hand written ones at the top. The sokol-shdc generated
 # files are in generated/ (manifest.json's "sources" adds it to the library).
 c3fmt_files := "*.c3"
@@ -34,10 +38,12 @@ check:
 # (`just test radiance out.png --p3`: elsewhere, and in Display P3's colors)
 test name *args:
     mkdir -p tests/build
+    {{c_libs}}
     c3c run {{target}} {{macos}} --libdir {{libdir}} --sources tests/{{name}}.c3 -- {{args}}
 
 # build and run an example program (examples/): `just example nodes`
 example name *args:
+    {{c_libs}}
     c3c run {{target}} {{macos}} --libdir {{libdir}} --sources examples/{{name}}.c3 -- {{args}}
 
 # regenerate generated/cgltf.c3, the binding of cgltf (third_party/cgltf/cgltf.h), with

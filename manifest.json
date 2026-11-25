@@ -1,5 +1,6 @@
 {
     "provides": "drie",
+    "linklib-dir": "build/c",
     "sources": [
         "./*",
         "generated/*",
@@ -24,6 +25,8 @@
     ],
     "targets": {
         "macos-aarch64": {
+            "c-sources-override": [],
+            "linked-libraries": ["drie_c"],
             "cflags-override": "-O2 -DNDEBUG -x objective-c -fobjc-arc"
         },
         "macos-x64": {
@@ -31,12 +34,20 @@
         },
         "linux-x64": {},
         "windows-x64": {},
-        "mingw-x64": {},
+        "mingw-x64": {
+            "c-sources-override": [],
+            "linked-libraries": ["drie_c"],
+            "cflags-override": "-O2 -DNDEBUG"
+        },
         "ios-aarch64": {
-            "cflags-override": "-x objective-c -fobjc-arc"
+            "c-sources-override": [],
+            "linked-libraries": ["drie_c"],
+            "cflags-override": "-O2 -DNDEBUG -x objective-c -fobjc-arc"
         },
         "ios-aarch64-sim": {
-            "cflags-override": "-x objective-c -fobjc-arc"
+            "c-sources-override": [],
+            "linked-libraries": ["drie_c"],
+            "cflags-override": "-O2 -DNDEBUG -x objective-c -fobjc-arc"
         },
         "linux-aarch64": {}
     }

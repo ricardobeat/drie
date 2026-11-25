@@ -10,3 +10,4 @@ driejs/demos/fonts/
 driejs/demos/thumbs/
 /build/
 driejs/lib/boomkat.c3l/
+lib/sokol.c3l/build/
