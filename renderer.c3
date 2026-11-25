@@ -2231,6 +2231,9 @@ fn void atlas_sort(List{int}* order, float[] key) @local {
     }
 }
 
+// Frames between walks over the whole scene (between them, only what moved is looked at:
+// a matrix_world set by hand, without update_world, is seen at the next).
+const uint CASTER_WALK_FRAMES @local = 60;
 // Frames a caster that changed counts as moving.
 const uint CASTER_STILL_FRAMES @local = 8;
 // Frames a map keeps its cache of the casters that don't move after it last needed it.
@@ -2251,20 +2254,31 @@ struct CasterRec @local {
     // the frame it last changed
     uint moved;
     bool animated;
+    bool instanced;
 }
 
 // The shadow casters of a scene, walked once a frame: what changed among those that keep still
 // (the spheres of casters that started or stopped moving, came or went: the cached maps they
-// are in must be drawn again) and those that move (indices into recs).
+// are in must be drawn again) and those that move.
 struct CasterWalk @private {
     Scene* scene;
     uint frame;
     List{CasterRec} recs;
     List{CasterRec} last;
-    HashMap{ulong, int} at;
-    HashMap{ulong, int} last_at;
+    // which of `last` this walk found again (Mesh.shadow_walk_at says where)
+    List{bool} found;
+    uint last_frame;
     List{Vec4} changes;
-    List{int} moving;
+    // those that move on the GPU, those that moved in the last frames, and those whose
+    // geometry changes (indices into recs); and what the last full walk (every
+    // CASTER_WALK_FRAMES) saw of the world's changes (see note_moved_mesh)
+    uint full_frame;
+    uint structure;
+    uint dropped;
+    sz moved_seen;
+    List{int} animated;
+    List{int} recent;
+    List{int} watched;
 }
 
 // Whether a caster moves on the GPU every frame: its vertices sway, move by its position_node or
@@ -2291,31 +2305,44 @@ fn void walk_object(CasterWalk* w, Object3D* obj, uint frame) @local {
 }
 
 fn void walk_caster(CasterWalk* w, Mesh* m, uint frame) @local {
+    // (met already in this walk: a mesh in two places of the scene)
+    if (m.shadow_walk == w && m.shadow_walk_frame == frame) return;
     BufferGeometry* g = m.geometry;
-    Vector3 center = g.bounds_center;
-    float radius = g.bounds_radius;
-    if (m.instance_data.len() > 0) {
-        center = m.instance_center;
-        radius = m.instance_radius;
-    }
-    Vector3 wc = m.matrix_world.transform_point(center);
-    float r = radius * max_scale(m.matrix_world) + m.material.sway * 2;
-    CasterRec rec = {
-        .mesh = m,
-        .world = m.matrix_world,
-        .geometry = g,
-        .material = m.material,
-        .version = g.version,
-        .instances = m.instance_uploads,
-        .sphere = { wc.x, wc.y, wc.z, r },
-        .animated = caster_animated(m),
-    };
-    ulong key = (ulong)(uptr)m;
-    if (w.at.has_key(key)) return;
-    if (try i = w.last_at[key]) {
+    int i = m.shadow_walk_at;
+    bool known = m.shadow_walk == w && m.shadow_walk_frame == w.last_frame && i >= 0 && i < w.last.len() && w.last[i].mesh == m;
+    CasterRec rec;
+    bool changed = true;
+    if (known) {
+        w.found[i] = true;
         CasterRec* was = &w.last[i];
-        bool changed = libc::memcmp(&was.world, &rec.world, Mat4::size) != 0 || was.geometry != g
+        changed = libc::memcmp(&was.world, &m.matrix_world, Mat4::size) != 0 || was.geometry != g
             || was.material != m.material || was.version != g.version || was.instances != m.instance_uploads;
+        // (as it was: its sphere too)
+        if (!changed) rec = *was;
+    }
+    if (changed) {
+        Vector3 center = g.bounds_center;
+        float radius = g.bounds_radius;
+        if (m.instance_data.len() > 0) {
+            center = m.instance_center;
+            radius = m.instance_radius;
+        }
+        Vector3 wc = m.matrix_world.transform_point(center);
+        float r = radius * max_scale(m.matrix_world) + m.material.sway * 2;
+        rec = {
+            .mesh = m,
+            .world = m.matrix_world,
+            .geometry = g,
+            .material = m.material,
+            .version = g.version,
+            .instances = m.instance_uploads,
+            .sphere = { wc.x, wc.y, wc.z, r },
+            .animated = caster_animated(m),
+            .instanced = m.instance_data.len() > 0,
+        };
+    }
+    if (known) {
+        CasterRec* was = &w.last[i];
         rec.moved = changed ? frame : was.moved;
         bool was_moving = rec_moving(was, frame - 1);
         bool now_moving = rec_moving(&rec, frame);
@@ -2330,9 +2357,10 @@ fn void walk_caster(CasterWalk* w, Mesh* m, uint frame) @local {
     }
     m.shadow_moving = rec_moving(&rec, frame);
     m.shadow_animated = rec.animated;
-    w.at[key] = (int)w.recs.len();
+    m.shadow_walk = w;
+    m.shadow_walk_frame = frame;
+    m.shadow_walk_at = (int)w.recs.len();
     w.recs.push(rec);
-    if (m.shadow_moving || rec.animated) w.moving.push((int)w.recs.len() - 1);
 }
 
 // Walks the shadow casters of `scene` (once a frame).
@@ -2344,42 +2372,105 @@ fn CasterWalk* walk_casters(Scene* scene) @local {
         if (cw.scene == scene) w = cw;
         if (cw.frame < oldest.frame) oldest = cw;
     }
+    bool fresh = !w;
     if (!w) {
         w = oldest;
         if (!w.recs.allocator) {
             w.recs.init(mem);
             w.last.init(mem);
-            w.at.init(mem);
-            w.last_at.init(mem);
+            w.found.init(mem);
             w.changes.init(mem);
-            w.moving.init(mem);
+            w.animated.init(mem);
+            w.watched.init(mem);
+            w.recent.init(mem);
         }
         w.recs.clear();
         w.last.clear();
-        w.at.clear();
-        w.last_at.clear();
         w.scene = scene;
     } else if (w.frame == frame && w.recs.len()) {
         return w;
     }
-    // this frame's walk becomes the last one
-    List{CasterRec} t = w.last;
-    w.last = w.recs;
-    w.recs = t;
-    HashMap{ulong, int} tm = w.last_at;
-    w.last_at = w.at;
-    w.at = tm;
-    w.recs.clear();
-    w.at.clear();
     w.changes.clear();
-    w.moving.clear();
-    w.frame = frame;
-    walk_object(w, scene, frame);
-    // the casters that went: out of the maps they were cached in
-    foreach (&was : w.last) {
-        if (!w.at.has_key((ulong)(uptr)was.mesh) && !rec_moving(was, frame - 1)) w.changes.push(was.sphere);
+    // the whole scene now and then, and when objects came or went; otherwise only what
+    // update_world says moved, and the geometries that change
+    bool full = fresh || frame - w.full_frame >= CASTER_WALK_FRAMES || w.structure != scene_structure_changes
+        || w.dropped != moved_meshes_dropped || w.moved_seen > moved_meshes.len();
+    if (full) {
+        // this frame's walk becomes the last one
+        List{CasterRec} t = w.last;
+        w.last = w.recs;
+        w.recs = t;
+        w.last_frame = w.frame;
+        w.recs.clear();
+        w.found.clear();
+        for (sz i = 0; i < w.last.len(); i++) w.found.push(false);
+        w.frame = frame;
+        w.full_frame = frame;
+        w.structure = scene_structure_changes;
+        w.dropped = moved_meshes_dropped;
+        w.moved_seen = moved_meshes.len();
+        w.animated.clear();
+        w.watched.clear();
+        w.recent.clear();
+        walk_object(w, scene, frame);
+        // the casters that went: out of the maps they were cached in
+        foreach (i, &was : w.last) {
+            if (!w.found[i] && !rec_moving(was, frame - 1)) w.changes.push(was.sphere);
+        }
+        foreach (k, &r : w.recs) {
+            if (r.animated) w.animated.push((int)k);
+            if (rec_moving(r, frame)) w.recent.push((int)k);
+            if (r.geometry.dynamic) w.watched.push((int)k);
+        }
+    } else {
+        w.last_frame = w.frame;
+        w.frame = frame;
+        for (sz k = w.moved_seen; k < moved_meshes.len(); k++) refresh_caster(w, moved_meshes[k], frame);
+        w.moved_seen = moved_meshes.len();
+        foreach (k : w.watched) refresh_caster(w, w.recs[k].mesh, frame);
+        // those that stopped: into the maps' caches
+        for (sz k = w.recent.len(); k > 0; k--) {
+            CasterRec* r = &w.recs[w.recent[k - 1]];
+            if (rec_moving(r, frame)) continue;
+            w.changes.push(r.sphere);
+            r.mesh.shadow_moving = false;
+            w.recent.remove_at(k - 1);
+        }
     }
     return w;
+}
+
+// A caster of the last full walk that may have changed (it moved, or its geometry is one that
+// changes): its record brought up to date (between full walks).
+fn void refresh_caster(CasterWalk* w, Mesh* m, uint frame) @local {
+    int i = m.shadow_walk_at;
+    if (m.shadow_walk != w || i < 0 || i >= w.recs.len() || w.recs[i].mesh != m) return;
+    CasterRec* r = &w.recs[i];
+    BufferGeometry* g = m.geometry;
+    if (r.moved == frame) return;
+    bool changed = libc::memcmp(&r.world, &m.matrix_world, Mat4::size) != 0 || r.geometry != g
+        || r.material != m.material || r.version != g.version || r.instances != m.instance_uploads;
+    if (!changed) return;
+    // out of the maps it was cached in; drawn over them while it moves
+    if (!rec_moving(r, frame - 1)) {
+        w.changes.push(r.sphere);
+        w.recent.push(i);
+    }
+    Vector3 center = g.bounds_center;
+    float radius = g.bounds_radius;
+    if (m.instance_data.len() > 0) {
+        center = m.instance_center;
+        radius = m.instance_radius;
+    }
+    Vector3 wc = m.matrix_world.transform_point(center);
+    r.world = m.matrix_world;
+    r.geometry = g;
+    r.material = m.material;
+    r.version = g.version;
+    r.instances = m.instance_uploads;
+    r.sphere = { wc.x, wc.y, wc.z, radius * max_scale(m.matrix_world) + m.material.sway * 2 };
+    r.moved = frame;
+    m.shadow_moving = true;
 }
 
 fn bool sphere_in(Frustum* f, Vec4 s) @local => f.contains_sphere({ s.x, s.y, s.z }, s.w);
@@ -2387,14 +2478,34 @@ fn bool sphere_in(Frustum* f, Vec4 s) @local => f.contains_sphere({ s.x, s.y, s.
 // Whether a caster that moves is in a map of a light (whose shadow.auto_update is `every`: a
 // light drawn once draws the casters that move on the GPU, as foliage in the wind, into its
 // cache as they were).
-fn bool moving_in(CasterWalk* w, Frustum* f, bool every, bool skip_instanced) @local {
-    foreach (i : w.moving) {
-        CasterRec* r = &w.recs[i];
-        if (!every && !r.mesh.shadow_moving) continue;
-        if (skip_instanced && r.mesh.instance_data.len() > 0) continue;
-        if (sphere_in(f, r.sphere)) return true;
+fn bool moving_in(CasterWalk* w, List{int}* near, Frustum* f) @local {
+    foreach (i : *near) {
+        if (sphere_in(f, w.recs[i].sphere)) return true;
     }
     return false;
+}
+
+// The casters that move in reach of light `l` (indices into w.recs; see moving_in).
+fn void movers_near(CasterWalk* w, Light* l, List{int}* near) @local {
+    LightShadow* sh = light_shadow(l);
+    bool everywhere = l.light_type == DIRECTIONAL;
+    Vector3 pos = l.matrix_world.get_position();
+    float reach = l.light_type == SPOT ? spot_shadow_far((SpotLight*)l) : point_shadow_far(l);
+    // (those that moved; with shadow.auto_update, also those that move on the GPU: a light
+    // drawn once keeps them in its cache as they were)
+    for (int pass = 0; pass < (sh.auto_update ? 2 : 1); pass++) {
+        foreach (i : pass == 0 ? w.recent : w.animated) {
+            CasterRec* r = &w.recs[i];
+            if (pass == 1 && w.recs[i].moved + CASTER_STILL_FRAMES > w.frame) continue;
+            if (sh.skip_instanced && r.instanced) continue;
+            if (!everywhere) {
+                Vector3 c = { r.sphere.x, r.sphere.y, r.sphere.z };
+                float d = reach + r.sphere.w;
+                if ((c - pos).length_sq() > d * d) continue;
+            }
+            near.push(i);
+        }
+    }
 }
 
 // Whether a caster that keeps still changed in a map.
@@ -2450,12 +2561,30 @@ fn void atlas_cache_trim(AtlasSlot* s) @local {
 // Draws the casters of map `face` of light `l` (its view-projection `vp`, `size` texels across)
 // into the viewport: `which` 0 all of them, 1 those that keep still, 2 those that move (see
 // caster_moves). Returns how many it drew.
+// (draw_atlas_casters's casters that move, for `which` 2: the walk and the light's movers_near)
+CasterWalk* atlas_movers @local;
+List{int}* atlas_movers_near @local;
+
 fn int draw_atlas_casters(Scene* scene, Camera* camera, Light* l, int face, int size, Mat4 vp, int which) @local {
     LightShadow* sh = light_shadow(l);
     Frustum fr = frustum_from(vp);
     state.casters.clear();
     state.skip_instanced = sh.skip_instanced;
-    collect_casters(scene, camera, &fr);
+    if (which == 2 && atlas_movers) {
+        // the casters that move in reach of the light, rather than the whole scene
+        Vector3 from = camera.matrix_world.get_position();
+        foreach (k : *atlas_movers_near) {
+            Mesh* mover = atlas_movers.recs[k].mesh;
+            sz first = state.casters.len();
+            collect(mover, camera.matrix_world_inverse, &fr, from, true);
+            // (its children are walked on their own)
+            for (sz j = state.casters.len(); j > first; j--) {
+                if (state.casters[j - 1].mesh != mover) state.casters.remove_at(j - 1);
+            }
+        }
+    } else {
+        collect_casters(scene, camera, &fr);
+    }
     state.skip_instanced = false;
     state.shadow_plain = false;
     bool every = sh.auto_update;
@@ -2669,13 +2798,16 @@ fn void place_and_draw_atlas(Scene* scene, Camera* camera, bool bake, SpotLight*
     AtlasView view = atlas_view_of(camera);
     Vector3 eye = camera.matrix_world.get_position();
     List{AtlasJob} jobs;
+    List{int}[] movers = mem::temp_array(List{int}, state.atlas_slots.len());
     jobs.tinit();
     foreach (i : order) {
         AtlasSlot* s = &state.atlas_slots[i];
         if (!s.size) continue;
         Light* l = s.light;
         LightShadow* sh = light_shadow(l);
-        bool every = sh.auto_update;
+        List{int}* near = &movers[i];
+        near.tinit();
+        if (walk) movers_near(walk, l, near);
         for (int f = 0; f < s.maps; f++) {
             AtlasMap* m = &s.map[f];
             Mat4 vp = light_view_proj(l, camera, false, f, m.w);
@@ -2686,8 +2818,8 @@ fn void place_and_draw_atlas(Scene* scene, Camera* camera, bool bake, SpotLight*
             Frustum fr = frustum_from(vp);
             bool light_moved = m.drawn && libc::memcmp(&vp, &m.view_proj, Mat4::size) != 0;
             bool dirty = !m.drawn || m.stale || sh.needs_update || light_moved || changed_in(walk, &fr);
-            bool movers = moving_in(walk, &fr, every, sh.skip_instanced);
-            if (!dirty && !movers && !m.composed) continue;
+            bool moves = near.len() > 0 && moving_in(walk, near, &fr);
+            if (!dirty && !moves && !m.composed) continue;
             // a map that has something and that the camera sees nothing of keeps it for now
             // (one drawn once is drawn when asked, a reflection may see it)
             if (m.drawn && !sh.needs_update && !atlas_seen(&view, vp, l, eye)) {
@@ -2695,10 +2827,10 @@ fn void place_and_draw_atlas(Scene* scene, Camera* camera, bool bake, SpotLight*
                 continue;
             }
             AtlasJob job = { .slot = i, .face = f, .vp = vp };
-            if (movers && (atlas_cache_ready(s, m) || atlas_cache_place(s, m))) {
+            if (moves && (atlas_cache_ready(s, m) || atlas_cache_place(s, m))) {
                 job.cache = dirty || !m.cached;
                 job.compose = true;
-            } else if (dirty || movers) {
+            } else if (dirty || moves) {
                 job.full = true;
             } else {
                 job.restore = true;
@@ -2787,7 +2919,10 @@ fn void place_and_draw_atlas(Scene* scene, Camera* camera, bool bake, SpotLight*
             copy_depth(state.cache_view, at[0], at[1], m.x, m.y, m.w, m.h);
             int drawn;
             if (job.compose) {
+                atlas_movers = walk;
+                atlas_movers_near = &movers[job.slot];
                 drawn = draw_atlas_casters(scene, camera, l, job.face, m.w, job.vp, 2);
+                atlas_movers = null;
                 m.cache_used = state.frame;
             }
             m.composed = job.compose;

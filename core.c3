@@ -68,9 +68,27 @@ fn void Object3D.init(&self, ObjectKind kind) {
     self.children.allocator = mem;
 }
 
+// What changed in the world since the shadow atlas last looked (renderer.c3's walk_casters):
+// the meshes whose matrix_world update_world changed, in order (`moved_meshes_dropped`
+// counts the times the list was emptied, so that a walk that missed some looks at everything),
+// and how many times an object was added or removed anywhere.
+List{Mesh*} moved_meshes @private;
+uint moved_meshes_dropped @private;
+uint scene_structure_changes @private;
+
+fn void note_moved_mesh(Mesh* m) @private {
+    if (!moved_meshes.allocator) moved_meshes.init(mem);
+    if (moved_meshes.len() >= 1 << 16) {
+        moved_meshes.clear();
+        moved_meshes_dropped++;
+    }
+    moved_meshes.push(m);
+}
+
 // Adds a child, removing it from its previous parent first. Returns self for chaining.
 fn Object3D* Object3D.add(&self, Object3D* child) {
     if (child == self) return self;
+    scene_structure_changes++;
     if (child.parent) child.parent.remove(child);
     child.parent = self;
     child.placed = false;
@@ -79,6 +97,7 @@ fn Object3D* Object3D.add(&self, Object3D* child) {
 }
 
 fn Object3D* Object3D.remove(&self, Object3D* child) {
+    scene_structure_changes++;
     foreach (i, c : self.children) {
         if (c == child) {
             self.children.remove_at(i);
@@ -90,6 +109,7 @@ fn Object3D* Object3D.remove(&self, Object3D* child) {
 }
 
 fn void Object3D.clear(&self) {
+    scene_structure_changes++;
     foreach (c : self.children) c.parent = null;
     self.children.clear();
 }
@@ -169,6 +189,7 @@ fn void Object3D.update_world(&self, bool parent_moved) {
     }
     // moved already, by update_world_matrix_from_parents (a bone its skeleton placed)
     moved = moved || self.world_dirty;
+    if (moved && self.kind == MESH) note_moved_mesh((Mesh*)self);
 
     self.world_dirty = false;
     foreach (c : self.children) {
@@ -487,6 +508,10 @@ struct Mesh {
     // a cache of the others (see AtlasMap).
     bool shadow_moving;
     bool shadow_animated;
+    // where that walk last found it: the walk, its frame and its index in the walk's list
+    void* shadow_walk;
+    uint shadow_walk_frame;
+    int shadow_walk_at;
 }
 
 // Sets morph target weights: `target_count` floats per instance (`instance_count == 0` for a
