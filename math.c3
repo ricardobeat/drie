@@ -117,6 +117,15 @@ fn Vector3 Mat4.transform_point(self, Vector3 v) {
     };
 }
 
+fn Vec4 Mat4.mul_vec4(self, Vec4 v) {
+    return {
+        self[0][0] * v.x + self[1][0] * v.y + self[2][0] * v.z + self[3][0] * v.w,
+        self[0][1] * v.x + self[1][1] * v.y + self[2][1] * v.z + self[3][1] * v.w,
+        self[0][2] * v.x + self[1][2] * v.y + self[2][2] * v.z + self[3][2] * v.w,
+        self[0][3] * v.x + self[1][3] * v.y + self[2][3] * v.z + self[3][3] * v.w,
+    };
+}
+
 fn Vector3 Mat4.get_position(self) => { self[3][0], self[3][1], self[3][2] };
 
 fn Mat4 Mat4.transpose(self) {

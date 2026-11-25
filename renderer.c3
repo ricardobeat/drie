@@ -1830,12 +1830,51 @@ fn Mat4 point_shadow_view_proj(Light* l, int face, bool relative = false) @local
     return proj.mul(world.invert());
 }
 
+// A rect area light's shadow maps: a cube turned with the light, without the face behind it
+// (the light shines from its front only). Map 0 looks out of its front; maps 1 to 4 out of its
+// sides (+x, -x, +y, -y of the light), each only the front half of a cube's face (and this
+// tangent of a turn behind the light's plane), so half as tall.
+const float RECT_SIDE_BEHIND @local = 0.1f;
+
+fn Mat4 rect_shadow_view_proj(Light* l, int face, bool relative = false) @local {
+    Mat4 m = l.matrix_world;
+    Vector3 x = ((Vector3) { m[0][0], m[0][1], m[0][2] }).normalize();
+    Vector3 y = ((Vector3) { m[1][0], m[1][1], m[1][2] }).normalize();
+    Vector3 front = -((Vector3) { m[2][0], m[2][1], m[2][2] }).normalize();
+    Vector3 dir = front;
+    Vector3 up = y;
+    switch (face) {
+        case 1: dir = x; up = front;
+        case 2: dir = -x; up = front;
+        case 3: dir = y; up = front;
+        case 4: dir = -y; up = front;
+    }
+    Vector3 pos = m.get_position();
+    Mat4 world  = mat4_look_at(pos, pos + dir, up, true);
+    world[3] = relative ? (Vec4) { 0, 0, 0, 1 } : (Vec4) { pos.x, pos.y, pos.z, 1 };
+    Mat4 proj = mat4_perspective(POINT_SHADOW_FOV, 1, math::max(light_shadow(l).near, 0.01f), point_shadow_far(l), 1,
+                                 depth_zero_to_one());
+    if (face > 0) {
+        // from RECT_SIDE_BEHIND below the light's plane up to the cube's corner
+        float top = math::tan(POINT_SHADOW_FOV * DEG2RAD * 0.5f);
+        float bottom = -RECT_SIDE_BEHIND;
+        proj[1][1] = 2 / (top - bottom);
+        proj[2][1] = (top + bottom) / (top - bottom);
+    }
+    return proj.mul(world.invert());
+}
+
+// View-projection of map `face` of a point or rect area light's shadow.
+fn Mat4 cube_view_proj(Light* l, int face, bool relative = false) @local {
+    return l.light_type == RECT_AREA ? rect_shadow_view_proj(l, face, relative) : point_shadow_view_proj(l, face, relative);
+}
+
 // View-projection of a light's map in the atlas: a spot light's frustum (`relative`: of world
 // - the light's position, see shadow_view_proj), or a directional light's one box (world), its
 // texels the atlas's.
 fn Mat4 light_view_proj(Light* l, Camera* camera, bool relative = false, int face = 0, int size = 0) @local {
     if (l.light_type == SPOT) return shadow_view_proj((SpotLight*)l, relative);
-    if (casts_cube(l)) return point_shadow_view_proj(l, face, relative);
+    if (casts_cube(l)) return cube_view_proj(l, face, relative);
     return directional_shadow_view_proj((DirectionalLight*)l, camera, size);
 }
 
@@ -1852,15 +1891,19 @@ struct AtlasMap @private {
     Mat4 view_proj;
     // drawn since it got its place
     bool drawn;
+    // when it was last drawn, nothing cast a shadow into it: it isn't looked up (lit)
+    bool empty;
 }
 
 // A light with a place in the atlas (a bake's lights have their own, see render_bake).
 struct AtlasSlot @private {
     Light* light;
     bool bake;
-    // the side of its maps (0: it has none) and how many there are
+    // the side of its maps' blocks (0: it has none), how many maps it has and how many blocks
+    // they take (a rect area light's side maps are half as tall, two to a block)
     int size;
     int maps;
+    int blocks;
     // the size it settles on (atlas_wanted, held steady), and the size the last frames asked
     // for instead, for how many frames
     int target;
@@ -1873,7 +1916,7 @@ struct AtlasSlot @private {
     float fade;
     // the frame it last asked for its maps
     uint seen;
-    // its maps' blocks of the atlas (atlas_key), one per map
+    // its blocks of the atlas (atlas_key)
     uint[6] block;
     AtlasMap[6] map;
 }
@@ -1889,7 +1932,8 @@ const int ATLAS_SHRINK_FRAMES @local = 30;
 // How much a shadow fades in or out per frame.
 const float ATLAS_FADE_STEP @local = 0.125f;
 
-fn int atlas_map_count(Light* l) @local => casts_cube(l) ? 6 : 1;
+fn int atlas_map_count(Light* l) @local => l.light_type == RECT_AREA ? 5 : l.light_type == POINT ? 6 : 1;
+fn int atlas_block_count(Light* l) @local => l.light_type == RECT_AREA ? 3 : l.light_type == POINT ? 6 : 1;
 
 // The light's place in the atlas, the current render's (a bake's or not); null: none.
 fn AtlasSlot* atlas_slot_of(Light* l) @local {
@@ -1922,7 +1966,7 @@ fn bool atlas_has_shadow(Light* l) @local {
 // Where map `m` is in the atlas's uv, as spot_shadows holds it (0 wide: nowhere; the shaders
 // take that as lit).
 fn Vec4 atlas_rect(AtlasMap* m) @local {
-    if (!m || !m.drawn || !m.w || !state.atlas_width) return { 0, 0, 0, 0 };
+    if (!m || !m.drawn || m.empty || !m.w || !state.atlas_width) return { 0, 0, 0, 0 };
     float w = (float)state.atlas_width;
     float h = (float)state.atlas_height;
     return { (float)m.x / w, (float)m.y / h, (float)m.w / w, (float)m.h / h };
@@ -2004,24 +2048,104 @@ fn bool atlas_wants(Light* l, bool bake, SpotLight* caster) @local {
 // Gives a light's blocks back.
 fn void atlas_release(AtlasSlot* s) @local {
     if (!s.size) return;
-    for (int b = 0; b < s.maps; b++) state.atlas_packer.release(s.block[b], s.size);
+    for (int b = 0; b < s.blocks; b++) state.atlas_packer.release(s.block[b], s.size);
     s.size = 0;
     for (int f = 0; f < 6; f++) s.map[f] = { };
 }
 
-// Blocks of `size` for each of a light's maps (false, with none taken, when they don't fit).
+// Blocks of `size` for a light's maps (false, with none taken, when they don't fit).
 fn bool atlas_place(AtlasSlot* s, int size) @local {
-    for (int b = 0; b < s.maps; b++) {
+    for (int b = 0; b < s.blocks; b++) {
         if (!state.atlas_packer.alloc(size, &s.block[b])) {
             for (int k = 0; k < b; k++) state.atlas_packer.release(s.block[k], size);
             return false;
         }
     }
     s.size = size;
-    for (int f = 0; f < s.maps; f++) {
-        s.map[f] = { .x = atlas_key_x(s.block[f]), .y = atlas_key_y(s.block[f]), .w = size, .h = size };
+    if (s.blocks == s.maps) {
+        for (int f = 0; f < s.maps; f++) {
+            s.map[f] = { .x = atlas_key_x(s.block[f]), .y = atlas_key_y(s.block[f]), .w = size, .h = size };
+        }
+        return true;
+    }
+    // a rect area light's: the front in a block, the sides half a block each
+    s.map[0] = { .x = atlas_key_x(s.block[0]), .y = atlas_key_y(s.block[0]), .w = size, .h = size };
+    for (int f = 1; f < s.maps; f++) {
+        uint b = s.block[(f + 1) / 2];
+        s.map[f] = { .x = atlas_key_x(b), .y = atlas_key_y(b) + (f % 2 ? 0 : size / 2), .w = size, .h = size / 2 };
     }
     return true;
+}
+
+// The corners of the box `inv` (an inverse view-projection) takes the clip space box with
+// depths from `z0` to `z1` to.
+fn Vector3[8] clip_box_corners(Mat4 inv, float z0, float z1) @local {
+    Vector3[8] c;
+    for (int i = 0; i < 8; i++) {
+        Vec4 p = inv.mul_vec4({ i & 1 ? 1 : -1, i & 2 ? 1 : -1, i & 4 ? z1 : z0, 1 });
+        c[i] = { p.x / p.w, p.y / p.w, p.z / p.w };
+    }
+    return c;
+}
+
+// Whether two frusta may overlap: no plane of either has all of the other's corners outside.
+fn bool frusta_overlap(Frustum* a, Vector3[8]* ac, Frustum* b, Vector3[8]* bc) @local {
+    for (int k = 0; k < 2; k++) {
+        Frustum* f = k ? b : a;
+        Vector3[8]* c = k ? ac : bc;
+        foreach (p : f.planes) {
+            bool inside;
+            foreach (v : *c) {
+                if (p.x * v.x + p.y * v.y + p.z * v.z + p.w >= 0) {
+                    inside = true;
+                    break;
+                }
+            }
+            if (!inside) return false;
+        }
+    }
+    return true;
+}
+
+// What the camera sees, as atlas_seen asks it: its frustum, and its view-projection's inverse.
+struct AtlasView @local {
+    Frustum frustum;
+    Mat4 inv;
+    Mat4 proj;
+    bool perspective;
+    float near;
+    float far;
+}
+
+fn AtlasView atlas_view_of(Camera* camera) @local {
+    Mat4 vp = camera.projection_matrix.mul(camera.matrix_world_inverse);
+    return {
+        .frustum = frustum_from(vp),
+        .inv = vp.invert(),
+        .proj = camera.projection_matrix,
+        .perspective = camera.camera_type == PERSPECTIVE,
+        .near = camera.near,
+        .far = camera.far,
+    };
+}
+
+// Whether the camera can see anything a map of a light (view-projection `light_vp`) shadows:
+// their frusta overlap, the camera's cut off where the light's reach ends.
+fn bool atlas_seen(AtlasView* v, Mat4 light_vp, Light* l, Vector3 eye) @local {
+    bool zo = depth_zero_to_one();
+    float z0 = zo ? 0 : -1;
+    float z1 = 1;
+    if (v.perspective) {
+        float reach = (l.matrix_world.get_position() - eye).length() + point_shadow_far(l);
+        float d = math::min(v.far, math::max(reach, v.near * 2));
+        // (the depth of distance d in the camera's clip space)
+        z1 = (v.proj[3][2] - v.proj[2][2] * d) / d;
+        z1 = math::min(z1, 1.0f);
+    }
+    Vector3[8] cam = clip_box_corners(v.inv, z0, z1);
+    Frustum lf = frustum_from(light_vp);
+    Vector3[8] lc = clip_box_corners(light_vp.invert(), z0, 1);
+    return frusta_overlap(&v.frustum, &cam, &lf, &lc);
 }
 
 // Sorts slot indices by `key` of each, the largest first.
@@ -2075,7 +2199,7 @@ fn void place_and_draw_atlas(Scene* scene, Camera* camera, bool bake, SpotLight*
         if (!atlas_wants(l, bake, caster)) continue;
         AtlasSlot* s = atlas_slot_of(l);
         if (!s) {
-            state.atlas_slots.push({ .light = l, .bake = bake, .maps = atlas_map_count(l), .fade = 1 });
+            state.atlas_slots.push({ .light = l, .bake = bake, .maps = atlas_map_count(l), .blocks = atlas_block_count(l), .fade = 1 });
             s = &state.atlas_slots[state.atlas_slots.len() - 1];
         }
         s.seen = frame;
@@ -2121,9 +2245,9 @@ fn void place_and_draw_atlas(Scene* scene, Camera* camera, bool bake, SpotLight*
         if (s.seen == frame && s.bake == bake) {
             order.push((int)i);
             give[i] = s.target;
-            area += (long)s.maps * s.target * s.target;
+            area += (long)s.blocks * s.target * s.target;
         } else {
-            others += (long)s.maps * s.size * s.size;
+            others += (long)s.blocks * s.size * s.size;
         }
     }
     // (the places of lights not in this render go first)
@@ -2140,8 +2264,8 @@ fn void place_and_draw_atlas(Scene* scene, Camera* camera, bool bake, SpotLight*
         for (sz k = order.len(); k > 0 && area > budget; k--) {
             int i = order[k - 1];
             if (give[i] <= ATLAS_MIN_BLOCK) continue;
-            long maps = state.atlas_slots[i].maps;
-            area -= maps * give[i] * give[i] * 3 / 4;
+            long blocks = state.atlas_slots[i].blocks;
+            area -= blocks * give[i] * give[i] * 3 / 4;
             give[i] /= 2;
             smaller = true;
         }
@@ -2149,7 +2273,7 @@ fn void place_and_draw_atlas(Scene* scene, Camera* camera, bool bake, SpotLight*
     }
     for (sz k = order.len(); k > 0 && area > budget; k--) {
         int i = order[k - 1];
-        area -= (long)state.atlas_slots[i].maps * give[i] * give[i];
+        area -= (long)state.atlas_slots[i].blocks * give[i] * give[i];
         give[i] = 0;
     }
     // a light left without fades out on the maps it has, then gives them up
@@ -2221,20 +2345,29 @@ fn void place_and_draw_atlas(Scene* scene, Camera* camera, bool bake, SpotLight*
         }
     }
 
-    // the maps to draw
-    int redraws;
+    // the maps to draw: those that have nothing yet, a bake's, and those of a light that asks
+    // for it or is drawn every frame; of the last, only those the camera sees something of
+    AtlasView view = atlas_view_of(camera);
+    Vector3 eye = camera.matrix_world.get_position();
+    List{int} todo;
+    todo.tinit();
     foreach (i : order) {
         AtlasSlot* s = &state.atlas_slots[i];
         if (!s.size) continue;
-        LightShadow* sh = light_shadow(s.light);
+        Light* l = s.light;
+        LightShadow* sh = light_shadow(l);
         bool every = (sh.auto_update && !bake) || bake || sh.needs_update;
+        bool cull = !bake && !sh.needs_update && l.light_type != DIRECTIONAL;
         for (int f = 0; f < s.maps; f++) {
-            if (every || !s.map[f].drawn) redraws++;
+            AtlasMap* m = &s.map[f];
+            if (m.drawn && !every) continue;
+            if (m.drawn && cull && !atlas_seen(&view, light_view_proj(l, camera, false, f, m.w), l, eye)) continue;
+            todo.push(i * 8 + f);
         }
     }
-    if (!redraws) return;
+    if (!todo.len()) return;
     bool top_left = depth_zero_to_one();
-    VsmTile[] tiles = mem::temp_array(VsmTile, (usz)redraws);
+    VsmTile[] tiles = mem::temp_array(VsmTile, todo.len());
     int ntiles;
     profile::begin_pass(
         &&{
@@ -2243,25 +2376,24 @@ fn void place_and_draw_atlas(Scene* scene, Camera* camera, bool bake, SpotLight*
             .label = "drie-shadow-atlas",
         }
     );
-    foreach (i : order) {
-        AtlasSlot* s = &state.atlas_slots[i];
-        if (!s.size) continue;
+    bool plain;
+    foreach (k, job : todo) {
+        AtlasSlot* s = &state.atlas_slots[job / 8];
+        int f = job % 8;
         Light* l = s.light;
         LightShadow* sh = light_shadow(l);
-        bool every = (sh.auto_update && !bake) || bake || sh.needs_update;
-        bool plain;
-        bool drew;
-        for (int f = 0; f < s.maps; f++) {
-            AtlasMap* m = &s.map[f];
-            if (!every && m.drawn) continue;
-            drew = true;
-            Mat4 light_vp = light_view_proj(l, camera, false, f, m.w);
-            m.view_proj = light_vp;
-            Frustum light_frustum = frustum_from(light_vp);
-            state.casters.clear();
-            state.skip_instanced = sh.skip_instanced;
-            collect_casters(scene, camera, &light_frustum);
-            state.skip_instanced = false;
+        AtlasMap* m = &s.map[f];
+        Mat4 light_vp = light_view_proj(l, camera, false, f, m.w);
+        m.view_proj = light_vp;
+        m.drawn = true;
+        Frustum light_frustum = frustum_from(light_vp);
+        state.casters.clear();
+        state.skip_instanced = sh.skip_instanced;
+        collect_casters(scene, camera, &light_frustum);
+        state.skip_instanced = false;
+        // nothing casts a shadow into it: lit, and nothing to draw
+        m.empty = state.casters.len() == 0;
+        if (!m.empty) {
             info.atlas_tiles++;
             info.atlas_casters += (int)state.casters.len();
             sg::apply_viewport(m.x, m.y, m.w, m.h, top_left);
@@ -2276,12 +2408,15 @@ fn void place_and_draw_atlas(Scene* scene, Camera* camera, bool bake, SpotLight*
                 foreach (&item : state.casters) draw_shadow_item(item, light_vp);
             }
             if (state.shadow_plain) plain = true;
-            m.drawn = true;
             tiles[ntiles++] = { m.x, m.y, m.w, m.h, sh.radius, sh.blur_samples };
         }
-        // A caster used the plain material: the maps are drawn again next frame, so that a
-        // light drawn once gets the real programs when they are ready.
-        if (drew) sh.needs_update = plain;
+        // after a light's last map: a caster used the plain material, so the maps are drawn
+        // again next frame (a light drawn once gets the real programs when they are ready)
+        bool last_of_light = k + 1 == todo.len() || todo[k + 1] / 8 != job / 8;
+        if (last_of_light) {
+            sh.needs_update = plain;
+            plain = false;
+        }
     }
     sg::end_pass();
     state.casters.clear();
@@ -2631,10 +2766,10 @@ fn void cube_shadows(Light* l, Vec4* shadow, LightData* g, bool vsm) @local {
     if (ls.softness > 0) g.soft_shadows = true;
     float width = 2 * math::tan(POINT_SHADOW_FOV * DEG2RAD * 0.5f);
     bool zo     = depth_zero_to_one();
-    for (int f = 0; f < 6; f++) {
+    for (int f = 0; f < slot.maps; f++) {
         AtlasMap* m = &slot.map[f];
         GpuSpotShadow sh;
-        sh.mat = shadow_bias().mul(point_shadow_view_proj(l, f, true));
+        sh.mat = shadow_bias().mul(cube_view_proj(l, f, true));
         sh.params = { 2, ls.normal_bias, atlas_texel(m), vsm ? ls.bias : ls.radius };
         sh.soft = { ls.softness, math::max(ls.near, 0.01f), point_shadow_far(l), zo ? width : -width };
         sh.rect = atlas_rect(m);

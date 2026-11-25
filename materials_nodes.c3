@@ -2025,14 +2025,13 @@ fn Node Lit.rect_lights(&self, Node outc, Node spec) {
     Node[4] q = { to + hw - hh, to - hw - hh, to - hw + hh, to + hw + hh };
     Node c = color.xyz();
     if (key.fog) c = c * shading::fog_transmittance(key, shading::fog_distance(key, pos.xyz(), self.world));
-    // RectAreaLight.shadow, cast from its centre as a point light's (not looked up for a point
-    // behind the light)
+    // RectAreaLight.shadow, cast from its centre (not looked up for a point behind the light)
     Node[3] pre;
     int np;
     if (key.point_shadows) {
         Node shade = nodes::variable(nodes::num(1));
         Node si = nodes::convert(shadow.x(), INT);
-        Node lit = nodes::mix(1, self.shadow.point(pos.xyz(), si, self.geo_n, self.world, self.dpdx, self.dpdy, self.frag), shadow.y());
+        Node lit = nodes::mix(1, self.shadow.rect(pos.xyz(), hw, hh, si, self.geo_n, self.world, self.dpdx, self.dpdy, self.frag), shadow.y());
         pre[np++] = nodes::if_then(behind, nodes::block(nodes::continue_()));
         pre[np++] = shade;
         pre[np++] = nodes::if_then(si.greater_than_equal(nodes::int_(0)), nodes::block(shade.assign(lit)));

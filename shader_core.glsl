@@ -1140,6 +1140,8 @@ float light_shadow_of(vec3 light_pos, int si, vec3 n) {
     if (sp.w <= 0.0) return 1.0;
     vec3 c = sp.xyz / sp.w;
     if (c.x < 0.0 || c.x > 1.0 || c.y < 0.0 || c.y > 1.0 || c.z > 1.0) return 1.0;
+    // (a map of the atlas that isn't drawn: lit)
+    if (params.x > 1.5 && spot_shadow_data[si].rect.z <= 0.0) return 1.0;
 #ifdef VSM
     // one lookup: the map is blurred already (params.w is the bias)
     return vsm_lookup(vsm_moments(params.x > 1.5, spot_shadow_data[si].rect, params.z, c.xy), c.z + params.w);
@@ -1247,6 +1249,24 @@ float point_shadow(gpu_point_light pl, vec3 n) {
     vec3 a = abs(d);
     int face = a.x >= a.y && a.x >= a.z ? (d.x >= 0.0 ? 0 : 1) : a.y >= a.z ? (d.y >= 0.0 ? 2 : 3) : (d.z >= 0.0 ? 4 : 5);
     return mix(1.0, light_shadow_of(pl.pos.xyz, si + face, n), pl.shadow.y);
+}
+
+// Shadow of a rect area light: the map that the point is in of its cube turned with the light
+// (renderer.c3's rect_shadow_view_proj: its front, 0, and the front halves of its sides, +x,
+// -x, +y and -y, 1 to 4).
+float rect_shadow(gpu_point_light ra, vec3 n) {
+    int si = int(ra.shadow.x);
+    if (si < 0 || (flags() & 4) == 0) return 1.0;
+    vec3 hw = vec3(ra.pos.w, ra.color.w, ra.params.x);
+    vec3 hh = ra.params.yzw;
+    vec3 front = cross(hh, hw);
+    vec3 d = v_world_pos - ra.pos.xyz;
+    float x = dot(d, hw / max(length(hw), 1e-6));
+    float y = dot(d, hh / max(length(hh), 1e-6));
+    float f = dot(d, front / max(length(front), 1e-12));
+    int side = abs(x) >= abs(y) ? (x >= 0.0 ? 1 : 2) : (y >= 0.0 ? 3 : 4);
+    int face = f >= abs(x) && f >= abs(y) ? 0 : side;
+    return mix(1.0, light_shadow_of(ra.pos.xyz, si + face, n), ra.shadow.y);
 }
 
 // 1 where cascade `i` of the sun's map has nothing nearer than depth `z` at `uv` (0..1 in its tile).
@@ -2932,7 +2952,7 @@ void main() {
                 q[3] = to + hw + hh;
                 vec3 c = ra.color.rgb * fog_transmittance(fog_distance(ra.pos.xyz, v_world_pos));
                 // RectAreaLight.shadow: cast from its centre
-                if (ra.shadow.x >= 0.0) c *= point_shadow(ra, geo_n);
+                if (ra.shadow.x >= 0.0) c *= rect_shadow(ra, geo_n);
                 spec += c * fresnel * ltc_evaluate(n, v, m_inv, q);
                 outc += c * diffuse_color * ltc_evaluate(n, v, mat3(1.0), q);
 #ifdef PHYSICAL
