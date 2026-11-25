@@ -453,13 +453,13 @@ struct gpu_dir_light {
     vec4 dir;    // world-space direction towards the light
     vec4 color;
     vec4 shadow; // x = its shadow in spot_shadows (-1: none; the sun's is dir_shadow_mat's),
-                 //   y = shadow intensity (0..1), z = Light.channels
+                 //   y = shadow intensity (0..1), z = Light.channels, w = shadow.contact_length
 };
 struct gpu_point_light {
     vec4 pos;    // w = distance cutoff
     vec4 color;  // w = decay
     vec4 shadow; // x = the first of its six maps in spot_shadows (+x -x +y -y +z -z; -1: none),
-                 //   y = shadow intensity (0..1), z = Light.channels
+                 //   y = shadow intensity (0..1), z = Light.channels, w = shadow.contact_length
     vec4 params; // x = source radius
 };
 struct gpu_spot_light {
@@ -469,7 +469,7 @@ struct gpu_spot_light {
     vec4 params; // x = cos(inner angle) (from penumbra), y = source radius, z = specular radius,
                  //   w = how much the light glows in the fog
     vec4 shadow; // x = its shadow in spot_shadows (-1: none), y = shadow intensity (0..1),
-                 //   z = Light.channels
+                 //   z = Light.channels, w = shadow.contact_length
     vec4 map;    // SpotLight.map's part of light_cookies: xy = offset, zw = size (z <= 0: no map)
     vec4 map_u;  // xyz = the map's +u axis / tan(angle), w = its +v axis' x / tan(angle)
     vec4 map_v;  // xy = the +v axis' y and z / tan(angle), z = lod bias (log2 of the map's size)
@@ -507,7 +507,8 @@ layout(binding=0) uniform deferred_params {
     mat4 d_inv_view_proj;
     vec4 d_view_origin;   // xyz = camera_pos, w = depth_zero_to_one (1.0 or 0.0)
     vec4 d_clear_color;   // rgb = clear color, a = clear alpha
-    vec4 d_screen_info;   // xy = 1/w, 1/h, z = flip_y (1.0 on Metal/D3D), w = unused
+    vec4 d_screen_info;   // xy = 1/w, 1/h, z = flip_y (1.0 on Metal/D3D), w = the frame (0..63)
+    mat4 d_view_proj;     // world - camera_pos -> clip
 };
 in vec2 v_uv;
 vec3 v_world_pos;
@@ -1225,6 +1226,38 @@ float light_shadow_of(vec3 light_pos, int si, vec3 n) {
         sum += shadow_tap(tiled, rect, params.z, c.xy + o, c.z + clamp(dot(grad, o), -0.25, 0.25));
     }
     return sum / float(taps);
+}
+
+// Contact shadow (LightShadow.contact_length): a ray from the pixel toward the light (`l`) for
+// `len` m, in 12 steps jittered by pixel and frame, through the depth buffer. Where it passes
+// behind what the buffer holds, by no more than a thickness that grows with the distance (a
+// thin pole in front of the floor doesn't shadow it far behind), the pixel is in shadow
+// (`intensity`: how much). The lighting pass's only: lit elsewhere.
+float contact_shadow(vec3 l, float len, vec3 geo_n, float intensity) {
+#ifdef DEFERRED_LIGHT
+    if (len <= 0.0 || (flags() & 4) == 0) return 1.0;
+    vec3 eye = d_view_origin.xyz;
+    float jitter = fract(52.9829189 * fract(dot(gl_FragCoord.xy + d_screen_info.w * 5.588238, vec2(0.06711056, 0.00583715))));
+    float dist = length(v_world_pos - eye);
+    vec3 from = v_world_pos + geo_n * (0.002 + 0.001 * dist);
+    for (int i = 0; i < 12; i++) {
+        vec3 p = from + l * (len * (float(i) + jitter) / 12.0);
+        vec4 clip = d_view_proj * vec4(p - eye, 1.0);
+        if (clip.w <= 0.0) break;
+        vec3 ndc = clip.xyz / clip.w;
+        if (abs(ndc.x) > 1.0 || abs(ndc.y) > 1.0) break;
+        vec2 uv = ndc.xy * 0.5 + 0.5;
+        if (d_screen_info.z > 0.5) uv.y = 1.0 - uv.y;
+        ivec2 tc = ivec2(uv / d_screen_info.xy);
+        float raw = texelFetch(sampler2D(tex_transmission, tex_smp), tc, 0).r;
+        if (raw >= 1.0) continue;
+        vec4 q = d_inv_view_proj * vec4(ndc.xy, d_view_origin.w > 0.5 ? raw : raw * 2.0 - 1.0, 1.0);
+        float here = length(p - eye);
+        float behind = here - length(q.xyz / q.w);
+        if (behind > 0.002 + 0.0005 * here && behind < 0.02 + 0.01 * here + 0.25 * len) return 1.0 - intensity;
+    }
+#endif
+    return 1.0;
 }
 
 float shadow(int s, vec3 n) {
@@ -2848,6 +2881,7 @@ void main() {
             // parallax_map: the bumps' own shadows, toward the first directional light
             if (i == 0) lit *= parallax_shadow(geo_n, l);
 #endif
+            if (lit > 0.0) lit *= contact_shadow(l, dirs[i].shadow.w, geo_n, 1.0);
             if (lit > 0.0) outc += direct(mode, n, v, l, 1e6, dirs[i].color.rgb * lit, diffuse_color, spec);
         }
         if (dir_cascade_params.z > 0.5 && dir_shadow_params.x > 0.5) {
@@ -2901,6 +2935,7 @@ void main() {
             }
             radiance *= fog_transmittance(fog_distance(pl.pos.xyz, v_world_pos));
             if (pl.shadow.x >= 0.0) radiance *= point_shadow(pl, geo_n);
+            if (pl.shadow.w > 0.0) radiance *= contact_shadow(lv / d, min(pl.shadow.w, d), geo_n, pl.shadow.y);
             outc += direct(mode, n, v, l, d, radiance, diffuse_color, spec);
         }
         g_sized = false;
@@ -2923,6 +2958,7 @@ void main() {
             radiance *= spot_cookie(i, l);
             if (max(radiance.r, max(radiance.g, radiance.b)) <= 0.0) continue;
             radiance *= shadow(i, geo_n);
+            if (spots[i].shadow.w > 0.0) radiance *= contact_shadow(l, min(spots[i].shadow.w, d), geo_n, spots[i].shadow.y);
             outc += direct(mode, n, v, l, d, radiance, diffuse_color, spec);
         }
         // three's specularMap: the highlights' strength
@@ -3264,7 +3300,8 @@ layout(binding=0) uniform deferred_params {
     mat4 d_inv_view_proj;
     vec4 d_view_origin;   // xyz = camera_pos, w = depth_zero_to_one (1.0 or 0.0)
     vec4 d_clear_color;   // rgb = clear color, a = clear alpha
-    vec4 d_screen_info;   // xy = 1/w, 1/h, z = flip_y (1.0 on Metal/D3D), w = unused
+    vec4 d_screen_info;   // xy = 1/w, 1/h, z = flip_y (1.0 on Metal/D3D), w = the frame (0..63)
+    mat4 d_view_proj;     // world - camera_pos -> clip
 };
 in vec2 v_uv;
 vec3 v_world_pos;

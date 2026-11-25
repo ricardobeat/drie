@@ -3338,7 +3338,7 @@ fn FsParams build_light_params(Scene* scene, Camera* camera, SpotLight* caster) 
                     p.dir_cascade_fwd.w = clamp(d.shadow.intensity, 0, 1);
                     p.shadow_ext.x = d.shadow.bias;
                 }
-                GpuDirLight gd = { .dir = { ...dir, 0 }, .color = { ...c, 0 }, .shadow = { -1, 1, (float)l.channels, 0 } };
+                GpuDirLight gd = { .dir = { ...dir, 0 }, .color = { ...c, 0 }, .shadow = { -1, 1, (float)l.channels, d.shadow.contact_length } };
                 // the other shadowed ones: a box in a tile of the atlas (dir_tile_shadow)
                 AtlasMap* am = d != state.sun_caster && atlas_has_shadow(d) ? atlas_map_of(d) : null;
                 if (am) {
@@ -3348,7 +3348,7 @@ fn FsParams build_light_params(Scene* scene, Camera* camera, SpotLight* caster) 
                     sh.params = { 3, d.shadow.normal_bias, atlas_texel(am), vsm ? d.shadow.bias : d.shadow.radius };
                     sh.rect = atlas_rect(am);
                     float fade = atlas_slot_of(d).fade;
-                    gd.shadow = { (float)g.shadows.len(), clamp(d.shadow.intensity, 0, 1) * fade, (float)l.channels, 0 };
+                    gd.shadow = { (float)g.shadows.len(), clamp(d.shadow.intensity, 0, 1) * fade, (float)l.channels, d.shadow.contact_length };
                     g.shadows.push(sh);
                     g.dir_tiles = true;
                 }
@@ -3368,7 +3368,7 @@ fn FsParams build_light_params(Scene* scene, Camera* camera, SpotLight* caster) 
                     .pos = { ...l.matrix_world.get_position(), pl.distance },
                     .color = { ...c, pl.decay },
                     .params = { pl.radius, half.x, half.y, half.z },
-                    .shadow = { -1, 1, (float)l.channels, 0 },
+                    .shadow = { -1, 1, (float)l.channels, pl.shadow.contact_length },
                 };
                 cube_shadows(l, &gp.shadow, g, vsm);
                 g.points.push(gp);
@@ -3414,7 +3414,7 @@ fn FsParams build_light_params(Scene* scene, Camera* camera, SpotLight* caster) 
                         sl.specular_radius > 0 ? sl.specular_radius : sl.radius,
                         sl.fog_glow
                     },
-                    .shadow = { -1, 1, (float)l.channels, 0 },
+                    .shadow = { -1, 1, (float)l.channels, sl.shadow.contact_length },
                 };
                 spot_map(sl, &gs, g);
                 // clip space -> shadow map uv (v points down outside of GL) and 0..1 depth
@@ -3442,7 +3442,7 @@ fn FsParams build_light_params(Scene* scene, Camera* camera, SpotLight* caster) 
                     sh.soft = { sl.shadow.softness, math::max(sl.shadow.near, 0.01f), far, zo ? width : -width };
                     if (am) sh.rect = atlas_rect(am);
                     float fade = am ? atlas_slot_of(sl).fade : 1;
-                    gs.shadow = { (float)g.shadows.len(), clamp(sl.shadow.intensity, 0, 1) * fade, (float)l.channels, 0 };
+                    gs.shadow = { (float)g.shadows.len(), clamp(sl.shadow.intensity, 0, 1) * fade, (float)l.channels, sl.shadow.contact_length };
                     g.spot_shadows = true;
                     if (sl.shadow.softness > 0) g.soft_shadows = true;
                     g.shadows.push(sh);
@@ -4411,7 +4411,8 @@ fn void draw_deferred_lighting(
         .inv_view_proj = view_proj_rel.invert(),
         .view_origin = { ...camera.matrix_world.get_position(), zo ? 1 : 0 },
         .clear_color = { clear.x, clear.y, clear.z, clear_alpha },
-        .screen_info = { 1.0f / rt.width, 1.0f / rt.height, zo ? 1 : 0, 0 },
+        .screen_info = { 1.0f / rt.width, 1.0f / rt.height, zo ? 1 : 0, (float)(state.frame % 64) },
+        .view_proj = view_proj_rel,
     };
     sg::apply_uniforms(0, &&{ .ptr = &dp, .size = DeferredLightParams::size });
 

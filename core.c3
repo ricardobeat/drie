@@ -907,6 +907,12 @@ struct LightShadow {
     // blur). 0 = the same edge everywhere, which is cheaper.
     float softness;
     float near;
+    // Contact shadows (extension): how far (m) a ray from each pixel goes toward the light
+    // through the depth buffer, catching the small shadows where things touch that the map is
+    // too coarse for (feet on a floor, a cup on a table). 0 = off (default); 0.1 to 0.5 suit
+    // most scenes. On top of the map, not instead of it; with or without cast_shadow. In
+    // the deferred lighting pass (Renderer.deferred), for directional, point and spot lights.
+    float contact_length;
     // Distance up to which shadows are cast (0 = the light's distance, or 50).
     float far;
     // Part of the light's cone covered by the shadow map, 0..1, like three's SpotLightShadow.focus.
