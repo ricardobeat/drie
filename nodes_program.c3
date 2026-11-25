@@ -2068,6 +2068,106 @@ fn void ShaderProgram.take_vertex(&self, ShaderProgram* from) {
     }
 }
 
+// The program as text, for the pipeline cache (read_program reads it back): a line of counts,
+// the two sources, then a line for each of its rows, views, samplers and pairs.
+fn void ShaderProgram.write(&self, DString* out) {
+    out.appendf("%d %d %d %d %d %d %d %d %d %d\n", self.lang.ordinal, self.vs.len, self.fs.len, self.block_rows[0],
+                self.block_rows[1], self.rows[0].len(), self.rows[1].len(), self.views.len(), self.samplers.len(),
+                self.pairs.len());
+    out.append(self.vs);
+    out.append(self.fs);
+    for (int st = 0; st < 2; st++) {
+        foreach (r : self.rows[st]) out.appendf("%d %d %d %d\n", r.source.ordinal, r.row, r.count, r.at);
+    }
+    foreach (v : self.views) {
+        out.appendf("%d %d %d %d %d %d %d %d\n", v.stage.ordinal, v.source, v.storage ? 1 : 0, v.kind.ordinal, v.elem.ordinal,
+                    v.msl, v.hlsl, v.glsl);
+    }
+    foreach (sm : self.samplers) out.appendf("%d %d %d %d\n", sm.stage.ordinal, sm.source, sm.compare ? 1 : 0, sm.msl);
+    foreach (pr : self.pairs) out.appendf("%d %d %d %s\n", pr.stage.ordinal, pr.view, pr.sampler, (ZString)pr.name);
+}
+
+// The numbers of the line at `*at` in `text` (up to `n.len`, the count in the result's last
+// place: -1 if there is no whole line there or a field isn't a number), moving `*at` past it.
+fn int read_numbers(String text, usz* at, int[] n) @local {
+    sz? end = text[*at..].index_of_char('\n');
+    if (catch end) return -1;
+    String line = text[*at:(usz)end];
+    *at += (usz)end + 1;
+    int count;
+    @pool() {
+        foreach (f : line.tsplit(" ")) {
+            if (count == n.len) return -1;
+            int? x = f.to_int();
+            if (catch x) return -1;
+            n[count++] = x;
+        }
+    };
+    return count;
+}
+
+// A program `write` wrote, at `*at` in `text` (moved past it), for the backend's language;
+// none if it isn't one.
+fn ShaderProgram*? read_program(String text, usz* at) {
+    int[10] h;
+    if (read_numbers(text, at, &h) != 10 || h[0] != backend_lang().ordinal) return NOT_FOUND~;
+    foreach (x : h) if (x < 0) return NOT_FOUND~;
+    if (*at + (usz)h[1] + (usz)h[2] > text.len || h[7] > 32 || h[8] > 16 || h[9] > 32) return NOT_FOUND~;
+    ShaderProgram* p = mem::new(ShaderProgram);
+    p.lang = (NodeLang)h[0];
+    p.rows[0].init(mem);
+    p.rows[1].init(mem);
+    p.views.init(mem);
+    p.samplers.init(mem);
+    p.pairs.init(mem);
+    p.varyings.init(mem);
+    p.vs = text[*at:(usz)h[1]].copy(mem);
+    *at += (usz)h[1];
+    p.fs = text[*at:(usz)h[2]].copy(mem);
+    *at += (usz)h[2];
+    p.block_rows = { h[3], h[4] };
+    bool ok = true;
+    for (int st = 0; st < 2 && ok; st++) {
+        for (int i = 0; i < h[5 + st] && ok; i++) {
+            int[4] r;
+            ok = read_numbers(text, at, &r) == 4 && r[0] >= 0 && r[0] < NodeSource::len;
+            if (ok) p.rows[st].push({ (NodeSource)r[0], r[1], r[2], r[3] });
+        }
+    }
+    for (int i = 0; i < h[7] && ok; i++) {
+        int[8] v;
+        ok = read_numbers(text, at, &v) == 8 && v[0] >= 0 && v[0] < 2 && v[3] >= 0 && v[3] < NodeTextureKind::len
+            && v[4] >= 0 && v[4] < NodeType::len;
+        if (ok) p.views.push({ (ProgramStage)v[0], v[1], v[2] == 1, (NodeTextureKind)v[3], (NodeType)v[4], v[5], v[6], v[7] });
+    }
+    for (int i = 0; i < h[8] && ok; i++) {
+        int[4] sm;
+        ok = read_numbers(text, at, &sm) == 4 && sm[0] >= 0 && sm[0] < 2;
+        if (ok) p.samplers.push({ (ProgramStage)sm[0], sm[1], sm[2] == 1, sm[3] });
+    }
+    for (int i = 0; i < h[9] && ok; i++) {
+        sz? end = text[*at..].index_of_char('\n');
+        if (catch end) {
+            ok = false;
+            break;
+        }
+        String[] f = text[*at:(usz)end].tsplit(" ");
+        *at += (usz)end + 1;
+        ok = f.len == 4 && (f[0] == "0" || f[0] == "1");
+        if (!ok) break;
+        int? view = f[1].to_int();
+        int? sampler = f[2].to_int();
+        ok = @ok(view) && @ok(sampler);
+        if (ok) p.pairs.push({ f[0] == "1" ? FRAGMENT : VERTEX, view!!, sampler!!, (ZString)f[3].copy(mem).ptr });
+    }
+    if (!ok) {
+        p.free();
+        mem::free(p);
+        return NOT_FOUND~;
+    }
+    return p;
+}
+
 // The language the backend's programs are printed in.
 fn NodeLang backend_lang() {
     switch (sg::query_backend()) {

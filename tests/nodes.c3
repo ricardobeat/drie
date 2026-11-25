@@ -64,13 +64,13 @@ fn float[3] rgb_at(char[] px, int[2] p) {
 }
 
 // The material's generated programs (materials_nodes.c3), and of what kind: the main pass's
-// with the depth prepass's, the shadow maps', for a target with MRT. None with an application's
-// material shader (Renderer.shaders), whose node programs NodeProgram holds.
+// with the depth prepass's, the shadow maps', for a target with MRT, the deferred G-buffer's.
 struct Generated {
     int count;
     bool depth;
     bool shadow;
     bool mrt;
+    bool gbuffer;
 }
 
 fn Generated generated(Material* mat) {
@@ -82,6 +82,7 @@ fn Generated generated(Material* mat) {
         if (mp.depth && mp.depth.shader.id) g.depth = true;
         if (mp.key.shadow && mp.program.shader.id) g.shadow = true;
         if (mp.key.mrt && mp.program.shader.id) g.mrt = true;
+        if (mp.key.gbuffer && mp.program.shader.id) g.gbuffer = true;
     }
     return g;
 }
@@ -231,13 +232,10 @@ fn int main(String[] args) {
     readback::read_image(rt.texture_image, W, H, px.ptr);
     if (!save(out_path, px)) return 1;
 
-    NodeProgram* rings = mats[2].node_build.program;
     Generated gen = generated(mats[2]);
-    expect(gen.count ? gen.depth : (renderer.deferred
-               ? rings.shaders[ShaderFamily.GBUFFER.ordinal][NodeVariant.MAIN.ordinal].id != 0
-               : rings.shaders[ShaderFamily.PBR.ordinal][NodeVariant.DEPTH.ordinal].id != 0),
+    expect(renderer.deferred ? gen.gbuffer : gen.depth,
            "the third ball through the gbuffer or depth prepass, with its own program");
-    expect(gen.count ? gen.shadow : rings.shadow_pipeline.id != 0, "the third ball's shadow, with its own program");
+    expect(gen.shadow, "the third ball's shadow, with its own program");
     NodeBuild* build = mats[0].node_build;
     tint.set_color(0x40ff40);
     renderer.render(scene, camera);
@@ -273,12 +271,9 @@ fn int main(String[] args) {
         renderer.render(scene, camera);
         drie::commit();
         if (k == 2) {
-            // (solid: the opaque program; with deferred, the gbuffer opaque program is reused for MRT)
-            ShaderFamily fam = renderer.deferred ? ShaderFamily.GBUFFER : ShaderFamily.PBR;
-            NodeVariant v = renderer.deferred ? NodeVariant.OPAQUE : NodeVariant.OPAQUE_MRT;
-            SgShader[8] built = mats[0].node_build.program.shaders[fam.ordinal];
+            // (solid: with deferred, the G-buffer's program, then the lighting pass writes the MRT targets)
             Generated g = generated(mats[0]);
-            expect(g.count ? g.mrt : built[v.ordinal].id != 0, "MRT: the node materials' programs for it");
+            expect(renderer.deferred ? g.gbuffer : g.mrt, "MRT: the node materials' programs for it");
             continue;
         }
         readback::read_image(target.texture_image, W, H, px2.ptr);
@@ -422,11 +417,6 @@ fn int main(String[] args) {
             vs = mp.program.vs;
             fs = mp.program.fs;
         }
-        if (!fs.len && called.node_build.program) {
-            NodeProgram* prog = called.node_build.program;
-            vs = string::tformat("%s\n%s", prog.vertex_funcs, prog.vertex_body);
-            fs = string::tformat("%s\n%s", prog.frag_funcs, prog.color_body);
-        }
         ball.material = inlined;
         renderer.render(flat, cam);
         drie::commit();
@@ -485,16 +475,26 @@ fn int main(String[] args) {
         expect(worst < 2, "a seq() reading normal_world() is printed again after normal_node binds it");
     }
     {
-        // the hooks' text: a constant is written where it is read, and a value that two nodes
+        // a program's text: a constant is written where it is read, and a value that two nodes
         // print alike is printed once
+        Scene* one = drie::scene();
         Material* m = drie::mesh_standard_material(color: 0xffffff);
         Node first = nodes::sin(nodes::uv().x() * 7.5f);
         Node again = nodes::sin(nodes::uv().x() * 7.5f);
         m.color_node = nodes::vec3(first, again * 0.5f, 0.25f);
-        NodeProgram* prog = drie::node_build_of(m).program;
-        io::printfn("color hook:\n%s", prog.color_body);
-        expect(count_of(prog.color_body, "sin(") == 1, "two nodes that print alike: one value");
-        expect(count_of(prog.color_body, " = (7.5") == 0 && count_of(prog.color_body, "(7.50000000e+00)") == 1,
+        one.add(drie::mesh(drie::plane_geometry(2, 2), m));
+        PerspectiveCamera* cam = drie::perspective_camera(40, (float)W / H, 0.1f, 100);
+        cam.position = { 0, 0, 4 };
+        cam.look_at_vec({ 0, 0, 0 });
+        renderer.set_render_target(rt);
+        renderer.render(one, cam);
+        drie::commit();
+        String fs;
+        foreach (mp : m.node_build.programs.tvalues()) {
+            if (!mp.key.shadow) fs = mp.program.fs;
+        }
+        expect(count_of(fs, "sin(") == 1, "two nodes that print alike: one value");
+        expect(count_of(fs, " = (7.5") == 0 && count_of(fs, "(7.50000000e+00)") == 1,
                "a constant written where it is read, not in a variable of its own");
     }
     io::printfn("saved %s, %s", out_path, second);

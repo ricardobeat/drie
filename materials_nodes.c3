@@ -119,6 +119,9 @@ bitstruct MaterialKey : char[32] {
     bool nodes : 84;
     bool morph : 85;             // GPU morph targets (BufferGeometry.morph_view + Mesh.morph_weights_view)
     bool flat_shading : 86;      // flat face normals via screen-space derivatives (Material.flat_shading)
+    // the deferred G-buffer's program (gbuffer_key): the surface written into the four targets
+    // the lighting pass reads (shader_core.glsl's GBUFFER), without the lights
+    bool gbuffer : 87;
 }
 
 // Logical view IDs for GPU morph target storage buffers (between engine slots < 32 and NODE_USER_VIEW = 64).
@@ -224,9 +227,6 @@ fn ulong hash64(String s) @local {
     return h;
 }
 
-// (Materials draw with the precompiled split shaders and NodeProgram hooks; only GPU morph
-// meshes route through materials_nodes.c3.)
-
 // The program for `key`, built the first time it is asked for; with MaterialKey.nodes, the one
 // node material `build`'s graphs print, found through the build (NodeBuild.programs) and shared
 // with the builds that print the same.
@@ -274,37 +274,41 @@ fn MaterialProgram* material_program(MaterialKey key, NodeBuild* build = null) @
     mp.program = build_program(backend_lang(), &graph, build, vbind, fbind);
     if (key.prepassed) mp.depth.take_vertex(mp.program);
     node_release(mark);
-    if (build) {
-        @pool() {
-            // (not by its key: keys that differ in what the program doesn't print share it)
-            String sig = material_signature(mp);
-            ulong h = hash64(sig);
-            if (!node_material_programs.is_initialized()) node_material_programs.init(mem);
-            MaterialProgram*? shared = node_material_programs[h];
-            if (try shared && material_signature(shared) == sig) {
-                free_program(mp.program);
-                if (mp.depth) free_program(mp.depth);
-                mem::free(mp);
-                shared.users++;
-                cache.set(words, shared);
-                return shared;
-            }
-            // (one whose hash another has, which is no likelier than a collision of 64-bit hashes:
-            // kept out of the table, shared with none)
-            mp.users = 1;
-            if (catch shared) {
-                mp.shared_as = h;
-                node_material_programs[h] = mp;
-            }
-        };
-    }
     mp.pipelines.init(mem);
+    if (build) {
+        mp = share_material_program(mp);
+        mp.users++;
+    }
     cache.set(words, mp);
     // (DRIE_TRACE_PROGRAMS: each program printed as it is built)
     if (try env::tget_var("DRIE_TRACE_PROGRAMS")) {
         io::eprintfn("drie: program %x%032x: vs %d B, fs %d B\n%s\n%s", words.hi, words.lo, mp.program.vs.len, mp.program.fs.len, mp.program.vs, mp.program.fs);
         if (mp.depth) io::eprintfn("drie: its depth prepass: fs %d B\n%s", mp.depth.fs.len, mp.depth.fs);
     }
+    return mp;
+}
+
+// A node material's program `mp` (MaterialKey.nodes), or the one made already that prints the
+// same (`mp` then let go of): shared by the builds whose graphs print it, and by a loaded
+// pipeline cache's list (see read_material_program).
+fn MaterialProgram* share_material_program(MaterialProgram* mp) @private {
+    @pool() {
+        // (not by its key: keys that differ in what the program doesn't print share it)
+        String sig = material_signature(mp);
+        ulong h = hash64(sig);
+        if (!node_material_programs.is_initialized()) node_material_programs.init(mem);
+        MaterialProgram*? shared = node_material_programs[h];
+        if (try shared && material_signature(shared) == sig) {
+            free_material_program(mp);
+            return shared;
+        }
+        // (one whose hash another has, which is no likelier than a collision of 64-bit hashes:
+        // kept out of the table, shared with none)
+        if (catch shared) {
+            mp.shared_as = h;
+            node_material_programs[h] = mp;
+        }
+    };
     return mp;
 }
 
@@ -368,7 +372,7 @@ fn void free_build_programs(NodeBuild* b) @private {
     b.programs.free();
 }
 
-fn void free_material_program(MaterialProgram* mp) @local {
+fn void free_material_program(MaterialProgram* mp) @private {
     if (try in = node_material_programs[mp.shared_as] && in == mp) node_material_programs.remove(mp.shared_as);
     mp.pipelines.@each(; ulong key, SgPipeline pip) {
         sg::destroy_pipeline(pip);
@@ -379,7 +383,7 @@ fn void free_material_program(MaterialProgram* mp) @local {
     mem::free(mp);
 }
 
-fn void free_program(ShaderProgram* p) @local {
+fn void free_program(ShaderProgram* p) @private {
     // (its compile in the background run to its end first)
     if (p.job) {
         sg_warm_wait(p.job - 1);
@@ -438,7 +442,7 @@ fn void fragment_binds(VertexValues* vtx, Node[NodeBuiltin::len]* b, Node v_uv, 
 // A node material's color step (where the material shader runs node_color): mask_node's
 // discard, then color_node and opacity_node over the color `rgb` and its alpha `a`, read with
 // NORMAL_WORLD the facing vertex normal `n`. `holes`: the statements that cut its holes (the
-// mask's discard, and the slots' own when the graphs can cut: NodeProgram.cuts).
+// mask's discard, and the slots' own when the graphs can cut: NodeBuild.cuts).
 fn void user_color(NodeBuild* build, Node n, Node* rgb, Node* a, Node[] holes, int* count) @local {
     Node mask = build.slots[8];
     Node color = build.slots[0];
@@ -452,7 +456,7 @@ fn void user_color(NodeBuild* build, Node n, Node* rgb, Node* a, Node[] holes, i
     }
     if (color.id) {
         Node c = bound(color, { rebind(NORMAL_WORLD, n), rebind(NORMAL_GEOMETRY, n), rebind(MATERIAL_COLOR, own) });
-        if (build.program.cuts) holes[(*count)++] = drie::node_eval(c);
+        if (build.cuts) holes[(*count)++] = drie::node_eval(c);
         if (color.type() == VEC4) {
             *rgb = c.xyz();
             *a = c.w();
@@ -462,7 +466,7 @@ fn void user_color(NodeBuild* build, Node n, Node* rgb, Node* a, Node[] holes, i
     }
     if (opacity.id) {
         Node o = bound(nodes::convert(opacity, FLOAT), { rebind(NORMAL_WORLD, n), rebind(NORMAL_GEOMETRY, n), rebind(MATERIAL_COLOR, own) });
-        if (build.program.cuts) holes[(*count)++] = drie::node_eval(o);
+        if (build.cuts) holes[(*count)++] = drie::node_eval(o);
         *a = o;
     }
 }
@@ -566,6 +570,7 @@ fn VertexValues vertex_stage(MaterialKey key, NodeBuild* build = null, UserBinds
         local = local + nodes::normalize(normal) * (height * d.y() + d.z());
     }
     Node ip = inst.point(local);
+    Node placed = ip;
     Node model = vs_in("model", MAT4);
     Node dir = inst.dir(normal);
     if (build) {
@@ -646,8 +651,17 @@ fn VertexValues vertex_stage(MaterialKey key, NodeBuild* build = null, UserBinds
         Node motion = vs_in("motion");
         o.clip = nodes::vec4(pos.xy() - motion.swizzle("zw") * pos.w(), pos.z(), pos.w());
         Node prev_view_proj = vs_in("prev_view_proj", MAT4);
-        Node pp = vs_in("prev_model", MAT4) * nodes::vec4(ip, 1);
-        if (key.sway) pp = nodes::vec4(shading::apply_sway(pp.xyz(), ip.y(), nodes::vec4(motion.y(), sway.y(), sway.z(), sway.w())), pp.w());
+        // the same vertex where it was a frame ago (a dynamic geometry's vertices of then),
+        // placed as it was, moved as far as position_node moves it now
+        Node was = node_attribute(shaders::ATTR_THREE_PREV_POSITION, VEC3);
+        if (key.displacement) {
+            Node d = vs_in("surface_vs");
+            was = was + nodes::normalize(normal) * (node_attribute(shaders::ATTR_THREE_HEIGHT, FLOAT) * d.y() + d.z());
+        }
+        was = inst.point(was);
+        if (build && build.slots[6].id) was = was + (ip - placed);
+        Node pp = vs_in("prev_model", MAT4) * nodes::vec4(was, 1);
+        if (key.sway) pp = nodes::vec4(shading::apply_sway(pp.xyz(), was.y(), nodes::vec4(motion.y(), sway.y(), sway.z(), sway.w())), pp.w());
         Node swayed = nodes::vec4(world, wp.w());
         o.prev_clip = nodes::select(motion.x().greater_than(nodes::num(1.5f)), prev_view_proj * pp,
                                     nodes::select(motion.x().greater_than(nodes::num(0.5f)), prev_view_proj * swayed, o.clip));
@@ -769,7 +783,7 @@ fn Node parallax_shadow(Parallax* px, FragUv* f, Node n, Node l) @local {
 fn void build_shadow_graph(MaterialKey key, ProgramGraph* graph, NodeBuild* build, UserBinds* binds) @local {
     VertexValues vtx = vertex_stage(key, build, binds);
     graph.position = vtx.position;
-    bool node_cuts = build && (build.program.cuts || build.slots[8].id);
+    bool node_cuts = build && (build.cuts || build.slots[8].id);
     if (!key.alpha_test && !node_cuts) return;
     ShadowFsParams* sp = null;
     int params = (int)((usz)&sp.s_params / 16);
@@ -1099,10 +1113,15 @@ fn void build_material_graph(MaterialKey key, ProgramGraph* graph, ProgramGraph*
             if (user[11].id) shininess = bound(nodes::convert(user[11], FLOAT), &sb);
         }
     }
+    if (key.gbuffer) {
+        gbuffer_out(key, graph, &f, vtx, rgb, map_rgb, v_color.xyz(), n, geo_n, rough, metal, ao, user_glow);
+        if (ncuts) graph.fragment = drie::node_block(cuts[:ncuts]);
+        return;
+    }
     Lit lit = { .key = key, .n = n, .geo_n = geo_n, .v = v, .world = world, .rough = rough, .metal = metal, .alpha = alpha,
                 .ao = ao, .parallax = px, .f = &f, .v_normal = v_normal, .tangent = vtx.tangent, .irid_fn = -1, .frag = fc.xy(),
                 .shadow = shadow_fns(key), .ltc_fn = -1, .refraction = { -1, -1, -1 }, .probe_fn = -1, .ssr_fn = -1,
-                .mirror_slot = reflector_slot(build && !key.morph ? build.texture_count : 0),
+                .mirror_slot = reflector_slot(0),
                 .user_glow = user_glow, .user_env = user[9], .user_cc = user[12], .user_cc_rough = user[13], .phong_specular = phong_specular, .shininess = shininess };
     if (key.type == (char)MaterialType.MATCAP) {
         // MeshMatcapMaterial: the matcap image at the view-space normal, from a frame turned
@@ -1289,6 +1308,57 @@ fn void build_material_graph(MaterialKey key, ProgramGraph* graph, ProgramGraph*
         graph.colors[3] = indirect;
     }
     if (ncuts) graph.fragment = drie::node_block(cuts[:ncuts]);
+}
+
+// The deferred G-buffer's four targets (MaterialKey.gbuffer, shader_core.glsl's GBUFFER): the
+// color and ambient occlusion; the shaded normal, roughness and metalness; the light the
+// surface gives off itself and the lighting pass's flags for it; the motion and the surface's
+// own normal.
+fn void gbuffer_out(MaterialKey key, ProgramGraph* graph, FragUv* f, VertexValues vtx, Node rgb, Node map_rgb, Node v_color,
+                    Node n, Node geo_n, Node rough, Node metal, Node ao, Node user_glow) @local {
+    int mode = key.type;
+    Node diffuse = mode == (int)MaterialType.STANDARD ? rgb * metal.one_minus() : rgb;
+    Node emissive = fs_in("emissive");
+    Node glow = emissive.xyz();
+    if (key.map_emissive && map_rgb.id) glow = glow * map_rgb;
+    if (key.slot(MAP_EMISSIVE)) glow = glow * role_texel(key, f, MAP_EMISSIVE).xyz();
+    if (user_glow.id) glow = user_glow;
+    Node own = glow;
+    if (key.baked) own = own + diffuse * v_color * emissive.w() * ao;
+    if (key.slot(MAP_LIGHT)) {
+        Node lm = role_texel(key, f, MAP_LIGHT).xyz() * (fs_in("light_map_params", FLOAT) * shading::RECIPROCAL_PI);
+        if (mode == (int)MaterialType.BASIC) {
+            rgb = rgb * lm;
+        } else {
+            own = own + lm * diffuse * ao;
+        }
+    }
+    if (key.vertex_occlusion) {
+        Node k = nodes::dot(v_color, nodes::vec3(0.2126f, 0.7152f, 0.0722f));
+        rgb = rgb * k;
+        own = own * k;
+    }
+    Node vel = nodes::vec2(0);
+    if (key.motion) {
+        Node clip = nodes::varying(vtx.clip);
+        Node prev = nodes::varying(vtx.prev_clip);
+        vel = (clip.xy() / clip.w() - prev.xy() / nodes::max(prev.w(), 1e-5f)) * 0.5f;
+        vel = nodes::select(fs_in("ssr_params", FLOAT, 3).greater_than(nodes::num(0.5f)), nodes::vec2(vel.x(), vel.y().negate()), vel);
+    }
+    // (the flags: the material type, receives shadows 8, foliage 16, SSR 32, the environment's
+    // light 64, fog 128, a light source 256)
+    Node flags = nodes::convert(fs_in("specular", FLOAT, 3) + 0.5f, INT);
+    Node pf = nodes::num((float)(mode + (key.foliage ? 16 : 0)));
+    pf = pf + nodes::select(node_binary(BIT_AND, flags, nodes::int_(4)).not_equal(nodes::int_(0)), 8.0f, 0.0f);
+    pf = pf + nodes::select(fs_in("ssr_params", FLOAT).greater_than(nodes::num(0)), 32.0f, 0.0f);
+    if (mode != (int)MaterialType.LAMBERT) pf = pf + nodes::select(fs_in("env_params", FLOAT).greater_than(nodes::num(0.5f)), 64.0f, 0.0f);
+    pf = pf + nodes::select(fs_in("fog_params", FLOAT, 3).not_equal(nodes::num(0)), 128.0f, 0.0f);
+    Node bright = nodes::max(emissive.x(), nodes::max(emissive.y(), emissive.z())).greater_than(nodes::num(4));
+    pf = pf + nodes::select(bright, 256.0f, 0.0f);
+    graph.colors[0] = nodes::vec4(rgb, ao);
+    graph.colors[1] = nodes::vec4(shading::pack_normal_octahedral(n), rough, metal);
+    graph.colors[2] = nodes::vec4(own, pf);
+    graph.colors[3] = nodes::vec4(vel, shading::pack_normal_octahedral(geo_n));
 }
 
 // Whether the key holds a slot for any map role.

@@ -5,10 +5,9 @@
 //
 // A pipeline is a program and the state it draws with (sides, blending, depth, the target's
 // format). The driver compiles one the first time it is made, which can take from a few to
-// hundreds of milliseconds (a second or two for a node material, whose program is printed
-// at runtime): a frame that makes one stalls. The driver keeps what it compiles in a cache of
-// its own on disk, so a pipeline made once before takes next to no time; the pipeline cache
-// is what gets it into the driver's cache before the frame that wants it.
+// hundreds of milliseconds: a frame that makes one stalls. The driver keeps what it compiles
+// in a cache of its own on disk, so a pipeline made once before takes next to no time; the
+// pipeline cache is what gets it into the driver's cache before the frame that wants it.
 //
 //   // a run that plays the game:
 //   renderer.save_pipeline_cache("pipelines.txt");
@@ -20,14 +19,13 @@
 //
 // Loading compiles a few at a time on worker threads (Metal only: elsewhere it does
 // nothing), so the frames go on: a pipeline still compiling when something wants it is
-// made then, after its compile in the background (or left out of the frame till its
+// made then, after its compile in the background (or drawn with the plain material till its
 // pipelines are ready, for a node material with Renderer.compile_in_background). The
-// materials' generated programs are listed by their MaterialKey; with an application's
-// material shader (Renderer.shaders) node materials' programs are in the list too, as
-// their hooks' text: when a graph that prints the same text is drawn, it gets the program
-// already made. The list is text, one line a pipeline (see
+// materials' generated programs are listed by their MaterialKey; a node material's, which its
+// key alone can't print, as the program itself (its text): a graph that prints the same then
+// gets the program already made. The list is text, one line a pipeline (see
 // Renderer.pipeline_cache); it holds no compiled code, so it doesn't go stale when the
-// driver, the GPU or drie's own shaders change, only less complete.
+// driver or the GPU change, only less complete.
 //
 // What a render target stands for: a pipeline that draws into the window is listed as the
 // window's, and is compiled for whatever window the run that loads it has (its samples, its
@@ -36,17 +34,17 @@
 module drie;
 import std::io, std::collections::list, sokol::sg;
 
-const String PIPELINE_CACHE_HEADER @local = "drie-pipelines 5\n";
+const String PIPELINE_CACHE_HEADER @local = "drie-pipelines 6\n";
 // pipelines compiled at once while a cache loads
 const int PIPELINE_CACHE_JOBS @local = 6;
 
-// A pipeline as get_pipeline (or get_shadow_pipeline) made it.
+// A pipeline as get_pipeline (or gen_shadow_pipeline) made it.
 struct PipelineRecord @private {
-    // a material's generated program's (materials_nodes.c3), built from `key`
-    bool generated;
+    // its generated program's key (materials_nodes.c3)
     MaterialKey key;
-    // a node material's program, or null: the engine's material shader
-    NodeProgram* program;
+    // a node material's program (MaterialKey.nodes), which the key alone doesn't print: listed
+    // by its text (kept while it is listed: MaterialProgram.users)
+    MaterialProgram* shared;
     // a shadow map's (the rest unused)
     bool shadow;
     Side side;
@@ -56,11 +54,10 @@ struct PipelineRecord @private {
     // the blending, as blend_key gives it (the material's blending and its factors)
     ulong blend;
     DrawKind kind;
-    // the material shader's programs it takes (get_pipeline's family)
-    ShaderFamily family;
+    // into the deferred G-buffer
+    bool gbuffer;
     bool depth_test;
     bool depth_write;
-    bool tangents;
     bool vsm;
     // the render target: 0 samples for the window's
     int target_samples;
@@ -68,28 +65,13 @@ struct PipelineRecord @private {
     bool target_mrt;
 }
 
-// Whether `a` and `b` print the same program: the same pointer (the common case: node_program()
-// already shares one NodeProgram* between every graph that prints the same hooks), or two
-// distinct ones with identical text — a loaded cache's own NodeProgram* (built by node_program()
-// too, but from a cache file whose "N" line used not to carry vertex_funcs/frag_funcs/unsupported,
-// so a graph that uses any of those got a key that didn't match and so a second, duplicate object).
-fn bool node_program_same_text(NodeProgram* a, NodeProgram* b) @local {
-    if (a == b) return true;
-    if (!a || !b) return false;
-    return a.cuts == b.cuts && a.vertex_funcs == b.vertex_funcs && a.frag_funcs == b.frag_funcs
-        && a.unsupported == b.unsupported && a.vertex_body == b.vertex_body && a.color_body == b.color_body
-        && a.normal_body == b.normal_body && a.surface_body == b.surface_body && a.output_body == b.output_body
-        && a.env_body == b.env_body && a.specular_body == b.specular_body;
-}
-
 fn bool PipelineRecord.same(&self, PipelineRecord* o) {
-    return self.generated == o.generated && bitcast(self.key, KeyWords) == bitcast(o.key, KeyWords)
-        && node_program_same_text(self.program, o.program) && self.shadow == o.shadow && self.side == o.side
-        && self.transparent == o.transparent && self.wireframe == o.wireframe && self.alpha_test == o.alpha_test
-        && self.blend == o.blend && self.kind == o.kind && self.family == o.family && self.depth_test == o.depth_test
-        && self.depth_write == o.depth_write && self.tangents == o.tangents && self.vsm == o.vsm
-        && self.target_samples == o.target_samples && self.target_format == o.target_format
-        && self.target_mrt == o.target_mrt;
+    return bitcast(self.key, KeyWords) == bitcast(o.key, KeyWords) && self.shared == o.shared
+        && self.shadow == o.shadow && self.side == o.side && self.transparent == o.transparent
+        && self.wireframe == o.wireframe && self.alpha_test == o.alpha_test && self.blend == o.blend
+        && self.kind == o.kind && self.gbuffer == o.gbuffer && self.depth_test == o.depth_test
+        && self.depth_write == o.depth_write && self.vsm == o.vsm && self.target_samples == o.target_samples
+        && self.target_format == o.target_format && self.target_mrt == o.target_mrt;
 }
 
 // the pipelines made in this run, for Renderer.pipeline_cache
@@ -101,11 +83,8 @@ struct PipelineWarmup @private {
     List{PipelineRecord} pending;
     // all it was given (one of each, however many caches list it)
     List{PipelineRecord} loaded;
-    // the engine's pipelines compiling (sg_warm_begin's jobs) whose programs were compiling
-    // already (the others' jobs are their programs': material_jobs)
+    // pipelines compiling (sg_warm_begin's jobs) whose programs were compiling already
     List{int} jobs;
-    // node programs whose pipelines it has started
-    List{NodeProgram*} programs;
     // generated programs compiled by the jobs of the pipelines it has started (ShaderProgram.claim)
     List{ShaderProgram*} generated;
     // the pipelines it has started
@@ -124,6 +103,7 @@ fn void record_pipeline(PipelineRecord r) @private {
     foreach (&o : pipeline_records) {
         if (o.same(&r)) return;
     }
+    if (r.shared) r.shared.users++;
     pipeline_records.push(r);
 }
 
@@ -135,18 +115,6 @@ fn bool PipelineWarmup.add(&self, PipelineRecord r) {
     self.loaded.push(r);
     self.pending.push(r);
     return true;
-}
-
-// Compiles the engine's pipeline `desc`, with program `v` of the material shader, in the
-// background (for get_pipeline): the program with it, if it isn't made or compiling yet.
-fn void PipelineWarmup.start(&self, NodeVariant v, bool tangents, SgPipelineDesc* desc) {
-    @pool() {
-        SgShaderDesc shader = material_shader_desc(PBR, v, false);
-        with_bytecode(&shader);
-        int job = sg_warm_begin(&shader, desc);
-        if (job < 0) return;
-        if (!claim_material_job(PBR, v, job)) self.jobs.push(job);
-    };
 }
 
 // A MaterialKey from the 64 hex digits pipeline_cache writes.
@@ -166,6 +134,11 @@ fn MaterialKey? key_from_hex(String hex) @local {
     return bitcast(k, MaterialKey);
 }
 
+fn String key_hex(MaterialKey key) @local {
+    KeyWords k = bitcast(key, KeyWords);
+    return string::tformat("%016x%016x%016x%016x", (ulong)(k.lo >> 64), (ulong)k.lo, (ulong)(k.hi >> 64), (ulong)k.hi);
+}
+
 // Compiles generated program `p`'s pipeline `desc` in the background (for get_pipeline): the
 // program with it, if it isn't made or compiling yet.
 fn void PipelineWarmup.start_generated(&self, ShaderProgram* p, SgPipelineDesc* desc) {
@@ -181,19 +154,16 @@ fn void PipelineWarmup.start_generated(&self, ShaderProgram* p, SgPipelineDesc* 
 
 // The pipelines (those made so far), as the text load_pipeline_cache takes, in `a`'s memory:
 //
-//   drie-pipelines 4
-//   N <cuts> <unsupported, vertex_funcs, frag_funcs lengths> <7 lengths>
-//                                          a node program, numbered from 0 in the order listed
-//                                          (one line; the lengths' texts follow it in that order,
-//                                          then the 7 hooks' bodies, one after the other)
-//   S <program>                           a shadow map's pipeline (-1: the engine's program)
-//   P <program> <side> <transparent> <wireframe> <alpha_test> <blend> <kind> <depth_test>
-//     <depth_write> <tangents> <vsm> <target samples, 0: the window> <target format> <mrt>
-//     <family>                            the material shader's (ShaderFamily)
-//   G <key> <side> ... <mrt>              as P, with a generated program: its MaterialKey, in
-//                                         64 hex digits (the header's number goes up when
-//                                         the key's layout changes)
-//   H <key>                               a shadow map's pipeline with a generated program
+//   drie-pipelines 6
+//   M <key> <depth>                       a node material's program, numbered from 0 in the
+//                                         order listed: the key it was printed for (64 hex
+//                                         digits), then the program as ShaderProgram.write
+//                                         writes it, and with <depth> 1 its depth prepass's
+//   G <key> <program> <side> <transparent> <wireframe> <alpha_test> <blend> <kind>
+//     <depth_test> <depth_write> <vsm> <target samples, 0: the window> <target format> <mrt>
+//     <gbuffer>                           a pipeline of the generated program for <key>, or
+//                                         of node program <program> (-1: none)
+//   H <key> <program>                     a shadow map's pipeline
 //
 // `include_loaded` (on by default) also writes what a loaded cache's records had
 // (cache_warmup.loaded: load_pipeline_cache's own full list, not just what's left pending),
@@ -201,7 +171,7 @@ fn void PipelineWarmup.start_generated(&self, ShaderProgram* p, SgPipelineDesc* 
 // them: record_pipeline skips a pipeline started by the cache's own warmup (so a run doesn't
 // save back what it only compiled for someone else to use later), and get_pipeline finding
 // one already made the same way (compiled by the warmup, or by an earlier draw this run)
-// returns before ever reaching record_pipeline — so a pipeline the loaded cache already knew
+// returns before ever reaching record_pipeline: a pipeline the loaded cache already knew
 // about is never (re-)recorded by drawing with it, only by making it from scratch.
 fn String Renderer.pipeline_cache(&self, Allocator a, bool include_loaded = true) {
     DString out = dstring::new(a);
@@ -222,58 +192,31 @@ fn String Renderer.pipeline_cache(&self, Allocator a, bool include_loaded = true
                 if (!dup) merged.push(*r);
             }
         }
-        if (!merged.len()) return out.str_view();
-        List{NodeProgram*} programs;
+        List{MaterialProgram*} programs;
         programs.tinit();
         foreach (&r : merged) {
-            if (r.generated) {
-                KeyWords k = bitcast(r.key, KeyWords);
-                String hex = string::tformat("%016x%016x%016x%016x", (ulong)(k.lo >> 64), (ulong)k.lo,
-                    (ulong)(k.hi >> 64), (ulong)k.hi);
-                if (r.shadow) {
-                    out.appendf("H %s\n", hex);
-                    continue;
-                }
-                out.appendf("G %s %d %d %d %d %d %d %d %d %d %d %d %d %d %d\n", hex, r.side.ordinal, r.transparent ? 1 : 0,
-                    r.wireframe ? 1 : 0, r.alpha_test ? 1 : 0, r.blend, r.kind.ordinal, r.depth_test ? 1 : 0,
-                    r.depth_write ? 1 : 0, r.tangents ? 1 : 0, r.vsm ? 1 : 0, r.target_samples, (uint)r.target_format,
-                    r.target_mrt ? 1 : 0, r.family.ordinal);
-                continue;
-            }
             int program = -1;
-            if (r.program) {
-                // dedupe by text, not pointer: a loaded cache's program and this run's can be
-                // distinct objects that print the same hooks (see node_program_same_text)
+            if (r.shared) {
                 foreach (i, p : programs) {
-                    if (node_program_same_text(p, r.program)) program = (int)i;
+                    if (p == r.shared) program = (int)i;
                 }
                 if (program < 0) {
-                    NodeProgram* p = r.program;
+                    MaterialProgram* mp = r.shared;
                     program = (int)programs.len();
-                    programs.push(p);
-                    out.appendf("N %d %d %d %d %d %d %d %d %d %d %d\n", p.cuts ? 1 : 0, p.unsupported.len,
-                        p.vertex_funcs.len, p.frag_funcs.len, p.vertex_body.len, p.color_body.len,
-                        p.normal_body.len, p.surface_body.len, p.output_body.len, p.env_body.len, p.specular_body.len);
-                    out.append(p.unsupported);
-                    out.append(p.vertex_funcs);
-                    out.append(p.frag_funcs);
-                    out.append(p.vertex_body);
-                    out.append(p.color_body);
-                    out.append(p.normal_body);
-                    out.append(p.surface_body);
-                    out.append(p.output_body);
-                    out.append(p.env_body);
-                    out.append(p.specular_body);
+                    programs.push(mp);
+                    out.appendf("M %s %d\n", key_hex(mp.key), mp.depth ? 1 : 0);
+                    mp.program.write(&out);
+                    if (mp.depth) mp.depth.write(&out);
                 }
             }
             if (r.shadow) {
-                out.appendf("S %d\n", program);
+                out.appendf("H %s %d\n", key_hex(r.key), program);
                 continue;
             }
-            out.appendf("P %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d\n", program, r.side.ordinal, r.transparent ? 1 : 0,
-                r.wireframe ? 1 : 0, r.alpha_test ? 1 : 0, r.blend, r.kind.ordinal, r.depth_test ? 1 : 0,
-                r.depth_write ? 1 : 0, r.tangents ? 1 : 0, r.vsm ? 1 : 0, r.target_samples, (uint)r.target_format,
-                r.target_mrt ? 1 : 0, r.family.ordinal);
+            out.appendf("G %s %d %d %d %d %d %d %d %d %d %d %d %d %d %d\n", key_hex(r.key), program, r.side.ordinal,
+                r.transparent ? 1 : 0, r.wireframe ? 1 : 0, r.alpha_test ? 1 : 0, r.blend, r.kind.ordinal,
+                r.depth_test ? 1 : 0, r.depth_write ? 1 : 0, r.vsm ? 1 : 0, r.target_samples, (uint)r.target_format,
+                r.target_mrt ? 1 : 0, r.gbuffer ? 1 : 0);
         }
     };
     return out.str_view();
@@ -290,7 +233,32 @@ fn bool Renderer.save_pipeline_cache(&self, String path) {
 // Clears the recorded pipelines (for a process that renders several scenes in turn and saves
 // each one's pipeline cache).
 fn void Renderer.clear_pipeline_cache(&self) {
-    if (pipeline_records.is_initialized()) pipeline_records.clear();
+    if (!pipeline_records.is_initialized()) return;
+    foreach (&r : pipeline_records) {
+        if (r.shared && --r.shared.users == 0) free_material_program(r.shared);
+    }
+    pipeline_records.clear();
+}
+
+// A node material's program as pipeline_cache lists it, at `*at` in `text` (moved past it):
+// the one made already that prints the same, or this one, which a graph that prints the same
+// takes from then on (see material_program).
+fn MaterialProgram*? read_material_program(String text, usz* at, MaterialKey key, bool depth) @local {
+    ShaderProgram* program = read_program(text, at)!;
+    ShaderProgram*? prepass = depth ? read_program(text, at) : (ShaderProgram*)null;
+    if (catch prepass) {
+        free_program(program);
+        return NOT_FOUND~;
+    }
+    MaterialProgram* mp = mem::new(MaterialProgram);
+    mp.key = key;
+    mp.program = program;
+    mp.depth = prepass;
+    mp.pipelines.init(mem);
+    mp = share_material_program(mp);
+    // (held by the loaded list)
+    mp.users++;
+    return mp;
 }
 
 // Starts compiling the pipelines `text` lists (pipeline_cache, from another run) in the
@@ -304,11 +272,11 @@ fn int Renderer.load_pipeline_cache(&self, String text) {
         w.pending.init(mem);
         w.loaded.init(mem);
         w.jobs.init(mem);
-        w.programs.init(mem);
+        w.generated.init(mem);
     }
     int added;
     @pool() {
-        List{NodeProgram*} programs;
+        List{MaterialProgram*} programs;
         programs.tinit();
         usz at = PIPELINE_CACHE_HEADER.len;
         while (at < text.len) {
@@ -317,70 +285,48 @@ fn int Renderer.load_pipeline_cache(&self, String text) {
             String[] f = text[at:(usz)end].tsplit(" ");
             at += (usz)end + 1;
             int[15] n;
-            foreach (i, x : f[1..]) {
-                if (i < n.len) n[i] = x.to_int() ?? -1;
+            foreach (i, x : f[2..]) {
+                if (i < n.len) n[i] = x.to_int() ?? -100;
             }
+            if (f.len < 2) return added;
+            MaterialKey? key = key_from_hex(f[1]);
+            if (catch key) return added;
             switch (f[0]) {
-                case "N":
-                    if (f.len != NODE_HOOKS + 5) return added;
-                    int unsupported_len = n[1];
-                    int vertex_funcs_len = n[2];
-                    int frag_funcs_len = n[3];
-                    if (unsupported_len < 0 || vertex_funcs_len < 0 || frag_funcs_len < 0) return added;
-                    if (at + (usz)unsupported_len + (usz)vertex_funcs_len + (usz)frag_funcs_len > text.len) return added;
-                    String unsupported = text[at:(usz)unsupported_len];
-                    at += (usz)unsupported_len;
-                    String vertex_funcs = text[at:(usz)vertex_funcs_len];
-                    at += (usz)vertex_funcs_len;
-                    String frag_funcs = text[at:(usz)frag_funcs_len];
-                    at += (usz)frag_funcs_len;
-                    String[NODE_HOOKS] bodies;
-                    foreach (i, &b : bodies) {
-                        int len = n[4 + i];
-                        if (len < 0 || at + (usz)len > text.len) return added;
-                        *b = text[at:(usz)len];
-                        at += (usz)len;
-                    }
-                    programs.push(node_program(bodies, n[0] == 1, unsupported, vertex_funcs, frag_funcs));
-                case "S":
-                    if (f.len != 2 || n[0] >= (int)programs.len()) return added;
-                    if (w.add({ .program = n[0] < 0 ? null : programs[n[0]], .shadow = true })) added++;
+                case "M":
+                    if (f.len != 3) return added;
+                    MaterialProgram*? mp = read_material_program(text, &at, key, n[0] == 1);
+                    if (catch mp) return added;
+                    programs.push(mp);
                 case "H":
-                    MaterialKey? key = key_from_hex(f.len == 2 ? f[1] : "");
-                    if (catch key) return added;
-                    if (w.add({ .generated = true, .key = key, .shadow = true })) added++;
                 case "G":
-                case "P":
-                    bool generated = f[0] == "G";
-                    MaterialKey? key = generated ? key_from_hex(f.len > 1 ? f[1] : "") : (MaterialKey){ };
-                    if (catch key) return added;
-                    if (f.len != 16 || (!generated && n[0] >= (int)programs.len())) return added;
+                    bool shadow = f[0] == "H";
+                    if (f.len != (shadow ? 3 : 16) || n[0] < -1 || n[0] >= (int)programs.len()) return added;
+                    MaterialProgram* shared = n[0] < 0 ? null : programs[n[0]];
+                    if (shadow) {
+                        if (w.add({ .key = key, .shared = shared, .shadow = true })) added++;
+                        continue;
+                    }
                     if (n[1] < 0 || n[1] > Side.DOUBLE_SIDE.ordinal || n[5] < 0
-                        || n[6] < 0 || n[6] > DrawKind.DEPTH.ordinal || n[11] < 0
-                        || n[14] < 0 || n[14] > ShaderFamily.GBUFFER.ordinal) {
+                        || n[6] < 0 || n[6] > DrawKind.DEPTH.ordinal || n[10] < 0) {
                         continue;
                     }
                     PipelineRecord r = {
-                        .generated = generated,
                         .key = key,
-                        .program = generated || n[0] < 0 ? null : programs[n[0]],
+                        .shared = shared,
                         .side = (Side)n[1],
                         .transparent = n[2] == 1,
                         .wireframe = n[3] == 1,
                         .alpha_test = n[4] == 1,
                         .blend = (ulong)n[5],
                         .kind = (DrawKind)n[6],
-                        .family = (ShaderFamily)n[14],
                         .depth_test = n[7] == 1,
                         .depth_write = n[8] == 1,
-                        .tangents = n[9] == 1,
-                        .vsm = n[10] == 1,
-                        .target_samples = n[11],
-                        .target_format = (SgPixelFormat)(uint)n[12],
-                        .target_mrt = n[13] == 1,
+                        .vsm = n[9] == 1,
+                        .target_samples = n[10],
+                        .target_format = (SgPixelFormat)(uint)n[11],
+                        .target_mrt = n[12] == 1,
+                        .gbuffer = n[13] == 1,
                     };
-                    // (a program for tangents only where the renderer has them)
-                    if (r.tangents && !r.program && !generated && !has_tangent_programs()) continue;
                     if (w.add(r)) added++;
                 default:
                     return added;
@@ -419,13 +365,9 @@ fn int[2] Renderer.compiling(&self) {
             }
         }
     }
-    @pool() {
-        foreach (p : w.programs) n[0] += p.compiling()[0];
-    };
     foreach (p : w.generated) {
         if (p.compiling()) n[0]++;
     }
-    n[0] += material_shaders_compiling();
     return n;
 }
 
@@ -448,13 +390,9 @@ fn void Renderer.pump_pipeline_cache(&self) {
     foreach (job : w.jobs) {
         if (sg_warm_state(job) == 0) running++;
     }
-    @pool() {
-        foreach (p : w.programs) running += p.compiling()[0];
-    };
     foreach (p : w.generated) {
         if (p.compiling()) running++;
     }
-    running += material_shaders_compiling();
     ShadowType shadow_type = self.shadow_type;
     defer self.shadow_type = shadow_type;
     pipeline_warmup = w;
@@ -463,27 +401,16 @@ fn void Renderer.pump_pipeline_cache(&self) {
         PipelineRecord r = w.pending.pop_first()!!;
         w.started++;
         running++;
-        if (r.program) {
-            bool known;
-            foreach (p : w.programs) known = known || p == r.program;
-            if (!known) w.programs.push(r.program);
-        }
-        MaterialProgram* gen = r.generated ? material_program(r.key) : null;
+        MaterialProgram* gen = r.shared ?: material_program(r.key);
         if (r.shadow) {
-            if (gen) {
-                (void)gen_shadow_pipeline(gen);
-            } else {
-                (void)get_shadow_pipeline(r.program);
-            }
+            (void)gen_shadow_pipeline(gen);
             continue;
         }
         // (get_pipeline reads VSM off the renderer)
         self.shadow_type = r.vsm ? ShadowType.VSM : shadow_type == VSM ? ShadowType.PCF : shadow_type;
         RenderTarget target = { .samples = r.target_samples, .format = r.target_format, .mrt = r.target_mrt };
-        // (the programs a render starts beside this one, for a pack's sources: see dump_programs)
-        if (r.program && dumping_only()) start_node_variants(r.program, r.family, variant_of(r.kind, r.target_samples ? &target : null));
         (void)get_pipeline(r.side, r.transparent, r.wireframe, r.target_samples ? &target : null, r.alpha_test,
-            r.blend, r.kind, r.depth_test, r.depth_write, r.family, r.program, gen);
+            r.blend, r.kind, r.depth_test, r.depth_write, r.gbuffer, gen);
     }
 }
 
