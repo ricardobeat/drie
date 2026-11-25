@@ -1,0 +1,168 @@
+// drie::cloth, without the GPU:
+//   - a sheet pinned along its top settles: no point moves after ten seconds, none drifts,
+//     no link stretches past a few percent
+//   - the same run twice gives the same points, bit for bit
+//   - two panels hung side by side (a parted curtain): a capsule (a person) walks through the
+//     gap, pushes them aside without going into them, and they fall back to where they hung
+//   - the cost of one curtain's update
+//
+//   just test cloth
+module cloth_test;
+import drie, drie::cloth;
+import std::io, std::math, std::time::clock;
+
+int failures;
+
+fn void expect(bool ok, String what) {
+    io::printfn("%s %s", ok ? "ok  " : "FAIL", what);
+    if (!ok) failures++;
+}
+
+fn Cloth* curtain(float x0, float width, int cols) {
+    Cloth* c = cloth::grid(cols, 36, { x0, 2.4, 0 }, { width, 0, 0 }, { 0, -2.3, 0 }, mass: 0.6);
+    c.pin_row(0);
+    return c;
+}
+
+fn void run(Cloth* c, float seconds) {
+    int n = (int)(seconds * 60 + 0.5f);
+    for (int i = 0; i < n; i++) c.update(1.0f / 60);
+}
+
+fn bool finite(Cloth* c) {
+    foreach (p : c.pos) {
+        if (!math::is_finite(p.x) || !math::is_finite(p.y) || !math::is_finite(p.z)) return false;
+    }
+    return true;
+}
+
+fn float max_strain(Cloth* c) {
+    float m = 0;
+    foreach (l : c.stretch) m = math::max(m, ((c.pos[l.a] - c.pos[l.b]).length() - l.rest) / l.rest);
+    return m;
+}
+
+fn float max_distance(Vector3[] a, Vector3[] b) {
+    float m = 0;
+    foreach (i, p : a) m = math::max(m, (p - b[i]).length());
+    return m;
+}
+
+fn Vector3[] copy(Vector3[] a) {
+    Vector3[] b = mem::new_array(Vector3, a.len);
+    b[..] = a[..];
+    return b;
+}
+
+// how far the deepest point is inside the capsule a..b
+fn float penetration(Cloth* c, Vector3 a, Vector3 b, float r) {
+    float worst = 0;
+    Vector3 ab  = b - a;
+    foreach (p : c.pos) {
+        float t = math::clamp((p - a).dot(ab) / ab.dot(ab), 0.0f, 1.0f);
+        float d = (p - (a + ab * t)).length();
+        worst = math::max(worst, r - d);
+    }
+    return worst;
+}
+
+fn int main(String[] args) {
+    // settling
+    Cloth* sheet = curtain(-0.6, 1.2, 24);
+    run(sheet, 10);
+    Vector3[] at10 = copy(sheet.pos);
+    run(sheet, 5);
+    expect(finite(sheet), "settled sheet: every point is a number");
+    expect(
+        sheet.max_speed() < 2e-3f,
+        string::tformat("settled sheet: still after 10 s (fastest point %.5f m/s)", sheet.max_speed())
+    );
+    float drift = max_distance(at10, sheet.pos);
+    expect(drift < 1e-3f, string::tformat("settled sheet: no drift from 10 s to 15 s (%.6f m)", drift));
+    expect(
+        max_strain(sheet) < 0.03f,
+        string::tformat("settled sheet: links stretched %.2f%% at most", max_strain(sheet) * 100)
+    );
+    float bottom = sheet.pos[sheet.index(12, 35)].y;
+    expect(
+        bottom < 0.12f && bottom > 0.0f,
+        string::tformat("settled sheet: hangs straight down (bottom at %.3f m)", bottom)
+    );
+
+    // determinism, with wind
+    Cloth* w1 = curtain(-0.6, 1.2, 24);
+    Cloth* w2 = curtain(-0.6, 1.2, 24);
+    w1.wind = w2.wind = { 0.2, 0, 0.6 };
+    w1.gust = w2.gust = 0.8;
+    run(w1, 4);
+    run(w2, 4);
+    bool same = true;
+    foreach (i, p : w1.pos) same = same && p == w2.pos[i];
+    float swayed = max_distance(w1.pos, sheet.pos);
+    expect(same, "two runs give the same points");
+    expect(swayed > 0.02f && finite(w1), string::tformat("the draft moves the sheet (%.3f m)", swayed));
+
+    // a person through a parted curtain
+    Cloth* left  = curtain(-0.62, 0.6, 14);
+    Cloth* right = curtain(0.02, 0.6, 14);
+    run(left, 8);
+    run(right, 8);
+    Vector3[] left_rest  = copy(left.pos);
+    Vector3[] right_rest = copy(right.pos);
+    float r              = 0.22;
+    Vector3 lo           = { 0, 0.3, -0.8 };
+    Vector3 hi           = { 0, 1.7, -0.8 };
+    int lid              = left.add_capsule(lo, hi, r);
+    int rid              = right.add_capsule(lo, hi, r);
+    float deepest        = 0;
+    float parted         = 0;
+    // walking at 1.2 m/s from z = -0.8 to 1.2
+    for (int f = 0; f <= 100; f++) {
+        float z   = -0.8f + 2.0f * f / 100;
+        Vector3 a =  { 0, 0.3, z };
+        Vector3 b =  { 0, 1.7, z };
+        left.move_collider(lid, a, b);
+        right.move_collider(rid, a, b);
+        left.update(1.0f / 60);
+        right.update(1.0f / 60);
+        deepest = math::max(deepest, math::max(penetration(left, a, b, r), penetration(right, a, b, r)));
+        // how far the inner edges at chest height were pushed apart
+        float gap = right.pos[right.index(0, 18)].x - left.pos[left.index(13, 18)].x;
+        parted = math::max(parted, gap);
+    }
+    expect(finite(left) && finite(right), "parted curtain: every point is a number");
+    expect(
+        deepest < 0.01f,
+        string::tformat("parted curtain: nothing deeper than 1 cm in the capsule (%.4f m)", deepest)
+    );
+    expect(
+        parted > 2 * r,
+        string::tformat("parted curtain: the gap opened to %.3f m (the capsule is %.2f m wide)", parted, 2 * r)
+    );
+    left.set_collider_active(lid, false);
+    right.set_collider_active(rid, false);
+    run(left, 12);
+    run(right, 12);
+    float back = math::max(max_distance(left.pos, left_rest), max_distance(right.pos, right_rest));
+    expect(back < 0.01f, string::tformat("parted curtain: back where it hung 12 s later (%.4f m off)", back));
+
+    // cost: one curtain in a draft with a capsule near it
+    Cloth* c = curtain(-0.6, 1.2, 24);
+    c.wind = { 0.2, 0, 0.6 };
+    c.gust = 0.8;
+    c.make_mesh();
+    int body = c.add_capsule({ 0, 0.3, -0.3 }, { 0, 1.7, -0.3 }, r);
+    run(c, 1);
+    std::time::Clock t0 = clock::now();
+    int frames          = 600;
+    for (int f = 0; f < frames; f++) {
+        float z = -0.3f + 0.4f * math::sin(f * 0.05f);
+        c.move_collider(body, { 0, 0.3, z }, { 0, 1.7, z });
+        c.update(1.0f / 60);
+    }
+    double ms = (double)t0.to_now() / 1e6 / frames;
+    io::printfn("cost: %.3f ms per frame for %d x %d points, %d substeps", ms, c.cols, c.rows, c.substeps);
+
+    if (failures) io::printfn("%d failed", failures);
+    return failures ? 1 : 0;
+}
