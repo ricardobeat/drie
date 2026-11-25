@@ -11,7 +11,8 @@
 //   5. color_node from a varying of the position in the model
 // then statements and integers against a constant, a ball that a uniform discards along
 // with its shadow, graph functions (nodes::function) against the same graphs inlined, and a
-// seq() reading normal_world() in two steps that bind it to different normals.
+// seq() reading normal_world() in two steps that bind it to different normals, and a block
+// in a block.
 //
 //   just test nodes [out.png]   (tests/build/nodes.png; nodes_2.png: the second picture)
 module nodes_test;
@@ -330,7 +331,40 @@ fn int main(String[] args) {
         expect(math::abs(x[0] - y[0]) < 2 && math::abs(x[1] - y[1]) < 2 && math::abs(x[2] - y[2]) < 2 && y[0] > 100,
             "statements and integers: as the constant");
     }
-    // a discard that a uniform decides: the ball and its shadow go together (shadow_nodes)
+    // a block in a block: its statements all run, declared where the outer block reads them,
+    // and the same block in a second outer block (0.5, 0.25, 0.75)
+    {
+        Scene* flat = drie::scene();
+        Node na = nodes::variable(nodes::num(0.25f));
+        Node nb = nodes::variable(nodes::num(0.125f));
+        Node inner = nodes::block(na, nb, na.assign(na + 0.25f));
+        Node nc = nodes::variable(nodes::num(0));
+        Node outer = nodes::seq(nodes::block(inner, nc, nc.assign(nb + 0.125f)), nodes::vec3(na, nc, na + nc));
+        Node again = nodes::seq(nodes::block(inner), nb * 8);
+        Material* built = drie::mesh_basic_material(color: 0xffffff);
+        built.color_node = outer * nodes::vec3(1, 1, again);
+        Material* plain = drie::mesh_basic_material(color: 0xffffff);
+        plain.color_node = nodes::vec3(0.5f, 0.25f, 0.75f);
+        Mesh* left = drie::mesh(drie::sphere_geometry(0.8f, 32, 16), built);
+        left.position = { -1.5f, 0, 0 };
+        Mesh* right = drie::mesh(drie::sphere_geometry(0.8f, 32, 16), plain);
+        right.position = { 1.5f, 0, 0 };
+        flat.add(left);
+        flat.add(right);
+        PerspectiveCamera* cam = drie::perspective_camera(40, (float)W / H, 0.1f, 100);
+        cam.position = { 0, 0, 6 };
+        cam.look_at_vec({ 0, 0, 0 });
+        renderer.set_render_target(rt);
+        renderer.render(flat, cam);
+        drie::commit();
+        readback::read_image(rt.texture_image, W, H, px2.ptr);
+        float[3] x = rgb_at(px2, pixel_of(cam, { -1.5f, 0, 0.8f }));
+        float[3] y = rgb_at(px2, pixel_of(cam, { 1.5f, 0, 0.8f }));
+        io::printfn("nested block: %s, constant: %s", x, y);
+        expect(math::abs(x[0] - y[0]) < 2 && math::abs(x[1] - y[1]) < 2 && math::abs(x[2] - y[2]) < 2 && y[2] > 100,
+            "a block in a block: every statement, as the constant");
+    }
+    // a discard that a uniform decides: the ball and its shadow go together
     {
         Scene* lit = drie::scene();
         lit.add(drie::hemisphere_light(0xffffff, 0x404040, 0.5));
