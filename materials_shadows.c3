@@ -151,6 +151,8 @@ fn int ShadowFns.make_light(&self) {
                                                        c.z().greater_than(nodes::num(1))));
     st[ns++] = nodes::if_then(outside, nodes::block(node_return(nodes::num(1))));
     Node tiled = params.x().greater_than(nodes::num(1.5f));
+    // (a map of the atlas that isn't drawn: lit)
+    st[ns++] = nodes::if_then(nodes::logical_and(tiled, rect.z().less_than_equal(nodes::num(0))), nodes::block(node_return(nodes::num(1))));
     if (self.key.vsm) {
         // one lookup: the map is blurred already (params.w is the bias)
         node_func_body(f, nodes::seq(drie::node_block(st[:ns]), vsm_lookup(vsm_moments(tiled, rect, params.z(), c.xy()), c.z() + params.w())));

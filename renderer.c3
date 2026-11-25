@@ -8,12 +8,10 @@ alias EventListener = fn void(SappEvent* event);
 alias Event = SappEvent;
 alias KeyCode = SappKeycode;
 
-// Defaults of Renderer.max_lights, max_rect_area_lights and shadow_atlas_capacity.
+// Defaults of Renderer.max_lights, max_rect_area_lights and shadow_atlas_size.
 const int DEFAULT_MAX_LIGHTS            = 1024;
 const int DEFAULT_MAX_RECT_AREA_LIGHTS  = 16;
-const int DEFAULT_SHADOW_ATLAS_CAPACITY = 8;
-// The most tiles the shadow atlas has.
-const int MAX_ATLAS_TILES @local        = 64;
+const int DEFAULT_SHADOW_ATLAS_SIZE = 8192;
 // Irradiance volumes a scene can have (Scene.irradiance and irradiance_volumes), as many as
 // the shader's gi_* uniforms hold.
 const int MAX_IRRADIANCE_VOLUMES        = 4;
@@ -357,10 +355,13 @@ struct Renderer {
     // every pixel of a standard material in view (three's have no reach to cut them off, so
     // they are not sorted into the clusters).
     int max_rect_area_lights;
-    // Extension: how many tiles the shadow atlas has room for at first: one per spot light with
-    // shadow.auto_update off, and per shadowed directional light besides the first; it grows to
-    // what they need, up to 64 (the atlas has max(4, sqrt(n)) columns of tiles).
-    int shadow_atlas_capacity;
+    // Extension: the side of the shadow atlas at most, in pixels (8192; at most the GPU's
+    // largest texture). Every shadowed light besides the primary spot light and the sun has
+    // its maps there, each map as large as the light looks on screen (up to its
+    // shadow.map_size, at least 128). The texture is only as large as the maps in it need. When
+    // they don't fit, the least important lights' maps get smaller, then those lights lose their
+    // shadows (see AtlasSlot).
+    int shadow_atlas_size;
     // Extension: sorts the lights into clusters (see clusters.c3). null: in a compute shader
     // (cluster_lights_gpu), or on the CPU without them.
     ClusterAssignFn assign_clusters;
@@ -754,27 +755,19 @@ struct RendererState @private {
     SgSampler shadow_sampler;
     SgSampler clamp_sampler;
     int shadow_size;
-    // The shadow maps that are drawn once (spot lights with shadow.auto_update off), and those
-    // of the shadowed directional lights besides the sun: a tile per light.
+    // The shadow maps of the lights besides the primary spot light and the sun (spot, point,
+    // rect area and directional ones), each in its own part of one texture (see shadow_atlas.c3)
     SgImage atlas_image;
     SgView atlas_attachment;
     SgView atlas_view;
-    int atlas_tile;
-    // the lights in it, in the order of their tiles, and its grid
-    List{Light*} atlas_lights;
-    int atlas_columns;
-    int atlas_rows;
-    // the lights that want a tile, while updating it
-    List{Light*} atlas_pending;
-    // a bake's lights (render_bake) have the tiles after the main render's: how many tiles
-    // each wants, and how big
-    int atlas_main_count;
-    int atlas_main_tile;
-    int atlas_bake_count;
-    int atlas_bake_tile;
-    // each tile's view-projection when it was last drawn (directional lights' boxes may follow
-    // the camera: the lookups must use the box the map was drawn for)
-    Mat4[MAX_ATLAS_TILES] atlas_view_proj;
+    int atlas_width;
+    int atlas_height;
+    AtlasPacker atlas_packer;
+    // the program that copies depth from one texture into another (copy_depth)
+    SgPipeline atlas_copy_pipeline;
+    SgSampler atlas_copy_sampler;
+    // the lights with a place in it, and their maps
+    List{AtlasSlot} atlas_slots;
     // set while gathering the casters of a light with shadow.skip_instanced
     bool skip_instanced;
     // the directional light with a shadow, if any, and its map: one box, or 2x2 cascades
@@ -865,7 +858,7 @@ fn Renderer* renderer(bool antialias = true, int width = 800, int height = 600, 
         .depth_prepass_pixels = 1.5f,
         .max_lights = DEFAULT_MAX_LIGHTS,
         .max_rect_area_lights = DEFAULT_MAX_RECT_AREA_LIGHTS,
-        .shadow_atlas_capacity = DEFAULT_SHADOW_ATLAS_CAPACITY,
+        .shadow_atlas_size = DEFAULT_SHADOW_ATLAS_SIZE,
         .shadow_map_scale = 1,
         .shadow_sample_scale = 1,
         .ssr_steps = 40,
@@ -881,8 +874,7 @@ fn Renderer* renderer(bool antialias = true, int width = 800, int height = 600, 
     state.spot_casters.allocator = mem;
     foreach (&l : state.sun_casters) l.allocator = mem;
     state.lights.allocator = mem;
-    state.atlas_lights.allocator = mem;
-    state.atlas_pending.allocator = mem;
+    state.atlas_slots.allocator = mem;
     lights_gpu.init_lists();
     state.listeners.allocator = mem;
     return r;
@@ -1628,33 +1620,71 @@ fn void ensure_sun_map(int size) @local {
     state.sun_view = sg::make_view(&&{ .texture = { .image = state.sun_image } });
 }
 
-fn void ensure_shadow_atlas(int tile, int capacity) @local {
-    int columns = math::max(4, (int)math::ceil(math::sqrt((float)capacity)));
-    int rows    = math::max((capacity + columns - 1) / columns, 1);
-    // within the GPU's largest texture
-    int most    = sg::query_limits().max_image_size_2d;
-    if (most > 0) tile = math::max(math::min(tile, most / math::max(columns, rows)), 4);
-    if (state.atlas_tile == tile && state.atlas_columns == columns && state.atlas_rows == rows) return;
-    if (state.atlas_tile) {
-        sg::destroy_view(state.atlas_attachment);
-        sg::destroy_view(state.atlas_view);
-        sg::destroy_image(state.atlas_image);
-    }
-    state.atlas_tile = tile;
-    state.atlas_columns = columns;
-    state.atlas_rows = rows;
-    state.atlas_lights.clear();
+// Makes the atlas's texture `width` x `height`, with what the one before had where it was.
+fn void ensure_shadow_atlas(int width, int height) @local {
+    if (state.atlas_width == width && state.atlas_height == height) return;
+    SgImage old_image = state.atlas_image;
+    SgView old_attachment = state.atlas_attachment;
+    SgView old_view = state.atlas_view;
+    int old_width = state.atlas_width;
+    int old_height = state.atlas_height;
+    state.atlas_width = width;
+    state.atlas_height = height;
     state.atlas_image = sg::make_image(
         &&{
             .usage = { .depth_stencil_attachment = true },
-            .width = tile * columns,
-            .height = tile * rows,
+            .width = width,
+            .height = height,
             .sample_count = 1,
             .pixel_format = DEPTH,
         }
     );
     state.atlas_attachment = sg::make_view(&&{ .depth_stencil_attachment = { .image = state.atlas_image } });
     state.atlas_view = sg::make_view(&&{ .texture = { .image = state.atlas_image } });
+    if (!old_width) return;
+    profile::begin_pass(
+        &&{
+            .action = { .depth = { .load_action = CLEAR, .store_action = STORE, .clear_value = 1 } },
+            .attachments = { .depth_stencil = state.atlas_attachment },
+            .label = "drie-shadow-atlas-grow",
+        }
+    );
+    copy_depth(old_view, 0, 0, 0, 0, math::min(old_width, width), math::min(old_height, height));
+    sg::end_pass();
+    sg::destroy_view(old_attachment);
+    sg::destroy_view(old_view);
+    sg::destroy_image(old_image);
+}
+
+// Copies `w` x `h` texels of the depth texture `src` from (sx, sy) to (dx, dy) of the depth
+// target of the pass being drawn (atlas.glsl).
+fn void copy_depth(SgView src, int sx, int sy, int dx, int dy, int w, int h) @local {
+    if (!state.atlas_copy_pipeline.id) {
+        state.atlas_copy_sampler = sg::make_sampler(
+            &&{ .min_filter = NEAREST, .mag_filter = NEAREST, .wrap_u = CLAMP_TO_EDGE, .wrap_v = CLAMP_TO_EDGE }
+        );
+        state.atlas_copy_pipeline = sg::make_pipeline(
+            &&{
+                .shader = make_program(shaders::atlas_copy_shader_desc(sg::query_backend())),
+                .depth = { .pixel_format = DEPTH, .write_enabled = true, .compare = ALWAYS },
+                .color_count = 0,
+                .colors[0].pixel_format = NONE,
+                .sample_count = 1,
+                .label = "drie-atlas-copy",
+            }
+        );
+    }
+    bool top_left = depth_zero_to_one();
+    sg::apply_pipeline(state.atlas_copy_pipeline);
+    SgBindings bind;
+    bind.views[shaders::VIEW_ATLAS_SRC] = src;
+    bind.samplers[shaders::SMP_ATLAS_SRC_SMP] = state.atlas_copy_sampler;
+    sg::apply_bindings(&bind);
+    sg::apply_viewport(dx, dy, w, h, top_left);
+    sg::apply_scissor_rect(dx, dy, w, h, top_left);
+    shaders::AtlasCopyParams p = { .atlas_shift = { (float)(sx - dx), (float)(sy - dy), 0, 0 } };
+    sg::apply_uniforms(shaders::UB_ATLAS_COPY_PARAMS, &&{ .ptr = &p, .size = shaders::AtlasCopyParams::size });
+    sg::draw(0, 3, 1);
 }
 
 // The shadows are VSM (Renderer.shadow_type).
@@ -1714,7 +1744,8 @@ fn bool ensure_vsm(VsmMaps* v, int width, int height) @local {
 struct VsmTile @local {
     int x;
     int y;
-    int size;
+    int w;
+    int h;
     float radius;
     int samples;
 }
@@ -1746,10 +1777,10 @@ fn void vsm_blur(VsmMaps* v, SgView depth, VsmTile[] tiles, bool load) @local {
         bind.samplers[shaders::SMP_VSM_SRC_SMP] = state.vsm_point_sampler;
         sg::apply_bindings(&bind);
         foreach (t : tiles) {
-            sg::apply_viewport(t.x, t.y, t.size, t.size, top_left);
-            sg::apply_scissor_rect(t.x, t.y, t.size, t.size, top_left);
+            sg::apply_viewport(t.x, t.y, t.w, t.h, top_left);
+            sg::apply_scissor_rect(t.x, t.y, t.w, t.h, top_left);
             shaders::VsmParams p = {
-                .vsm_rect = { (float)t.x, (float)t.y, (float)t.size, (float)t.size },
+                .vsm_rect = { (float)t.x, (float)t.y, (float)t.w, (float)t.h },
                 .vsm_spread = { math::max(t.radius, 0.0f), (float)math::max(t.samples, 1), along_x ? 1 : 0, 0 },
             };
             sg::apply_uniforms(shaders::UB_VSM_PARAMS, &&{ .ptr = &p, .size = shaders::VsmParams::size });
@@ -1757,14 +1788,6 @@ fn void vsm_blur(VsmMaps* v, SgView depth, VsmTile[] tiles, bool load) @local {
         }
         sg::end_pass();
     }
-}
-
-// The tile of a light in the atlas, -1 if it has none.
-fn int atlas_tile_of(Light* sl) @local {
-    foreach (i, l : state.atlas_lights) {
-        if (l == sl) return (int)i;
-    }
-    return -1;
 }
 
 // The shadow settings of a spot, point, rect area or directional light.
@@ -1780,14 +1803,6 @@ fn LightShadow* light_shadow(Light* l) @local {
 // A light whose shadow is a cube of six maps round its position: a point light's, and a rect
 // area light's (from its centre).
 fn bool casts_cube(Light* l) @local => l.light_type == POINT || l.light_type == RECT_AREA;
-
-// Which of a cube-shadowed light's six faces atlas tile `i` is: the tiles before it that are
-// the same light's.
-fn int atlas_face(int i) @local {
-    int face = 0;
-    while (i - face > 0 && state.atlas_pending[(sz)(i - face - 1)] == state.atlas_pending[(sz)i]) face++;
-    return face;
-}
 
 // The directions of a point light's six shadow maps (+x -x +y -y +z -z) and their up.
 const Vector3[6] CUBE_FORWARD @local = { { 1, 0, 0 }, { -1, 0, 0 }, { 0, 1, 0 }, { 0, -1, 0 }, { 0, 0, 1 }, { 0, 0, -1 } };
@@ -1818,193 +1833,459 @@ fn Mat4 point_shadow_view_proj(Light* l, int face, bool relative = false) @local
 // View-projection of a light's map in the atlas: a spot light's frustum (`relative`: of world
 // - the light's position, see shadow_view_proj), or a directional light's one box (world), its
 // texels the atlas's.
-fn Mat4 light_view_proj(Light* l, Camera* camera, bool relative = false, int face = 0) @local {
+fn Mat4 light_view_proj(Light* l, Camera* camera, bool relative = false, int face = 0, int size = 0) @local {
     if (l.light_type == SPOT) return shadow_view_proj((SpotLight*)l, relative);
     if (casts_cube(l)) return point_shadow_view_proj(l, face, relative);
-    return directional_shadow_view_proj((DirectionalLight*)l, camera, state.atlas_tile);
+    return directional_shadow_view_proj((DirectionalLight*)l, camera, size);
 }
 
-// Draws the atlas's tiles: static spot and point lights (shadow.auto_update off) first, drawn
-// only when they ask for it or their tile changed hands, then dynamic shadowed lights besides
-// the primary spot (`caster`) and sun (`state.sun_caster`) — extra directional, point and spot
-// lights — every frame unless their shadow.auto_update is off too.
-// `bake` (render_bake): the tiles of all of the bake's shadowed lights, spot and directional,
-// drawn every time after the main render's, which are left as they are (unless the atlas is
-// new: then the main render draws its own again). The atlas is made big enough for both, so
-// that neither makes it anew for the other.
-fn void update_shadow_atlas(Scene* scene, Camera* camera, bool bake = false, SpotLight* caster = null) @local {
-    state.atlas_pending.clear();
-    int tile = 4;
-    int keep;
-    if (bake) {
-        // the main render's tiles, kept (null: none to keep)
-        keep = state.atlas_main_count;
-        for (int i = 0; i < keep; i++) {
-            state.atlas_pending.push(i < state.atlas_lights.len() ? state.atlas_lights[i] : null);
-        }
+// One map of a light in the atlas: a spot or directional light's, or one face of a point or
+// rect area light's cube.
+struct AtlasMap @private {
+    // where it is, in pixels (w 0: nowhere)
+    int x;
+    int y;
+    int w;
+    int h;
+    // its view-projection when it was last drawn (a directional light's box may follow the
+    // camera: the lookups use the box the map was drawn for)
+    Mat4 view_proj;
+    // drawn since it got its place
+    bool drawn;
+}
+
+// A light with a place in the atlas (a bake's lights have their own, see render_bake).
+struct AtlasSlot @private {
+    Light* light;
+    bool bake;
+    // the side of its maps (0: it has none) and how many there are
+    int size;
+    int maps;
+    // the size it settles on (atlas_wanted, held steady), and the size the last frames asked
+    // for instead, for how many frames
+    int target;
+    int asked;
+    int asked_frames;
+    // how much its maps matter: how large its reach looks times how bright it is at the camera
+    float importance;
+    // its shadow's strength, 0..1: a light that loses its maps to more important ones fades
+    // out before it gives them up, and fades in when it gets maps again
+    float fade;
+    // the frame it last asked for its maps
+    uint seen;
+    // its maps' blocks of the atlas (atlas_key), one per map
+    uint[6] block;
+    AtlasMap[6] map;
+}
+
+// Frames a light keeps its maps after it last asked for them (a light switched off for a
+// moment, or one of a render that draws no shadows every frame).
+const uint ATLAS_KEEP_FRAMES @local = 120;
+// Frames a light must ask for another size before it gets it: a larger one, a smaller one.
+// A light whose maps are drawn once (shadow.auto_update off) only gets smaller when the
+// atlas is full.
+const int ATLAS_GROW_FRAMES @local = 3;
+const int ATLAS_SHRINK_FRAMES @local = 30;
+// How much a shadow fades in or out per frame.
+const float ATLAS_FADE_STEP @local = 0.125f;
+
+fn int atlas_map_count(Light* l) @local => casts_cube(l) ? 6 : 1;
+
+// The light's place in the atlas, the current render's (a bake's or not); null: none.
+fn AtlasSlot* atlas_slot_of(Light* l) @local {
+    bool bake = state.bake.on;
+    foreach (&s : state.atlas_slots) {
+        if (s.light == l && s.bake == bake) return s;
     }
-    // a static light keeps its tile while it exists and casts, at intensity 0 too: a light that
-    // flickers down to 0 would otherwise hand every tile after its own to another light, and
-    // they would all be drawn again
-    foreach (l : state.lights) {
-        if (l.light_type != SPOT || !l.cast_shadow || !l.visible) continue;
-        SpotLight* sl = (SpotLight*)l;
-        if (l.intensity <= 0 && (sl.shadow.auto_update || bake)) continue;
-        if (sl.shadow.auto_update && !bake) continue;
-        if (state.atlas_pending.len() >= MAX_ATLAS_TILES) {
-            state.renderer.info.atlas_dropped++;
-            continue;
-        }
-        state.atlas_pending.push(sl);
-        tile = math::max(tile, shadow_map_size(sl.shadow.map_size));
+    return null;
+}
+
+// Map `face` of a light's shadow, if it has one (null: none).
+fn AtlasMap* atlas_map_of(Light* l, int face = 0) @local {
+    if (!l.cast_shadow) return null;
+    AtlasSlot* s = atlas_slot_of(l);
+    if (!s || !s.size || face >= s.maps) return null;
+    return &s.map[face];
+}
+
+// Whether any of a light's maps is drawn.
+fn bool atlas_has_shadow(Light* l) @local {
+    if (!l.cast_shadow) return false;
+    AtlasSlot* s = atlas_slot_of(l);
+    if (!s || !s.size) return false;
+    for (int f = 0; f < s.maps; f++) {
+        if (s.map[f].drawn) return true;
     }
-    // a point (or rect area) light's six faces: drawn once (or in a bake) with the spot
-    // lights, else every frame with the directional lights
-    foreach (l : state.lights) {
-        if (!casts_cube(l) || !l.cast_shadow || !l.visible) continue;
-        LightShadow* sh = light_shadow(l);
-        if (l.intensity <= 0 && (sh.auto_update || bake)) continue;
-        if (sh.auto_update && !bake) continue;
-        if (state.atlas_pending.len() + 6 > MAX_ATLAS_TILES) {
-            state.renderer.info.atlas_dropped++;
-            continue;
-        }
-        for (int f = 0; f < 6; f++) state.atlas_pending.push(l);
-        tile = math::max(tile, shadow_map_size(sh.map_size));
+    return false;
+}
+
+// Where map `m` is in the atlas's uv, as spot_shadows holds it (0 wide: nowhere; the shaders
+// take that as lit).
+fn Vec4 atlas_rect(AtlasMap* m) @local {
+    if (!m || !m.drawn || !m.w || !state.atlas_width) return { 0, 0, 0, 0 };
+    float w = (float)state.atlas_width;
+    float h = (float)state.atlas_height;
+    return { (float)m.x / w, (float)m.y / h, (float)m.w / w, (float)m.h / h };
+}
+
+// A texel of map `m`, as a part of its width (or height, the smaller).
+fn float atlas_texel(AtlasMap* m) @local => m && m.w ? 1.0f / (float)math::min(m.w, m.h) : 1.0f;
+
+// The power of two nearest `size`, from ATLAS_MIN_BLOCK up to the atlas's side.
+fn int atlas_pow2(int size) @local {
+    int p = ATLAS_MIN_BLOCK;
+    while (p < state.atlas_packer.root && p * 3 / 2 < size) p *= 2;
+    return p;
+}
+
+// The height of the picture being rendered, in pixels.
+fn float render_height() @local {
+    RenderTarget* rt = state.renderer.render_target;
+    return rt ? (float)rt.height : sapp::heightf();
+}
+
+// The size of a light's maps as it looks from the camera: two texels for each pixel of the
+// picture that its reach spans, up to its shadow.map_size (a directional light's and a bake's:
+// that size). `importance`: how large its reach looks times how bright it is at the camera.
+fn int atlas_wanted(Light* l, Camera* camera, bool bake, float* importance) @local {
+    int most    = atlas_pow2(shadow_map_size(light_shadow(l).map_size));
+    Vector3 at  = camera.matrix_world.get_position();
+    Vector3 pos = l.matrix_world.get_position();
+    float dl    = (pos - at).length();
+    float bright = math::max(l.intensity, 0.0f) / math::max(dl * dl, 1.0f);
+    if (bake || l.light_type == DIRECTIONAL) {
+        // (before any other)
+        *importance = 1e9f + l.intensity;
+        return most;
     }
-    int statics = (int)state.atlas_pending.len();
-    if (bake) statics = keep;
-    foreach (l : state.lights) {
-        if (l.light_type != DIRECTIONAL || !l.cast_shadow || !l.visible || l.intensity <= 0) continue;
-        if (l == state.sun_caster || state.atlas_pending.len() >= MAX_ATLAS_TILES) continue;
-        state.atlas_pending.push(l);
-        tile = math::max(tile, shadow_map_size(((DirectionalLight*)l).shadow.map_size));
+    LightBounds b = { pos, point_shadow_far(l) };
+    if (l.light_type == SPOT) {
+        b = spot_light_bounds((SpotLight*)l);
+        if (b.radius <= 0) b = { pos, point_shadow_far(l) };
     }
-    if (!bake) {
-        foreach (l : state.lights) {
-            if (l.light_type != SPOT || !l.cast_shadow || !l.visible || l.intensity <= 0) continue;
-            SpotLight* sl = (SpotLight*)l;
-            if (sl == caster || !sl.shadow.auto_update) continue;
-            if (state.atlas_pending.len() >= MAX_ATLAS_TILES) {
-                state.renderer.info.atlas_dropped++;
-                continue;
-            }
-            state.atlas_pending.push(sl);
-            tile = math::max(tile, shadow_map_size(sl.shadow.map_size));
-        }
-        foreach (l : state.lights) {
-            if (!casts_cube(l) || !l.cast_shadow || !l.visible || l.intensity <= 0) continue;
-            LightShadow* sh = light_shadow(l);
-            if (!sh.auto_update) continue;
-            if (state.atlas_pending.len() + 6 > MAX_ATLAS_TILES) {
-                state.renderer.info.atlas_dropped++;
-                continue;
-            }
-            for (int f = 0; f < 6; f++) state.atlas_pending.push(l);
-            tile = math::max(tile, shadow_map_size(sh.map_size));
-        }
-    }
-    int count = (int)state.atlas_pending.len();
-    int wanted;
-    if (bake) {
-        state.atlas_bake_count = count - keep;
-        state.atlas_bake_tile = tile;
-        tile = math::max(tile, state.atlas_main_tile);
-        wanted = count;
-        if (count == keep) return;
+    float d   = (b.center - at).length();
+    float p11 = math::abs(camera.projection_matrix[1][1]);
+    // the radius it spans on screen, in halves of the picture's height
+    float cover;
+    if (camera.camera_type != PERSPECTIVE) {
+        cover = b.radius * p11;
+    } else if (d <= b.radius * 1.05f) {
+        cover = 4;
     } else {
-        state.atlas_main_count = count;
-        state.atlas_main_tile = tile;
-        tile = math::max(tile, state.atlas_bake_tile);
-        wanted = count + state.atlas_bake_count;
+        cover = b.radius * p11 / math::sqrt(d * d - b.radius * b.radius);
     }
-    int capacity = math::min(math::max(state.renderer.shadow_atlas_capacity, wanted, 1), MAX_ATLAS_TILES);
-    // keep the atlas while nothing uses it: the lights may only be switched off for a moment
-    if (!count && state.atlas_tile) return;
-    int old_tile = state.atlas_tile;
-    ensure_shadow_atlas(tile, capacity);
-    tile = state.atlas_tile;
-    // a new atlas (ensure_shadow_atlas forgot its lights): every tile
-    bool all = state.atlas_tile != old_tile || state.atlas_lights.len() == 0;
-    // ...and new moments for VSM
+    cover = math::min(cover, 4.0f);
+    *importance = cover * (bright + 1e-6f);
+    return math::min(atlas_pow2((int)(cover * render_height() * 2)), most);
+}
+
+// Whether a light gets maps in the atlas in this render: every shadowed spot, point, rect area
+// and directional light besides the primary spot light (`caster`) and the sun. A light whose
+// maps are drawn once keeps them at intensity 0 too: a light that flickers down to 0 would
+// otherwise have them drawn again.
+fn bool atlas_wants(Light* l, bool bake, SpotLight* caster) @local {
+    if (!l.cast_shadow || !l.visible) return false;
+    switch (l.light_type) {
+        case SPOT:
+            SpotLight* sl = (SpotLight*)l;
+            if (l.intensity <= 0 && (sl.shadow.auto_update || bake)) return false;
+            return bake || sl != caster;
+        case POINT:
+        case RECT_AREA:
+            LightShadow* sh = light_shadow(l);
+            return l.intensity > 0 || (!sh.auto_update && !bake);
+        case DIRECTIONAL:
+            return l.intensity > 0 && l != state.sun_caster;
+        default:
+            return false;
+    }
+}
+
+// Gives a light's blocks back.
+fn void atlas_release(AtlasSlot* s) @local {
+    if (!s.size) return;
+    for (int b = 0; b < s.maps; b++) state.atlas_packer.release(s.block[b], s.size);
+    s.size = 0;
+    for (int f = 0; f < 6; f++) s.map[f] = { };
+}
+
+// Blocks of `size` for each of a light's maps (false, with none taken, when they don't fit).
+fn bool atlas_place(AtlasSlot* s, int size) @local {
+    for (int b = 0; b < s.maps; b++) {
+        if (!state.atlas_packer.alloc(size, &s.block[b])) {
+            for (int k = 0; k < b; k++) state.atlas_packer.release(s.block[k], size);
+            return false;
+        }
+    }
+    s.size = size;
+    for (int f = 0; f < s.maps; f++) {
+        s.map[f] = { .x = atlas_key_x(s.block[f]), .y = atlas_key_y(s.block[f]), .w = size, .h = size };
+    }
+    return true;
+}
+
+// Sorts slot indices by `key` of each, the largest first.
+fn void atlas_sort(List{int}* order, float[] key) @local {
+    for (sz i = 1; i < order.len(); i++) {
+        int v = (*order)[i];
+        sz j = i;
+        while (j > 0 && key[(*order)[j - 1]] < key[v]) {
+            (*order)[j] = (*order)[j - 1];
+            j--;
+        }
+        (*order)[j] = v;
+    }
+}
+
+// Where map `face` of a light's shadow is in the shadow atlas, in pixels: x, y, width and
+// height (all 0: it has none).
+fn int[4] Renderer.shadow_map_rect(&self, Light* l, int face = 0) {
+    AtlasMap* m = atlas_map_of(l, face);
+    if (!m || !m.drawn) return { 0, 0, 0, 0 };
+    return { m.x, m.y, m.w, m.h };
+}
+
+// Places the lights' maps in the atlas and draws them. Each light asking for maps (atlas_wants)
+// gets a size from how it looks from the camera (atlas_wanted), held steady over a few frames;
+// while the atlas can't hold them all, the least important lights' maps get smaller, then
+// those lights lose their shadows. A map is drawn when it gets a new place, when its light
+// asks for it (shadow.needs_update), every frame for a light with shadow.auto_update, and every
+// time for a bake's light (`bake`, render_bake: its lights have places of their own, so the
+// main render's maps stay as they are).
+fn void update_shadow_atlas(Scene* scene, Camera* camera, bool bake = false, SpotLight* caster = null) @local {
+    @pool() {
+        place_and_draw_atlas(scene, camera, bake, caster);
+    };
+}
+
+fn void place_and_draw_atlas(Scene* scene, Camera* camera, bool bake, SpotLight* caster) @local {
+    RenderInfo* info = &state.renderer.info;
+    int most = state.renderer.shadow_atlas_size > 0 ? state.renderer.shadow_atlas_size : DEFAULT_SHADOW_ATLAS_SIZE;
+    int limit = sg::query_limits().max_image_size_2d;
+    if (limit > 0) most = math::min(most, limit);
+    int root = ATLAS_MIN_BLOCK;
+    while (root * 2 <= most) root *= 2;
+    if (state.atlas_packer.root != root) {
+        foreach (&s : state.atlas_slots) s.size = 0;
+        state.atlas_slots.clear();
+        state.atlas_packer.reset(root);
+    }
+    uint frame = state.frame;
+    foreach (l : state.lights) {
+        if (!atlas_wants(l, bake, caster)) continue;
+        AtlasSlot* s = atlas_slot_of(l);
+        if (!s) {
+            state.atlas_slots.push({ .light = l, .bake = bake, .maps = atlas_map_count(l), .fade = 1 });
+            s = &state.atlas_slots[state.atlas_slots.len() - 1];
+        }
+        s.seen = frame;
+        int want = atlas_wanted(l, camera, bake, &s.importance);
+        if (!s.target || bake) {
+            s.target = want;
+        } else if (want == s.target) {
+            s.asked_frames = 0;
+        } else {
+            if (want != s.asked) s.asked_frames = 0;
+            s.asked = want;
+            s.asked_frames++;
+            bool cached = !light_shadow(l).auto_update;
+            if ((want > s.target && s.asked_frames >= ATLAS_GROW_FRAMES)
+                || (want < s.target && !cached && s.asked_frames >= ATLAS_SHRINK_FRAMES)) {
+                s.target = want;
+                s.asked_frames = 0;
+            }
+        }
+    }
+    // the lights not asked for a while give their places back
+    for (sz i = state.atlas_slots.len(); i > 0; i--) {
+        AtlasSlot* s = &state.atlas_slots[i - 1];
+        if (s.bake != bake) continue;
+        if (frame - s.seen > ATLAS_KEEP_FRAMES) {
+            atlas_release(s);
+            state.atlas_slots.remove_at(i - 1);
+        }
+    }
+
+    // what the asking lights get: their targets; while the atlas can't hold them, the least
+    // important ones a size smaller each round, then nothing
+    sz n = state.atlas_slots.len();
+    List{int} order;
+    order.tinit();
+    float[] importance = mem::temp_array(float, n);
+    int[] give = mem::temp_array(int, n);
+    long budget = (long)root * root;
+    long area;
+    long others;
+    foreach (i, &s : state.atlas_slots) {
+        importance[i] = s.importance;
+        if (s.seen == frame && s.bake == bake) {
+            order.push((int)i);
+            give[i] = s.target;
+            area += (long)s.maps * s.target * s.target;
+        } else {
+            others += (long)s.maps * s.size * s.size;
+        }
+    }
+    // (the places of lights not in this render go first)
+    if (area + others > budget) {
+        foreach (&s : state.atlas_slots) {
+            if (s.seen != frame || s.bake != bake) atlas_release(s);
+        }
+        others = 0;
+    }
+    area += others;
+    atlas_sort(&order, importance);
+    while (area > budget) {
+        bool smaller;
+        for (sz k = order.len(); k > 0 && area > budget; k--) {
+            int i = order[k - 1];
+            if (give[i] <= ATLAS_MIN_BLOCK) continue;
+            long maps = state.atlas_slots[i].maps;
+            area -= maps * give[i] * give[i] * 3 / 4;
+            give[i] /= 2;
+            smaller = true;
+        }
+        if (!smaller) break;
+    }
+    for (sz k = order.len(); k > 0 && area > budget; k--) {
+        int i = order[k - 1];
+        area -= (long)state.atlas_slots[i].maps * give[i] * give[i];
+        give[i] = 0;
+    }
+    // a light left without fades out on the maps it has, then gives them up
+    bool fading;
+    foreach (i : order) {
+        AtlasSlot* s = &state.atlas_slots[i];
+        if (give[i]) {
+            if (!s.size && s.fade <= 0) {
+                s.fade = ATLAS_FADE_STEP;
+            } else if (s.size) {
+                s.fade = math::min(s.fade + ATLAS_FADE_STEP, 1.0f);
+            }
+            continue;
+        }
+        info.atlas_dropped++;
+        if (s.size && s.fade > ATLAS_FADE_STEP) {
+            s.fade -= ATLAS_FADE_STEP;
+            give[i] = s.size;
+            fading = true;
+        } else {
+            s.fade = 0;
+        }
+    }
+    // new places for the lights whose size changed, the larger ones first; when they don't
+    // fit, everything is placed anew (unless a fading light will soon make room)
+    List{int} moving;
+    moving.tinit();
+    foreach (i : order) {
+        AtlasSlot* s = &state.atlas_slots[i];
+        if (give[i] == s.size) continue;
+        atlas_release(s);
+        if (give[i]) moving.push(i);
+    }
+    float[] by_size = mem::temp_array(float, n);
+    for (sz i = 0; i < n; i++) by_size[i] = (float)give[i];
+    atlas_sort(&moving, by_size);
+    bool full;
+    foreach (i : moving) {
+        if (!atlas_place(&state.atlas_slots[i], give[i])) full = true;
+    }
+    if (full && !fading) {
+        foreach (&s : state.atlas_slots) atlas_release(s);
+        state.atlas_packer.reset(root);
+        List{int} all_order;
+        all_order.tinit();
+        foreach (i : order) {
+            if (give[i]) all_order.push(i);
+        }
+        atlas_sort(&all_order, by_size);
+        foreach (i : all_order) atlas_place(&state.atlas_slots[i], give[i]);
+    }
+
+    // the texture: as large as the part in use (it only grows)
+    int width  = math::max(state.atlas_width, ATLAS_MIN_BLOCK);
+    int height = math::max(state.atlas_height, ATLAS_MIN_BLOCK);
+    foreach (&s : state.atlas_slots) {
+        for (int f = 0; f < s.maps && s.size; f++) {
+            while (width < s.map[f].x + s.map[f].w) width *= 2;
+            while (height < s.map[f].y + s.map[f].h) height *= 2;
+        }
+    }
+    ensure_shadow_atlas(width, height);
+    bool all;
     bool vsm = vsm_on();
-    if (vsm && ensure_vsm(&state.vsm_atlas, tile * state.atlas_columns, tile * state.atlas_rows)) all = true;
-    // (a bake can't draw the main render's tiles: they are gone)
-    if (bake && all) for (int i = 0; i < keep; i++) state.atlas_pending[i] = null;
-    // a tile is drawn again for a light that asks for it, that it newly belongs to, or a
-    // directional light's that is updated every frame (a bake's: every time)
-    bool[MAX_ATLAS_TILES] redraw;
+    if (vsm && ensure_vsm(&state.vsm_atlas, width, height)) all = true;
+    if (all) {
+        foreach (&s : state.atlas_slots) {
+            for (int f = 0; f < 6; f++) s.map[f].drawn = false;
+        }
+    }
+
+    // the maps to draw
     int redraws;
-    int static_redraws;
-    for (int i = 0; i < count; i++) {
-        Light* l = state.atlas_pending[i];
-        if (!l || (bake && i < keep)) continue;
-        LightShadow* sh = light_shadow(l);
-        bool moved      = i >= state.atlas_lights.len() || state.atlas_lights[i] != l;
-        if (all || moved || sh.needs_update || (i >= statics && sh.auto_update) || bake) {
-            redraw[i] = true;
-            redraws++;
-            if (i < statics) static_redraws++;
+    foreach (i : order) {
+        AtlasSlot* s = &state.atlas_slots[i];
+        if (!s.size) continue;
+        LightShadow* sh = light_shadow(s.light);
+        bool every = (sh.auto_update && !bake) || bake || sh.needs_update;
+        for (int f = 0; f < s.maps; f++) {
+            if (every || !s.map[f].drawn) redraws++;
         }
     }
     if (!redraws) return;
-    // most of the drawn-once ones: clear all of it, as a pass does
-    if (static_redraws * 2 > statics && !bake) all = true;
-    state.atlas_lights.clear();
-    foreach (l : state.atlas_pending) state.atlas_lights.push(l);
-    Vector3 camera_pos = camera.matrix_world.get_position();
-    bool top_left      = depth_zero_to_one();
+    bool top_left = depth_zero_to_one();
+    VsmTile[] tiles = mem::temp_array(VsmTile, (usz)redraws);
+    int ntiles;
     profile::begin_pass(
         &&{
             .action = { .depth = { .load_action = all ? CLEAR : LOAD, .store_action = STORE, .clear_value = 1 } },
             .attachments = { .depth_stencil = state.atlas_attachment },
-            .label = "drie-spot-atlas",
+            .label = "drie-shadow-atlas",
         }
     );
-    for (int i = 0; i < count; i++) {
-        Light* l = state.atlas_pending[i];
-        if (!l || (!all && !redraw[i])) continue;
+    foreach (i : order) {
+        AtlasSlot* s = &state.atlas_slots[i];
+        if (!s.size) continue;
+        Light* l = s.light;
         LightShadow* sh = light_shadow(l);
-        sh.needs_update = false;
-        int face      = casts_cube(l) ? atlas_face(i) : 0;
-        Mat4 light_vp = light_view_proj(l, camera, false, face);
-        state.atlas_view_proj[i] = light_vp;
-        Frustum light_frustum = frustum_from(light_vp);
-        state.casters.clear();
-        state.skip_instanced = sh.skip_instanced;
-        collect_casters(scene, camera, &light_frustum);
-        state.skip_instanced = false;
-        state.renderer.info.atlas_tiles++;
-        state.renderer.info.atlas_casters += (int)state.casters.len();
-        int columns = state.atlas_columns;
-        sg::apply_viewport((i % columns) * tile, (i / columns) * tile, tile, tile, top_left);
-        sg::apply_scissor_rect((i % columns) * tile, (i / columns) * tile, tile, tile, top_left);
-        if (!all) clear_atlas_tile();
-        state.shadow_plain = false;
-        if (l.light_type == SPOT || casts_cube(l)) {
-            Mat4 light_rel    = light_view_proj(l, camera, true, face);
-            Vector3 light_pos = l.matrix_world.get_position();
-            foreach (&item : state.casters) draw_shadow_item(item, light_rel, light_pos);
-        } else {
-            foreach (&item : state.casters) draw_shadow_item(item, light_vp);
+        bool every = (sh.auto_update && !bake) || bake || sh.needs_update;
+        bool plain;
+        bool drew;
+        for (int f = 0; f < s.maps; f++) {
+            AtlasMap* m = &s.map[f];
+            if (!every && m.drawn) continue;
+            drew = true;
+            Mat4 light_vp = light_view_proj(l, camera, false, f, m.w);
+            m.view_proj = light_vp;
+            Frustum light_frustum = frustum_from(light_vp);
+            state.casters.clear();
+            state.skip_instanced = sh.skip_instanced;
+            collect_casters(scene, camera, &light_frustum);
+            state.skip_instanced = false;
+            info.atlas_tiles++;
+            info.atlas_casters += (int)state.casters.len();
+            sg::apply_viewport(m.x, m.y, m.w, m.h, top_left);
+            sg::apply_scissor_rect(m.x, m.y, m.w, m.h, top_left);
+            if (!all) clear_atlas_tile();
+            state.shadow_plain = false;
+            if (l.light_type == SPOT || casts_cube(l)) {
+                Mat4 light_rel    = light_view_proj(l, camera, true, f, m.w);
+                Vector3 light_pos = l.matrix_world.get_position();
+                foreach (&item : state.casters) draw_shadow_item(item, light_rel, light_pos);
+            } else {
+                foreach (&item : state.casters) draw_shadow_item(item, light_vp);
+            }
+            if (state.shadow_plain) plain = true;
+            m.drawn = true;
+            tiles[ntiles++] = { m.x, m.y, m.w, m.h, sh.radius, sh.blur_samples };
         }
-        // A caster used the plain material. Draw the tile again next frame.
-        // This way a static light's shadow gets the real program once it is ready.
-        if (state.shadow_plain) sh.needs_update = true;
+        // A caster used the plain material: the maps are drawn again next frame, so that a
+        // light drawn once gets the real programs when they are ready.
+        if (drew) sh.needs_update = plain;
     }
     sg::end_pass();
     state.casters.clear();
-    if (vsm) {
-        VsmTile[MAX_ATLAS_TILES] tiles;
-        int n;
-        for (int i = 0; i < count; i++) {
-            if (!state.atlas_pending[i] || (!all && !redraw[i])) continue;
-            LightShadow* sh = light_shadow(state.atlas_pending[i]);
-            int columns     = state.atlas_columns;
-            tiles[n++] = { (i % columns) * tile, (i / columns) * tile, tile, sh.radius, sh.blur_samples };
-        }
-        vsm_blur(&state.vsm_atlas, state.atlas_view, tiles[:n], !all);
-    }
+    if (vsm) vsm_blur(&state.vsm_atlas, state.atlas_view, tiles[:ntiles], !all);
 }
 
 // Clip planes of a view-projection matrix for NDC sub-box [x0, x1] x [y0, y1], pointing inwards.
@@ -2278,6 +2559,7 @@ fn void draw_sun_shadow(DirectionalLight* sun) @local {
             n ? (i % 2) * tile : 0,
             n ? (i / 2) * tile : 0,
             n ? tile : state.sun_size,
+            n ? tile : state.sun_size,
             radius,
             sun.shadow.blur_samples
         };
@@ -2340,24 +2622,22 @@ fn Vector3 spot_direction(SpotLight* sl) @private {
 // first (see update_shadow_atlas), into the render's shadows, and where they are into its
 // GPU entry's `shadow` (x = the first, y = intensity; left as it is when it has none).
 fn void cube_shadows(Light* l, Vec4* shadow, LightData* g, bool vsm) @local {
-    int tile = l.cast_shadow ? atlas_tile_of(l) : -1;
-    if (tile < 0 || (sz)tile + 6 > state.atlas_lights.len()) return;
+    if (!atlas_has_shadow(l)) return;
+    AtlasSlot* slot = atlas_slot_of(l);
     LightShadow* ls = light_shadow(l);
     (*shadow).x = (float)g.shadows.len();
-    (*shadow).y = clamp(ls.intensity, 0, 1);
+    (*shadow).y = clamp(ls.intensity, 0, 1) * slot.fade;
     g.point_shadows = true;
     if (ls.softness > 0) g.soft_shadows = true;
     float width = 2 * math::tan(POINT_SHADOW_FOV * DEG2RAD * 0.5f);
     bool zo     = depth_zero_to_one();
-    float cols  = (float)state.atlas_columns;
-    float rows  = (float)state.atlas_rows;
     for (int f = 0; f < 6; f++) {
+        AtlasMap* m = &slot.map[f];
         GpuSpotShadow sh;
         sh.mat = shadow_bias().mul(point_shadow_view_proj(l, f, true));
-        sh.params = { 2, ls.normal_bias, 1.0f / state.atlas_tile, vsm ? ls.bias : ls.radius };
+        sh.params = { 2, ls.normal_bias, atlas_texel(m), vsm ? ls.bias : ls.radius };
         sh.soft = { ls.softness, math::max(ls.near, 0.01f), point_shadow_far(l), zo ? width : -width };
-        int t = tile + f;
-        sh.rect = { (float)(t % state.atlas_columns) / cols, (float)(t / state.atlas_columns) / rows, 1.0f / cols, 1.0f / rows };
+        sh.rect = atlas_rect(m);
         g.shadows.push(sh);
     }
 }
@@ -2543,26 +2823,15 @@ fn FsParams build_light_params(Scene* scene, Camera* camera, SpotLight* caster) 
                 }
                 GpuDirLight gd = { .dir = { ...dir, 0 }, .color = { ...c, 0 }, .shadow = { -1, 1, (float)l.channels, 0 } };
                 // the other shadowed ones: a box in a tile of the atlas (dir_tile_shadow)
-                int tile = atlas_tile_of(d);
-                if (d != state.sun_caster && tile >= 0 && d.cast_shadow) {
-                    float cols = (float)state.atlas_columns;
-                    float rows = (float)state.atlas_rows;
+                AtlasMap* am = d != state.sun_caster && atlas_has_shadow(d) ? atlas_map_of(d) : null;
+                if (am) {
                     GpuSpotShadow sh;
-                    sh.mat = shadow_bias().mul(state.atlas_view_proj[tile]);
-                    // (VSM: w is the bias, the tile being blurred already)
-                    sh.params = {
-                        3,
-                        d.shadow.normal_bias,
-                        1.0f / (float)state.atlas_tile,
-                        vsm ? d.shadow.bias : d.shadow.radius
-                    };
-                    sh.rect = {
-                        (float)(tile % state.atlas_columns) / cols,
-                        (float)(tile / state.atlas_columns) / rows,
-                        1.0f / cols,
-                        1.0f / rows
-                    };
-                    gd.shadow = { (float)g.shadows.len(), clamp(d.shadow.intensity, 0, 1), (float)l.channels, 0 };
+                    sh.mat = shadow_bias().mul(am.view_proj);
+                    // (VSM: w is the bias, the map being blurred already)
+                    sh.params = { 3, d.shadow.normal_bias, atlas_texel(am), vsm ? d.shadow.bias : d.shadow.radius };
+                    sh.rect = atlas_rect(am);
+                    float fade = atlas_slot_of(d).fade;
+                    gd.shadow = { (float)g.shadows.len(), clamp(d.shadow.intensity, 0, 1) * fade, (float)l.channels, 0 };
                     g.shadows.push(sh);
                     g.dir_tiles = true;
                 }
@@ -2632,8 +2901,8 @@ fn FsParams build_light_params(Scene* scene, Camera* camera, SpotLight* caster) 
                 };
                 spot_map(sl, &gs, g);
                 // clip space -> shadow map uv (v points down outside of GL) and 0..1 depth
-                int tile = atlas_tile_of(sl);
-                if (sl == caster || (tile >= 0 && sl.cast_shadow)) {
+                AtlasMap* am = sl != caster && atlas_has_shadow(sl) ? atlas_map_of(sl) : null;
+                if (sl == caster || am) {
                     bool zo   = depth_zero_to_one();
                     Mat4 bias = mat4_identity();
                     bias[0][0] = 0.5f;
@@ -2644,28 +2913,19 @@ fn FsParams build_light_params(Scene* scene, Camera* camera, SpotLight* caster) 
                     bias[3][2] = zo ? 0.0f : 0.5f;
                     GpuSpotShadow sh;
                     sh.mat = bias.mul(shadow_view_proj(sl, true));
-                    float size = sl == caster ? (float)state.shadow_size : (float)state.atlas_tile;
                     sh.params = {
                         sl == caster ? 1 : 2,
                         sl.shadow.normal_bias,
-                        1.0f / size,
+                        sl == caster ? 1.0f / (float)state.shadow_size : atlas_texel(am),
                         vsm ? sl.shadow.bias : sl.shadow.radius
                     };
                     float fov   = math::min(sl.angle * 2 * RAD2DEG * clamp(sl.shadow.focus, 0.05f, 1) + 4, 150.0f);
                     float width = 2 * math::tan(fov * DEG2RAD * 0.5f);
                     float far   = sl.shadow.far > 0 ? sl.shadow.far : (sl.distance > 0 ? sl.distance : 50.0f);
                     sh.soft = { sl.shadow.softness, math::max(sl.shadow.near, 0.01f), far, zo ? width : -width };
-                    if (sl != caster) {
-                        float cols = (float)state.atlas_columns;
-                        float rows = (float)state.atlas_rows;
-                        sh.rect = {
-                            (float)(tile % state.atlas_columns) / cols,
-                            (float)(tile / state.atlas_columns) / rows,
-                            1.0f / cols,
-                            1.0f / rows
-                        };
-                    }
-                    gs.shadow = { (float)g.shadows.len(), clamp(sl.shadow.intensity, 0, 1), (float)l.channels, 0 };
+                    if (am) sh.rect = atlas_rect(am);
+                    float fade = am ? atlas_slot_of(sl).fade : 1;
+                    gs.shadow = { (float)g.shadows.len(), clamp(sl.shadow.intensity, 0, 1) * fade, (float)l.channels, 0 };
                     g.spot_shadows = true;
                     if (sl.shadow.softness > 0) g.soft_shadows = true;
                     g.shadows.push(sh);
@@ -4715,7 +4975,7 @@ fn SpotLight* prepare_and_draw_shadows(Scene* scene, Camera* camera, bool bake =
         if (vsm_on()) {
             int size = state.shadow_size;
             ensure_vsm(&state.vsm_spot, size, size);
-            VsmTile[1] tiles = { { 0, 0, size, caster.shadow.radius, caster.shadow.blur_samples } };
+            VsmTile[1] tiles = { { 0, 0, size, size, caster.shadow.radius, caster.shadow.blur_samples } };
             vsm_blur(&state.vsm_spot, state.shadow_view, &tiles, false);
         }
     }
@@ -4729,13 +4989,13 @@ fn SpotLight* prepare_and_draw_shadows(Scene* scene, Camera* camera, bool bake =
     // before any that does: the shaders still sample the maps, so they must exist
     if (!shadows || bake) {
         ensure_sun_map(state.sun_size ?: 4);
-        if (!state.atlas_tile) ensure_shadow_atlas(4, 1);
+        if (!state.atlas_width) ensure_shadow_atlas(ATLAS_MIN_BLOCK, ATLAS_MIN_BLOCK);
     }
     // VSM's moments, the size of the depth maps (the main pass binds them all)
     if (vsm_on()) {
         ensure_vsm(&state.vsm_spot, state.shadow_size, state.shadow_size);
         ensure_vsm(&state.vsm_sun, state.sun_size, state.sun_size);
-        ensure_vsm(&state.vsm_atlas, state.atlas_tile * state.atlas_columns, state.atlas_tile * state.atlas_rows);
+        ensure_vsm(&state.vsm_atlas, state.atlas_width, state.atlas_height);
     }
     note_atlas_info();
     profile::stop("render: spot atlas", pt);
@@ -4745,15 +5005,15 @@ fn SpotLight* prepare_and_draw_shadows(Scene* scene, Camera* camera, bool bake =
 // The atlas's size, memory and lights into RenderInfo.
 fn void note_atlas_info() @local {
     RenderInfo* info = &state.renderer.info;
-    info.atlas_width = state.atlas_tile * state.atlas_columns;
-    info.atlas_height = state.atlas_tile * state.atlas_rows;
+    info.atlas_width = state.atlas_width;
+    info.atlas_height = state.atlas_height;
     usz pixels = (usz)info.atlas_width * (usz)info.atlas_height;
     info.atlas_bytes = pixels * 4;
     // (the moments and their blur's scratch)
     if (state.vsm_atlas.width) info.atlas_bytes += (usz)state.vsm_atlas.width * (usz)state.vsm_atlas.height * (usz)(state.vsm_format == RG32F ? 16 : 8);
     info.atlas_lights = 0;
-    foreach (i, l : state.atlas_lights) {
-        if (l && (i == 0 || state.atlas_lights[i - 1] != l)) info.atlas_lights++;
+    foreach (&s : state.atlas_slots) {
+        if (s.size && s.seen == state.frame) info.atlas_lights++;
     }
 }
 
