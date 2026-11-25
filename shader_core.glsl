@@ -460,7 +460,8 @@ struct gpu_point_light {
     vec4 color;  // w = decay
     vec4 shadow; // x = the first of its six maps in spot_shadows (+x -x +y -y +z -z; -1: none),
                  //   y = shadow intensity (0..1), z = Light.channels, w = shadow.contact_length
-    vec4 params; // x = source radius
+    vec4 params; // x = source radius (rect area lights: shadow.w = their channel of the
+                 //   ray-traced mask plus 1, see rt_shadow)
 };
 struct gpu_spot_light {
     vec4 pos;    // w = distance cutoff
@@ -1258,6 +1259,18 @@ float contact_shadow(vec3 l, float len, vec3 geo_n, float intensity) {
     }
 #endif
     return 1.0;
+}
+
+// A ray-traced rect area light's shadow (ray_shadows.c3): channel `ch` of its mask, in
+// tex_ext5 in the lighting pass (lit elsewhere).
+float rt_shadow(int ch) {
+#ifdef DEFERRED_LIGHT
+    ivec2 size = textureSize(sampler2D(tex_ext5, tex_smp), 0);
+    vec4 m = texelFetch(sampler2D(tex_ext5, tex_smp), min(ivec2(gl_FragCoord.xy), size - 1), 0);
+    return ch == 0 ? m.r : (ch == 1 ? m.g : (ch == 2 ? m.b : m.a));
+#else
+    return 1.0;
+#endif
 }
 
 float shadow(int s, vec3 n) {
@@ -2998,8 +3011,10 @@ void main() {
                 q[2] = to - hw + hh;
                 q[3] = to + hw + hh;
                 vec3 c = ra.color.rgb * fog_transmittance(fog_distance(ra.pos.xyz, v_world_pos));
-                // RectAreaLight.shadow: cast from its centre
-                if (ra.shadow.x >= 0.0) c *= rect_shadow(ra, geo_n);
+                // RectAreaLight.shadow: ray traced (a channel of the mask), or cast from its
+                // centre
+                if (ra.shadow.w > 0.5) c *= mix(1.0, rt_shadow(int(ra.shadow.w) - 1), ra.shadow.y);
+                else if (ra.shadow.x >= 0.0) c *= rect_shadow(ra, geo_n);
                 spec += c * fresnel * ltc_evaluate(n, v, m_inv, q);
                 outc += c * diffuse_color * ltc_evaluate(n, v, mat3(1.0), q);
 #ifdef PHYSICAL

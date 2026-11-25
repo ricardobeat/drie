@@ -321,6 +321,9 @@ struct Renderer {
     bool hdr_window;
     // Deferred G-Buffer + fullscreen lighting pass for single-sampled render targets.
     bool deferred;
+    // Rect area lights with shadow.ray_traced get ray-traced shadows where the GPU can
+    // (ray_shadows.c3). Default true; false: their shadow maps everywhere.
+    bool ray_traced_shadows;
     // Fragments inside cull_box_min..max are not drawn (to look through a portal past whatever
     // stands between the camera and it).
     bool cull_box;
@@ -864,6 +867,7 @@ fn Renderer* renderer(bool antialias = true, int width = 800, int height = 600, 
         .gpu_culling = true,
         .depth_prepass = true,
         .deferred = true,
+        .ray_traced_shadows = true,
         .shadow_map_auto_update = true,
         .depth_prepass_pixels = 1.5f,
         .max_lights = DEFAULT_MAX_LIGHTS,
@@ -2080,6 +2084,8 @@ fn int atlas_wanted(Light* l, Camera* camera, bool bake, float* importance) @loc
     }
     cover = math::min(cover, 4.0f);
     *importance = cover * (bright + 1e-6f);
+    // (a ray-traced light's maps only shadow what the deferred pass doesn't draw)
+    if (rt_traced(l)) most = math::min(most, RT_MAP_SIZE);
     return math::min(atlas_pow2((int)(cover * render_height() * 2)), most);
 }
 
@@ -3302,6 +3308,7 @@ fn FsParams build_light_params(Scene* scene, Camera* camera, SpotLight* caster) 
     p.dir_cascade_fwd = { ...((Vector3) { -cw[2][0], -cw[2][1], -cw[2][2] }).normalize(), 1 };
     p.camera_right = { ...((Vector3) { cw[0][0], cw[0][1], cw[0][2] }).normalize(), 0 };
     p.camera_up = { ...((Vector3) { cw[1][0], cw[1][1], cw[1][2] }).normalize(), 0 };
+    rt_begin();
     foreach (l : state.lights) {
         Vector3 c = color_to_linear(l.color) * l.intensity;
         switch (l.light_type) {
@@ -3398,6 +3405,8 @@ fn FsParams build_light_params(Scene* scene, Camera* camera, SpotLight* caster) 
                     .shadow = { -1, 1, (float)l.channels, 0 },
                 };
                 cube_shadows(l, &gr.shadow, g, vsm);
+                gr.shadow.w = rt_light(r, ra, hw, hh);
+                if (gr.shadow.w > 0) gr.shadow.y = clamp(ra.shadow.intensity, 0, 1);
                 g.rects.push(gr);
             case SPOT:
                 SpotLight* sl = (SpotLight*)l;
@@ -4366,6 +4375,8 @@ fn void draw_deferred_lighting(
     bind.samplers[shaders::SMP_TEX_SMP] = state.gb_sampler;
     bind.samplers[SMP_TRANSMISSION_SMP] = state.gb_sampler;
     for (int k = 0; k < 6; k++) bind.views[shaders::VIEW_TEX_EXT0 + k] = none.view;
+    // (the ray-traced shadows' mask, rt_shadow)
+    bind.views[shaders::VIEW_TEX_EXT5] = rt_mask(none.view);
     if (vsm) {
         bind.views[shaders::VIEW_VSM_MAP] = state.vsm_spot.view;
         bind.views[shaders::VIEW_VSM_ATLAS] = state.vsm_atlas.view;
@@ -5806,6 +5817,8 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera) {
         sg::end_pass();
         profile::stop("render: gbuffer", pt);
         pt = profile::start();
+
+        rt_trace(scene, camera, view_proj_rel, rt.depth, state.gb_color[3], rt.width, rt.height);
 
         if (scene.radiance && scene.radiance.sparse && !self.reflecting) {
             scene.radiance.update_sparse(

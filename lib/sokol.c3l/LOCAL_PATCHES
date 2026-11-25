@@ -38,3 +38,9 @@ To update: copy the new sokol.c3l/ over this folder, then re-apply each item bel
    Depth16Unorm; D3D11 R16_TYPELESS, D16_UNORM to draw into, R16_UNORM to read; GL
    DEPTH_COMPONENT16; WebGPU Depth16Unorm; Vulkan D16_UNORM), in the backends' format tables
    as DEPTH is. The hunks are marked "drie patch (16-bit depth)".
+8. c/sokol_rt.h (drie's own, not upstream) and its #include at the end of c/sokol.c, after
+   sokol_warm.h: ray-traced rect light shadows with Metal's ray tracing (acceleration
+   structures over sokol's vertex and index buffers, a compute pass that writes a shadow mask
+   into sokol storage images, in the frame's command buffer between passes). It reads
+   sokol_gfx's internals (_sg.mtl.device, _sg.mtl.cmd_buffer, _sg_lookup_buffer/_image,
+   _sg_mtl_id); other backends get stubs. Bound in drie's ray_shadows.c3.

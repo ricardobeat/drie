@@ -88,6 +88,8 @@ fn int main(String[] args) {
     door.position = { 0, 1, 0 };
     door.look_at_vec({ 0, 1, 1 });
     door.shadow.map_size = 512;
+    // (its shadow maps: tests/rt_shadows has the ray-traced shadow)
+    door.shadow.ray_traced = false;
     scene.add(door);
     // the curtain: 1.4 m wide, to the floor, 0.3 m in front
     MeshStandardMaterial* cloth = drie::mesh_standard_material(color: 0x401010, roughness: 0.9f);
