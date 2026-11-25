@@ -28,3 +28,7 @@ To update: copy the new sokol.c3l/ over this folder, then re-apply each item bel
    pipeline state is made by _sg_warm_render_pipeline(rp_desc, &err, desc->shader.id) (declared
    in place), not by newRenderPipelineStateWithDescriptor. The hunk is marked "drie patch
    (pipeline archive)".
+6. c/sokol_gfx.h, _sg_mtl_compile_library: the library is compiled with MTLCompileOptions whose
+   preserveInvariance is YES (not options:nil), so that a generated vertex stage's
+   [[position, invariant]] gives every pipeline it is in the same depth (a depth prepass's
+   and the EQUAL-tested pass after it). The hunk is marked "drie patch (invariant position)".

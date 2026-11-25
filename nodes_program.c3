@@ -1790,7 +1790,9 @@ fn String ProgramGen.vertex_source(&self) {
                 NodeType t = carried(n.type());
                 s.appendf("    %s v%d [[user(locn%d)%s]];\n", self.type_name(t), i, i, scalar_of(t) == FLOAT ? "" : ", flat");
             }
-            s.append("    float4 pos [[position]];\n};\n\n");
+            // (invariant: the depth prepass's pipeline and the EQUAL-tested one after it compute
+            // the same depth from the same vertex function)
+            s.append("    float4 pos [[position, invariant]];\n};\n\n");
             s.append(self.funcs.str_view());
             s.appendf("vertex VOut main0(%s", attrs ? "VIn vin [[stage_in]]" : "");
             String rest = string::tformat("%s%s%s%s", self.block_decl(), self.resource_decls(),
@@ -1819,7 +1821,7 @@ fn String ProgramGen.vertex_source(&self) {
             s.append(self.body.out.str_view());
             s.append("    return vout;\n}\n");
         case GLSL:
-            s.append("#version 430\n\n");
+            s.append("#version 430\n\ninvariant gl_Position;\n");
             foreach (i, t : p.attrs) {
                 if (t != VOID) s.appendf("layout(location = %d) in %s a%d;\n", i, self.type_name(t), i);
             }

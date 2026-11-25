@@ -225,7 +225,15 @@ static bool _sg_warm_stage(const sg_shader_function* f, _sg_warm_stage_t* out) {
 
 static id<MTLLibrary> _sg_warm_library(id<MTLDevice> device, NSString* src, dispatch_data_t data, NSError** err) {
     if (data) return [device newLibraryWithData:data error:err];
-    return [device newLibraryWithSource:src options:nil error:err];
+    // (as _sg_mtl_compile_library: the invariant position kept; one set of options for all
+    // the worker threads, never freed)
+    static MTLCompileOptions* opts;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        opts = [[MTLCompileOptions alloc] init];
+        opts.preserveInvariance = YES;
+    });
+    return [device newLibraryWithSource:src options:opts error:err];
 }
 
 static void _sg_warm_stage_release(_sg_warm_stage_t* st) {
