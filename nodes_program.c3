@@ -1815,7 +1815,8 @@ fn String ProgramGen.vertex_source(&self) {
                 NodeType t = carried(n.type());
                 s.appendf("    %s%s v%d : TEXCOORD%d;\n", varying_qualifier(HLSL, t), self.type_name(t), i, i);
             }
-            s.append("    float4 pos : SV_Position;\n};\n\n");
+            // (precise: as Metal's invariant position)
+            s.append("    precise float4 pos : SV_Position;\n};\n\n");
             s.append(self.funcs.str_view());
             s.append("VOut main(VIn vin) {\n    VOut vout = (VOut)0;\n");
             s.append(self.body.out.str_view());
