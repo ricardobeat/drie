@@ -19,7 +19,7 @@ import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
 
-DRIE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DRIE = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 
 # the oldest OS versions the games run on: house links with these
 MACOS_MIN = "14.0"
@@ -65,7 +65,7 @@ def stale(obj, dep, cmd_file, cmd):
 
 
 def build(lib_dir, target):
-    lib_dir = os.path.abspath(lib_dir)
+    lib_dir = os.path.realpath(lib_dir)
     with open(os.path.join(lib_dir, "manifest.json")) as f:
         manifest = json.load(f)
     sources = manifest.get("c-sources", [])
