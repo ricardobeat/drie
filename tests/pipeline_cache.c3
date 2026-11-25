@@ -3,7 +3,7 @@
 // programs are listed as their text (M lines), the pipelines by their keys. `just test pipeline_cache`
 module pipeline_cache_test;
 import drie, drie::nodes, sokol;
-import std::io, std::time, std::math, std::thread;
+import std::io, std::io::file, std::io::path, std::os::process, std::time, std::math, std::thread;
 
 int failures;
 
@@ -46,9 +46,9 @@ fn String with_comment(String text) {
     return string::tformat("%s%s\n%s%s", text[:at], line.str_view(), comment, text[end + 1..]);
 }
 
-fn int main(String[] args) {
-    Renderer* renderer = drie::renderer(antialias: false, width: 320, height: 180);
-    renderer.init_headless();
+// The scene: a plain material and two node materials (one with a clear coat: drawn forward,
+// not into the G-buffer).
+fn Scene* make_scene(Material** noded_material) {
     Scene* scene = drie::scene();
     scene.add(drie::hemisphere_light(0xffffff, 0x404040, 1));
     Mesh* plain = drie::mesh(drie::box_geometry(1, 1, 1), drie::mesh_standard_material(color: 0x808080));
@@ -59,16 +59,51 @@ fn int main(String[] args) {
     Mesh* noded = drie::mesh(drie::box_geometry(1, 1, 1), m);
     noded.position.x = 1;
     scene.add(noded);
-    // (a clearcoat: drawn forward, not into the G-buffer)
     Material* coated = drie::mesh_standard_material(color: 0xffffff);
     coated.clearcoat = 1;
     coated.color_node = nodes::color(0x40c040);
     Mesh* coated_mesh = drie::mesh(drie::box_geometry(1, 1, 1), coated);
     coated_mesh.position = { 0, 1, 0 };
     scene.add(coated_mesh);
+    if (noded_material) *noded_material = m;
+    return scene;
+}
+
+fn PerspectiveCamera* make_camera() {
     PerspectiveCamera* camera = drie::perspective_camera(50, 320.0f / 180, 0.1, 100);
     camera.position = { 0, 1, 4 };
     camera.look_at_vec({ 0, 0, 0 });
+    return camera;
+}
+
+// Another run, as a game's next start: the list loaded before the backend is up (a game loads
+// it before its first frame), then the same scene drawn with what it lists.
+fn int load_run(String path, int listed) {
+    Renderer* renderer = drie::renderer(antialias: false, width: 320, height: 180);
+    char[] text = file::load(mem, path)!!;
+    expect(renderer.load_pipeline_cache((String)text) == listed, "another run loads every pipeline before the backend is up");
+    renderer.init_headless();
+    Scene* scene = make_scene(null);
+    PerspectiveCamera* camera = make_camera();
+    renderer.set_render_target(drie::render_target(320, 180, 1, RGBA8));
+    for (int i = 0; i < 1000 && renderer.compiling()[0] > 0; i++) (void)thread::sleep_ms(10);
+    expect(renderer.compiling()[0] == 0, "and compiles them");
+    renderer.render(scene, camera);
+    drie::commit();
+    expect(renderer.info.calls >= 3, "the meshes draw");
+    String again = renderer.pipeline_cache(tmem);
+    expect(count_lines(again, "M ") == 2 && count_lines(again, "G ") + count_lines(again, "H ") == listed,
+           "with the node programs it loaded, nothing new made");
+    return failures ? 1 : 0;
+}
+
+fn int main(String[] args) {
+    if (args.len == 4 && args[1] == "--load") return load_run(args[2], args[3].to_int()!!);
+    Renderer* renderer = drie::renderer(antialias: false, width: 320, height: 180);
+    renderer.init_headless();
+    Material* m;
+    Scene* scene = make_scene(&m);
+    PerspectiveCamera* camera = make_camera();
     RenderTarget* rt = drie::render_target(320, 180, 1, RGBA8);
     renderer.set_render_target(rt);
     renderer.render(scene, camera);
@@ -87,6 +122,13 @@ fn int main(String[] args) {
     renderer.render(scene, camera);
     drie::commit();
     expect(renderer.compiling()[0] == 0, "the pipelines this run made need no compiling");
+
+    // the list in another run
+    (void)path::mkdir("tests/build", true);
+    file::save("tests/build/pipeline_cache.txt", text)!!;
+    int? code = process::run({ args[0], "--load", "tests/build/pipeline_cache.txt", string::tformat("%d", listed) },
+                             INHERIT_ENV | INHERIT_STDIO);
+    expect(@ok(code) && (code ?? 1) == 0, "the run that loads it");
 
     // a program no graph here prints: compiled in the background
     String other = with_comment(text);

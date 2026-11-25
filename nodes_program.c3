@@ -2106,11 +2106,11 @@ fn int read_numbers(String text, usz* at, int[] n) @local {
     return count;
 }
 
-// A program `write` wrote, at `*at` in `text` (moved past it), for the backend's language;
-// none if it isn't one.
+// A program `write` wrote, at `*at` in `text` (moved past it); none if it isn't one.
 fn ShaderProgram*? read_program(String text, usz* at) {
     int[10] h;
-    if (read_numbers(text, at, &h) != 10 || h[0] != backend_lang().ordinal) return NOT_FOUND~;
+    // (any language: a list can be read before the backend is up, see Renderer.pump_pipeline_cache)
+    if (read_numbers(text, at, &h) != 10 || h[0] >= NodeLang::len) return NOT_FOUND~;
     foreach (x : h) if (x < 0) return NOT_FOUND~;
     if (*at + (usz)h[1] + (usz)h[2] > text.len || h[7] > 32 || h[8] > 16 || h[9] > 32) return NOT_FOUND~;
     ShaderProgram* p = mem::new(ShaderProgram);

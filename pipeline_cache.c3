@@ -400,6 +400,8 @@ fn void Renderer.pump_pipeline_cache(&self) {
     while (running < PIPELINE_CACHE_JOBS && w.pending.len()) {
         PipelineRecord r = w.pending.pop_first()!!;
         w.started++;
+        // (a node material's program printed for another backend's language: never drawn here)
+        if (r.shared && r.shared.program.lang != backend_lang()) continue;
         running++;
         MaterialProgram* gen = r.shared ?: material_program(r.key);
         if (r.shadow) {
