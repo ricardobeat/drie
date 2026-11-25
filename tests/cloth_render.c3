@@ -132,7 +132,7 @@ fn int main(String[] args) {
     float parted;
     float swayed;
     Vector3[] before = mem::new_array(Vector3, panels[0].pos.len);
-    before[..] = panels[0].pos[..];
+    foreach (i, &p : before) *p = panels[0].point((uint)i);
     for (int f = 0; f < FRAMES; f++) {
         // six simulation frames per picture; the walk starts at picture 5, at 1.1 m/s
         for (int k = 0; k < 6; k++) {
@@ -145,11 +145,11 @@ fn int main(String[] args) {
             }
         }
         if (f == 4) {
-            foreach (i, p : panels[0].pos) swayed = math::max(swayed, (p - before[i]).length());
+            foreach (i, p : before) swayed = math::max(swayed, (panels[0].point((uint)i) - p).length());
         }
         parted = math::max(
             parted,
-            panels[1].pos[panels[1].index(0, 18)].x - panels[0].pos[panels[0].index(COLS - 1, 18)].x
+            panels[1].point(panels[1].index(0, 18)).x - panels[0].point(panels[0].index(COLS - 1, 18)).x
         );
         renderer.render(scene, camera);
         drie::commit();
