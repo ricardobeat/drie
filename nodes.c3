@@ -610,14 +610,22 @@ fn Node node_jump(int kind) => add_node({ .op = JUMP, .type = VOID, .kind = (cha
 // A statement of an expression: worked out at this point.
 fn Node node_eval(Node x) => add_node({ .op = EVAL, .type = VOID, .count = 1, .args = { x.id, 0, 0, 0 } });
 
-// Statements in a block: chained in order; the block is its first one ({}: empty). Each
-// statement belongs to one block.
+// Statements in a block: chained in order; the block is its first one ({}: empty). A block
+// among them (a statement already chained to another one) is worked out in its place, its
+// statements still chained as they were; the same statements in the same order are chained
+// again as they are.
 fn Node node_block(Node[] stmts) {
     Node first;
     Node last;
-    foreach (st : stmts) {
+    foreach (i, st : stmts) {
         if (!st.id) continue;
-        if (node_data(st).type != VOID) st = node_eval(st);
+        if (node_data(st).type != VOID) {
+            st = node_eval(st);
+        } else if (node_data(st).next) {
+            uint after;
+            for (sz j = i + 1; j < stmts.len && !after; j++) after = stmts[j].id;
+            if (node_data(st).next != after) st = node_eval(node_seq(st));
+        }
         if (last.id) {
             node_data(last).next = st.id;
         } else {
@@ -629,8 +637,9 @@ fn Node node_block(Node[] stmts) {
 }
 
 // Appends `stmt` after `last` (a block's last statement) and returns it (the new last).
+// (a block: worked out there, as in node_block)
 fn Node node_append(Node last, Node stmt) {
-    if (node_data(stmt).type != VOID) stmt = node_eval(stmt);
+    if (node_data(stmt).type != VOID || node_data(stmt).next) stmt = node_eval(stmt.type() == VOID ? node_seq(stmt) : stmt);
     if (last.id) node_data(last).next = stmt.id;
     return stmt;
 }

@@ -442,7 +442,6 @@ fn Node[2] rc_irradiance_sparse(Node n, Node world, Node corner, Node size) @pri
     Node w  = w3.x() * w3.y() * w3.z() * ex.w();
     Node faces = ex.xyz() * nn.x() + node_storage(shaders::VIEW_RC_PROBES, VEC4, at + side.y()).xyz() * nn.y()
         + node_storage(shaders::VIEW_RC_PROBES, VEC4, at + side.z()).xyz() * nn.z();
-    // (a block in a block would end at its first statement: the lookup's are spliced in)
     Node[11] body_stmts;
     body_stmts[:10] = rc_sparse_lookup(c, 0, hash_cap, entry, slot)[..];
     body_stmts[10] = nodes::if_then(slot.greater_than_equal(nodes::int_(0)), nodes::block(
