@@ -1253,6 +1253,7 @@ fn SgPipeline get_pipeline(
         .alpha_test = alpha_test,
         .blend = blend,
         .kind = kind,
+        .family = family,
         .depth_test = depth_test,
         .depth_write = depth_write,
         .tangents = false,

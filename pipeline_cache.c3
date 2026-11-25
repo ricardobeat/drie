@@ -36,7 +36,7 @@
 module drie;
 import std::io, std::collections::list, sokol::sg;
 
-const String PIPELINE_CACHE_HEADER @local = "drie-pipelines 4\n";
+const String PIPELINE_CACHE_HEADER @local = "drie-pipelines 5\n";
 // pipelines compiled at once while a cache loads
 const int PIPELINE_CACHE_JOBS @local = 6;
 
@@ -56,6 +56,8 @@ struct PipelineRecord @private {
     // the blending, as blend_key gives it (the material's blending and its factors)
     ulong blend;
     DrawKind kind;
+    // the material shader's programs it takes (get_pipeline's family)
+    ShaderFamily family;
     bool depth_test;
     bool depth_write;
     bool tangents;
@@ -84,7 +86,7 @@ fn bool PipelineRecord.same(&self, PipelineRecord* o) {
     return self.generated == o.generated && bitcast(self.key, KeyWords) == bitcast(o.key, KeyWords)
         && node_program_same_text(self.program, o.program) && self.shadow == o.shadow && self.side == o.side
         && self.transparent == o.transparent && self.wireframe == o.wireframe && self.alpha_test == o.alpha_test
-        && self.blend == o.blend && self.kind == o.kind && self.depth_test == o.depth_test
+        && self.blend == o.blend && self.kind == o.kind && self.family == o.family && self.depth_test == o.depth_test
         && self.depth_write == o.depth_write && self.tangents == o.tangents && self.vsm == o.vsm
         && self.target_samples == o.target_samples && self.target_format == o.target_format
         && self.target_mrt == o.target_mrt;
@@ -187,6 +189,7 @@ fn void PipelineWarmup.start_generated(&self, ShaderProgram* p, SgPipelineDesc* 
 //   P <program> <side> <transparent> <wireframe> <alpha_test> <blend> <kind> <depth_test>
 //     <depth_write> <tangents> <vsm> <target samples, 0: the window> <target format> <mrt>
 //   G <key> <side> ... <mrt>              as P, with a generated program: its MaterialKey, in
+//     <family>                            the material shader's (ShaderFamily)
 //                                         64 hex digits (the header's number goes up when
 //                                         the key's layout changes)
 //   H <key>                               a shadow map's pipeline with a generated program
@@ -230,10 +233,10 @@ fn String Renderer.pipeline_cache(&self, Allocator a, bool include_loaded = true
                     out.appendf("H %s\n", hex);
                     continue;
                 }
-                out.appendf("G %s %d %d %d %d %d %d %d %d %d %d %d %d %d\n", hex, r.side.ordinal, r.transparent ? 1 : 0,
+                out.appendf("G %s %d %d %d %d %d %d %d %d %d %d %d %d %d %d\n", hex, r.side.ordinal, r.transparent ? 1 : 0,
                     r.wireframe ? 1 : 0, r.alpha_test ? 1 : 0, r.blend, r.kind.ordinal, r.depth_test ? 1 : 0,
                     r.depth_write ? 1 : 0, r.tangents ? 1 : 0, r.vsm ? 1 : 0, r.target_samples, (uint)r.target_format,
-                    r.target_mrt ? 1 : 0);
+                    r.target_mrt ? 1 : 0, r.family.ordinal);
                 continue;
             }
             int program = -1;
@@ -266,10 +269,10 @@ fn String Renderer.pipeline_cache(&self, Allocator a, bool include_loaded = true
                 out.appendf("S %d\n", program);
                 continue;
             }
-            out.appendf("P %d %d %d %d %d %d %d %d %d %d %d %d %d %d\n", program, r.side.ordinal, r.transparent ? 1 : 0,
+            out.appendf("P %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d\n", program, r.side.ordinal, r.transparent ? 1 : 0,
                 r.wireframe ? 1 : 0, r.alpha_test ? 1 : 0, r.blend, r.kind.ordinal, r.depth_test ? 1 : 0,
                 r.depth_write ? 1 : 0, r.tangents ? 1 : 0, r.vsm ? 1 : 0, r.target_samples, (uint)r.target_format,
-                r.target_mrt ? 1 : 0);
+                r.target_mrt ? 1 : 0, r.family.ordinal);
         }
     };
     return out.str_view();
@@ -312,7 +315,7 @@ fn int Renderer.load_pipeline_cache(&self, String text) {
             if (catch end) break;
             String[] f = text[at:(usz)end].tsplit(" ");
             at += (usz)end + 1;
-            int[14] n;
+            int[15] n;
             foreach (i, x : f[1..]) {
                 if (i < n.len) n[i] = x.to_int() ?? -1;
             }
@@ -350,9 +353,10 @@ fn int Renderer.load_pipeline_cache(&self, String text) {
                     bool generated = f[0] == "G";
                     MaterialKey? key = generated ? key_from_hex(f.len > 1 ? f[1] : "") : (MaterialKey){ };
                     if (catch key) return added;
-                    if (f.len != 15 || (!generated && n[0] >= (int)programs.len())) return added;
+                    if (f.len != 16 || (!generated && n[0] >= (int)programs.len())) return added;
                     if (n[1] < 0 || n[1] > Side.DOUBLE_SIDE.ordinal || n[5] < 0
-                        || n[6] < 0 || n[6] > DrawKind.DEPTH.ordinal || n[11] < 0) {
+                        || n[6] < 0 || n[6] > DrawKind.DEPTH.ordinal || n[11] < 0
+                        || n[14] < 0 || n[14] > ShaderFamily.GBUFFER.ordinal) {
                         continue;
                     }
                     PipelineRecord r = {
@@ -366,6 +370,7 @@ fn int Renderer.load_pipeline_cache(&self, String text) {
                         .blend = (ulong)n[5],
                         .kind = (DrawKind)n[6],
                         .depth_test = n[7] == 1,
+                        .family = (ShaderFamily)n[14],
                         .depth_write = n[8] == 1,
                         .tangents = n[9] == 1,
                         .vsm = n[10] == 1,
@@ -475,6 +480,6 @@ fn void Renderer.pump_pipeline_cache(&self) {
         self.shadow_type = r.vsm ? ShadowType.VSM : shadow_type == VSM ? ShadowType.PCF : shadow_type;
         RenderTarget target = { .samples = r.target_samples, .format = r.target_format, .mrt = r.target_mrt };
         (void)get_pipeline(r.side, r.transparent, r.wireframe, r.target_samples ? &target : null, r.alpha_test,
-            r.blend, r.kind, r.depth_test, r.depth_write, PBR, r.program, gen);
+            r.blend, r.kind, r.depth_test, r.depth_write, r.family, r.program, gen);
     }
 }
