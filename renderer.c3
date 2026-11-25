@@ -3937,6 +3937,8 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
 
     r.info.calls++;
     int drawn = draw_geometry(item, lines);
+    // (the depth prepass's draws count as calls only)
+    if (kind == DEPTH) return;
     if (m.is_line()) {
         r.info.lines += drawn;
     } else {
