@@ -484,6 +484,19 @@ fn int main(String[] args) {
         io::printfn("seq after a bind: up to %.1f from normal_world()", worst);
         expect(worst < 2, "a seq() reading normal_world() is printed again after normal_node binds it");
     }
+    {
+        // the hooks' text: a constant is written where it is read, and a value that two nodes
+        // print alike is printed once
+        Material* m = drie::mesh_standard_material(color: 0xffffff);
+        Node first = nodes::sin(nodes::uv().x() * 7.5f);
+        Node again = nodes::sin(nodes::uv().x() * 7.5f);
+        m.color_node = nodes::vec3(first, again * 0.5f, 0.25f);
+        NodeProgram* prog = drie::node_build_of(m).program;
+        io::printfn("color hook:\n%s", prog.color_body);
+        expect(count_of(prog.color_body, "sin(") == 1, "two nodes that print alike: one value");
+        expect(count_of(prog.color_body, " = (7.5") == 0 && count_of(prog.color_body, "(7.50000000e+00)") == 1,
+               "a constant written where it is read, not in a variable of its own");
+    }
     io::printfn("saved %s, %s", out_path, second);
     return failures ? 1 : 0;
 }
