@@ -971,12 +971,17 @@ struct SpotLight {
 // meters, shining from its front, its -z (point it with look_at, as three). Its intensity is
 // in nits, its power in lumens intensity * width * height * PI (three r155+). Lights
 // MeshStandardMaterial (and its physical layers: the clear coat too) only, as three, with
-// linearly transformed cosines (Heitz et al. 2016, three's tables); no shadows. The light's
-// world rotation turns it; its scale is left out. Renderer.max_rect_area_lights of them at most.
+// linearly transformed cosines (Heitz et al. 2016, three's tables). The light's world rotation
+// turns it; its scale is left out. Renderer.max_rect_area_lights of them at most.
 struct RectAreaLight {
     inline Light light;
     float width;
     float height;
+    // Extension (three's has none): with cast_shadow, what stands in front of it shadows its
+    // light and its highlights, as from a point light at its centre: six maps in the shadow
+    // atlas (see PointLight.shadow), from shadow.near to shadow.far (0: 50). shadow.softness
+    // about the rectangle's size gives the edges an area light's.
+    LightShadow shadow;
 }
 
 fn void Light.init_light(&self, LightType t, Color color, float intensity) {
@@ -1034,6 +1039,16 @@ fn RectAreaLight* rect_area_light(Color color = 0xffffff, float intensity = 1, f
     l.init_light(RECT_AREA, color, intensity);
     l.width = width;
     l.height = height;
+    l.shadow = {
+        .map_size = 512,
+        .normal_bias = 0.006f,
+        .radius = 2,
+        .blur_samples = 8,
+        .intensity = 1,
+        .near = 0.1f,
+        .auto_update = true,
+        .needs_update = true
+    };
     return l;
 }
 
