@@ -358,13 +358,12 @@ struct Material {
     float dash_size;
     float gap_size;
     float dash_scale;
-    // For the application's own shader hooks (Renderer.shaders, see shader.glsl), which read
-    // them as `material_custom[0]` and `[1]`. The engine's own shader ignores them.
+    // The application's own numbers: drie neither reads nor draws with them (an application
+    // keeps what its node graphs are built from here, say).
     Vec4[2] custom;
-    // And a texture for them: a hook reads it with custom_map_texel(uv, dx, dy), at a uv of its
-    // own (world meters, say) and its change from one pixel to the next. It takes the
-    // material's sampler, its first map's (map, normal_map, arm_map, then the others), and so
-    // that one's wrapping.
+    // A texture for the node graphs: nodes::material_map(CUSTOM_MAP), at a uv of their own.
+    // It takes the material's sampler, its first map's (map, normal_map, arm_map, then the
+    // others), and so that one's wrapping.
     Texture* custom_map;
     // Blurred by how far it is out of focus, by its own distance (not three's): its maps are
     // read over the blur of the lens's focus at its depth (Renderer.focus_map, from a

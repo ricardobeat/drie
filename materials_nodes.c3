@@ -114,8 +114,8 @@ bitstruct MaterialKey : char[32] {
     // a node material's nodes and foliage too
     bool shadow : 82;
     bool bake : 83;              // a light map's sample (lightmap.c3): drawn at uv1, its light blended in
-    // a node material's (its *_node graphs plugged in where the material shader's hooks run
-    // them): found through its NodeBuild (NodeBuild.programs), which the key alone doesn't name
+    // a node material's (its *_node graphs in the program): found through its NodeBuild
+    // (NodeBuild.programs), which the key alone doesn't name
     bool nodes : 84;
     bool morph : 85;             // GPU morph targets (BufferGeometry.morph_view + Mesh.morph_weights_view)
     bool flat_shading : 86;      // flat face normals via screen-space derivatives (Material.flat_shading)
@@ -163,7 +163,7 @@ fn uint KeyWords.hash(self) => (uint)(self.lo.hash() ^ self.hi.hash() * 31);
 fn bool KeyWords.equals(self, KeyWords other) @operator(==) => self.lo == other.lo && self.hi == other.hi;
 
 // Where role `role`'s slot is in the key's high word: three bits each from its bit 64 (the
-// key's bit 192; MAP_CUSTOM, 16, the application's hooks' map, is the material shader's only).
+// key's bit 192; MAP_CUSTOM, 16, has none: a graph reads custom_map as a texture of its own).
 fn int map_role_bit(int role) @local => 64 + 3 * (role < 16 ? role : role - 1);
 
 // The shared slot role `role`'s map is in, + 1 (0: none).
@@ -779,7 +779,7 @@ fn Node parallax_shadow(Parallax* px, FragUv* f, Node n, Node l) @local {
 // for it: see draw_shadow_item), and the alpha test's cut-out as shader_core.glsl's shadow_fs
 // (the color map's alpha, the opacity and the alpha map's green, ShadowFsParams). A node
 // material's (`build`) moves its vertices as its main program does, and cuts the holes its
-// color step cuts (mask_node's, color_node's and opacity_node's) as shadow_nodes_fs does.
+// color step cuts (mask_node's, color_node's and opacity_node's).
 fn void build_shadow_graph(MaterialKey key, ProgramGraph* graph, NodeBuild* build, UserBinds* binds) @local {
     VertexValues vtx = vertex_stage(key, build, binds);
     graph.position = vtx.position;
@@ -813,8 +813,8 @@ fn void build_shadow_graph(MaterialKey key, ProgramGraph* graph, NodeBuild* buil
 
 // The graphs of `key`'s program, and with MaterialKey.prepassed of its depth prepass's
 // (`prepass`: the holes it cuts, and the alpha it leaves for alpha-to-coverage). A node
-// material's graphs (`build`, MaterialKey.nodes) go in where the material shader runs its
-// hooks, reading their builtins as `binds` and the steps below bind them.
+// material's graphs (`build`, MaterialKey.nodes) go in at their steps, reading their builtins
+// as `binds` and the steps below bind them.
 fn void build_material_graph(MaterialKey key, ProgramGraph* graph, ProgramGraph* prepass, NodeBuild* build, UserBinds* binds) @private {
     VertexValues vtx = vertex_stage(key, build, binds);
     graph.position = vtx.position;
