@@ -57,21 +57,31 @@ void sg_warm_dry(int on) {
     _sg_warm_dry = on != 0;
 }
 
-// The pipeline archive (an MTLBinaryArchive): render pipelines compiled to the GPU's code,
-// saved by a run and loaded by the next. A pipeline it has is made without compiling, by the
-// jobs here and by sg_make_pipeline (sokol_gfx.h calls _sg_warm_render_pipeline); one it hasn't
-// is compiled and added.
+// The pipeline archive (MTLBinaryArchives): render pipelines compiled to the GPU's code, saved
+// by a run and loaded by the next. A pipeline it has is made without compiling, by the jobs here
+// and by sg_make_pipeline (sokol_gfx.h calls _sg_warm_render_pipeline); one it hasn't is
+// compiled and added.
 //
-//   sg_warm_archive_load(path);   // before the first pipeline: 1 the file's archive taken, 0 an
-//                                 // empty one (no file, or one this device can't read), -1 none
+//   sg_warm_archive_load(path);   // before the first pipeline: the number of files taken, 0 for
+//                                 // none (no file, or none this device can read), -1 no GPU
 //   sg_warm_archive_save(path);   // 1 written, 0 nothing new to write, -1 failed
+//
+// The archive is a file per run that added to it: `path`, then `path.1`, `path.2`... up to
+// SG_WARM_ARCHIVE_FILES; a run looks pipelines up in all of them and saves what it added into
+// the next. (A loaded archive with pipelines added to it can fail to save, "missing 'vertex'
+// stage in pipeline no. N", and then nothing new is kept; a new one saves.)
 //
 // An archive made on another GPU or OS loads, or not, and has nothing that matches: then every
 // pipeline is compiled as without one. Only pipelines of shaders marked with
 // sg_warm_archivable(shader) are added (and every background job's): a library loaded from old
 // bytecode (sokol's own shaders, built for macOS 10.12) can't be packed, and would keep the
 // whole archive from being saved.
+#define SG_WARM_ARCHIVE_FILES 16
+// the loaded files' archives and this run's (last), looked up in that order
+static NSMutableArray* _sg_warm_archives;
+// this run's, which pipelines are added to, and the file it is saved to (-1: none, all taken)
 static id<MTLBinaryArchive> _sg_warm_archive;
+static int _sg_warm_archive_file = -1;
 static bool _sg_warm_archive_dirty;
 static int _sg_warm_archive_hits, _sg_warm_archive_misses;
 static os_unfair_lock _sg_warm_archive_lock = OS_UNFAIR_LOCK_INIT;
@@ -83,27 +93,43 @@ void sg_warm_archivable(uint32_t shader_id) {
     [_sg_warm_archivable addObject:[NSNumber numberWithUnsignedInt:shader_id]];
 }
 
+// The archive's file `i`: `path`, then `path.i`.
+static NSString* _sg_warm_archive_path(const char* path, int i) {
+    NSString* p = [NSString stringWithUTF8String:path];
+    return i == 0 ? p : [NSString stringWithFormat:@"%@.%d", p, i];
+}
+
 int sg_warm_archive_load(const char* path) {
-    if (!_sg.valid) return -1;
+    if (!_sg.valid || !path) return -1;
     int taken = 0;
     @autoreleasepool {
+        if (!_sg_warm_archives) _sg_warm_archives = [[NSMutableArray alloc] init];
+        [_sg_warm_archives removeAllObjects];
+        _sg_warm_archive_file = -1;
         MTLBinaryArchiveDescriptor* d = [[MTLBinaryArchiveDescriptor alloc] init];
-        NSError* err = nil;
-        if (path && access(path, R_OK) == 0) {
-            d.url = [NSURL fileURLWithPath:[NSString stringWithUTF8String:path]];
-            _sg_warm_archive = [_sg.mtl.device newBinaryArchiveWithDescriptor:d error:&err];
-            if (_sg_warm_archive) {
-                taken = 1;
+        for (int i = 0; i < SG_WARM_ARCHIVE_FILES; i++) {
+            NSString* p = _sg_warm_archive_path(path, i);
+            if (access([p UTF8String], R_OK) != 0) {
+                _sg_warm_archive_file = i;
+                break;
+            }
+            NSError* err = nil;
+            d.url = [NSURL fileURLWithPath:p];
+            id<MTLBinaryArchive> a = [_sg.mtl.device newBinaryArchiveWithDescriptor:d error:&err];
+            if (a) {
+                [_sg_warm_archives addObject:a];
+                _SG_OBJC_RELEASE(a);
+                taken++;
             } else {
-                fprintf(stderr, "drie: the pipeline archive %s doesn't load here (%s): an empty one\n", path,
+                fprintf(stderr, "drie: the pipeline archive %s doesn't load here (%s)\n", [p UTF8String],
                     err ? [err.localizedDescription UTF8String] : "?");
             }
         }
-        if (!_sg_warm_archive) {
-            d.url = nil;
-            err = nil;
-            _sg_warm_archive = [_sg.mtl.device newBinaryArchiveWithDescriptor:d error:&err];
-        }
+        d.url = nil;
+        NSError* err = nil;
+        _SG_OBJC_RELEASE(_sg_warm_archive);
+        _sg_warm_archive = [_sg.mtl.device newBinaryArchiveWithDescriptor:d error:&err];
+        if (_sg_warm_archive) [_sg_warm_archives addObject:_sg_warm_archive];
         _SG_OBJC_RELEASE(d);
     }
     _sg_warm_archive_dirty = false;
@@ -114,18 +140,22 @@ int sg_warm_archive_save(const char* path) {
     if (!_sg_warm_archive || !path) return -1;
     int r = 0;
     os_unfair_lock_lock(&_sg_warm_archive_lock);
+    if (_sg_warm_archive_dirty && _sg_warm_archive_file < 0) {
+        fprintf(stderr, "drie: the pipeline archive %s has its %d files: nothing new is saved\n", path, SG_WARM_ARCHIVE_FILES);
+        _sg_warm_archive_dirty = false;
+    }
     if (_sg_warm_archive_dirty) {
         @autoreleasepool {
-            // (into a file of its own, then over the old one, which the archive may still read)
-            NSString* p = [NSString stringWithUTF8String:path];
+            // (into a file of its own, then renamed: a file is whole or not there)
+            NSString* p = _sg_warm_archive_path(path, _sg_warm_archive_file);
             NSString* tmp = [p stringByAppendingString:@".tmp"];
             NSError* err = nil;
             if ([_sg_warm_archive serializeToURL:[NSURL fileURLWithPath:tmp] error:&err]
-                && rename([tmp UTF8String], path) == 0) {
+                && rename([tmp UTF8String], [p UTF8String]) == 0) {
                 _sg_warm_archive_dirty = false;
                 r = 1;
             } else {
-                fprintf(stderr, "drie: the pipeline archive can't be saved to %s (%s)\n", path,
+                fprintf(stderr, "drie: the pipeline archive can't be saved to %s (%s)\n", [p UTF8String],
                     err ? [err.localizedDescription UTF8String] : "rename failed");
                 r = -1;
             }
@@ -150,8 +180,8 @@ id<MTLRenderPipelineState> _sg_warm_render_pipeline(MTLRenderPipelineDescriptor*
     id<MTLDevice> device = _sg.mtl.device;
     id<MTLBinaryArchive> archive = _sg_warm_archive;
     if (!archive) return [device newRenderPipelineStateWithDescriptor:rp_desc error:err];
-    rp_desc.binaryArchives = @[archive];
-    // (looked up with the archive held: it isn't added to meanwhile)
+    rp_desc.binaryArchives = _sg_warm_archives;
+    // (looked up with this run's archive held: it isn't added to meanwhile)
     os_unfair_lock_lock(&_sg_warm_archive_lock);
     id<MTLRenderPipelineState> rps = [device newRenderPipelineStateWithDescriptor:rp_desc
         options:MTLPipelineOptionFailOnBinaryArchiveMiss reflection:nil error:nil];

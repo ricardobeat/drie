@@ -7,8 +7,11 @@
 // - A second process loads it and renders the same scene: every pipeline comes from the
 //   archive (MTLPipelineOptionFailOnBinaryArchiveMiss finds it), none is compiled, and the
 //   picture is the first's.
-// - A file that isn't an archive is taken for an empty one: everything is compiled, and the
-//   picture is the same.
+// - A third renders the scene with one more node material: only its pipelines are compiled,
+//   and saved into the archive's second file (ARCHIVE.1); a fourth finds every pipeline in the
+//   two files.
+// - A file that isn't an archive is taken for none: everything is compiled, and the picture is
+//   the same.
 //
 // Run it with `just test pipeline_archive`.
 module pipeline_archive_test;
@@ -20,6 +23,7 @@ const int H = 120;
 const String DIR = "tests/build/pipeline_archive";
 const String ARCHIVE = "tests/build/pipeline_archive/pipelines.archive";
 const String PICTURE = "tests/build/pipeline_archive/first.rgba";
+const String PICTURE_MORE = "tests/build/pipeline_archive/more.rgba";
 
 int failures;
 
@@ -28,9 +32,9 @@ fn void expect(bool ok, String what) {
     if (!ok) failures++;
 }
 
-// The scene rendered (till no draw waits for its program) with the archive `archive`; its
-// pixels into `px`.
-fn void render(String archive, char[] px) {
+// The scene (with one more box, if `more`) rendered till no draw waits for its program, with
+// the archive `archive`; its pixels into `px`.
+fn void render(String archive, char[] px, bool more) {
     Renderer* renderer = drie::renderer(antialias: false, width: W, height: H);
     renderer.init_headless();
     renderer.compile_in_background = true;
@@ -56,6 +60,13 @@ fn void render(String archive, char[] px) {
     plain.position = { 0.8f, 0.5f, 0 };
     plain.cast_shadow = true;
     scene.add(plain);
+    if (more) {
+        Material* m2 = drie::mesh_standard_material(color: 0xffffff);
+        m2.color_node = nodes::color(0xffe080) * nodes::uv().x();
+        Mesh* third = drie::mesh(drie::box_geometry(0.6f, 0.6f, 0.6f), m2);
+        third.position = { 0, 0.3f, 1.2f };
+        scene.add(third);
+    }
     PerspectiveCamera* camera = drie::perspective_camera(50, (float)W / H, 0.1f, 50);
     camera.position = { 0, 3, 5 };
     camera.look_at_vec({ 0, 0.3f, 0 });
@@ -77,7 +88,8 @@ fn void render(String archive, char[] px) {
 
 fn int run(String archive, String want) {
     char[] px = mem::new_array(char, (sz)W * H * 4);
-    render(archive, px);
+    bool more = want.starts_with("more");
+    render(archive, px, more);
     int[2] n = drie::pipeline_archive_counts();
     io::printfn("%s: %d pipelines from the archive, %d compiled and added", archive, n[0], n[1]);
     switch (want) {
@@ -86,12 +98,20 @@ fn int run(String archive, String want) {
             expect(file::exists(archive), "and the archive is written");
             file::save(PICTURE, px)!!;
             return failures ? 1 : 0;
+        case "more":
+            expect(n[0] > 0 && n[1] > 0, "with one more material, only its pipelines are compiled and added");
+            expect(file::exists(ARCHIVE.tconcat(".1")), "into the archive's second file");
+            file::save(PICTURE_MORE, px)!!;
+            return failures ? 1 : 0;
+        case "more_loaded":
+            expect(n[0] > 0 && n[1] == 0, "with its two files, every pipeline comes from the archive");
+            expect(!file::exists(ARCHIVE.tconcat(".2")), "and no file is added");
         case "loaded":
             expect(n[0] > 0 && n[1] == 0, "with the archive, every pipeline comes from it");
         case "broken":
-            expect(n[1] > 0, "a file that isn't an archive is an empty one: the pipelines are compiled");
+            expect(n[1] > 0, "a file that isn't an archive is none: the pipelines are compiled");
     }
-    char[] first = file::load(mem, PICTURE)!!;
+    char[] first = file::load(mem, more ? PICTURE_MORE : PICTURE)!!;
     int differ;
     foreach (i, c : px) if (math::abs((int)c - first[i]) > 2) differ++;
     expect(differ == 0, string::tformat("the picture is the first run's (%d bytes differ)", differ));
@@ -102,10 +122,13 @@ fn int main(String[] args) {
     if (args.len == 4 && args[1] == "--run") return run(args[2], args[3]);
     (void)path::mkdir(DIR, true);
     (void)file::delete(ARCHIVE);
+    (void)file::delete(ARCHIVE.tconcat(".1"));
+    (void)file::delete(ARCHIVE.tconcat(".2"));
     (void)file::delete(PICTURE);
     String broken = DIR.tconcat("/broken.archive");
     file::save(broken, "not an archive")!!;
-    String[2][3] runs = { { ARCHIVE, "new" }, { ARCHIVE, "loaded" }, { broken, "broken" } };
+    (void)file::delete(broken.tconcat(".1"));
+    String[2][5] runs = { { ARCHIVE, "new" }, { ARCHIVE, "loaded" }, { ARCHIVE, "more" }, { ARCHIVE, "more_loaded" }, { broken, "broken" } };
     foreach (r : runs) {
         // (each run its own process: the archive is loaded once, at the GPU's setup)
         int? code = process::run({ args[0], "--run", r[0], r[1] }, INHERIT_ENV | INHERIT_STDIO);
