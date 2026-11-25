@@ -67,7 +67,10 @@ fn Node ShadowFns.tap(&self, Node tiled, Node rect, Node texel, Node uv, Node z)
         Node r = node_param(f, 1);
         Node tx = node_param(f, 2);
         Node at = node_param(f, 3);
-        Node d = node_param(f, 4);
+        // (a depth past the map's far plane at its back, where whatever the map holds is still
+        // in front: a light that reaches further than its shadow, a rect area light, is hidden
+        // there too)
+        Node d = nodes::min(node_param(f, 4), 0.9999f);
         // stay half a texel inside the tile: the neighbours belong to other lights
         Node in_tile = r.xy() + nodes::clamp(at, nodes::vec2(tx), nodes::vec2(tx.one_minus())) * r.swizzle("zw");
         Node atlas;
@@ -156,10 +159,10 @@ fn int ShadowFns.make_light(&self) {
     Node sp = m * nodes::vec4(p, 1);
     st[ns++] = nodes::if_then(sp.w().less_than_equal(nodes::num(0)), nodes::block(node_return(nodes::num(1))));
     Node linear = nodes::logical_and(params.x().greater_than(nodes::num(1.5f)), params.x().less_than(nodes::num(2.5f)));
+    // (past its far plane is in the map: shadow_tap)
     Node c = shadow_point(sp, soft, linear);
     Node outside = nodes::logical_or(nodes::logical_or(c.x().less_than(nodes::num(0)), c.x().greater_than(nodes::num(1))),
-                                     nodes::logical_or(nodes::logical_or(c.y().less_than(nodes::num(0)), c.y().greater_than(nodes::num(1))),
-                                                       c.z().greater_than(nodes::num(1))));
+                                     nodes::logical_or(c.y().less_than(nodes::num(0)), c.y().greater_than(nodes::num(1))));
     st[ns++] = nodes::if_then(outside, nodes::block(node_return(nodes::num(1))));
     Node tiled = params.x().greater_than(nodes::num(1.5f));
     // (a map of the atlas that isn't drawn: lit)
