@@ -1116,6 +1116,9 @@ vec2 vsm_moments(bool tiled, vec4 rect, float texel, vec2 uv) {
 
 // 1 where the light's map has nothing nearer than depth `z` at `uv`.
 float shadow_tap(bool tiled, vec4 rect, float texel, vec2 uv, float z) {
+    // (a depth past the map's far plane at its back, where whatever the map holds is still in
+    // front: a light that reaches further than its shadow, a rect area light, is hidden there too)
+    z = min(z, 0.9999);
 #ifdef VSM
     // (with VSM: nearer than the mean depth)
     return step(z, vsm_moments(tiled, rect, texel, uv).x);
@@ -1153,7 +1156,8 @@ float light_shadow_of(vec3 light_pos, int si, vec3 n) {
     vec4 soft = spot_shadow_data[si].soft;
     bool linear = params.x > 1.5 && params.x < 2.5;
     vec3 c = shadow_point(sp, soft, linear);
-    if (c.x < 0.0 || c.x > 1.0 || c.y < 0.0 || c.y > 1.0 || c.z > 1.0) return 1.0;
+    // (past its far plane is in the map: shadow_tap)
+    if (c.x < 0.0 || c.x > 1.0 || c.y < 0.0 || c.y > 1.0) return 1.0;
     // (a map of the atlas that isn't drawn: lit)
     if (params.x > 1.5 && spot_shadow_data[si].rect.z <= 0.0) return 1.0;
 #ifdef VSM
