@@ -34,6 +34,15 @@ static bool _sg_warm_pipeline[SG_WARM_JOBS];
 // block never finished, and a rock's material never drawn.) Its slot stays taken.
 #define SG_WARM_GIVE_UP_SECONDS 60.0
 
+// DRIE_WARM_TIMES=1 in the environment: each job prints how long its libraries (source to
+// AIR) and its pipeline (AIR to the GPU's code) took.
+static bool _sg_warm_times(void) {
+    static int on = -1;
+    if (on < 0) on = getenv("DRIE_WARM_TIMES") != NULL;
+    return on == 1;
+}
+
+
 static void _sg_warm_started_now(int job) {
     _sg_warm_started[job] = CFAbsoluteTimeGetCurrent();
     _sg_warm_given_up[job] = false;
@@ -124,16 +133,22 @@ int sg_warm_begin(const sg_shader_desc* shader_desc, const sg_pipeline_desc* pip
         @autoreleasepool {
             int state = 3;
             NSError* err = nil;
+            double t0 = CFAbsoluteTimeGetCurrent();
             id<MTLLibrary> vs_lib = [device newLibraryWithSource:vs_src options:nil error:&err];
             id<MTLLibrary> fs_lib = vs_lib ? [device newLibraryWithSource:fs_src options:nil error:&err] : nil;
             id<MTLFunction> vs = vs_lib ? [vs_lib newFunctionWithName:vs_entry] : nil;
             id<MTLFunction> fs = fs_lib ? [fs_lib newFunctionWithName:fs_entry] : nil;
+            double t1 = CFAbsoluteTimeGetCurrent();
             if (vs && fs) {
                 rp_desc.vertexFunction = vs;
                 rp_desc.fragmentFunction = fs;
                 id<MTLRenderPipelineState> rps = [device newRenderPipelineStateWithDescriptor:rp_desc error:&err];
                 if (rps) state = 2;
                 _SG_OBJC_RELEASE(rps);
+            }
+            if (_sg_warm_times()) {
+                fprintf(stderr, "drie warm: pipeline job %d: library %.1f ms, pipeline %.1f ms\n", job,
+                    (t1 - t0) * 1000.0, (CFAbsoluteTimeGetCurrent() - t1) * 1000.0);
             }
             _SG_OBJC_RELEASE(vs);
             _SG_OBJC_RELEASE(fs);
@@ -173,12 +188,16 @@ int sg_warm_shader_begin(const sg_shader_desc* shader_desc) {
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         @autoreleasepool {
             NSError* err = nil;
+            double t0 = CFAbsoluteTimeGetCurrent();
             id<MTLLibrary> lib = [device newLibraryWithSource:vs_src options:nil error:&err];
             bool ok = lib != nil;
             _SG_OBJC_RELEASE(lib);
             lib = ok ? [device newLibraryWithSource:fs_src options:nil error:&err] : nil;
             ok = lib != nil;
             _SG_OBJC_RELEASE(lib);
+            if (_sg_warm_times()) {
+                fprintf(stderr, "drie warm: shader job %d: library %.1f ms\n", job, (CFAbsoluteTimeGetCurrent() - t0) * 1000.0);
+            }
             atomic_store(&_sg_warm_jobs[job], ok ? 2 : 3);
         }
     });
