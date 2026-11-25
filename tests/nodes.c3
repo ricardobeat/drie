@@ -289,8 +289,8 @@ fn int main(String[] args) {
         }
         expect(worst < 12, string::tformat("%s: the balls as in the first picture (%.1f)", name, worst));
     }
-    // statements and integers: a loop with a break, a variable, uints' bits and an int's
-    // remainder, unlit, against the same value as a constant (0.5, 0.5, 0.5)
+    // statements and integers: a loop with a break, a variable, uints' bits, a number's bits
+    // and an int's remainder, unlit, against the same value as a constant (0.5, 0.5, 0.5)
     {
         Scene* flat = drie::scene();
         Node sum = nodes::variable(nodes::num(0));
@@ -304,7 +304,9 @@ fn int main(String[] args) {
         Node h = nodes::variable(nodes::uint_(0xdeadbeef));
         Node bits = nodes::seq(nodes::block(h, h.assign(nodes::bit_xor(nodes::shift_right(h, nodes::uint_(28)), nodes::uint_(0)))), h);
         Node top = nodes::convert(bits, FLOAT) / 26;
-        Node r = nodes::convert(nodes::rem(nodes::int_(7), nodes::int_(4)), FLOAT) / 6;
+        // (1.0's exponent: 127)
+        Node exponent = nodes::convert(nodes::shift_right(nodes::as_uint(nodes::num(1)), nodes::uint_(23)), FLOAT) / 254;
+        Node r = (nodes::convert(nodes::rem(nodes::int_(7), nodes::int_(4)), FLOAT) / 6 + exponent) * 0.5f;
         Material* built = drie::mesh_basic_material(color: 0xffffff);
         built.color_node = nodes::vec3(half, top, r);
         Material* plain = drie::mesh_basic_material(color: 0xffffff);

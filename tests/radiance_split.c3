@@ -70,5 +70,28 @@ fn int main() {
         return 1;
     }
     io::printn("ok   sparse Split Radiance Cascades bounced red light onto white wall");
+
+    // the back wall drawn forward (a clear coat keeps it out of the G-buffer): its program
+    // reads the cascades' hash itself
+    MeshStandardMaterial* coated = drie::mesh_standard_material(color: 0xe8e8e8, roughness: 0.9f);
+    coated.clearcoat = 1;
+    coated.clearcoat_roughness = 1;
+    back_wall.material = coated;
+    for (int f = 0; f < 4 || (f < 400 && renderer.compiling()[0] > 0); f++) {
+        renderer.render(scene, cam);
+        drie::commit();
+    }
+    renderer.render(scene, cam);
+    drie::commit();
+    readback::read_image(rt.texture_image, W, H, px.ptr);
+    png::write("tests/build/radiance_split_forward.png", px, W, H);
+    r = (int)px[idx];
+    g = (int)px[idx + 1];
+    io::printfn("forward back wall center pixel: [%d, %d, %d]", r, g, (int)px[idx + 2]);
+    if (r < g + 20 || r < 40) {
+        io::printn("FAIL expected the red bounce on the back wall drawn forward too");
+        return 1;
+    }
+    io::printn("ok   drawn forward, it takes the red bounce too");
     return 0;
 }
