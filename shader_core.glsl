@@ -3352,6 +3352,8 @@ void main() {
                 q[2] = to - hw + hh;
                 q[3] = to + hw + hh;
                 vec3 c = ra.color.rgb * fog_transmittance(fog_distance(ra.pos.xyz, v_world_pos));
+                // RectAreaLight.shadow: cast from its centre
+                if (ra.shadow.x >= 0.0) c *= point_shadow(ra, geo_n);
                 spec += c * fresnel * ltc_evaluate(n, v, m_inv, q);
                 outc += c * diffuse_color * ltc_evaluate(n, v, mat3(1.0), q);
 #ifdef PHYSICAL
