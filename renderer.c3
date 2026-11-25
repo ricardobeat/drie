@@ -330,9 +330,6 @@ struct Renderer {
     Vector3 cull_box_max;
     // LOD distances are multiplied by this (above 1 keeps detail and draws further).
     float lod_scale;
-    // For the application's own shader hooks (see `shaders`), which read them as
-    // `frame_custom[0]` and `[1]`, the same for every draw.
-    Vec4[2] custom;
     // The lens's focus, for Material.defocus: a 1x1 map whose r is the distance in focus (m;
     // BokehPass.focus_map()), and the blur of something at distance z, in pixels of the
     // render: min(focus_aperture / f * |1 - f / z|, focus_maxblur) (BokehPass's aperture and
@@ -3032,7 +3029,7 @@ fn VsParams vs_params_of(DrawItem* item, Mat4 view_proj, bool normals = true) @l
         .normal_mat = normals ? model.invert()
         .transpose() : model, .uv_transform = uv_transform(
             mat
-        ), .sway = sway_params(mat), .vs_material_custom = mat.custom, .vs_frame_custom = state.renderer.custom, };
+        ), .sway = sway_params(mat), };
     if (state.motion) {
         // the first time this frame: what was this frame's matrix is the last frame's now (or,
         // not drawn then, it stood where it is)
@@ -3618,7 +3615,6 @@ fn void draw_deferred_lighting(
         : (Vec4) { env_map ? 1 : 0, env_map ? scene.environment_intensity : 1, env_diffuse ? 1 : 0, env_map ? env_map.env_distance_range : 0 };
     df.env_combine = { };
     df.reflector_params = { };
-    df.frame_custom = r.custom;
     df.ssr_view_proj = r.ssr_view_proj;
     df.ssr_params = { ssr ? 1.0f : 0.0f, r.ssr_reach, (float)(r.ssr_frame % 64), zo ? 1 : 0 };
     df.ssr_thickness = { ssr && r.ssr_back.id ? 1 : 0, r.ssr_reach, 0, 0 };
@@ -3862,7 +3858,6 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     fs.env_pos = { ...mat.env_position, boxed ? 1 : 0 };
     fs.env_box_min = { ...mat.env_box_min, 0 };
     fs.env_box_max = { ...mat.env_box_max, 0 };
-    fs.material_custom = mat.custom;
     // (a draw without the picture behind it, the transmission pass's own, leaves it off)
     fs.transmission_params = { mat.ior > 0 ? mat.ior : 1.5f, mat.thickness, mat.dispersion, mat.attenuation_distance };
     fs.transmission_color = { ...color_to_linear(mat.attenuation_color), transmission ? mat.transmission : 0 };
@@ -3917,7 +3912,6 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
         math::cos(mat.anisotropy_rotation) * anisotropy,
         math::sin(mat.anisotropy_rotation) * anisotropy
     };
-    fs.frame_custom = r.custom;
     fs.ssr_view_proj = r.ssr_view_proj;
     fs.ssr_params = { ssr ? mat.ssr : 0, r.ssr_reach, (float)(r.ssr_frame % 64), depth_zero_to_one() ? 1 : 0 };
     fs.ssr_thickness = { ssr && r.ssr_back.id ? 1 : 0, mat.ssr_reach > 0 ? mat.ssr_reach : r.ssr_reach, 0, 0 };

@@ -1,23 +1,12 @@
-// The uber shader, shader_core.glsl, with hooks that do nothing. drie's materials draw with
-// generated programs (materials_nodes.c3); of this build drie uses the structs and binding
-// slots, and the depth and shadow programs (Renderer.render_back_faces, the shadow atlas's
-// clears) and clear_rect.
+// The uber shader, shader_core.glsl. drie's materials draw with generated programs
+// (materials_nodes.c3); of this build drie uses the structs and binding slots, the depth and
+// shadow programs (Renderer.render_back_faces, the shadow atlas's clears) and clear_rect.
 // Regenerate generated/shader.c3 with: just shaders
 @header module drie::shaders;
 @header import drie;
 
 @ctype mat4 Mat4
 @ctype vec4 Vec4
-
-@block vertex_hooks
-void vertex_hook(inout vec3 world, vec3 local, mat4 model) {}
-@end
-
-@block surface_hooks
-void surface_hook(vec3 geo_n, inout vec4 base, inout float rough, inout float metal) {}
-void normal_hook(vec3 geo_n, inout vec3 n) {}
-void reflection_hook(vec3 dir, inout vec3 sky) {}
-@end
 
 @include tonemapping.glsl
 @include shader_core.glsl
