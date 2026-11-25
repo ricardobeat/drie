@@ -4,6 +4,9 @@
 //   - the same run twice gives the same points, bit for bit
 //   - two panels hung side by side (a parted curtain): a capsule (a person) walks through the
 //     gap, pushes them aside without going into them, and they fall back to where they hung
+//   - box and plane colliders: a sheet pressed on a wall stays in front of it, one falling on a
+//     slope stays on it, and a door swinging through a sheet pushes it without any of it
+//     going into or through the door
 //   - the cost of one curtain's update
 //
 //   just test cloth
@@ -157,6 +160,96 @@ fn int main(String[] args) {
         t.update(1.0f / 60);
         float moved = max_distance(before, t.pos);
         expect(moved < 0.005f, string::tformat("a body moved 3 m in a frame jumps there, not through the sheet (%.4f m)", moved));
+    }
+
+    // a gale blows a sheet against a wall (a box) behind it: the cloth stays in front of its face
+    {
+        Cloth* t = curtain(-0.6, 1.2, 24);
+        t.floor_y = 0;
+        run(t, 6);
+        t.add_box({ 2, 1.5, 0.1 }, drie::mat4_compose({ 0, 1.5, -0.45 }, { 0, 0, 0 }, { 1, 1, 1 }));
+        t.wind = { 0, 0, -8 };
+        t.gust = 0.5;
+        float worst;
+        float reached = 1;
+        for (int f = 0; f < 240; f++) {
+            t.update(1.0f / 60);
+            foreach (p : t.pos) {
+                worst = math::max(worst, -0.35f - p.z);
+                reached = math::min(reached, p.z);
+            }
+        }
+        expect(finite(t) && reached < -0.3f && worst < 0.005f,
+               string::tformat("box: a sheet blown onto a wall stays in front of it (down to z %.3f; %.4f m in at most)", reached, worst));
+    }
+
+    // a plane, tilted: the points stay on its side
+    {
+        Cloth* t = curtain(-0.6, 1.2, 24);
+        Vector3 nrm = { 0, 0.8, 0.6 };
+        t.add_plane({ 0, 0.8, 0 }, nrm);
+        run(t, 4);
+        float under;
+        foreach (p : t.pos) under = math::max(under, -(p - (Vector3) { 0, 0.8, 0 }).dot(nrm.normalize()));
+        expect(finite(t) && under < 0.001f, string::tformat("plane: a sheet falls onto a slope and stays on it (%.4f m under)", under));
+    }
+
+    // a door (a thin box on a hinge) swings through a hanging sheet at 2.4 m/s at its edge, and
+    // back: no point goes into it, and none crosses from one face to the other within it
+    {
+        Cloth* t = curtain(-0.6, 1.2, 24);
+        t.floor_y = 0;
+        run(t, 6);
+        Vector3 hinge = { 0, 0.9, 0.6 };
+        Vector3 half = { 0.45, 0.9, 0.022 };
+        int door;
+        int inside;
+        int through;
+        float worst;
+        float swept;
+        // per point: its side of the leaf when last within its span (0: not)
+        float[] side = mem::new_array(float, t.pos.len);
+        defer free(side);
+        Vector3[] start = copy(t.pos);
+        defer free(start);
+        for (int f = 0; f < 216; f++) {
+            // open (0 to 180 degrees) in 1.2 s, held 0.6 s, shut in 1.2 s
+            float k = f < 72 ? (float)f / 72 : f < 108 ? 1 : 1 - (float)(f - 108) / 72;
+            float a = k * (float)math::PI;
+            Vector3 d = { math::cos(a), 0, -math::sin(a) };
+            drie::Mat4 place = drie::mat4_compose(hinge + d * half.x, { 0, a, 0 }, { 1, 1, 1 });
+            if (f == 0) {
+                door = t.add_box(half, place);
+            } else {
+                t.move_box(door, place);
+            }
+            t.update(1.0f / 60);
+            // the leaf's frame: x along it, z out of its face
+            Vector3 c = hinge + d * half.x;
+            Vector3 az = { math::sin(a), 0, math::cos(a) };
+            foreach (i, p : t.pos) {
+                if (t.inv_mass[i] == 0) continue;
+                swept = math::max(swept, (p - start[i]).length());
+                Vector3 rel = p - c;
+                float lx = rel.dot(d);
+                float ly = rel.y;
+                float lz = rel.dot(az);
+                if (math::abs(lx) > half.x - 0.02f || math::abs(ly) > half.y - 0.02f) {
+                    side[i] = 0;
+                    continue;
+                }
+                float in = half.z + t.thickness - math::abs(lz);
+                if (in > 0.005f) {
+                    inside++;
+                    worst = math::max(worst, in);
+                }
+                float now = lz < 0 ? -1 : 1;
+                if (side[i] != 0 && side[i] != now) through++;
+                side[i] = now;
+            }
+        }
+        expect(finite(t) && swept > 0.3f && inside == 0 && through == 0,
+               string::tformat("box: a swinging door pushes the sheet (%.2f m), none of it in the door (%d, %.4f m) or through it (%d)", swept, inside, worst, through));
     }
 
     // a fine pleated grid over a coarse cloth: drawn where its rest shape is, and carried along

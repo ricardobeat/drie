@@ -9,8 +9,9 @@
 //   - tethers: no point gets further from its nearest pin than it is along the cloth at rest
 //
 // Pinned points (inverse mass 0) are held where pin() or move_pin() puts them. Colliders are
-// spheres and capsules, moved with move_collider(); the points go where the collider was at
-// each substep, so a fast capsule does not pass through. The wind pushes on each triangle by
+// spheres, capsules, boxes (turned any way: a door, a wall) and planes, moved with
+// move_collider() or move_box(); the points go where the collider was at each substep, so a
+// fast capsule or a swinging door does not pass through. The wind pushes on each triangle by
 // how much the air crosses it, and gusts with a deterministic noise in time and space.
 // Everything is in world space; the same calls give the same result every run.
 //
@@ -41,9 +42,12 @@ const float STILL = 1e-4f;
 enum ColliderKind : char {
     SPHERE,
     CAPSULE,
+    BOX,
+    PLANE,
 }
 
-// A sphere (a) or a capsule (the segment a..b) of `radius`.
+// A sphere (a) or a capsule (the segment a..b) of `radius`; a box centered at a, `half` its
+// half size along its `axes`; a plane through a, the points kept on the side axes[0] faces.
 struct Collider {
     ColliderKind kind;
     float radius;
@@ -51,6 +55,9 @@ struct Collider {
     Vector3 from_a, from_b;
     Vector3 a, b;
     bool active;
+    Vector3 half;
+    Vector3[3] from_axes;
+    Vector3[3] axes;
 }
 
 struct Link {
@@ -409,12 +416,12 @@ fn void Cloth.unpin(&self, uint i) {
 fn void Cloth.move_pin(&self, uint i, Vector3 to) => self.pin_to[i] = to;
 
 fn int Cloth.add_sphere(&self, Vector3 center, float radius) {
-    self.colliders.push({ SPHERE, radius, center, center, center, center, true });
+    self.colliders.push({ .kind = SPHERE, .radius = radius, .from_a = center, .from_b = center, .a = center, .b = center, .active = true });
     return (int)self.colliders.len() - 1;
 }
 
 fn int Cloth.add_capsule(&self, Vector3 a, Vector3 b, float radius) {
-    self.colliders.push({ CAPSULE, radius, a, b, a, b, true });
+    self.colliders.push({ .kind = CAPSULE, .radius = radius, .from_a = a, .from_b = b, .a = a, .b = b, .active = true });
     return (int)self.colliders.len() - 1;
 }
 
@@ -429,6 +436,46 @@ fn void Cloth.move_collider(&self, int id, Vector3 a, Vector3 b = { 0, 0, 0 }) {
     }
     k.a = a;
     k.b = b;
+}
+
+fn Vector3 column(drie::Mat4 m, int i) @local => { m[i][0], m[i][1], m[i][2] };
+
+// A box of half size `half`, placed by `placement` (centered on its origin, its axes along the
+// matrix's columns; their length is left out). Move it with move_box.
+fn int Cloth.add_box(&self, Vector3 half, drie::Mat4 placement) {
+    Collider k = { .kind = BOX, .half = half, .active = true };
+    k.a = column(placement, 3);
+    for (int i = 0; i < 3; i++) k.axes[i] = column(placement, i).normalize();
+    k.from_a = k.a;
+    k.from_axes = k.axes;
+    self.colliders.push(k);
+    return (int)self.colliders.len() - 1;
+}
+
+// A plane through `point`: the points stay on the side `normal` faces (thickness away).
+fn int Cloth.add_plane(&self, Vector3 point, Vector3 normal) {
+    Collider k = { .kind = PLANE, .a = point, .from_a = point, .active = true };
+    k.axes[0] = normal.normalize();
+    k.from_axes = k.axes;
+    self.colliders.push(k);
+    return (int)self.colliders.len() - 1;
+}
+
+// Moves (and turns) a box. As with move_collider, the cloth sees it travel there over the next
+// update's steps; from inactive, further than JUMP or turned more than 60 degrees, it appears
+// there.
+fn void Cloth.move_box(&self, int id, drie::Mat4 placement) {
+    Collider* k = &self.colliders[id];
+    Vector3 a = column(placement, 3);
+    Vector3[3] axes;
+    for (int i = 0; i < 3; i++) axes[i] = column(placement, i).normalize();
+    bool turned = axes[0].dot(k.from_axes[0]) < 0.5f || axes[1].dot(k.from_axes[1]) < 0.5f;
+    if (!k.active || (a - k.from_a).length() > JUMP || turned) {
+        k.from_a = a;
+        k.from_axes = axes;
+    }
+    k.a = a;
+    k.axes = axes;
 }
 
 fn void Cloth.set_collider_active(&self, int id, bool active) => self.colliders[id].active = active;
@@ -450,6 +497,7 @@ fn int Cloth.update(&self, float dt) {
         foreach (&k : self.colliders) {
             k.from_a = k.a;
             k.from_b = k.b;
+            k.from_axes = k.axes;
         }
     }
     if (self.mesh) self.write_mesh(self.accumulator / STEP);
@@ -493,7 +541,7 @@ fn void Cloth.step_once(&self, float from = 0, float until = 1) {
         solve_links(p, &self.shear);
         solve_links(p, &self.bend);
         self.solve_tethers();
-        self.collide(from + (until - from) * (float)(s + 1) * step_frac);
+        self.collide(from + (until - from) * (float)(s + 1) * step_frac, from + (until - from) * (float)s * step_frac);
         for (uint i = 0; i < n; i++) {
             if (w[i] != 0) v[i] = (p[i] - q[i]) * keep;
         }
@@ -669,14 +717,23 @@ fn float gust_at(Cloth* c, int col, int row) @local @inline {
     return 0.6f * (x[0] * y[1] + x[1] * y[0]) + 0.4f * (x[2] * y[3] + x[3] * y[2]);
 }
 
-// Pushes the points out of the colliders (placed at `t` of their way) and above the floor.
-fn void Cloth.collide(&self, float t) {
+// Pushes the points out of the colliders (placed at `t` of their way; at `t_prev` the substep
+// before) and above the floor.
+fn void Cloth.collide(&self, float t, float t_prev = 0) {
     uint n     = self.count();
     Vector3* p = self.pos.ptr;
     Vector3* q = self.prev.ptr;
     float* w   = self.inv_mass.ptr;
     foreach (&k : self.colliders) {
         if (!k.active) continue;
+        if (k.kind == BOX) {
+            self.collide_box(k, t, t_prev);
+            continue;
+        }
+        if (k.kind == PLANE) {
+            self.collide_plane(k, t);
+            continue;
+        }
         Vector3 a  = k.from_a + (k.a - k.from_a) * t;
         Vector3 b  = k.from_b + (k.b - k.from_b) * t;
         float r    = k.radius + self.thickness;
@@ -712,6 +769,94 @@ fn void Cloth.collide(&self, float t) {
             p[i].x -= moved.x * self.friction;
             p[i].z -= moved.z * self.friction;
         }
+    }
+}
+
+// The box's center and axes at `t` of its way.
+fn Vector3 box_at(Collider* k, float t, Vector3[3]* axes) @local {
+    Vector3 x = k.from_axes[0] + (k.axes[0] - k.from_axes[0]) * t;
+    Vector3 y = k.from_axes[1] + (k.axes[1] - k.from_axes[1]) * t;
+    x = x.normalize();
+    Vector3 z = x.cross(y).normalize();
+    (*axes)[0] = x;
+    (*axes)[1] = z.cross(x);
+    (*axes)[2] = z;
+    return k.from_a + (k.a - k.from_a) * t;
+}
+
+// Pushes the points out of a box, through the face they came in by: the face their place a
+// substep ago was outside of, in the box as it was then (the nearest face for a point that was
+// already in). So a thin box (a door) moving or met edge on sends no point out the far side.
+fn void Cloth.collide_box(&self, Collider* k, float t, float t_prev) {
+    uint n     = self.count();
+    Vector3* p = self.pos.ptr;
+    Vector3* q = self.prev.ptr;
+    float* w   = self.inv_mass.ptr;
+    Vector3[3] ax;
+    Vector3[3] was_ax;
+    Vector3 c     = box_at(k, t, &ax);
+    Vector3 was_c = box_at(k, t_prev, &was_ax);
+    Vector3 h     = k.half + (Vector3) { self.thickness, self.thickness, self.thickness };
+    // the box around it, for a cheap test first
+    Vector3 ext;
+    for (int i = 0; i < 3; i++) ext += (Vector3) { math::abs(ax[i].x), math::abs(ax[i].y), math::abs(ax[i].z) } * h[i];
+    Vector3 lo = c - ext;
+    Vector3 hi = c + ext;
+    for (uint i = 0; i < n; i++) {
+        Vector3 pi = p[i];
+        if (pi.x < lo.x || pi.y < lo.y || pi.z < lo.z || pi.x > hi.x || pi.y > hi.y || pi.z > hi.z) continue;
+        if (w[i] == 0) continue;
+        Vector3 d = pi - c;
+        Vector3 l = { d.dot(ax[0]), d.dot(ax[1]), d.dot(ax[2]) };
+        if (math::abs(l.x) >= h.x || math::abs(l.y) >= h.y || math::abs(l.z) >= h.z) continue;
+        Vector3 e = q[i] - was_c;
+        Vector3 was = { e.dot(was_ax[0]), e.dot(was_ax[1]), e.dot(was_ax[2]) };
+        int face = -1;
+        float side;
+        float least = FAR;
+        for (int j = 0; j < 3; j++) {
+            if (math::abs(was[j]) < h[j]) continue;
+            float depth = h[j] - math::abs(l[j]);
+            if (depth < least) {
+                least = depth;
+                face = j;
+                side = was[j] < 0 ? -1 : 1;
+            }
+        }
+        if (face < 0) {
+            for (int j = 0; j < 3; j++) {
+                float depth = h[j] - math::abs(l[j]);
+                if (depth < least) {
+                    least = depth;
+                    face = j;
+                    side = l[j] < 0 ? -1 : 1;
+                }
+            }
+        }
+        l[face] = side * h[face];
+        Vector3 out   = c + ax[0] * l.x + ax[1] * l.y + ax[2] * l.z;
+        Vector3 nrm   = ax[face] * side;
+        // friction: of the substep's move along the surface, keep (1 - friction)
+        Vector3 moved = out - q[i];
+        Vector3 along = moved - nrm * moved.dot(nrm);
+        p[i] = out - along * self.friction;
+    }
+}
+
+fn void Cloth.collide_plane(&self, Collider* k, float t) {
+    uint n      = self.count();
+    Vector3* p  = self.pos.ptr;
+    Vector3* q  = self.prev.ptr;
+    float* w    = self.inv_mass.ptr;
+    Vector3 nrm = k.axes[0];
+    Vector3 o   = k.from_a + (k.a - k.from_a) * t;
+    for (uint i = 0; i < n; i++) {
+        float d = (p[i] - o).dot(nrm) - self.thickness;
+        if (d >= 0 || w[i] == 0) continue;
+        Vector3 out   = p[i] - nrm * d;
+        Vector3 moved = out - q[i];
+        Vector3 along = moved - nrm * moved.dot(nrm);
+        p[i] = out - along * self.friction;
     }
 }
 
