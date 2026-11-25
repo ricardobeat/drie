@@ -43,6 +43,11 @@ struct BufferGeometry {
     bool line_loop;
     uint index_count;
     bool uploaded;
+    // The vertices change every frame (cloth, see cloth.c3): the vertex buffer is written from
+    // `vertices` the first time the geometry is drawn in each frame, without a new buffer.
+    // Set before the first upload; keep the vertex count.
+    bool dynamic;
+    uint vbuf_frame;
     // counts the uploads: what is worked out from the vertices knows when they change
     uint version;
     // Bounding sphere in local space, computed on upload (or by compute_bounding_sphere).
@@ -264,18 +269,32 @@ fn void BufferGeometry.free_cpu(&self) {
 
 // Uploads vertex/index data to the GPU (called by the renderer).
 fn void BufferGeometry.upload(&self) {
-    if (self.uploaded) return;
+    if (self.uploaded) {
+        if (self.dynamic) self.write_vertices();
+        return;
+    }
     self.version++;
     self.dispose();
     // (nothing to draw: Metal makes no buffer of no bytes)
     if (!self.indices.len() || !self.vertices.len()) return;
     if (self.bounds_radius == 0) self.compute_bounding_sphere();
     self.index_count = (uint)self.indices.len();
-    self.vbuf = sg::make_buffer(
-        &&{
-            .data = { .ptr = self.vertices.entries, .size = (usz)self.vertices.len() * float::size },
-        }
-    );
+    if (self.dynamic) {
+        self.vbuf = sg::make_buffer(
+            &&{
+                .usage = { .vertex_buffer = true, .write_transient = true },
+                .size = (usz)self.vertices.len() * float::size,
+            }
+        );
+        self.vbuf_frame = 0;
+        self.write_vertices();
+    } else {
+        self.vbuf = sg::make_buffer(
+            &&{
+                .data = { .ptr = self.vertices.entries, .size = (usz)self.vertices.len() * float::size },
+            }
+        );
+    }
     self.ibuf = sg::make_buffer(
         &&{
             .usage = { .index_buffer = true },
@@ -292,6 +311,19 @@ fn void BufferGeometry.upload(&self) {
     }
     self.upload_morph();
     self.uploaded = true;
+}
+
+// A dynamic geometry's vertex buffer, written once a frame (a transient buffer holds what was
+// written only for the frame it was written in).
+fn void BufferGeometry.write_vertices(&self) {
+    if (self.vbuf_frame == state.frame + 1) return;
+    self.vbuf_frame = state.frame + 1;
+    sg::write_buffer_transient(
+        &&{
+            .src.data = { .ptr = self.vertices.entries, .size = (usz)self.vertices.len() * float::size },
+            .dst.buffer = self.vbuf,
+        }
+    );
 }
 
 // Sets position morph target deltas: `target_count * vertex_count` vec4s of (dx, dy, dz, 0).
