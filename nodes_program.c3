@@ -2005,6 +2005,7 @@ fn SgShader ShaderProgram.make(&self) {
     }
     SgShaderDesc d = self.desc();
     self.shader = sg::make_shader(&d);
+    sg_warm_archivable(self.shader.id);
     if (sg::query_shader_state(self.shader) != VALID) {
         io::eprintfn("drie: a generated program failed to build.\n--- vertex:\n%s\n--- fragment:\n%s", self.vs, self.fs);
         abort("drie: a generated program failed to build");

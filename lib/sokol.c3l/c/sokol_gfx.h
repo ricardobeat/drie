@@ -18275,8 +18275,8 @@ _SOKOL_PRIVATE sg_resource_state _sg_mtl_create_pipeline(_sg_pipeline_t* pip, co
         #endif
         NSError* err = NULL;
         // drie patch (pipeline archive): made through sokol_warm.h's archive
-        id<MTLRenderPipelineState> _sg_warm_render_pipeline(MTLRenderPipelineDescriptor* rp_desc, NSError** err);
-        id<MTLRenderPipelineState> mtl_rps = _sg_warm_render_pipeline(rp_desc, &err);
+        id<MTLRenderPipelineState> _sg_warm_render_pipeline(MTLRenderPipelineDescriptor* rp_desc, NSError** err, uint32_t shader_id);
+        id<MTLRenderPipelineState> mtl_rps = _sg_warm_render_pipeline(rp_desc, &err, desc->shader.id);
         _SG_OBJC_RELEASE(rp_desc);
         if (nil == mtl_rps) {
             SOKOL_ASSERT(err);
