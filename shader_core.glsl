@@ -238,7 +238,8 @@ layout(binding=0) uniform sampler s_smp;
 layout(binding=1) uniform sampler s_alpha_smp;
 layout(binding=1) uniform shadow_fs_params {
     vec4 s_params;      // x = alpha test threshold (0 = off), y = material opacity, z = 1: has a
-                        //   map, w = 1: has an alpha map (s_alpha, three's alphaMap: its green)
+                        //   map, w = 1: has an alpha map (s_alpha, three's alphaMap: its green);
+                        //   the generated programs' z and w: an atlas map's near and far
     vec4 s_alpha_uv[2]; // the alpha map's uv from v_uv, as uv_rel
 };
 
@@ -1052,14 +1053,23 @@ vec4 fog_volume_at(vec3 p) {
     return mix(a, b, f);
 }
 
-// Distance from the light's plane of a depth in its shadow map, and back.
-float shadow_distance(float z, vec4 soft) {
+// Distance from the light's plane of a depth in its shadow map, and back (`linear`: a map of
+// the atlas, which holds that distance over its reach).
+float shadow_distance(float z, vec4 soft, bool linear) {
+    if (linear) return soft.y + z * (soft.z - soft.y);
     if (soft.w < 0.0) z = 2.0 * z - 1.0;
     return soft.w < 0.0 ? 2.0 * soft.y * soft.z / (soft.z + soft.y - z * (soft.z - soft.y))
                         : soft.y * soft.z / (soft.z - z * (soft.z - soft.y));
 }
 
-float shadow_depth(float d, vec4 soft) {
+// A point in a shadow map from its clip position `sp` (`linear`: a map of the atlas, whose
+// depth is the distance from the light's plane over its reach, soft.y to soft.z).
+vec3 shadow_point(vec4 sp, vec4 soft, bool linear) {
+    return vec3(sp.xy / sp.w, linear ? (sp.w - soft.y) / (soft.z - soft.y) : sp.z / sp.w);
+}
+
+float shadow_depth(float d, vec4 soft, bool linear) {
+    if (linear) return (d - soft.y) / (soft.z - soft.y);
     return soft.w < 0.0 ? 0.5 + 0.5 * ((soft.z + soft.y) * d - 2.0 * soft.y * soft.z) / (d * (soft.z - soft.y))
                         : soft.z * (d - soft.y) / (d * (soft.z - soft.y));
 }
@@ -1138,7 +1148,9 @@ float light_shadow_of(vec3 light_pos, int si, vec3 n) {
     p -= light_pos;
     vec4 sp = m * vec4(p, 1.0);
     if (sp.w <= 0.0) return 1.0;
-    vec3 c = sp.xyz / sp.w;
+    vec4 soft = spot_shadow_data[si].soft;
+    bool linear = params.x > 1.5 && params.x < 2.5;
+    vec3 c = shadow_point(sp, soft, linear);
     if (c.x < 0.0 || c.x > 1.0 || c.y < 0.0 || c.y > 1.0 || c.z > 1.0) return 1.0;
     // (a map of the atlas that isn't drawn: lit)
     if (params.x > 1.5 && spot_shadow_data[si].rect.z <= 0.0) return 1.0;
@@ -1150,8 +1162,8 @@ float light_shadow_of(vec3 light_pos, int si, vec3 n) {
     // and the search for what casts the shadow none
     vec4 spx = m * vec4(p + g_dpdx, 1.0);
     vec4 spy = m * vec4(p + g_dpdy, 1.0);
-    vec3 dx = spx.w > 0.0 ? spx.xyz / spx.w - c : vec3(0.0);
-    vec3 dy = spy.w > 0.0 ? spy.xyz / spy.w - c : vec3(0.0);
+    vec3 dx = spx.w > 0.0 ? shadow_point(spx, soft, linear) - c : vec3(0.0);
+    vec3 dy = spy.w > 0.0 ? shadow_point(spy, soft, linear) - c : vec3(0.0);
     float pixel = max(max(length(dx.xy), length(dy.xy)), 1e-6);
     // rotated disk of taps for a soft edge
     float angle = fract(sin(dot(gl_FragCoord.xy + ssr_params.z * vec2(5.0, 3.0), vec2(12.9898, 78.233))) * 43758.5453) * 6.2831;
@@ -1160,7 +1172,6 @@ float light_shadow_of(vec3 light_pos, int si, vec3 n) {
     float r = params.z * params.w;
     bool tiled = params.x > 1.5;
     vec4 rect = spot_shadow_data[si].rect;
-    vec4 soft = spot_shadow_data[si].soft;
     // how the depth changes over the map along this surface, so that a wide blur does not
     // run the surface into its own shadow
     vec2 grad = vec2(0.0);
@@ -1169,7 +1180,7 @@ float light_shadow_of(vec3 light_pos, int si, vec3 n) {
         // A source with a size: the edge of a shadow is as wide as the source looks from there
         // past the thing that casts it. Sharp where the two touch, wide far behind. How far the
         // caster is comes from asking the map at a few depths, nearer each time.
-        float dr = shadow_distance(c.z, soft);
+        float dr = shadow_distance(c.z, soft, linear);
         float per_m = 1.0 / (abs(soft.w) * dr);
         float search = clamp(soft.x * 1.6 * per_m, r, 0.04);
         most = shadow_taps(14.0);
@@ -1192,7 +1203,7 @@ float light_shadow_of(vec3 light_pos, int si, vec3 n) {
                 float hi = dr;
                 for (int j = 0; j < 5; j++) {
                     float mid = 0.5 * (lo + hi);
-                    if (shadow_tap(tiled, rect, params.z, c.xy + o, shadow_depth(mid, soft)) > 0.5) lo = mid; else hi = mid;
+                    if (shadow_tap(tiled, rect, params.z, c.xy + o, shadow_depth(mid, soft, linear)) > 0.5) lo = mid; else hi = mid;
                 }
                 nearest += 0.5 * (lo + hi);
                 found += 1.0;

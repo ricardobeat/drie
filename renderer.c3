@@ -1493,6 +1493,7 @@ fn SgPipelineDesc shadow_pipeline_desc() @local {
 fn SgPipeline gen_shadow_pipeline(MaterialProgram* gen) @private {
     if (try found = gen.pipelines[0]) return found;
     SgPipelineDesc desc = shadow_pipeline_desc();
+    if (gen.key.atlas_depth) desc.depth.pixel_format = ATLAS_FORMAT;
     record_pipeline({ .key = gen.key, .shared = gen.key.nodes ? gen : null, .shadow = true });
     if (pipeline_warmup) {
         pipeline_warmup.start_generated(gen.program, &desc);
@@ -1503,6 +1504,17 @@ fn SgPipeline gen_shadow_pipeline(MaterialProgram* gen) @private {
     gen.pipelines[0] = pip;
     return pip;
 }
+
+// The shadow atlas's depth (and its cache's): 16 bits. Its perspective maps hold the distance
+// from the light's plane over their reach (build_shadow_graph), as even as the light's reach
+// is long; the sun's cascades keep 32-bit maps of their own.
+const SgPixelFormat ATLAS_FORMAT @local = DEPTH16;
+
+// Set while draw_atlas_casters draws into the atlas: the near and far of the map's light (far 0:
+// an orthographic map, its window depth as it is).
+bool atlas_drawing @local;
+float atlas_near @local;
+float atlas_far @local;
 
 // Clears the atlas's tile at the current viewport to the far depth (a pass clears all of it).
 fn void clear_atlas_tile() @local {
@@ -1528,7 +1540,7 @@ fn void clear_atlas_tile() @local {
                         -1
                     }
                 ),
-                .depth = { .pixel_format = DEPTH, .write_enabled = true, .compare = ALWAYS },
+                .depth = { .pixel_format = ATLAS_FORMAT, .write_enabled = true, .compare = ALWAYS },
                 .color_count = 0,
                 .colors[0].pixel_format = NONE,
                 .sample_count = 1,
@@ -1656,7 +1668,7 @@ fn void grow_depth(SgImage* image, SgView* attachment, SgView* view, int* cur_wi
             .width = width,
             .height = height,
             .sample_count = 1,
-            .pixel_format = DEPTH,
+            .pixel_format = ATLAS_FORMAT,
         }
     );
     *attachment = sg::make_view(&&{ .depth_stencil_attachment = { .image = *image } });
@@ -1686,7 +1698,7 @@ fn void copy_depth(SgView src, int sx, int sy, int dx, int dy, int w, int h) @lo
         state.atlas_copy_pipeline = sg::make_pipeline(
             &&{
                 .shader = make_program(shaders::atlas_copy_shader_desc(sg::query_backend())),
-                .depth = { .pixel_format = DEPTH, .write_enabled = true, .compare = ALWAYS },
+                .depth = { .pixel_format = ATLAS_FORMAT, .write_enabled = true, .compare = ALWAYS },
                 .color_count = 0,
                 .colors[0].pixel_format = NONE,
                 .sample_count = 1,
@@ -2445,12 +2457,17 @@ fn int draw_atlas_casters(Scene* scene, Camera* camera, Light* l, int face, int 
     Mat4 light_rel = from_light ? light_view_proj(l, camera, true, face, size) : vp;
     Vector3 light_pos = from_light ? l.matrix_world.get_position() : (Vector3) { 0, 0, 0 };
     int drawn;
+    atlas_drawing = true;
+    atlas_near = from_light ? math::max(sh.near, 0.01f) : 0;
+    atlas_far = 0;
+    if (from_light) atlas_far = l.light_type == SPOT ? spot_shadow_far((SpotLight*)l) : point_shadow_far(l);
     foreach (&item : state.casters) {
         if (which == 1 && caster_moves(item.mesh, every)) continue;
         if (which == 2 && !caster_moves(item.mesh, every)) continue;
         draw_shadow_item(item, light_rel, light_pos);
         drawn++;
     }
+    atlas_drawing = false;
     state.renderer.info.atlas_casters += drawn;
     return drawn;
 }
@@ -3178,6 +3195,9 @@ fn void spot_map(SpotLight* sl, GpuSpotLight* gs, LightData* g) @local {
 
 // View-projection of the shadow casting spot light. `relative`: of world - the light's
 // position, as the shadow pass and the lookups take it (see relative_view_proj).
+// How far a spot light's shadow map reaches.
+fn float spot_shadow_far(SpotLight* sl) @local => sl.shadow.far > 0 ? sl.shadow.far : (sl.distance > 0 ? sl.distance : 50.0f);
+
 fn Mat4 shadow_view_proj(SpotLight* sl, bool relative = false) @local {
     Vector3 pos = sl.matrix_world.get_position();
     Vector3 dir = spot_direction(sl);
@@ -3186,7 +3206,7 @@ fn Mat4 shadow_view_proj(SpotLight* sl, bool relative = false) @local {
     world[3] = { pos.x, pos.y, pos.z, 1 };
     if (relative) world[3] = { 0, 0, 0, 1 };
     float fov = math::min(sl.angle * 2 * RAD2DEG * clamp(sl.shadow.focus, 0.05f, 1) + 4, 150.0f);
-    float far = sl.shadow.far > 0 ? sl.shadow.far : (sl.distance > 0 ? sl.distance : 50.0f);
+    float far = spot_shadow_far(sl);
     Mat4 proj = mat4_perspective(fov, 1, math::max(sl.shadow.near, 0.01f), far, 1, depth_zero_to_one());
     return proj.mul(world.invert());
 }
@@ -4737,12 +4757,14 @@ fn void draw_shadow_item(DrawItem* item, Mat4 light_vp, Vector3 origin = { 0, 0,
     NodeBuild* build = node_build_of(mat);
     MaterialKey key;
     shadow_key_of(item, &key);
+    key.atlas_depth = atlas_drawing;
     MaterialProgram* gen = material_program(key, build);
     NodeBuild* gen_build = gen.key.nodes ? build : null;
     // The program is still compiling. Draw with the plain material. See material_busy.
     if (gen_build && (material_busy(gen_build, gen) || !gen_shadow_pipeline(gen).id)) {
         note_waiting(m, 2);
         shadow_key_of(item, &key, plain: true);
+        key.atlas_depth = atlas_drawing;
         gen = material_program(key);
         gen_build = null;
         state.shadow_plain = true;
@@ -4777,7 +4799,7 @@ fn void draw_shadow_item(DrawItem* item, Mat4 light_vp, Vector3 origin = { 0, 0,
         .surface_vs = { 0, d.x, d.y, d.z },
     };
     ShadowFsParams sfs = {
-        .s_params = { key.alpha_test ? mat.alpha_test : 0, mat.opacity, 0, 0 },
+        .s_params = { key.alpha_test ? mat.alpha_test : 0, mat.opacity, atlas_near, atlas_far },
         .s_alpha_uv = uv_relative(uv_base(mat), mat.alpha_map),
     };
     @pool() {
@@ -5505,7 +5527,7 @@ fn void note_atlas_info() @local {
     info.atlas_width = state.atlas_width;
     info.atlas_height = state.atlas_height;
     usz pixels = (usz)info.atlas_width * (usz)info.atlas_height;
-    info.atlas_bytes = (pixels + (usz)state.cache_width * (usz)state.cache_height) * 4;
+    info.atlas_bytes = (pixels + (usz)state.cache_width * (usz)state.cache_height) * 2;
     // (the moments and their blur's scratch)
     if (state.vsm_atlas.width) info.atlas_bytes += (usz)state.vsm_atlas.width * (usz)state.vsm_atlas.height * (usz)(state.vsm_format == RG32F ? 16 : 8);
     info.atlas_lights = 0;

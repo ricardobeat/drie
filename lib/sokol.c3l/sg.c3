@@ -303,7 +303,8 @@ constdef SgPixelFormat : uint
     EAC_RG11SN = 66,
     ASTC_4X4_RGBA = 67,
     ASTC_4X4_SRGBA = 68,
-    NUM = 69,
+    DEPTH16 = 69,
+    NUM = 70,
 }
 
 struct SgPixelformatInfo

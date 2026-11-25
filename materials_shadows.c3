@@ -95,20 +95,30 @@ fn Node vsm_moments(Node tiled, Node rect, Node texel, Node uv) @local {
     return nodes::select(tiled, atlas, own);
 }
 
-// Distance from the light's plane of a depth in its shadow map, and back.
-fn Node shadow_distance(Node z, Node soft) @local {
+// Distance from the light's plane of a depth in its shadow map, and back (`linear`: a map of
+// the atlas, which holds that distance over its reach, see build_shadow_graph).
+fn Node shadow_distance(Node z, Node soft, Node linear) @local {
     Node gl = soft.w().less_than(nodes::num(0));
     Node zz = nodes::select(gl, z * 2.0f - 1.0f, z);
     Node y = soft.y();
     Node s = soft.z();
-    return nodes::select(gl, 2.0f * y * s / (s + y - zz * (s - y)), y * s / (s - zz * (s - y)));
+    Node d = nodes::select(gl, 2.0f * y * s / (s + y - zz * (s - y)), y * s / (s - zz * (s - y)));
+    return nodes::select(linear, y + z * (s - y), d);
 }
 
-fn Node shadow_depth(Node d, Node soft) @local {
+fn Node shadow_depth(Node d, Node soft, Node linear) @local {
     Node y = soft.y();
     Node s = soft.z();
-    return nodes::select(soft.w().less_than(nodes::num(0)), ((s + y) * d - 2.0f * y * s) / (d * (s - y)) * 0.5f + 0.5f,
-                         s * (d - y) / (d * (s - y)));
+    Node z = nodes::select(soft.w().less_than(nodes::num(0)), ((s + y) * d - 2.0f * y * s) / (d * (s - y)) * 0.5f + 0.5f,
+                           s * (d - y) / (d * (s - y)));
+    return nodes::select(linear, (d - y) / (s - y), z);
+}
+
+// A point in a shadow map from its clip position `sp` (`linear`: a map of the atlas, whose
+// depth is the distance from the light's plane over its reach, soft.y to soft.z).
+fn Node shadow_point(Node sp, Node soft, Node linear) @local {
+    Node c = sp.xyz() / sp.w();
+    return nodes::vec3(c.xy(), nodes::select(linear, (sp.w() - soft.y()) / (soft.z() - soft.y()), c.z()));
 }
 
 // Shadow of the light at `light_pos` (a spot light, or one face of a point light's) whose map is
@@ -145,7 +155,8 @@ fn int ShadowFns.make_light(&self) {
     Node m = spot_shadow_mat(si);
     Node sp = m * nodes::vec4(p, 1);
     st[ns++] = nodes::if_then(sp.w().less_than_equal(nodes::num(0)), nodes::block(node_return(nodes::num(1))));
-    Node c = sp.xyz() / sp.w();
+    Node linear = nodes::logical_and(params.x().greater_than(nodes::num(1.5f)), params.x().less_than(nodes::num(2.5f)));
+    Node c = shadow_point(sp, soft, linear);
     Node outside = nodes::logical_or(nodes::logical_or(c.x().less_than(nodes::num(0)), c.x().greater_than(nodes::num(1))),
                                      nodes::logical_or(nodes::logical_or(c.y().less_than(nodes::num(0)), c.y().greater_than(nodes::num(1))),
                                                        c.z().greater_than(nodes::num(1))));
@@ -162,8 +173,8 @@ fn int ShadowFns.make_light(&self) {
     // and the search for what casts the shadow none
     Node spx = m * nodes::vec4(p + dpdx, 1);
     Node spy = m * nodes::vec4(p + dpdy, 1);
-    Node dx = nodes::select(spx.w().greater_than(nodes::num(0)), spx.xyz() / spx.w() - c, nodes::vec3(0));
-    Node dy = nodes::select(spy.w().greater_than(nodes::num(0)), spy.xyz() / spy.w() - c, nodes::vec3(0));
+    Node dx = nodes::select(spx.w().greater_than(nodes::num(0)), shadow_point(spx, soft, linear) - c, nodes::vec3(0));
+    Node dy = nodes::select(spy.w().greater_than(nodes::num(0)), shadow_point(spy, soft, linear) - c, nodes::vec3(0));
     Node pixel = nodes::max(nodes::max(nodes::length(dx.xy()), nodes::length(dy.xy())), 1e-6f);
     // rotated disk of taps for a soft edge
     Node[2] rot = tap_rotation(frag);
@@ -183,7 +194,7 @@ fn int ShadowFns.make_light(&self) {
         // A source with a size: the edge of a shadow is as wide as the source looks from there
         // past the thing that casts it. Sharp where the two touch, wide far behind. How far the
         // caster is comes from asking the map at a few depths, nearer each time.
-        Node dr = shadow_distance(c.z(), soft);
+        Node dr = shadow_distance(c.z(), soft, linear);
         Node per_m = 1.0f / (nodes::abs(soft.w()) * dr);
         Node search = nodes::clamp(soft.x() * 1.6f * per_m, r, 0.04f);
         Node found = nodes::variable(nodes::num(0));
@@ -199,7 +210,7 @@ fn int ShadowFns.make_light(&self) {
         Node hi = nodes::variable(dr);
         Node j = nodes::loop_index();
         Node mid = (lo + hi) * 0.5f;
-        Node closer = self.tap(tiled, rect, params.z(), at, shadow_depth(mid, soft)).greater_than(nodes::num(0.5f));
+        Node closer = self.tap(tiled, rect, params.z(), at, shadow_depth(mid, soft, linear)).greater_than(nodes::num(0.5f));
         Node bisect = nodes::loop(j, 0, 5, nodes::block(nodes::if_then(closer, nodes::block(lo.assign(mid)), nodes::block(hi.assign(mid)))));
         // (along the receiver's own plane, as the blur below: a surface the light grazes is
         // not its own blocker)
