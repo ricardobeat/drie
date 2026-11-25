@@ -38,6 +38,7 @@ InstanceArena arena @private;
 fn void upload_instances_gpu(Mesh* m) @private {
     if (m.instances_uploaded) return;
     m.instance_uploads++;
+    note_moved_mesh(m);
     BufferGeometry* g =  m.geometry;
     Vector3 lo        =  { 1e30f, 1e30f, 1e30f };
     Vector3 hi        = -lo;
