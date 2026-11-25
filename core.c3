@@ -41,6 +41,8 @@ struct Object3D {
     bool placed;
     // matrix_world was changed outside update_world, which has yet to tell the children
     bool world_dirty;
+    // visible and cast_shadow as update_world last saw them (see note_switches)
+    char seen_switches;
     // Like three's matrixAutoUpdate: `matrix` is rebuilt from position, rotation and scale
     // when they change. Off, `matrix` is yours to set (update_matrix() rebuilds it).
     bool matrix_auto_update;
@@ -71,10 +73,19 @@ fn void Object3D.init(&self, ObjectKind kind) {
 // What changed in the world since the shadow atlas last looked (renderer.c3's walk_casters):
 // the meshes whose matrix_world update_world changed, in order (`moved_meshes_dropped`
 // counts the times the list was emptied, so that a walk that missed some looks at everything),
-// and how many times an object was added or removed anywhere.
+// and how many times an object was added or removed anywhere, shown or hidden, or had its
+// cast_shadow switched.
 List{Mesh*} moved_meshes @private;
 uint moved_meshes_dropped @private;
 uint scene_structure_changes @private;
+
+// Counts a switch of `visible`, or of a mesh's cast_shadow, since update_world last saw it.
+fn void note_switches(Object3D* o) @private {
+    char now = (char)((o.visible ? 1 : 0) | (o.cast_shadow && o.kind == MESH ? 2 : 0) | 4);
+    if (now == o.seen_switches) return;
+    o.seen_switches = now;
+    scene_structure_changes++;
+}
 
 fn void note_moved_mesh(Mesh* m) @private {
     if (!moved_meshes.allocator) moved_meshes.init(mem);
@@ -167,6 +178,7 @@ fn void Object3D.update_matrix(&self) {
 fn void Object3D.update_matrix_world(&self) => self.update_world(true);
 
 fn void Object3D.update_world(&self, bool parent_moved) {
+    note_switches(self);
     // (with matrix_auto_update off the matrix may have changed in any way: matrix_world is
     // computed, and compared below)
     bool moved = !self.matrix_auto_update;
@@ -193,7 +205,12 @@ fn void Object3D.update_world(&self, bool parent_moved) {
 
     self.world_dirty = false;
     foreach (c : self.children) {
-        if (c.matrix_world_auto_update) c.update_world(moved);
+        // (a child left alone is still looked at: shown or hidden, it changes the shadows)
+        if (c.matrix_world_auto_update) {
+            c.update_world(moved);
+        } else {
+            note_switches(c);
+        }
     }
 }
 
