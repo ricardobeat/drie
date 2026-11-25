@@ -33,3 +33,8 @@ To update: copy the new sokol.c3l/ over this folder, then re-apply each item bel
    preserveInvariance is YES (not options:nil), so that a generated vertex stage's
    [[position, invariant]] gives every pipeline it is in the same depth (a depth prepass's
    and the EQUAL-tested pass after it). The hunk is marked "drie patch (invariant position)".
+7. c/sokol_gfx.h and sg.c3, a 16-bit depth format: SG_PIXELFORMAT_DEPTH16 (sg.c3's DEPTH16 =
+   69) after ASTC_4x4_SRGBA, a depth format of 2 bytes a texel on every backend (Metal
+   Depth16Unorm; D3D11 R16_TYPELESS, D16_UNORM to draw into, R16_UNORM to read; GL
+   DEPTH_COMPONENT16; WebGPU Depth16Unorm; Vulkan D16_UNORM), in the backends' format tables
+   as DEPTH is. The hunks are marked "drie patch (16-bit depth)".

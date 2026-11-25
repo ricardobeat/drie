@@ -122,6 +122,10 @@ bitstruct MaterialKey : char[32] {
     // the deferred G-buffer's program (gbuffer_key): the surface written into the four targets
     // the lighting pass reads (shader_core.glsl's GBUFFER), without the lights
     bool gbuffer : 87;
+    // a shadow map of the atlas (MaterialKey.shadow): drawn into its depth format (renderer.c3's
+    // atlas_format), as the distance from the light's plane over its reach (see
+    // build_shadow_graph)
+    bool atlas_depth : 88;
 }
 
 // Logical view IDs for GPU morph target storage buffers (between engine slots < 32 and NODE_USER_VIEW = 64).
@@ -783,12 +787,23 @@ fn Node parallax_shadow(Parallax* px, FragUv* f, Node n, Node l) @local {
 fn void build_shadow_graph(MaterialKey key, ProgramGraph* graph, NodeBuild* build, UserBinds* binds) @local {
     VertexValues vtx = vertex_stage(key, build, binds);
     graph.position = vtx.position;
-    bool node_cuts = build && (build.cuts || build.slots[8].id);
-    if (!key.alpha_test && !node_cuts) return;
     ShadowFsParams* sp = null;
     int params = (int)((usz)&sp.s_params / 16);
     int alpha_uv = (int)((usz)&sp.s_alpha_uv / 16);
     Node p = node_input(SHADOW_FS, params, VEC4);
+    if (key.atlas_depth) {
+        // a map of the atlas: the distance from the light's plane, from its near (s_params.z) to
+        // its far (w), as 0..1, the same everywhere over its reach (the window depth when w is
+        // 0: an orthographic map's is that already)
+        Node z = node_system(FRAG_COORD).z();
+        Node n = p.z();
+        Node f = p.w();
+        Node d = backend_lang() == GLSL ? n * f * 2.0f / (f + n - (z * 2.0f - 1.0f) * (f - n)) : n * f / (f - z * (f - n));
+        Node lin = nodes::clamp((d - n) / nodes::max(f - n, 1e-6f), 0, 1);
+        graph.depth = nodes::select(f.greater_than(nodes::num(0)), lin, z);
+    }
+    bool node_cuts = build && (build.cuts || build.slots[8].id);
+    if (!key.alpha_test && !node_cuts) return;
     Node v_uv = nodes::varying(vtx.uv);
     Node a = p.y();
     if (key.map) a = a * node_sample(SAMPLE, shaders::VIEW_S_MAP, shaders::SMP_S_SMP, TEX_2D, v_uv).w();

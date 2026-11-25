@@ -2747,6 +2747,9 @@ typedef enum sg_pixel_format {
     SG_PIXELFORMAT_ASTC_4x4_RGBA,
     SG_PIXELFORMAT_ASTC_4x4_SRGBA,
 
+    // drie patch (16-bit depth): 16-bit unorm depth
+    SG_PIXELFORMAT_DEPTH16,
+
     _SG_PIXELFORMAT_NUM,
     _SG_PIXELFORMAT_FORCE_U32 = 0x7FFFFFFF
 } sg_pixel_format;
@@ -9995,7 +9998,7 @@ _SOKOL_PRIVATE bool _sg_is_valid_storage_image_format(sg_pixel_format fmt) {
 }
 
 _SOKOL_PRIVATE bool _sg_is_depth_or_depth_stencil_format(sg_pixel_format fmt) {
-    return (SG_PIXELFORMAT_DEPTH == fmt) || (SG_PIXELFORMAT_DEPTH_STENCIL == fmt);
+    return (SG_PIXELFORMAT_DEPTH == fmt) || (SG_PIXELFORMAT_DEPTH_STENCIL == fmt) || (SG_PIXELFORMAT_DEPTH16 == fmt); // drie patch (16-bit depth)
 }
 
 _SOKOL_PRIVATE bool _sg_is_depth_stencil_format(sg_pixel_format fmt) {
@@ -10064,6 +10067,8 @@ _SOKOL_PRIVATE int _sg_pixelformat_bytesize(sg_pixel_format fmt) {
         case SG_PIXELFORMAT_DEPTH:
         case SG_PIXELFORMAT_DEPTH_STENCIL:
             return 4;
+        case SG_PIXELFORMAT_DEPTH16: // drie patch (16-bit depth)
+            return 2;
         default:
             SOKOL_UNREACHABLE;
             return 0;
@@ -10284,6 +10289,7 @@ _SOKOL_PRIVATE void _sg_dummy_setup_backend(const sg_desc* desc) {
     }
     _sg.formats[SG_PIXELFORMAT_DEPTH].depth = true;
     _sg.formats[SG_PIXELFORMAT_DEPTH_STENCIL].depth = true;
+    _sg.formats[SG_PIXELFORMAT_DEPTH16].depth = true; // drie patch (16-bit depth)
     _sg.limits.max_image_size_2d = 1024;
     _sg.limits.max_image_size_cube = 1024;
     _sg.limits.max_image_size_3d = 1024;
@@ -11042,6 +11048,8 @@ _SOKOL_PRIVATE GLenum _sg_gl_teximage_type(sg_pixel_format fmt) {
             return GL_UNSIGNED_INT_5_9_9_9_REV;
         case SG_PIXELFORMAT_DEPTH:
             return GL_FLOAT;
+        case SG_PIXELFORMAT_DEPTH16: // drie patch (16-bit depth)
+            return GL_UNSIGNED_SHORT;
         case SG_PIXELFORMAT_DEPTH_STENCIL:
             return GL_FLOAT_32_UNSIGNED_INT_24_8_REV;
         default:
@@ -11099,6 +11107,7 @@ _SOKOL_PRIVATE GLenum _sg_gl_teximage_format(sg_pixel_format fmt) {
         case SG_PIXELFORMAT_RGB9E5:
             return GL_RGB;
         case SG_PIXELFORMAT_DEPTH:
+        case SG_PIXELFORMAT_DEPTH16: // drie patch (16-bit depth)
             return GL_DEPTH_COMPONENT;
         case SG_PIXELFORMAT_DEPTH_STENCIL:
             return GL_DEPTH_STENCIL;
@@ -11202,6 +11211,7 @@ _SOKOL_PRIVATE GLenum _sg_gl_teximage_internal_format(sg_pixel_format fmt) {
         case SG_PIXELFORMAT_RGBA32SI:   return GL_RGBA32I;
         case SG_PIXELFORMAT_RGBA32F:    return GL_RGBA32F;
         case SG_PIXELFORMAT_DEPTH:      return GL_DEPTH_COMPONENT32F;
+        case SG_PIXELFORMAT_DEPTH16:    return GL_DEPTH_COMPONENT16; // drie patch (16-bit depth)
         case SG_PIXELFORMAT_DEPTH_STENCIL:      return GL_DEPTH32F_STENCIL8;
         case SG_PIXELFORMAT_BC1_RGBA:           return GL_COMPRESSED_RGBA_S3TC_DXT1_EXT;
         case SG_PIXELFORMAT_BC2_RGBA:           return GL_COMPRESSED_RGBA_S3TC_DXT3_EXT;
@@ -11289,6 +11299,7 @@ _SOKOL_PRIVATE void _sg_gl_init_pixelformats(bool has_bgra) {
     _sg_pixelformat_srm(&_sg.formats[SG_PIXELFORMAT_RGBA32SI]);
     _sg_pixelformat_srmd(&_sg.formats[SG_PIXELFORMAT_DEPTH]);
     _sg_pixelformat_srmd(&_sg.formats[SG_PIXELFORMAT_DEPTH_STENCIL]);
+    _sg_pixelformat_srmd(&_sg.formats[SG_PIXELFORMAT_DEPTH16]); // drie patch (16-bit depth)
 }
 
 // FIXME: OES_half_float_blend
@@ -14841,6 +14852,7 @@ _SOKOL_PRIVATE DXGI_FORMAT _sg_d3d11_base_pixel_format(sg_pixel_format fmt) {
         case SG_PIXELFORMAT_RGBA32SI:       return DXGI_FORMAT_R32G32B32A32_SINT;
         case SG_PIXELFORMAT_RGBA32F:        return DXGI_FORMAT_R32G32B32A32_FLOAT;
         case SG_PIXELFORMAT_DEPTH:          return DXGI_FORMAT_R32_TYPELESS;
+        case SG_PIXELFORMAT_DEPTH16:        return DXGI_FORMAT_R16_TYPELESS; // drie patch (16-bit depth)
         case SG_PIXELFORMAT_DEPTH_STENCIL:  return DXGI_FORMAT_R32G8X24_TYPELESS;
         case SG_PIXELFORMAT_BC1_RGBA:       return DXGI_FORMAT_BC1_UNORM;
         case SG_PIXELFORMAT_BC2_RGBA:       return DXGI_FORMAT_BC2_UNORM;
@@ -14869,7 +14881,9 @@ _SOKOL_PRIVATE DXGI_FORMAT _sg_d3d11_texture_pixel_format(sg_pixel_format fmt) {
 }
 
 _SOKOL_PRIVATE DXGI_FORMAT _sg_d3d11_srv_pixel_format(sg_pixel_format fmt) {
-    if (fmt == SG_PIXELFORMAT_DEPTH) {
+    if (fmt == SG_PIXELFORMAT_DEPTH16) { // drie patch (16-bit depth)
+        return DXGI_FORMAT_R16_UNORM;
+    } else if (fmt == SG_PIXELFORMAT_DEPTH) {
         return DXGI_FORMAT_R32_FLOAT;
     } else if (fmt == SG_PIXELFORMAT_DEPTH_STENCIL) {
         return DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS;
@@ -14879,7 +14893,9 @@ _SOKOL_PRIVATE DXGI_FORMAT _sg_d3d11_srv_pixel_format(sg_pixel_format fmt) {
 }
 
 _SOKOL_PRIVATE DXGI_FORMAT _sg_d3d11_dsv_pixel_format(sg_pixel_format fmt) {
-    if (fmt == SG_PIXELFORMAT_DEPTH) {
+    if (fmt == SG_PIXELFORMAT_DEPTH16) { // drie patch (16-bit depth)
+        return DXGI_FORMAT_D16_UNORM;
+    } else if (fmt == SG_PIXELFORMAT_DEPTH) {
         return DXGI_FORMAT_D32_FLOAT;
     } else if (fmt == SG_PIXELFORMAT_DEPTH_STENCIL) {
         return DXGI_FORMAT_D32_FLOAT_S8X24_UINT;
@@ -14889,7 +14905,9 @@ _SOKOL_PRIVATE DXGI_FORMAT _sg_d3d11_dsv_pixel_format(sg_pixel_format fmt) {
 }
 
 _SOKOL_PRIVATE DXGI_FORMAT _sg_d3d11_rtv_uav_pixel_format(sg_pixel_format fmt) {
-    if (fmt == SG_PIXELFORMAT_DEPTH) {
+    if (fmt == SG_PIXELFORMAT_DEPTH16) { // drie patch (16-bit depth)
+        return DXGI_FORMAT_R16_UNORM;
+    } else if (fmt == SG_PIXELFORMAT_DEPTH) {
         return DXGI_FORMAT_R32_FLOAT;
     } else if (fmt == SG_PIXELFORMAT_DEPTH_STENCIL) {
         return DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS;
@@ -17018,6 +17036,7 @@ _SOKOL_PRIVATE MTLPixelFormat _sg_mtl_pixel_format(sg_pixel_format fmt) {
         case SG_PIXELFORMAT_RGBA32SI:               return MTLPixelFormatRGBA32Sint;
         case SG_PIXELFORMAT_RGBA32F:                return MTLPixelFormatRGBA32Float;
         case SG_PIXELFORMAT_DEPTH:                  return MTLPixelFormatDepth32Float;
+        case SG_PIXELFORMAT_DEPTH16:                return MTLPixelFormatDepth16Unorm; // drie patch (16-bit depth)
         case SG_PIXELFORMAT_DEPTH_STENCIL:          return MTLPixelFormatDepth32Float_Stencil8;
         #if defined(_SG_TARGET_MACOS)
         case SG_PIXELFORMAT_BC1_RGBA:               return MTLPixelFormatBC1_RGBA;
@@ -17505,6 +17524,7 @@ _SOKOL_PRIVATE void _sg_mtl_init_caps(void) {
     #endif
     _sg_pixelformat_srmd(&_sg.formats[SG_PIXELFORMAT_DEPTH]);
     _sg_pixelformat_srmd(&_sg.formats[SG_PIXELFORMAT_DEPTH_STENCIL]);
+    _sg_pixelformat_srmd(&_sg.formats[SG_PIXELFORMAT_DEPTH16]); // drie patch (16-bit depth)
     #if defined(_SG_TARGET_MACOS)
         _sg_pixelformat_sf(&_sg.formats[SG_PIXELFORMAT_BC1_RGBA]);
         _sg_pixelformat_sf(&_sg.formats[SG_PIXELFORMAT_BC2_RGBA]);
@@ -19676,6 +19696,7 @@ _SOKOL_PRIVATE WGPUTextureFormat _sg_wgpu_textureformat(sg_pixel_format p) {
         case SG_PIXELFORMAT_RGBA32SI:       return WGPUTextureFormat_RGBA32Sint;
         case SG_PIXELFORMAT_RGBA32F:        return WGPUTextureFormat_RGBA32Float;
         case SG_PIXELFORMAT_DEPTH:          return WGPUTextureFormat_Depth32Float;
+        case SG_PIXELFORMAT_DEPTH16:        return WGPUTextureFormat_Depth16Unorm; // drie patch (16-bit depth)
         case SG_PIXELFORMAT_DEPTH_STENCIL:  return WGPUTextureFormat_Depth32FloatStencil8;
         case SG_PIXELFORMAT_BC1_RGBA:       return WGPUTextureFormat_BC1RGBAUnorm;
         case SG_PIXELFORMAT_BC2_RGBA:       return WGPUTextureFormat_BC2RGBAUnorm;
@@ -19904,6 +19925,7 @@ _SOKOL_PRIVATE void _sg_wgpu_init_caps(void) {
 
     _sg_pixelformat_srmd(&_sg.formats[SG_PIXELFORMAT_DEPTH]);
     _sg_pixelformat_srmd(&_sg.formats[SG_PIXELFORMAT_DEPTH_STENCIL]);
+    _sg_pixelformat_srmd(&_sg.formats[SG_PIXELFORMAT_DEPTH16]); // drie patch (16-bit depth)
 
     _sg_pixelformat_sf(&_sg.formats[SG_PIXELFORMAT_RGB9E5]);
 
@@ -23460,6 +23482,7 @@ _SOKOL_PRIVATE VkFormat _sg_vk_format(sg_pixel_format fmt) {
         case SG_PIXELFORMAT_RGBA32SI:       return VK_FORMAT_R32G32B32A32_SINT;
         case SG_PIXELFORMAT_RGBA32F:        return VK_FORMAT_R32G32B32A32_SFLOAT;
         case SG_PIXELFORMAT_DEPTH:          return VK_FORMAT_D32_SFLOAT;
+        case SG_PIXELFORMAT_DEPTH16:        return VK_FORMAT_D16_UNORM; // drie patch (16-bit depth)
         case SG_PIXELFORMAT_DEPTH_STENCIL:  return VK_FORMAT_D32_SFLOAT_S8_UINT;
         case SG_PIXELFORMAT_BC1_RGBA:       return VK_FORMAT_BC1_RGBA_UNORM_BLOCK;
         case SG_PIXELFORMAT_BC2_RGBA:       return VK_FORMAT_BC2_UNORM_BLOCK;

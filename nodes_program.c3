@@ -202,6 +202,7 @@ fn Node node_return(Node value = { }) {
 struct ProgramGraph {
     Node position;          // vertex: the clip position (a vec4; a SEQ for statements before it)
     Node[4] colors;         // fragment: its outputs (vec4s; 0 past the last); none: depth only
+    Node depth;             // fragment: the depth it writes (a float; 0: the rasterizer's)
     Node fragment;          // fragment: a block worked out before the outputs (0: none)
     // Two programs that place vertices exactly alike (the depth prepass and the main pass
     // that tests against its depth with EQUAL) share one vertex stage: the one whose fragment
@@ -257,6 +258,7 @@ struct ShaderProgram {
     List{Node} varyings;          // (for programs sharing the vertex stage)
     NodeType[16] attrs;           // the vertex attributes it reads by location (VOID: not read)
     int colors;
+    bool depth_out;
     bool discards;
     SgShader shader;
     // its compile in the background, plus 1 (0: none): sg_warm_shader_begin's, or the job of
@@ -1689,6 +1691,11 @@ fn ShaderProgram* build_program(NodeLang lang, ProgramGraph* graph, NodeBuild* b
         for (int i = 0; i < p.colors; i++) {
             f.line(lang == GLSL ? "c%d = %s;" : "fout.c%d = %s;", i, colors[i]);
         }
+        if (graph.depth.id) {
+            String depth = f.value_as(graph.depth, FLOAT);
+            p.depth_out = true;
+            f.line(lang == GLSL ? "gl_FragDepth = %s;" : "fout.depth = %s;", depth);
+        }
         p.fs = f.fragment_source().copy(mem);
         if (graph.fragment_only) return p;
         ProgramGen* v = new_gen(p, VERTEX, build, vertex_bind);
@@ -1857,19 +1864,21 @@ fn String ProgramGen.fragment_source(&self) {
                 if (self.frag_coord) s.append("    float4 fc [[position]];\n");
                 s.append("};\n\n");
             }
-            if (p.colors) {
+            bool fout = p.colors || p.depth_out;
+            if (fout) {
                 s.append("struct FOut {\n");
                 for (int i = 0; i < p.colors; i++) s.appendf("    float4 c%d [[color(%d)]];\n", i, i);
+                if (p.depth_out) s.append("    float depth [[depth(any)]];\n");
                 s.append("};\n\n");
             }
             s.append(self.funcs.str_view());
-            s.appendf("fragment %s main0(%s", p.colors ? "FOut" : "void", input ? "FIn fin [[stage_in]]" : "");
+            s.appendf("fragment %s main0(%s", fout ? "FOut" : "void", input ? "FIn fin [[stage_in]]" : "");
             String rest = string::tformat("%s%s%s", self.block_decl(), self.resource_decls(), self.front_facing ? ", bool ff [[front_facing]]" : "");
             s.append(input ? rest : (rest.len ? rest[2..] : ""));
             s.append(") {\n");
-            if (p.colors) s.append("    FOut fout = {};\n");
+            if (fout) s.append("    FOut fout = {};\n");
             s.append(self.body.out.str_view());
-            if (p.colors) s.append("    return fout;\n");
+            if (fout) s.append("    return fout;\n");
             s.append("}\n");
         case HLSL:
             s.append(self.block_decl());
@@ -1882,16 +1891,18 @@ fn String ProgramGen.fragment_source(&self) {
             if (self.frag_coord) s.append("    float4 fc : SV_Position;\n");
             if (self.front_facing) s.append("    bool ff : SV_IsFrontFace;\n");
             if (input || self.front_facing) s.append("};\n\n");
-            if (p.colors) {
+            bool fout = p.colors || p.depth_out;
+            if (fout) {
                 s.append("struct FOut {\n");
                 for (int i = 0; i < p.colors; i++) s.appendf("    float4 c%d : SV_Target%d;\n", i, i);
+                if (p.depth_out) s.append("    float depth : SV_Depth;\n");
                 s.append("};\n\n");
             }
             s.append(self.funcs.str_view());
-            s.appendf("%s main(%s) {\n", p.colors ? "FOut" : "void", input || self.front_facing ? "FIn fin" : "");
-            if (p.colors) s.append("    FOut fout = (FOut)0;\n");
+            s.appendf("%s main(%s) {\n", fout ? "FOut" : "void", input || self.front_facing ? "FIn fin" : "");
+            if (fout) s.append("    FOut fout = (FOut)0;\n");
             s.append(self.body.out.str_view());
-            if (p.colors) s.append("    return fout;\n");
+            if (fout) s.append("    return fout;\n");
             s.append("}\n");
         case GLSL:
             s.append("#version 430\n\n");
