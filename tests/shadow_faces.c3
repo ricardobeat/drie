@@ -1,9 +1,9 @@
 // The shadow maps a light draws: only those it can use and someone sees.
 //   - a rect area light has five maps, none behind it: its front, and its four sides' front
 //     halves, half as tall, two to a block of the atlas
-//   - a point light whose maps are drawn every frame, behind the camera: after the first
-//     frame, the face that looks away from everything the camera sees isn't drawn, and the
-//     picture is the one its maps drawn all at once give
+//   - a point light behind the camera that moves a little: its maps that look away from
+//     everything the camera sees aren't drawn again, and the picture is the one its maps
+//     drawn all at once give
 //   - a point light over a floor that casts no shadow, with one box beside it: only the face
 //     that sees the box is drawn; the others read as lit
 //
@@ -109,8 +109,11 @@ fn int main(String[] args) {
     camera.position = { 0, 1.5f, 0 };
     camera.look_at_vec({ 0, 0.5f, -4 });
     settle(points, camera);
+    // (it moves a little each frame: its maps are drawn again)
+    bulb.position.x = 0.001f;
     frame(points, camera);
     int first = renderer.info.atlas_tiles;
+    bulb.position.x = 0;
     frame(points, camera);
     int later = renderer.info.atlas_tiles;
     readback::read_image(rt.texture_image, S, S, px.ptr);
@@ -125,7 +128,7 @@ fn int main(String[] args) {
     double diff;
     for (usz i = 0; i < px.len; i++) diff += math::abs((double)px[i] - (double)every[i]);
     diff /= (double)px.len;
-    expect(later < 6 && later > 0, string::tformat("a point light drawn every frame, behind the camera: %d of its 6 maps drawn (%d in the frame before)", later, first));
+    expect(later < 6 && later > 0, string::tformat("a point light behind the camera that moves: %d of its 6 maps drawn (%d in the frame before)", later, first));
     expect(diff < 0.5, string::tformat("...and the same picture as with all six drawn (mean difference %.3f)", diff));
 
     // a point light whose only caster is one box to its +x
@@ -147,12 +150,15 @@ fn int main(String[] args) {
     camera.look_at_vec({ 0, 0, 0 });
     settle(lone, camera);
     frame(lone, camera);
-    int drawn = renderer.info.atlas_tiles;
+    int drawn;
+    for (int f = 0; f < 6; f++) {
+        if (renderer.shadow_map_rect(lamp, f)[2] > 0) drawn++;
+    }
     readback::read_image(rt.texture_image, S, S, px.ptr);
     // the floor behind the box (+x, beyond it) is in shadow; as far on the other side, lit
     float behind = mean(S * 84 / 100, S * 90 / 100, S * 47 / 100, S * 53 / 100);
     float open = mean(S * 10 / 100, S * 16 / 100, S * 47 / 100, S * 53 / 100);
-    expect(drawn == 1, string::tformat("one caster beside a point light: %d map drawn", drawn));
+    expect(drawn == 1, string::tformat("one caster beside a point light: %d map with something in it", drawn));
     expect(behind < open * 0.5f, string::tformat("...and its shadow is there (%.0f behind the box, %.0f as far on the other side)", behind, open));
 
     if (!png::write(out_path, px, S, S)) {
