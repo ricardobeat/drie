@@ -13,7 +13,9 @@
 // move_collider() or move_box(); the points go where the collider was at each substep, so a
 // fast capsule or a swinging door does not pass through. The wind pushes on each triangle by
 // how much the air crosses it, and gusts with a deterministic noise in time and space.
-// Everything is in world space; the same calls give the same result every run.
+// Everything is in world space, but the points are kept from `origin`, near them: a float 1 km
+// from the world's origin steps by 0.12 mm, and a cloth simulated there in world coordinates
+// shivers at half a meter a second. The same calls give the same result every run.
 //
 // from_fine simulates every few columns and rows of a fine grid and draws the whole of it, its
 // folds carried by the coarse cells (see Detail). moved() and mark() tell when the cloth has
@@ -74,6 +76,10 @@ struct Tether {
 
 struct Cloth {
     int cols, rows;
+    // where the points are kept from (the rest shape's first point): a point at p is at
+    // origin + p in the world. The arrays of points below are from it; point() gives one in
+    // the world.
+    Vector3 origin;
     // per point: where it is, where it was a substep ago, its velocity, where it was at the
     // start of the last fixed step (the mesh is drawn between that and now)
     Vector3[] pos;
@@ -153,6 +159,9 @@ struct Detail {
 fn uint Cloth.index(&self, int col, int row) @inline => (uint)(row * self.cols + col);
 fn uint Cloth.count(&self) @inline => (uint)(self.cols * self.rows);
 
+// Where point `i` is, in the world.
+fn Vector3 Cloth.point(&self, uint i) => self.origin + self.pos[i];
+
 // A flat grid of `cols` x `rows` points from `origin`, `across` to the last column and `down`
 // to the last row. Its front (the mesh's front faces) is cross(across, -down).
 fn Cloth* grid(int cols, int rows, Vector3 origin, Vector3 across, Vector3 down, float mass = 0.4f) {
@@ -200,13 +209,15 @@ fn Cloth* from_positions(int cols, int rows, Vector3[] rest, float mass = 0.4f) 
     c.floor_y = -FAR;
     c.mass = mass;
     c.links_alpha = { -1, -1, -1 };
+    c.origin = rest[0];
     float w = (float)n / math::max(mass, 1e-6f);
     for (sz i = 0; i < n; i++) {
-        c.pos[i] = rest[i];
-        c.rest[i] = rest[i];
-        c.prev[i] = rest[i];
-        c.start[i] = rest[i];
-        c.pin_to[i] = rest[i];
+        Vector3 at = rest[i] - c.origin;
+        c.pos[i] = at;
+        c.rest[i] = at;
+        c.prev[i] = at;
+        c.start[i] = at;
+        c.pin_to[i] = at;
         c.inv_mass[i] = w;
     }
     for (int r = 0; r < rows; r++) {
@@ -261,7 +272,7 @@ fn Cloth* from_fine(int cols, int rows, Vector3[] rest, int step_cols, int step_
     for (int r = 0; r < rows; r++) {
         for (int c = 0; c < cols; c++) {
             Frame f = cl.frame_at(cl.pos, d.col_cell[c], d.col_t[c], d.row_cell[r], d.row_s[r]);
-            Vector3 o = rest[r * cols + c] - f.at;
+            Vector3 o = rest[r * cols + c] - cl.origin - f.at;
             Vector3 n = grid_normal(rest, cols, rows, c, r);
             d.offset[r * cols + c] = { o.dot(f.u), o.dot(f.v), o.dot(f.n) };
             d.normal[r * cols + c] = { n.dot(f.u), n.dot(f.v), n.dot(f.n) };
@@ -413,14 +424,17 @@ fn void Cloth.unpin(&self, uint i) {
 }
 
 // Moves pinned point `i`: it gets there at the next fixed step.
-fn void Cloth.move_pin(&self, uint i, Vector3 to) => self.pin_to[i] = to;
+fn void Cloth.move_pin(&self, uint i, Vector3 to) => self.pin_to[i] = to - self.origin;
 
 fn int Cloth.add_sphere(&self, Vector3 center, float radius) {
+    center -= self.origin;
     self.colliders.push({ .kind = SPHERE, .radius = radius, .from_a = center, .from_b = center, .a = center, .b = center, .active = true });
     return (int)self.colliders.len() - 1;
 }
 
 fn int Cloth.add_capsule(&self, Vector3 a, Vector3 b, float radius) {
+    a -= self.origin;
+    b -= self.origin;
     self.colliders.push({ .kind = CAPSULE, .radius = radius, .from_a = a, .from_b = b, .a = a, .b = b, .active = true });
     return (int)self.colliders.len() - 1;
 }
@@ -429,6 +443,8 @@ fn int Cloth.add_capsule(&self, Vector3 a, Vector3 b, float radius) {
 // of the next update; from inactive, or further than JUMP, it appears there.
 fn void Cloth.move_collider(&self, int id, Vector3 a, Vector3 b = { 0, 0, 0 }) {
     Collider* k = &self.colliders[id];
+    a -= self.origin;
+    b -= self.origin;
     if (k.kind == SPHERE) b = a;
     if (!k.active || (a - k.from_a).length() > JUMP || (b - k.from_b).length() > JUMP) {
         k.from_a = a;
@@ -444,7 +460,7 @@ fn Vector3 column(drie::Mat4 m, int i) @local => { m[i][0], m[i][1], m[i][2] };
 // matrix's columns; their length is left out). Move it with move_box.
 fn int Cloth.add_box(&self, Vector3 half, drie::Mat4 placement) {
     Collider k = { .kind = BOX, .half = half, .active = true };
-    k.a = column(placement, 3);
+    k.a = column(placement, 3) - self.origin;
     for (int i = 0; i < 3; i++) k.axes[i] = column(placement, i).normalize();
     k.from_a = k.a;
     k.from_axes = k.axes;
@@ -454,6 +470,7 @@ fn int Cloth.add_box(&self, Vector3 half, drie::Mat4 placement) {
 
 // A plane through `point`: the points stay on the side `normal` faces (thickness away).
 fn int Cloth.add_plane(&self, Vector3 point, Vector3 normal) {
+    point -= self.origin;
     Collider k = { .kind = PLANE, .a = point, .from_a = point, .active = true };
     k.axes[0] = normal.normalize();
     k.from_axes = k.axes;
@@ -466,7 +483,7 @@ fn int Cloth.add_plane(&self, Vector3 point, Vector3 normal) {
 // there.
 fn void Cloth.move_box(&self, int id, drie::Mat4 placement) {
     Collider* k = &self.colliders[id];
-    Vector3 a = column(placement, 3);
+    Vector3 a = column(placement, 3) - self.origin;
     Vector3[3] axes;
     for (int i = 0; i < 3; i++) axes[i] = column(placement, i).normalize();
     bool turned = axes[0].dot(k.from_axes[0]) < 0.5f || axes[1].dot(k.from_axes[1]) < 0.5f;
@@ -761,7 +778,7 @@ fn void Cloth.collide(&self, float t, float t_prev = 0) {
         }
     }
     if (self.floor_y > -FAR) {
-        float y = self.floor_y + self.thickness;
+        float y = self.floor_y - self.origin.y + self.thickness;
         for (uint i = 0; i < n; i++) {
             if (p[i].y >= y || w[i] == 0) continue;
             p[i].y = y;
@@ -903,7 +920,7 @@ fn Mesh* Cloth.make_mesh(&self, Material* material = null) {
             int i = r * cols + k;
             if (k > 0) across += (rest[i] - rest[i - 1]).length();
             if (r > 0) down[k] += (rest[i] - rest[i - cols]).length();
-            g.add_vertex(rest[i], { 0, 0, 1 }, { across, -down[k] });
+            g.add_vertex(self.detail ? rest[i] : self.origin + rest[i], { 0, 0, 1 }, { across, -down[k] });
         }
     }
     for (int r = 0; r + 1 < rows; r++) {
@@ -1000,7 +1017,7 @@ fn void Cloth.write_mesh(&self, float alpha) {
                 Vector3 vv = n.cross(u);
                 int i      = r * cols + c;
                 Vector3 o  = d.offset[i];
-                Vector3 q  = left + du * t + u * o.x + vv * o.y + n * o.z;
+                Vector3 q  = self.origin + left + du * t + u * o.x + vv * o.y + n * o.z;
                 Vector3 m  = d.normal[i];
                 Vector3 nn = u * m.x + vv * m.y + n * m.z;
                 float* w   = v + (usz)i * drie::FLOATS_PER_VERTEX;
@@ -1015,7 +1032,8 @@ fn void Cloth.write_mesh(&self, float alpha) {
             }
         }
     } else {
-        foreach (i, p : self.shown) {
+        foreach (i, at : self.shown) {
+            Vector3 p = self.origin + at;
             float* w = v + (usz)i * drie::FLOATS_PER_VERTEX;
             w[0] = p.x;
             w[1] = p.y;

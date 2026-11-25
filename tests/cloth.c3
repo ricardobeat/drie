@@ -1,6 +1,7 @@
 // drie::cloth, without the GPU:
 //   - a sheet pinned along its top settles: no point moves after ten seconds, none drifts,
 //     no link stretches past a few percent
+//   - the same sheet 1 km from the origin settles as still, and hangs the same
 //   - the same run twice gives the same points, bit for bit
 //   - two panels hung side by side (a parted curtain): a capsule (a person) walks through the
 //     gap, pushes them aside without going into them, and they fall back to where they hung
@@ -33,7 +34,7 @@ fn void run(Cloth* c, float seconds) {
 }
 
 fn bool finite(Cloth* c) {
-    foreach (p : c.pos) {
+    foreach (p : points(c)) {
         if (!math::is_finite(p.x) || !math::is_finite(p.y) || !math::is_finite(p.z)) return false;
     }
     return true;
@@ -51,6 +52,13 @@ fn float max_distance(Vector3[] a, Vector3[] b) {
     return m;
 }
 
+// where the points are, in the world (in the temporary allocator)
+fn Vector3[] points(Cloth* c) {
+    Vector3[] w = mem::temp_array(Vector3, c.pos.len);
+    foreach (i, &p : w) *p = c.point((uint)i);
+    return w;
+}
+
 fn Vector3[] copy(Vector3[] a) {
     Vector3[] b = mem::new_array(Vector3, a.len);
     b[..] = a[..];
@@ -61,7 +69,7 @@ fn Vector3[] copy(Vector3[] a) {
 fn float penetration(Cloth* c, Vector3 a, Vector3 b, float r) {
     float worst = 0;
     Vector3 ab  = b - a;
-    foreach (p : c.pos) {
+    foreach (p : points(c)) {
         float t = math::clamp((p - a).dot(ab) / ab.dot(ab), 0.0f, 1.0f);
         float d = (p - (a + ab * t)).length();
         worst = math::max(worst, r - d);
@@ -73,24 +81,41 @@ fn int main(String[] args) {
     // settling
     Cloth* sheet = curtain(-0.6, 1.2, 24);
     run(sheet, 10);
-    Vector3[] at10 = copy(sheet.pos);
+    Vector3[] at10 = copy(points(sheet));
     run(sheet, 5);
     expect(finite(sheet), "settled sheet: every point is a number");
     expect(
         sheet.max_speed() < 2e-3f,
         string::tformat("settled sheet: still after 10 s (fastest point %.5f m/s)", sheet.max_speed())
     );
-    float drift = max_distance(at10, sheet.pos);
+    float drift = max_distance(at10, points(sheet));
     expect(drift < 1e-3f, string::tformat("settled sheet: no drift from 10 s to 15 s (%.6f m)", drift));
     expect(
         max_strain(sheet) < 0.03f,
         string::tformat("settled sheet: links stretched %.2f%% at most", max_strain(sheet) * 100)
     );
-    float bottom = sheet.pos[sheet.index(12, 35)].y;
+    float bottom = sheet.point(sheet.index(12, 35)).y;
     expect(
         bottom < 0.12f && bottom > 0.0f,
         string::tformat("settled sheet: hangs straight down (bottom at %.3f m)", bottom)
     );
+
+    // the same sheet hung 1 km from the origin settles as still, where it hangs here, moved
+    // (a float there steps by 0.12 mm: in world coordinates the sheet shivered at 0.5 m/s)
+    {
+        Vector3 out = { 300, 0, -1040 };
+        Cloth* far = cloth::grid(24, 36, (Vector3) { -0.6, 2.4, 0 } + out, { 1.2, 0, 0 }, { 0, -2.3, 0 }, mass: 0.6);
+        far.pin_row(0);
+        far.make_mesh();
+        run(far, 15);
+        float off = 0;
+        foreach (i, p : points(sheet)) off = math::max(off, (far.point((uint)i) - out - p).length());
+        float* v = &far.mesh.geometry.vertices[0];
+        float drawn = ((Vector3) { v[0], v[1], v[2] } - far.point(0)).length();
+        expect(far.max_speed() < 2e-3f && off < 1e-3f && drawn < 1e-3f,
+               string::tformat("1 km out: still (fastest point %.5f m/s), where the sheet here hangs (%.5f m off), drawn there",
+                               far.max_speed(), off));
+    }
 
     // determinism, with wind
     Cloth* w1 = curtain(-0.6, 1.2, 24);
@@ -101,7 +126,7 @@ fn int main(String[] args) {
     run(w2, 4);
     bool same = true;
     foreach (i, p : w1.pos) same = same && p == w2.pos[i];
-    float swayed = max_distance(w1.pos, sheet.pos);
+    float swayed = max_distance(points(w1), points(sheet));
     expect(same, "two runs give the same points");
     expect(swayed > 0.02f && finite(w1), string::tformat("the draft moves the sheet (%.3f m)", swayed));
 
@@ -110,8 +135,8 @@ fn int main(String[] args) {
     Cloth* right = curtain(0.02, 0.6, 14);
     run(left, 8);
     run(right, 8);
-    Vector3[] left_rest  = copy(left.pos);
-    Vector3[] right_rest = copy(right.pos);
+    Vector3[] left_rest  = copy(points(left));
+    Vector3[] right_rest = copy(points(right));
     float r              = 0.22;
     Vector3 lo           = { 0, 0.3, -0.8 };
     Vector3 hi           = { 0, 1.7, -0.8 };
@@ -130,7 +155,7 @@ fn int main(String[] args) {
         right.update(1.0f / 60);
         deepest = math::max(deepest, math::max(penetration(left, a, b, r), penetration(right, a, b, r)));
         // how far the inner edges at chest height were pushed apart
-        float gap = right.pos[right.index(0, 18)].x - left.pos[left.index(13, 18)].x;
+        float gap = right.point(right.index(0, 18)).x - left.point(left.index(13, 18)).x;
         parted = math::max(parted, gap);
     }
     expect(finite(left) && finite(right), "parted curtain: every point is a number");
@@ -146,19 +171,19 @@ fn int main(String[] args) {
     right.set_collider_active(rid, false);
     run(left, 12);
     run(right, 12);
-    float back = math::max(max_distance(left.pos, left_rest), max_distance(right.pos, right_rest));
+    float back = math::max(max_distance(points(left), left_rest), max_distance(points(right), right_rest));
     expect(back < 0.01f, string::tformat("parted curtain: back where it hung 12 s later (%.4f m off)", back));
 
     // a body put somewhere else (further than cloth::JUMP) is not swept through the cloth
     {
         Cloth* t = curtain(-0.6, 1.2, 24);
         run(t, 6);
-        Vector3[] before = copy(t.pos);
+        Vector3[] before = copy(points(t));
         int id = t.add_capsule({ 0, 0.3, -1.5 }, { 0, 1.7, -1.5 }, 0.22);
         t.update(1.0f / 60);
         t.move_collider(id, { 0, 0.3, 1.5 }, { 0, 1.7, 1.5 });
         t.update(1.0f / 60);
-        float moved = max_distance(before, t.pos);
+        float moved = max_distance(before, points(t));
         expect(moved < 0.005f, string::tformat("a body moved 3 m in a frame jumps there, not through the sheet (%.4f m)", moved));
     }
 
@@ -174,7 +199,7 @@ fn int main(String[] args) {
         float reached = 1;
         for (int f = 0; f < 240; f++) {
             t.update(1.0f / 60);
-            foreach (p : t.pos) {
+            foreach (p : points(t)) {
                 worst = math::max(worst, -0.35f - p.z);
                 reached = math::min(reached, p.z);
             }
@@ -190,7 +215,7 @@ fn int main(String[] args) {
         t.add_plane({ 0, 0.8, 0 }, nrm);
         run(t, 4);
         float under;
-        foreach (p : t.pos) under = math::max(under, -(p - (Vector3) { 0, 0.8, 0 }).dot(nrm.normalize()));
+        foreach (p : points(t)) under = math::max(under, -(p - (Vector3) { 0, 0.8, 0 }).dot(nrm.normalize()));
         expect(finite(t) && under < 0.001f, string::tformat("plane: a sheet falls onto a slope and stays on it (%.4f m under)", under));
     }
 
@@ -210,7 +235,7 @@ fn int main(String[] args) {
         // per point: its side of the leaf when last within its span (0: not)
         float[] side = mem::new_array(float, t.pos.len);
         defer free(side);
-        Vector3[] start = copy(t.pos);
+        Vector3[] start = copy(points(t));
         defer free(start);
         for (int f = 0; f < 216; f++) {
             // open (0 to 180 degrees) in 1.2 s, held 0.6 s, shut in 1.2 s
@@ -227,7 +252,7 @@ fn int main(String[] args) {
             // the leaf's frame: x along it, z out of its face
             Vector3 c = hinge + d * half.x;
             Vector3 az = { math::sin(a), 0, math::cos(a) };
-            foreach (i, p : t.pos) {
+            foreach (i, p : points(t)) {
                 if (t.inv_mass[i] == 0) continue;
                 swept = math::max(swept, (p - start[i]).length());
                 Vector3 rel = p - c;
@@ -281,7 +306,8 @@ fn int main(String[] args) {
         // turned a quarter about y and moved
         Vector3 move = { 3, 1, -2 };
         foreach (i, &p : d.pos) {
-            *p = (Vector3) { p.z, p.y, -p.x } + move;
+            Vector3 w = d.origin + *p;
+            *p = (Vector3) { w.z, w.y, -w.x } + move - d.origin;
             d.start[i] = *p;
         }
         d.write_mesh(1);
