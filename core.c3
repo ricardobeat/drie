@@ -481,6 +481,12 @@ struct Mesh {
     SgView morph_weights_view;
     int morph_weights_cap;
     bool morph_weights_uploaded;
+    // Set by the shadow atlas's walk over the casters (renderer.c3): it changed in the last
+    // frames (moved, or its vertices, instances, geometry or material changed), or it moves on
+    // the GPU every frame (sway, position_node, morph targets). Lights draw such casters over
+    // a cache of the others (see AtlasMap).
+    bool shadow_moving;
+    bool shadow_animated;
 }
 
 // Sets morph target weights: `target_count` floats per instance (`instance_count == 0` for a
