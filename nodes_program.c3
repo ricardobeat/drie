@@ -1998,7 +1998,7 @@ fn SgShader ShaderProgram.make(&self) {
     // (the driver's cache has it once its compile in the background is done: made at once
     // then, rather than a second time beside it)
     if (self.job) {
-        while (sg_warm_state(self.job - 1) == 0) thread::sleep_ms(1);
+        sg_warm_wait(self.job - 1);
         sg_warm_end(self.job - 1);
         self.job = 0;
     }

@@ -25,6 +25,8 @@ static _Atomic int _sg_warm_jobs[SG_WARM_JOBS];
 // when each job started (CFAbsoluteTime), and whether it was given up on (see sg_warm_state)
 static double _sg_warm_started[SG_WARM_JOBS];
 static bool _sg_warm_given_up[SG_WARM_JOBS];
+// Whether a job is a pipeline job from sg_warm_begin. DRIE_WARM_DELAY holds these back.
+static bool _sg_warm_pipeline[SG_WARM_JOBS];
 
 // A compile in the background that has run this long is given up on: sg_warm_state says it
 // failed, so that its caller makes the shader or pipeline itself, on its own thread, rather
@@ -35,6 +37,7 @@ static bool _sg_warm_given_up[SG_WARM_JOBS];
 static void _sg_warm_started_now(int job) {
     _sg_warm_started[job] = CFAbsoluteTimeGetCurrent();
     _sg_warm_given_up[job] = false;
+    _sg_warm_pipeline[job] = false;
 }
 
 int sg_warm_begin(const sg_shader_desc* shader_desc, const sg_pipeline_desc* pipeline_desc) {
@@ -116,6 +119,7 @@ int sg_warm_begin(const sg_shader_desc* shader_desc, const sg_pipeline_desc* pip
     NSString* fs_entry = [[NSString alloc] initWithUTF8String:sd.fragment_func.entry ? sd.fragment_func.entry : "main0"];
     id<MTLDevice> device = _sg.mtl.device;
     _sg_warm_started_now(job);
+    _sg_warm_pipeline[job] = true;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
         @autoreleasepool {
             int state = 3;
@@ -201,7 +205,28 @@ int sg_warm_state(int job) {
             job, CFAbsoluteTimeGetCurrent() - _sg_warm_started[job]);
         return 2;
     }
+    // DRIE_WARM_DELAY=<seconds> holds pipeline jobs back, to test slow compiles.
+    // A pipeline job reports "running" until that many seconds after it started.
+    // Shader-only jobs are not held back, because callers block on them.
+    static double delay = -1;
+    if (delay < 0) {
+        const char* d = getenv("DRIE_WARM_DELAY");
+        delay = d ? atof(d) : 0;
+        if (delay < 0) delay = 0;
+    }
+    if (delay > 0 && _sg_warm_pipeline[job] && s != 0 && CFAbsoluteTimeGetCurrent() - _sg_warm_started[job] < delay) return 0;
     return s == 1 ? 0 : s == 2 ? 1 : 2;
+}
+
+// Blocks until `job` is done or failed. DRIE_WARM_DELAY does not hold this back:
+// a caller that waits needs the result now.
+void sg_warm_wait(int job) {
+    if (job < 0 || job >= SG_WARM_JOBS) return;
+    while (atomic_load(&_sg_warm_jobs[job]) == 1) {
+        // (sg_warm_state says 2 once the job is given up on)
+        if (sg_warm_state(job) == 2) return;
+        usleep(1000);
+    }
 }
 
 void sg_warm_end(int job) {
@@ -229,6 +254,10 @@ int sg_warm_shader_begin(const sg_shader_desc* shader_desc) {
 int sg_warm_state(int job) {
     (void)job;
     return 2;
+}
+
+void sg_warm_wait(int job) {
+    (void)job;
 }
 
 void sg_warm_end(int job) {

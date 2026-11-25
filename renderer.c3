@@ -630,6 +630,9 @@ struct RendererState @private {
     // frame, to flush (their last call's G-Buffer still wins) once commit() ends the frame.
     List{RadianceCascades*} pending_sparse_flush;
     bool gfx_ready;
+    // Set when a shadow draw used the plain material because a program was still compiling.
+    // A static light then draws its tile again in the next frame.
+    bool shadow_plain;
     // Precompiled material shaders by ShaderFamily and NodeVariant, created on first use
     // (or warmed in the background via start_material_shaders).
     SgShader[8][4] material_shaders;
@@ -1355,7 +1358,7 @@ fn SgShader node_shader(NodeProgram* p, ShaderFamily fam, NodeVariant v) @local 
     if (s.id) return *s;
     int job = p.shader_jobs[fam.ordinal][v.ordinal] - 1;
     if (job >= 0) {
-        while (sg_warm_state(job) == 0) thread::sleep_ms(1);
+        sg_warm_wait(job);
         sg_warm_end(job);
         p.shader_jobs[fam.ordinal][v.ordinal] = 0;
     }
@@ -1383,7 +1386,7 @@ fn SgShader material_shader(ShaderFamily fam, NodeVariant v) @local {
     if (s.id) return *s;
     int job = state.material_jobs[fam.ordinal][v.ordinal] - 1;
     if (job >= 0) {
-        while (sg_warm_state(job) == 0) thread::sleep_ms(1);
+        sg_warm_wait(job);
         sg_warm_end(job);
         state.material_jobs[fam.ordinal][v.ordinal] = 0;
     }
@@ -1494,7 +1497,10 @@ fn void start_material_shaders(Renderer* r, Scene* scene, bool prepass) @local {
                     start_node_shader(nb.program, fam, OPAQUE_MRT);
                 }
                 if (!use_gb && list == 0 && prepass && prepassed(item)) start_node_shader(nb.program, PBR, DEPTH);
-            } else {
+            }
+            // Node materials need these too when they compile in the background.
+            // Their draws use them while the program compiles. See takes_program.
+            if (!nb || background()) {
                 start_material_shader(fam, v);
                 if (use_gb) {
                     start_material_shader(GBUFFER, MAIN);
@@ -1563,6 +1569,20 @@ fn bool generated_materials() @local => false;
 // The node material build whose graphs a draw of `mat` takes (none in a light map's bake,
 // which draws the material without them).
 fn NodeBuild* draw_build(Material* mat) @local => state.bake.on ? null : node_build_of(mat);
+
+// Decides whether a draw uses its node material's program or the plain material.
+// Every pass calls this. `p` is the program. `pip` is its pipeline for this pass.
+// The answer is false while the program compiles in the background.
+// NodeProgram.busy gives the same answer in every pass of a render.
+// The plain material is the material shader without the node graphs. It is always ready.
+// It draws the mesh with its color, map, vertex colors and alpha test.
+// It does not apply position_node, so a moved mesh is drawn where it stands.
+// A false answer is counted in RenderInfo.waiting, so shots still wait for the real picture.
+fn bool takes_program(NodeProgram* p, SgPipeline pip, Mesh* m, int why = 1) @local {
+    if (pip.id && !p.busy()) return true;
+    note_waiting(m, why);
+    return false;
+}
 
 // A node material's USER block for a draw of `m` (its generated programs' NodeSource.USER):
 // the render's view and projection, the mesh's matrix_world, the camera's position and the
@@ -2149,6 +2169,7 @@ fn void update_shadow_atlas(Scene* scene, Camera* camera, bool bake = false, Spo
         sg::apply_viewport((i % columns) * tile, (i / columns) * tile, tile, tile, top_left);
         sg::apply_scissor_rect((i % columns) * tile, (i / columns) * tile, tile, tile, top_left);
         if (!all) clear_atlas_tile();
+        state.shadow_plain = false;
         if (l.light_type == SPOT || l.light_type == POINT) {
             Mat4 light_rel    = light_view_proj(l, camera, true, face);
             Vector3 light_pos = l.matrix_world.get_position();
@@ -2156,6 +2177,9 @@ fn void update_shadow_atlas(Scene* scene, Camera* camera, bool bake = false, Spo
         } else {
             foreach (&item : state.casters) draw_shadow_item(item, light_vp);
         }
+        // A caster used the plain material. Draw the tile again next frame.
+        // This way a static light's shadow gets the real program once it is ready.
+        if (state.shadow_plain) sh.needs_update = true;
     }
     sg::end_pass();
     state.casters.clear();
@@ -3241,22 +3265,22 @@ fn VsParams vs_params_of(DrawItem* item, Mat4 view_proj, bool normals = true) @l
     return vs;
 }
 
-// The depth prepass's draw of an opaque item with holes (see Renderer.depth_prepass).
-fn void draw_depth_item(DrawItem* item, Mat4 view_proj) @local {
+// The depth prepass's draw of an opaque item with holes. See Renderer.depth_prepass.
+// `nodes` is the material's node build. Null draws the plain material.
+fn void draw_depth_item(DrawItem* item, Mat4 view_proj, NodeBuild* nodes) @local {
     Mesh* m           = item.mesh;
     Material* mat     = m.material;
     BufferGeometry* g = m.geometry;
     Renderer* r       = state.renderer;
     float alpha_test  = alpha_test_of(mat);
-    NodeBuild* nodes  = node_build_of(mat);
     SgPipeline pip = get_pipeline(
         mat.side, false, false, r.render_target, alpha_test > 0, 0, DEPTH,
         nodes: nodes ? nodes.program : null
     );
-    // (a node material's program still compiling: not drawn yet)
-    if (nodes && (!pip.id || nodes.program.busy())) {
-        note_waiting(m, 1);
-        return;
+    // The program is still compiling. Draw with the plain material.
+    if (nodes && !takes_program(nodes.program, pip, m)) {
+        nodes = null;
+        pip = get_pipeline(mat.side, false, false, r.render_target, alpha_test > 0, 0, DEPTH);
     }
     sg::apply_pipeline(pip);
     SgBindings bind = { .vertex_buffers[0] = g.vbuf, .index_buffer = g.ibuf };
@@ -3857,13 +3881,21 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     material_slots(mat, nodes, &slots, &map_slots);
     MaterialProgram* gen = material_key_of(item, kind, fs, &map_slots, &key) ? material_program(key, build) : null;
     NodeBuild* gen_build = gen && gen.key.nodes ? build : null;
-    // (the depth prepass of what the material shader draws: its own program)
-    if (kind == DEPTH && !gen) {
-        draw_depth_item(item, view_proj);
-        return;
-    }
+    // The generated programs are still compiling. Draw with the plain material.
+    // Morph targets are not applied then. See takes_program.
+    bool plain;
     if (gen_build && material_busy(gen_build, gen)) {
         note_waiting(item.mesh, 2);
+        gen = null;
+        gen_build = null;
+        build = null;
+        nodes = null;
+        plain = true;
+        material_slots(mat, null, &slots, &map_slots);
+    }
+    // (the depth prepass of what the material shader draws: its own program)
+    if (kind == DEPTH && !gen) {
+        draw_depth_item(item, view_proj, plain ? null : node_build_of(mat));
         return;
     }
     ShaderProgram* own = gen ? (kind == DEPTH ? gen.depth : gen.program) : null;
@@ -3885,10 +3917,24 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
                 gen
             )
     );
-    // (a node material's program still compiling: not drawn yet)
-    if ((nodes && (!pip.id || nodes.program.busy())) || (gen_build && !pip.id)) {
-        note_waiting(item.mesh, (nodes && (!pip.id || nodes.program.busy())) ? 1 : 3);
-        return;
+    // The program is still compiling. Draw with the plain material. See takes_program.
+    bool waits = nodes && !takes_program(nodes.program, pip, m);
+    if (!waits && gen_build && !pip.id) {
+        note_waiting(m, 3);
+        waits = true;
+    }
+    if (waits) {
+        gen = null;
+        gen_build = null;
+        build = null;
+        nodes = null;
+        material_slots(mat, null, &slots, &map_slots);
+        if (kind == DEPTH) {
+            draw_depth_item(item, view_proj, null);
+            return;
+        }
+        pip = state.bake.on ? state.bake.pipeline : get_pipeline(mat.side, mat.transparent, lines, r.render_target, alpha_test > 0,
+            blend_key(mat), kind, mat.depth_test, mat.depth_write, family);
     }
     sg::apply_pipeline(pip);
     // the prepass has cut it out already (the shader takes a negative threshold as "covered")
@@ -4186,17 +4232,21 @@ fn void draw_shadow_item(DrawItem* item, Mat4 light_vp, Vector3 origin = { 0, 0,
     // shadow_nodes when it cuts holes), then the shared one again
     NodeBuild* nodes = gen ? null : build;
     NodeBuild* gen_build = gen && gen.key.nodes ? build : null;
+    // The program is still compiling. Draw with the plain material. See takes_program.
+    if (gen && ((gen_build && material_busy(gen_build, gen)) || !gen_shadow_pipeline(gen).id)) {
+        note_waiting(m, 2);
+        gen = null;
+        gen_build = null;
+        state.shadow_plain = true;
+    }
+    if (nodes && !takes_program(nodes.program, get_shadow_pipeline(nodes.program), m)) {
+        nodes = null;
+        state.shadow_plain = true;
+    }
     if (gen) {
-        // (still compiling: not drawn yet)
-        if (gen_build && material_busy(gen_build, gen)) return;
-        SgPipeline pip = gen_shadow_pipeline(gen);
-        if (!pip.id) return;
-        sg::apply_pipeline(pip);
+        sg::apply_pipeline(gen_shadow_pipeline(gen));
     } else if (nodes) {
-        // (still compiling: not drawn yet)
-        SgPipeline pip = get_shadow_pipeline(nodes.program);
-        if (!pip.id || nodes.program.busy()) return;
-        sg::apply_pipeline(pip);
+        sg::apply_pipeline(get_shadow_pipeline(nodes.program));
     } else {
         // (the shared one again after a generated program's)
         sg::apply_pipeline(get_shadow_pipeline());

@@ -382,7 +382,7 @@ fn void free_material_program(MaterialProgram* mp) @local {
 fn void free_program(ShaderProgram* p) @local {
     // (its compile in the background run to its end first)
     if (p.job) {
-        while (sg_warm_state(p.job - 1) == 0) thread::sleep_ms(1);
+        sg_warm_wait(p.job - 1);
         sg_warm_end(p.job - 1);
     }
     if (p.shader.id) sg::destroy_shader(p.shader);
