@@ -63,8 +63,9 @@ struct RenderTarget {
     //                     three's packNormalToOctahedral (unpack_octahedral_normal in gtao.glsl)
     //   velocity_texture  RG16F: how far it moved across the picture since the last frame
     //                     drawn with MRT, in texture coordinates (uv now - uv then), with the
-    //                     camera's motion and each mesh's; instances and skinned vertices are
-    //                     taken to stand still
+    //                     camera's motion, each mesh's and a dynamic geometry's vertices'
+    //                     (BufferGeometry.dynamic); instances and skinned vertices are taken
+    //                     to stand still
     //   indirect_texture  RGBA8: the share of the pixel's light that is indirect, r = diffuse
     //                     (ambient, hemisphere, irradiance volume, baked vertex light), g =
     //                     specular (environment map and screen-space reflections): what ambient
@@ -499,7 +500,8 @@ fn void Renderer.render_back_faces(&self, RenderTarget* target) {
                         shaders::ATTR_THREE_INST1,
                         shaders::ATTR_THREE_INST2,
                         shaders::ATTR_THREE_HEIGHT,
-                        shaders::ATTR_THREE_INSTANCE_COLOR
+                        shaders::ATTR_THREE_INSTANCE_COLOR,
+                        shaders::ATTR_THREE_PREV_POSITION
                     }
                 ),
                 .depth = { .pixel_format = DEPTH, .write_enabled = true, .compare = LESS_EQUAL },
@@ -560,6 +562,10 @@ struct RenderInfo {
     // 2 a generated program compiling, 3 its pipeline not made yet
     Mesh* waiting_mesh;
     int waiting_why;
+    // dynamic geometries whose vertices this render copied to the GPU (needs_update), and the
+    // bytes
+    int updates;
+    usz update_bytes;
 }
 
 alias WebGLRenderer = Renderer;
@@ -1065,11 +1071,12 @@ fn void on_event(SappEvent* e) @local {
     foreach (l : state.listeners) l(e);
 }
 
-// position, normal, uv, color, uv1, tangent, the instance's three rows, the height and the
-// instance's color. Buffer 0: the geometry's vertices, 1: the instances, 2: the second uv set,
-// 3: the tangents, 4: the heights, 5: the instances' colors (see bind_instances); the tangent
-// and the instance color only for a program that reads them (-1: none).
-fn SgVertexLayoutState vertex_layout(int[11] attrs) @local {
+// position, normal, uv, color, uv1, tangent, the instance's three rows, the height, the
+// instance's color and the position a frame ago. Buffer 0: the geometry's vertices, 1: the
+// instances, 2: the second uv set, 3: the tangents, 4: the heights, 5: the instances' colors,
+// 6: the vertices a frame ago (see bind_instances); the tangent, the instance color and the
+// position a frame ago only for a program that reads them (-1: none).
+fn SgVertexLayoutState vertex_layout(int[12] attrs) @local {
     SgVertexLayoutState layout;
     layout.buffers[0].stride = FLOATS_PER_VERTEX * float::size;
     layout.buffers[1] = { .stride = 12 * float::size, .step_func = PER_INSTANCE };
@@ -1091,6 +1098,10 @@ fn SgVertexLayoutState vertex_layout(int[11] attrs) @local {
     if (attrs[10] >= 0) {
         layout.buffers[5] = { .stride = 3 * float::size, .step_func = PER_INSTANCE };
         layout.attrs[attrs[10]] = { .format = FLOAT3, .offset = 0, .buffer_index = 5 };
+    }
+    if (attrs[11] >= 0) {
+        layout.buffers[6].stride = FLOATS_PER_VERTEX * float::size;
+        layout.attrs[attrs[11]] = { .format = FLOAT3, .offset = 0, .buffer_index = 6 };
     }
     return layout;
 }
@@ -1288,7 +1299,8 @@ fn SgPipeline get_pipeline(
                 shaders::ATTR_THREE_INST1,
                 shaders::ATTR_THREE_INST2,
                 shaders::ATTR_THREE_HEIGHT,
-                shaders::ATTR_THREE_INSTANCE_COLOR
+                shaders::ATTR_THREE_INSTANCE_COLOR,
+                shaders::ATTR_THREE_PREV_POSITION
             }
         ),
         .depth = {
@@ -1678,6 +1690,7 @@ fn SgPipelineDesc shadow_pipeline_desc() @local {
                 shaders::ATTR_SHADOW_INST1,
                 shaders::ATTR_SHADOW_INST2,
                 shaders::ATTR_SHADOW_HEIGHT,
+                -1,
                 -1
             }
         ),
@@ -1747,6 +1760,7 @@ fn void clear_atlas_tile() @local {
                         shaders::ATTR_SHADOW_INST1,
                         shaders::ATTR_SHADOW_INST2,
                         shaders::ATTR_SHADOW_HEIGHT,
+                        -1,
                         -1
                     }
                 ),
@@ -2984,8 +2998,9 @@ fn Vec4 displacement_params(Material* mat) @local {
 }
 
 // The mesh's vertex attribute of heights: its material's displacement_map read at each
-// vertex's uv (placed by the map's uv transform), worked out again when the geometry, the map
-// or its placement changes. Zeros without a map.
+// vertex's uv (placed by the map's uv transform), worked out again when the geometry is
+// uploaded again (not when a dynamic geometry's vertices move: the uvs are the same), or the
+// map or its placement changes. Zeros without a map.
 fn SgBuffer displacement_heights(Mesh* m) @local {
     Texture* t = m.material.displacement_map;
     BufferGeometry* g = m.geometry;
@@ -3002,7 +3017,7 @@ fn SgBuffer displacement_heights(Mesh* m) @local {
     Texture* image = t.source ?: t;
     if (image.preparing.load() != 2) image.prepare();
     Vec4[2] rows = uv_rows(t);
-    ulong key = (ulong)(uptr)t * 31 + g.version;
+    ulong key = (ulong)(uptr)t * 31 + g.upload_version;
     for (int i = 0; i < 2; i++) {
         for (int k = 0; k < 3; k++) key = key * 1000003 + bitcast(rows[i][k], uint);
     }
@@ -3267,7 +3282,8 @@ fn VsParams vs_params_of(DrawItem* item, Mat4 view_proj, bool normals = true) @l
         }
         vs.prev_view_proj = state.motion_view_proj;
         vs.prev_model = m.motion_prev;
-        bool moved = m.motion_prev != m.motion_cur || (mat.sway > 0 && state.motion_prev_time != state.motion_time);
+        bool moved = m.motion_prev != m.motion_cur || (mat.sway > 0 && state.motion_prev_time != state.motion_time)
+            || m.geometry.updated_now();
         vs.motion = { moved ? 2 : 1, state.motion_prev_time, state.motion_jitter.x, state.motion_jitter.y };
     }
     if (state.bake.on) vs.bake = { 1, depth_zero_to_one() ? 1 : 0, 0, 0 };
@@ -4350,6 +4366,7 @@ fn void bind_instances(SgBindings* bind, DrawItem* item) @local {
     bind.vertex_buffers[3] = g.tangent_buf.id ? g.tangent_buf : zeros(g.vertex_count());
     bind.vertex_buffers[4] = displacement_heights(m);
     bind.vertex_buffers[5] = instance_colors(m);
+    bind.vertex_buffers[6] = g.prev_vertices();
     if (!m.instance_data.len()) {
         bind.vertex_buffers[1] = state.identity_instance;
         return;
@@ -5083,6 +5100,8 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera) {
     if (!state.gfx_ready) return;
     if (self.auto_time) self.time = (float)stm::sec(stm::since(state.start_ticks));
     self.info = { };
+    // (outside any pass: no render is drawn inside another's pass)
+    self.info.updates = update_dynamic(&self.info.update_bytes);
 
     if (self.auto_aspect && camera.camera_type == PERSPECTIVE && !camera.custom_projection) {
         PerspectiveCamera* pc = (PerspectiveCamera*)camera;
@@ -5500,7 +5519,8 @@ fn SgPipeline gen_bake_pipeline(MaterialProgram* gen, SgPixelFormat format) @loc
                     shaders::ATTR_THREE_INST1,
                     shaders::ATTR_THREE_INST2,
                     shaders::ATTR_THREE_HEIGHT,
-                    shaders::ATTR_THREE_INSTANCE_COLOR
+                    shaders::ATTR_THREE_INSTANCE_COLOR,
+                    -1
                 }
             ),
             .depth.pixel_format = NONE,
@@ -5534,7 +5554,8 @@ fn SgPipeline bake_pipeline(SgPixelFormat format) @local {
                     shaders::ATTR_THREE_INST1,
                     shaders::ATTR_THREE_INST2,
                     shaders::ATTR_THREE_HEIGHT,
-                    shaders::ATTR_THREE_INSTANCE_COLOR
+                    shaders::ATTR_THREE_INSTANCE_COLOR,
+                    shaders::ATTR_THREE_PREV_POSITION
                 }
             ),
             .depth.pixel_format = NONE,

@@ -34,6 +34,9 @@ const float FAR @local = 1e30f;
 // A collider that moves further than this in one update has been put somewhere else, not
 // swept there through the cloth.
 const float JUMP = 1.0f;
+// The mesh is written again when a point has moved further than this since it was last
+// written (0.1 mm): a cloth at rest costs no upload.
+const float STILL = 1e-4f;
 
 enum ColliderKind : char {
     SPHERE,
@@ -120,6 +123,8 @@ struct Cloth {
     Detail* detail;
     // the points when mark() was last called (see moved)
     Vector3[] marked;
+    // where the points were drawn when the mesh was last written (see write_mesh)
+    Vector3[] drawn;
 }
 
 // The grid drawn over a coarser cloth. Each of its points is a spot in a cell of the cloth
@@ -365,6 +370,7 @@ fn void Cloth.free(&self) {
     self.colliders.free();
     free(self.shown);
     free(self.marked);
+    free(self.drawn);
     if (self.detail) {
         Detail* d = self.detail;
         free(d.rest);
@@ -782,12 +788,30 @@ fn Mesh* Cloth.make_mesh(&self, Material* material = null) {
 }
 
 // Writes the points, `alpha` (0..1) of the way from the last step's start to now (or the
-// finer grid over them), and their normals into the mesh's geometry.
+// finer grid over them), and their normals into the mesh's geometry, and marks it for the GPU
+// (BufferGeometry.needs_update): unless no point is more than STILL from where the mesh last
+// had it, when the mesh is left as it is.
 fn void Cloth.write_mesh(&self, float alpha) {
     if (!self.mesh) return;
     if (!self.shown.len) self.shown = mem::new_array(Vector3, self.pos.len);
     foreach (i, &p : self.shown) *p = self.start[i] + (self.pos[i] - self.start[i]) * alpha;
+    if (!self.drawn.len) {
+        self.drawn = mem::new_array(Vector3, self.pos.len);
+    } else {
+        float far2 = STILL * STILL;
+        bool moved;
+        foreach (i, p : self.shown) {
+            Vector3 d = p - self.drawn[i];
+            if (d.dot(d) > far2) {
+                moved = true;
+                break;
+            }
+        }
+        if (!moved) return;
+    }
+    self.drawn[..] = self.shown[..];
     BufferGeometry* g =  self.mesh.geometry;
+    g.vertices_changed();
     float* v          =  g.vertices.entries;
     Vector3 lo        =  { FAR, FAR, FAR };
     Vector3 hi        = -lo;

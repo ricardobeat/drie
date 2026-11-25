@@ -43,13 +43,27 @@ struct BufferGeometry {
     bool line_loop;
     uint index_count;
     bool uploaded;
-    // The vertices change every frame (cloth, see cloth.c3): the vertex buffer is written from
-    // `vertices` the first time the geometry is drawn in each frame, without a new buffer.
-    // Set before the first upload; keep the vertex count.
+    // The vertices change often (three's DynamicDrawUsage; cloth, see cloth.c3). Set before
+    // the first upload, and keep the vertex count. After changing the vertices (and the
+    // tangents, if it has them), set needs_update (or call vertices_changed): the next render
+    // copies them to the GPU once, before its passes. Unmarked, the GPU keeps what it has.
+    // The copy is of the whole vertex: position, normal, uv and color.
     bool dynamic;
-    uint vbuf_frame;
-    // counts the uploads: what is worked out from the vertices knows when they change
+    // three's attribute.needsUpdate, for a dynamic geometry. A change marked after the frame
+    // has copied the geometry once is copied in the next frame.
+    bool needs_update;
+    // a dynamic geometry's other vertex buffer: the vertices before the last update (vbuf has
+    // the new ones), where the motion vectors find where each vertex was; `staging` is the
+    // buffer an update is written into, and copied from on the GPU
+    SgBuffer prev_vbuf;
+    SgBuffer staging;
+    // the frame (state.frame + 1) of the last update
+    uint updated_frame;
+    // counts the changes of the vertices on the GPU (uploads and updates): what is worked out
+    // from the vertices knows when they change
     uint version;
+    // counts the uploads only (every buffer made again: the uvs and indices may have changed)
+    uint upload_version;
     // Bounding sphere in local space, computed on upload (or by compute_bounding_sphere).
     Vector3 bounds_center;
     float bounds_radius;
@@ -269,32 +283,17 @@ fn void BufferGeometry.free_cpu(&self) {
 
 // Uploads vertex/index data to the GPU (called by the renderer).
 fn void BufferGeometry.upload(&self) {
-    if (self.uploaded) {
-        if (self.dynamic) self.write_vertices();
-        return;
-    }
+    if (self.uploaded) return;
     self.version++;
+    self.upload_version++;
     self.dispose();
     // (nothing to draw: Metal makes no buffer of no bytes)
     if (!self.indices.len() || !self.vertices.len()) return;
     if (self.bounds_radius == 0) self.compute_bounding_sphere();
     self.index_count = (uint)self.indices.len();
-    if (self.dynamic) {
-        self.vbuf = sg::make_buffer(
-            &&{
-                .usage = { .vertex_buffer = true, .write_transient = true },
-                .size = (usz)self.vertices.len() * float::size,
-            }
-        );
-        self.vbuf_frame = 0;
-        self.write_vertices();
-    } else {
-        self.vbuf = sg::make_buffer(
-            &&{
-                .data = { .ptr = self.vertices.entries, .size = (usz)self.vertices.len() * float::size },
-            }
-        );
-    }
+    SgBufferUsage dyn = { .vertex_buffer = true, .copy_dst = self.dynamic };
+    usz vbytes = (usz)self.vertices.len() * float::size;
+    self.vbuf = sg::make_buffer(&&{ .usage = dyn, .data = { .ptr = self.vertices.entries, .size = vbytes } });
     self.ibuf = sg::make_buffer(
         &&{
             .usage = { .index_buffer = true },
@@ -304,26 +303,113 @@ fn void BufferGeometry.upload(&self) {
     if ((usz)self.uv1.len() >= (usz)self.vertex_count() * 2) {
         self.uv1buf = sg::make_buffer(&&{ .data = { .ptr = self.uv1.entries, .size = (usz)self.vertex_count() * 2 * float::size } });
     }
-    if ((usz)self.tangents.len() >= (usz)self.vertex_count() * 4) {
-        self.tangent_buf = sg::make_buffer(
-            &&{ .data = { .ptr = self.tangents.entries, .size = (usz)self.vertex_count() * 4 * float::size } }
+    usz tbytes = (usz)self.vertex_count() * 4 * float::size;
+    bool tangents = (usz)self.tangents.len() >= (usz)self.vertex_count() * 4;
+    if (tangents) {
+        self.tangent_buf = sg::make_buffer(&&{ .usage = dyn, .data = { .ptr = self.tangents.entries, .size = tbytes } });
+    }
+    if (self.dynamic) {
+        self.prev_vbuf = sg::make_buffer(&&{ .usage = dyn, .data = { .ptr = self.vertices.entries, .size = vbytes } });
+        self.staging = sg::make_buffer(
+            &&{
+                .usage = { .staging_buffer = true, .write_transient = true, .copy_src = true },
+                .size = vbytes + (tangents ? tbytes : 0),
+                .label = "drie-dynamic-staging",
+            }
         );
+        self.needs_update = false;
+        self.updated_frame = 0;
+        add_dynamic(self);
     }
     self.upload_morph();
     self.uploaded = true;
 }
 
-// A dynamic geometry's vertex buffer, written once a frame (a transient buffer holds what was
-// written only for the frame it was written in).
-fn void BufferGeometry.write_vertices(&self) {
-    if (self.vbuf_frame == state.frame + 1) return;
-    self.vbuf_frame = state.frame + 1;
-    sg::write_buffer_transient(
-        &&{
-            .src.data = { .ptr = self.vertices.entries, .size = (usz)self.vertices.len() * float::size },
-            .dst.buffer = self.vbuf,
+// Marks the vertices changed: a dynamic geometry's are copied to the GPU in the next render
+// (needs_update), any other's are uploaded again (new buffers) when it is next drawn.
+fn void BufferGeometry.vertices_changed(&self) {
+    if (self.dynamic && self.uploaded) {
+        self.needs_update = true;
+    } else {
+        self.uploaded = false;
+    }
+}
+
+// The vertex buffer that holds where the vertices were a frame ago (for the motion vectors):
+// a dynamic geometry updated this frame has its vertices before the update there; any other,
+// the vertices it draws with.
+fn SgBuffer BufferGeometry.prev_vertices(&self) {
+    return self.dynamic && self.updated_frame == state.frame + 1 && self.prev_vbuf.id ? self.prev_vbuf : self.vbuf;
+}
+
+// Whether a dynamic geometry's vertices changed this frame (they move, for the motion vectors).
+fn bool BufferGeometry.updated_now(&self) => self.dynamic && self.updated_frame == state.frame + 1;
+
+// Copies a marked dynamic geometry's vertices (and tangents) to the GPU, outside any pass: written
+// into the staging buffer, copied from there into the vertex buffer the motion vectors don't
+// need (the older of the two), which becomes vbuf. Once a frame: a geometry already updated
+// this frame stays marked for the next. Returns the bytes copied.
+fn usz BufferGeometry.update_vertices(&self) {
+    if (!self.needs_update || !self.uploaded || !self.vbuf.id) return 0;
+    if (self.updated_frame == state.frame + 1) return 0;
+    usz vbytes = (usz)self.vertices.len() * float::size;
+    usz tbytes = self.tangent_buf.id ? (usz)self.vertex_count() * 4 * float::size : 0;
+    bool tangents = (usz)self.tangents.len() >= (usz)self.vertex_count() * 4;
+    if (vbytes != sg::query_buffer_size(self.vbuf) || tangents != (tbytes != 0)) {
+        // (another vertex count, or tangents added or gone: buffers made again where it is
+        // next drawn)
+        self.uploaded = false;
+        self.needs_update = false;
+        return 0;
+    }
+    self.needs_update = false;
+    self.updated_frame = state.frame + 1;
+    self.version++;
+    SgBuffer older = self.prev_vbuf;
+    self.prev_vbuf = self.vbuf;
+    self.vbuf = older;
+    sg::write_buffer_transient(&&{ .src.data = { .ptr = self.vertices.entries, .size = vbytes }, .dst.buffer = self.staging });
+    if (tbytes) {
+        sg::write_buffer_transient(
+            &&{ .src.data = { .ptr = self.tangents.entries, .size = tbytes }, .dst = { .buffer = self.staging, .offset = vbytes } }
+        );
+    }
+    sg::copy_buffer_to_buffer(&&{ .src.buffer = self.staging, .dst.buffer = self.vbuf, .size = vbytes });
+    if (tbytes) {
+        sg::copy_buffer_to_buffer(&&{ .src = { .buffer = self.staging, .offset = vbytes }, .dst.buffer = self.tangent_buf, .size = tbytes });
+    }
+    return vbytes + tbytes;
+}
+
+// The dynamic geometries with GPU buffers (see update_dynamic).
+List{BufferGeometry*} dynamic_geometries @private;
+
+fn void add_dynamic(BufferGeometry* g) @private {
+    if (!dynamic_geometries.allocator) dynamic_geometries.allocator = mem;
+    foreach (d : dynamic_geometries) if (d == g) return;
+    dynamic_geometries.push(g);
+}
+
+fn void remove_dynamic(BufferGeometry* g) @private {
+    foreach (i, d : dynamic_geometries) {
+        if (d == g) {
+            dynamic_geometries.remove_at(i);
+            return;
         }
-    );
+    }
+}
+
+// Copies the marked dynamic geometries' vertices to the GPU (BufferGeometry.needs_update).
+// Called outside any pass, at the start of a render. Returns how many, and the bytes.
+fn int update_dynamic(usz* bytes) @private {
+    int n;
+    foreach (g : dynamic_geometries) {
+        usz b = g.update_vertices();
+        if (!b) continue;
+        n++;
+        *bytes += b;
+    }
+    return n;
 }
 
 // Sets position morph target deltas: `target_count * vertex_count` vec4s of (dx, dy, dz, 0).
@@ -420,6 +506,11 @@ fn void BufferGeometry.upload_lines(&self, bool loop) {
 // Frees GPU buffers. Geometry is re-uploaded if rendered again.
 fn void BufferGeometry.dispose(&self) {
     if (self.vbuf.id) sg::destroy_buffer(self.vbuf);
+    if (self.prev_vbuf.id) sg::destroy_buffer(self.prev_vbuf);
+    if (self.staging.id) sg::destroy_buffer(self.staging);
+    self.prev_vbuf = { };
+    self.staging = { };
+    remove_dynamic(self);
     if (self.ibuf.id) sg::destroy_buffer(self.ibuf);
     if (self.wire_ibuf.id) sg::destroy_buffer(self.wire_ibuf);
     if (self.line_ibuf.id) sg::destroy_buffer(self.line_ibuf);
