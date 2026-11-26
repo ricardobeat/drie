@@ -57,6 +57,13 @@ struct BufferGeometry {
     // buffer an update is written into, and copied from on the GPU
     SgBuffer prev_vbuf;
     SgBuffer staging;
+    // The vertices are written on the GPU (a compute kernel: gpu_cloth.c3), never copied from
+    // the CPU after the first upload. Set before it, with dynamic. Both vertex buffers are also
+    // storage buffers; gpu_vertices_target() gives the one a kernel writes this frame.
+    bool gpu_vertices;
+    // the storage views of vbuf and prev_vbuf, for a geometry with gpu_vertices
+    SgView vbuf_view;
+    SgView prev_view;
     // the frame (state.frame + 1) of the last update
     uint updated_frame;
     // counts the changes of the vertices on the GPU (uploads and updates): what is worked out
@@ -291,7 +298,7 @@ fn void BufferGeometry.upload(&self) {
     if (!self.indices.len() || !self.vertices.len()) return;
     if (self.bounds_radius == 0) self.compute_bounding_sphere();
     self.index_count = (uint)self.indices.len();
-    SgBufferUsage dyn = { .vertex_buffer = true, .copy_dst = self.dynamic };
+    SgBufferUsage dyn = { .vertex_buffer = true, .copy_dst = self.dynamic && !self.gpu_vertices, .storage_buffer = self.gpu_vertices };
     usz vbytes = (usz)self.vertices.len() * float::size;
     self.vbuf = sg::make_buffer(&&{ .usage = dyn, .data = { .ptr = self.vertices.entries, .size = vbytes } });
     self.ibuf = sg::make_buffer(
@@ -308,7 +315,12 @@ fn void BufferGeometry.upload(&self) {
     if (tangents) {
         self.tangent_buf = sg::make_buffer(&&{ .usage = dyn, .data = { .ptr = self.tangents.entries, .size = tbytes } });
     }
-    if (self.dynamic) {
+    if (self.dynamic && self.gpu_vertices) {
+        self.prev_vbuf = sg::make_buffer(&&{ .usage = dyn, .data = { .ptr = self.vertices.entries, .size = vbytes } });
+        self.vbuf_view = sg::make_view(&&{ .storage_buffer = { .buffer = self.vbuf } });
+        self.prev_view = sg::make_view(&&{ .storage_buffer = { .buffer = self.prev_vbuf } });
+        self.updated_frame = 0;
+    } else if (self.dynamic) {
         self.prev_vbuf = sg::make_buffer(&&{ .usage = dyn, .data = { .ptr = self.vertices.entries, .size = vbytes } });
         self.staging = sg::make_buffer(
             &&{
@@ -345,12 +357,34 @@ fn SgBuffer BufferGeometry.prev_vertices(&self) {
 // Whether a dynamic geometry's vertices changed this frame (they move, for the motion vectors).
 fn bool BufferGeometry.updated_now(&self) => self.dynamic && self.updated_frame == state.frame + 1;
 
+// The storage view of the vertex buffer a kernel writes this frame's vertices into, for a
+// geometry with gpu_vertices (uploaded first if it is not yet): the first call in a frame makes
+// the older of the two vertex buffers vbuf, the other keeping the last frame's vertices for the
+// motion vectors, and counts a change (version). Write every vertex: the buffer holds the ones
+// of two frames ago. A zero view without GPU buffers.
+fn SgView BufferGeometry.gpu_vertices_target(&self) {
+    if (!self.gpu_vertices || !self.dynamic) return { };
+    self.upload();
+    if (!self.vbuf_view.id) return { };
+    if (self.updated_frame != state.frame + 1) {
+        self.updated_frame = state.frame + 1;
+        self.version++;
+        SgBuffer older = self.prev_vbuf;
+        self.prev_vbuf = self.vbuf;
+        self.vbuf = older;
+        SgView older_view = self.prev_view;
+        self.prev_view = self.vbuf_view;
+        self.vbuf_view = older_view;
+    }
+    return self.vbuf_view;
+}
+
 // Copies a marked dynamic geometry's vertices (and tangents) to the GPU, outside any pass: written
 // into the staging buffer, copied from there into the vertex buffer the motion vectors don't
 // need (the older of the two), which becomes vbuf. Once a frame: a geometry already updated
 // this frame stays marked for the next. Returns the bytes copied.
 fn usz BufferGeometry.update_vertices(&self) {
-    if (!self.needs_update || !self.uploaded || !self.vbuf.id) return 0;
+    if (!self.needs_update || !self.uploaded || !self.vbuf.id || self.gpu_vertices) return 0;
     if (self.updated_frame == state.frame + 1) return 0;
     usz vbytes = (usz)self.vertices.len() * float::size;
     usz tbytes = self.tangent_buf.id ? (usz)self.vertex_count() * 4 * float::size : 0;
@@ -505,6 +539,10 @@ fn void BufferGeometry.upload_lines(&self, bool loop) {
 
 // Frees GPU buffers. Geometry is re-uploaded if rendered again.
 fn void BufferGeometry.dispose(&self) {
+    if (self.vbuf_view.id) sg::destroy_view(self.vbuf_view);
+    if (self.prev_view.id) sg::destroy_view(self.prev_view);
+    self.vbuf_view = { };
+    self.prev_view = { };
     if (self.vbuf.id) sg::destroy_buffer(self.vbuf);
     if (self.prev_vbuf.id) sg::destroy_buffer(self.prev_vbuf);
     if (self.staging.id) sg::destroy_buffer(self.staging);
