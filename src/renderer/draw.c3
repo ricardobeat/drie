@@ -288,6 +288,7 @@ fn FsParams build_light_params(Scene* scene, Camera* camera, SpotLight* caster) 
                     g.shadows.push(sh);
                     g.dir_tiles = true;
                 }
+                if (d.shadow.contact_length > 0) g.contact_shadows = true;
                 g.dirs.push(gd);
             case POINT:
                 if (!g.room(g.points.len(), r.max_lights)) break;
@@ -307,6 +308,7 @@ fn FsParams build_light_params(Scene* scene, Camera* camera, SpotLight* caster) 
                     .shadow = { -1, 1, (float)l.channels, pl.shadow.contact_length },
                 };
                 cube_shadows(l, &gp.shadow, g, vsm);
+                if (pl.shadow.contact_length > 0) g.contact_shadows = true;
                 g.points.push(gp);
                 if (pl.radius > 0 || pl.length > 0) g.sized = true;
                 if (half != (Vector3) { 0, 0, 0 }) g.tubes = true;
@@ -316,7 +318,7 @@ fn FsParams build_light_params(Scene* scene, Camera* camera, SpotLight* caster) 
                 g.point_bounds.push(b);
             case RECT_AREA:
                 // Oriented half-width and half-height axes (ignoring node scale) packed into
-                // GpuPointLight fields for ltc_tables evaluation in shaders/shader_core.glsl.
+                // GpuPointLight fields for `ltc_tables()` evaluation in src/material/material_lit.c3.
                 RectAreaLight* ra = (RectAreaLight*)l;
                 if (l.intensity <= 0 || !g.room(g.rects.len(), r.max_rect_area_lights)) break;
                 Mat4 m = l.matrix_world;
@@ -334,7 +336,10 @@ fn FsParams build_light_params(Scene* scene, Camera* camera, SpotLight* caster) 
                 };
                 cube_shadows(l, &gr.shadow, g, vsm);
                 gr.shadow.w = rt_light(r, ra, hw, hh);
-                if (gr.shadow.w > 0) gr.shadow.y = clamp(ra.shadow.intensity, 0, 1);
+                if (gr.shadow.w > 0) {
+                    gr.shadow.y = clamp(ra.shadow.intensity, 0, 1);
+                    g.rt_shadows = true;
+                }
                 g.rects.push(gr);
             case SPOT:
                 SpotLight* sl = (SpotLight*)l;
@@ -389,6 +394,7 @@ fn FsParams build_light_params(Scene* scene, Camera* camera, SpotLight* caster) 
                     if (sl.shadow.softness > 0) g.soft_shadows = true;
                     g.shadows.push(sh);
                 }
+                if (sl.shadow.contact_length > 0) g.contact_shadows = true;
                 g.spots.push(gs);
                 if (gs.params.z > 0) g.sized = true;
                 LightBounds b = spot_light_bounds(sl);
@@ -698,7 +704,7 @@ fn bool prepassed(DrawItem* item) @private {
 }
 
 // Builds `projection * view` translated to `origin` in double precision so vertices transform
-// `(world - origin)` into clip space without float jitter far from world origin (shaders/shader_core.glsl).
+// `(world - origin)` into clip space without float jitter far from world origin.
 fn Mat4 relative_view_proj(Camera* camera, Vector3 origin) @private {
     Mat4 view = camera.matrix_world_inverse;
     for (int r = 0; r < 3; r++) {
@@ -1281,13 +1287,13 @@ fn void draw_item(
     bind.views[shaders::VIEW_SSR_DEPTH] = ssr ? r.ssr_depth : ready(state.white).view;
     bind.views[shaders::VIEW_SSR_BACK] = ssr && r.ssr_back.id ? r.ssr_back : ready(state.white).view;
     Reflector* mirror = mirror_of(mat);
-    // SpotLight.map projection texture (`light_cookies` in shaders/shader_core.glsl).
+    // SpotLight.map projection texture (`VIEW_LIGHT_COOKIES`).
     bind.views[shaders::VIEW_LIGHT_COOKIES] = lights_gpu.cookie ? lights_gpu.cookie.view : ready(state.white).view;
     bind.samplers[shaders::SMP_SSR_SMP] = clamp_sampler();
     Texture* none     = ready(state.white);
     bool transmission = mat.transmission > 0 && mat.type == STANDARD && state.transmission_mips.id != 0;
-    bind.views[VIEW_TEX_TRANSMISSION] = transmission ? state.transmission_mips_view : none.view;
-    bind.samplers[SMP_TRANSMISSION_SMP] = transmission ? state.mip_sampler : none.sampler;
+    bind.views[shaders::VIEW_TEX_TRANSMISSION] = transmission ? state.transmission_mips_view : none.view;
+    bind.samplers[shaders::SMP_TRANSMISSION_SMP] = transmission ? state.mip_sampler : none.sampler;
     bind.views[shaders::VIEW_TEX_GI] = state.gi_view;
     bind.views[shaders::VIEW_RC_PROBES] = state.radiance_view;
     bind.samplers[shaders::SMP_GI_SMP] = state.irradiance.sampler;

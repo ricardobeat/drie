@@ -81,6 +81,13 @@ struct Lit @private {
     Node outc;
     Node ind_d;
     Node ind_s;
+    // Deferred lighting pass runtime flags unpacked from G-Buffer g2.a (unused when !key.deferred_light).
+    Node df_mode;
+    Node df_shadow;
+    Node df_foliage;
+    Node df_ssr;
+    Node df_env;
+    Node df_own;
 }
 
 // The light of all the render's lights on the surface: `rgb` the material's color (with its
@@ -88,11 +95,17 @@ struct Lit @private {
 fn void Lit.shade(&self, FragUv* f, Node rgb, Node map_rgb, Node v_color) {
     MaterialKey key = self.key;
     Node n          = self.n;
-    self.dpdx = nodes::dfdx(self.world);
-    self.dpdy = nodes::dfdy(self.world);
+    if (!self.dpdx.id) {
+        self.dpdx = nodes::dfdx(self.world);
+        self.dpdy = nodes::dfdy(self.world);
+    }
     Node ao = self.ao;
     self.diffuse = rgb;
-    if (key.type == (char)MaterialType.STANDARD) {
+    if (key.deferred_light) {
+        self.f0 = nodes::mix(nodes::vec3(0.04f), rgb, self.metal);
+        self.f90 = nodes::num(1);
+        self.diffuse = nodes::select(self.df_mode.equal(nodes::int_(3)), rgb * self.metal.one_minus(), rgb);
+    } else if (key.type == (char)MaterialType.STANDARD) {
         // what it reflects head on: 4% for glass's IOR of 1.5, tinted and scaled by the specular
         // color and intensity (KHR_materials_specular); metals reflect their own color
         Node ior_in   = fs_in("transmission_params", FLOAT);
@@ -191,7 +204,7 @@ fn void Lit.shade(&self, FragUv* f, Node rgb, Node map_rgb, Node v_color) {
         Node[6] pre;
         int np;
         Node skip;
-        if (key.sun_shadow || key.dir_tiles || key.parallax) {
+        if (key.sun_shadow || key.dir_tiles || key.parallax || key.contact_shadows) {
             Node world = self.world;
             Node lit   = nodes::variable(nodes::num(1));
             pre[np++] = drie::node_eval(l);
@@ -199,18 +212,29 @@ fn void Lit.shade(&self, FragUv* f, Node rgb, Node map_rgb, Node v_color) {
             if (key.sun_shadow) {
                 Node sun = nodes::convert(fs_in("dir_shadow_params", FLOAT), INT)
                     .equal(nodes::convert(i, INT) + nodes::int_(1));
+                if (key.deferred_light) sun = nodes::logical_and(sun, self.df_shadow);
                 pre[np++] = nodes::if_then(sun, nodes::block(lit.assign(self.shadow.sun(n, l, world, self.frag))));
             }
             if (key.dir_tiles) {
                 // the other shadowed ones: a tile of shadow_atlas each
-                Node dsi  = nodes::convert(shadow.x(), INT);
-                Node tile = nodes::mix(1, self.shadow.dir_tile(dsi, n, l, world, self.frag), shadow.y());
-                pre[np++] = nodes::if_then(dsi.greater_than_equal(nodes::int_(0)), nodes::block(lit.assign(tile)));
+                Node dsi     = nodes::convert(shadow.x(), INT);
+                Node tile    = nodes::mix(1, self.shadow.dir_tile(dsi, n, l, world, self.frag), shadow.y());
+                Node on_tile = dsi.greater_than_equal(nodes::int_(0));
+                if (key.deferred_light) on_tile = nodes::logical_and(on_tile, self.df_shadow);
+                pre[np++] = nodes::if_then(on_tile, nodes::block(lit.assign(tile)));
             }
             if (key.parallax) {
                 // parallax_map: the bumps' own shadows, toward the first directional light
                 Node bumps = parallax_shadow(&self.parallax, self.f, self.geo_n, l);
                 pre[np++] = nodes::if_then(i.equal(nodes::uint_(0)), nodes::block(lit.assign(lit * bumps)));
+            }
+            if (key.contact_shadows) {
+                Node cs_on = nodes::logical_and(
+                    lit.greater_than(nodes::num(0)),
+                    nodes::logical_and(self.df_shadow, shadow.w()
+                    .greater_than(nodes::num(0))));
+                Node cs = self.shadow.contact(l, shadow.w(), self.geo_n, nodes::num(1), world, self.frag);
+                pre[np++] = nodes::if_then(cs_on, nodes::block(lit.assign(lit * cs)));
             }
             skip = lit.less_than_equal(nodes::num(0));
             radiance = radiance * lit;
@@ -276,6 +300,7 @@ fn void Lit.shade(&self, FragUv* f, Node rgb, Node map_rgb, Node v_color) {
                 size.on = (radius + nodes::abs(
                     seg.x()
                 ) + nodes::abs(seg.y()) + nodes::abs(seg.z())).greater_than(nodes::num(0));
+                if (key.deferred_light) size.on = nodes::logical_and(self.df_mode.equal(nodes::int_(3)), size.on);
             }
             if (key.tubes) {
                 // a tube (PointLight.length): the light of the whole segment, its intensity
@@ -299,18 +324,34 @@ fn void Lit.shade(&self, FragUv* f, Node rgb, Node map_rgb, Node v_color) {
                 key,
                 shading::fog_distance(key, pos.xyz(), self.world)
             );
-            Node[2] pre;
+            Node[4] pre;
             int np;
-            if (key.point_shadows) {
+            if (key.point_shadows || key.contact_shadows) {
                 Node shade = nodes::variable(nodes::num(1));
-                Node si    = nodes::convert(shadow.x(), INT);
-                Node lit = nodes::mix(
-                    1,
-                    self.shadow.point(pos.xyz(), si, self.geo_n, self.world, self.dpdx, self.dpdy, self.frag),
-                    shadow.y()
-                );
                 pre[np++] = shade;
-                pre[np++] = nodes::if_then(si.greater_than_equal(nodes::int_(0)), nodes::block(shade.assign(lit)));
+                if (key.point_shadows) {
+                    Node si = nodes::convert(shadow.x(), INT);
+                    Node lit = nodes::mix(
+                        1,
+                        self.shadow.point(pos.xyz(), si, self.geo_n, self.world, self.dpdx, self.dpdy, self.frag),
+                        shadow.y()
+                    );
+                    Node on_ps = si.greater_than_equal(nodes::int_(0));
+                    if (key.deferred_light) on_ps = nodes::logical_and(on_ps, self.df_shadow);
+                    pre[np++] = nodes::if_then(on_ps, nodes::block(shade.assign(lit)));
+                }
+                if (key.contact_shadows) {
+                    Node cs_on = nodes::logical_and(self.df_shadow, shadow.w().greater_than(nodes::num(0)));
+                    Node cs = self.shadow.contact(
+                        lv / d,
+                        nodes::min(shadow.w(), d),
+                        self.geo_n,
+                        shadow.y(),
+                        self.world,
+                        self.frag
+                    );
+                    pre[np++] = nodes::if_then(cs_on, nodes::block(shade.assign(shade * cs)));
+                }
                 radiance = radiance * shade;
             }
             Node body = self.light_body(shadow, self.direct(l, radiance, &size), outc, spec, { }, pre[:np]);
@@ -335,6 +376,7 @@ fn void Lit.shade(&self, FragUv* f, Node rgb, Node map_rgb, Node v_color) {
             if (key.sized) {
                 size = light_toward(mirror_r, lv, { }, params.z(), false);
                 size.on = params.z().greater_than(nodes::num(0));
+                if (key.deferred_light) size.on = nodes::logical_and(self.df_mode.equal(nodes::int_(3)), size.on);
             }
             if (key.fog) radiance = radiance * shading::fog_transmittance(
                 key,
@@ -343,13 +385,12 @@ fn void Lit.shade(&self, FragUv* f, Node rgb, Node map_rgb, Node v_color) {
             // out of the light's reach, or of its cone
             Node away = nodes::logical_or(nodes::logical_and(pos.w()
                 .greater_than(nodes::num(0)), d.greater_than(pos.w())), cone.less_than_equal(nodes::num(0)));
-            Node[4] pre;
+            Node[6] pre;
             int np;
 
 
             {
-                // SpotLight.map (shaders/shader_core.glsl's spot_cookie): projected cookie texture
-                // sampled from VIEW_LIGHT_COOKIES.
+                // SpotLight.map: projected cookie texture sampled from VIEW_LIGHT_COOKIES.
                 Node map    = node_storage(shaders::VIEW_SPOT_LIGHTS, VEC4, at + nodes::uint_(5));
                 Node map_u  = node_storage(shaders::VIEW_SPOT_LIGHTS, VEC4, at + nodes::uint_(6));
                 Node map_v  = node_storage(shaders::VIEW_SPOT_LIGHTS, VEC4, at + nodes::uint_(7));
@@ -375,23 +416,42 @@ fn void Lit.shade(&self, FragUv* f, Node rgb, Node map_rgb, Node v_color) {
                     ), nodes::block(cookie.assign(nodes::select(inside, texel, nodes::vec3(0, 0, 0)))));
                 radiance = radiance * cookie;
             }
-            if (key.spot_shadows) {
+            if (key.spot_shadows || key.contact_shadows) {
                 Node shade = nodes::variable(nodes::num(1));
-                Node si    = nodes::convert(shadow.x(), INT);
-                Node lit = nodes::mix(
-                    1,
-                    self.shadow.light(pos.xyz(), si, self.geo_n, self.world, self.dpdx, self.dpdy, self.frag),
-                    shadow.y()
-                );
                 pre[np++] = shade;
-                pre[np++] = nodes::if_then(si.greater_than_equal(nodes::int_(0)), nodes::block(shade.assign(lit)));
+                if (key.spot_shadows) {
+                    Node si = nodes::convert(shadow.x(), INT);
+                    Node lit = nodes::mix(
+                        1,
+                        self.shadow.light(pos.xyz(), si, self.geo_n, self.world, self.dpdx, self.dpdy, self.frag),
+                        shadow.y()
+                    );
+                    Node on_ss = si.greater_than_equal(nodes::int_(0));
+                    if (key.deferred_light) on_ss = nodes::logical_and(on_ss, self.df_shadow);
+                    pre[np++] = nodes::if_then(on_ss, nodes::block(shade.assign(lit)));
+                }
+                if (key.contact_shadows) {
+                    Node cs_on = nodes::logical_and(self.df_shadow, shadow.w().greater_than(nodes::num(0)));
+                    Node cs = self.shadow.contact(
+                        l,
+                        nodes::min(shadow.w(), d),
+                        self.geo_n,
+                        shadow.y(),
+                        self.world,
+                        self.frag
+                    );
+                    pre[np++] = nodes::if_then(cs_on, nodes::block(shade.assign(shade * cs)));
+                }
                 radiance = radiance * shade;
             }
             Node body = self.light_body(shadow, self.direct(l, radiance, &size), outc, spec, away, pre[:np]);
             stmts[ns++] = nodes::loop(k, nodes::uint_(0), nspot, body);
         }
     }
-    if (key.rect_lights) stmts[ns++] = self.rect_lights(outc, spec);
+    if (key.rect_lights) {
+        Node rl = self.rect_lights(outc, spec);
+        stmts[ns++] = key.deferred_light ? nodes::if_then(self.df_mode.equal(nodes::int_(3)), nodes::block(rl)) : rl;
+    }
     Node lit        = nodes::seq(drie::node_block(stmts[:ns]), outc);
     Node highlights = spec;
     // three's specularMap: the highlights' strength
@@ -399,13 +459,19 @@ fn void Lit.shade(&self, FragUv* f, Node rgb, Node map_rgb, Node v_color) {
         MAP_SPECULAR
     )) highlights = highlights * role_texel(key, f, MAP_SPECULAR)
         .x();
-    bool shiny = key.type != (char)MaterialType.LAMBERT && key.type != (char)MaterialType.TOON;
+    bool shiny = key.deferred_light || (key.type != (char)MaterialType.LAMBERT && key.type != (char)MaterialType.TOON);
     if (shiny) self.highlights = highlights * ao;
     // what it gives off itself: Material.map_emissive (the color map glows too), three's emissiveMap
-    Node glow = fs_in("emissive", VEC3);
-    if (key.map_emissive && map_rgb.id) glow = glow * map_rgb;
-    if (key.slot(MAP_EMISSIVE)) glow = glow * role_texel(key, f, MAP_EMISSIVE).xyz();
-    if (self.user_glow.id) glow = self.user_glow;
+    Node glow;
+    if (key.deferred_light) {
+        glow = self.df_own;
+        self.ind_d = self.ind_d + glow;
+    } else {
+        glow = fs_in("emissive", VEC3);
+        if (key.map_emissive && map_rgb.id) glow = glow * map_rgb;
+        if (key.slot(MAP_EMISSIVE)) glow = glow * role_texel(key, f, MAP_EMISSIVE).xyz();
+        if (self.user_glow.id) glow = self.user_glow;
+    }
     self.glow = glow;
     Node result = lit + glow;
     // light baked into the vertex colors, as if from fixed lamps
@@ -453,6 +519,48 @@ fn void Lit.finish(&self) {
         return;
     }
     self.ind_s = nodes::vec3(0);
+    Node result = self.lights;
+    if (key.deferred_light && (key.env_reflect || key.ssr)) {
+        Node env_var = nodes::variable(nodes::vec3(0));
+        Node mir_var = nodes::variable(nodes::vec3(0));
+        Node[4] fin_st;
+        int nf;
+        fin_st[nf++] = env_var;
+        fin_st[nf++] = mir_var;
+        if (key.env_reflect) {
+            Node v      = self.v;
+            Node rough  = self.rough;
+            Node nov    = nodes::clamp(nodes::dot(n, v), 0, 1);
+            Node f0     = self.f0;
+            Node fr     = f0 + (nodes::max(
+                nodes::vec3(rough.one_minus() * self.f90),
+                f0
+            ) - f0) * nodes::pow(nov.one_minus(), 5);
+            Node r      = dominant_reflection(nodes::reflect(v.negate(), n), n, rough);
+            Node env_c  = env_sample(key, &self.probe_fn, r, rough, self.world, self.frag, n) * fr;
+            Node env_on = nodes::logical_and(self.df_env, self.df_mode.not_equal(nodes::int_(1)));
+            fin_st[nf++] = nodes::if_then(env_on, nodes::block(env_var.assign(env_c)));
+        }
+        if (key.ssr) {
+            Node v       = self.v;
+            Node bumps   = nodes::smoothstep(1.5f, 5.0f, nodes::length(fs_in("camera_pos", VEC3) - self.world))
+                .one_minus() * 0.5f;
+            Node rn      = nodes::normalize(nodes::mix(self.geo_n, n, bumps));
+            Node fresnel = nodes::pow(nodes::clamp(nodes::dot(rn, v), 0, 1).one_minus(), 5) * 0.96f + 0.04f;
+            Node near    = screen_reflection(&self.ssr_fn, rn, self.geo_n, v, self.rough, self.world, self.frag);
+            Node ssr     = fs_in("ssr_params", FLOAT);
+            Node[2] ss;
+            int nss;
+            ss[nss++] = mir_var.assign(near.xyz() * (near.w() * fresnel * ssr * ao));
+            if (key.env_reflect) ss[nss++] = env_var.assign(env_var * nodes::clamp(near.w() * ssr, 0, 1).one_minus());
+            fin_st[nf++] = nodes::if_then(self.df_ssr, drie::node_block(ss[:nss]));
+        }
+        Node ind = nodes::seq(drie::node_block(fin_st[:nf]), env_var + mir_var);
+        self.ind_s = ind;
+        result = result + ind;
+        self.outc = self.highlights.id ? result + self.highlights : result;
+        return;
+    }
     Node env_term;
     if (key.env_reflect) {
         // reflections of the surroundings, fading as the surface gets rougher
@@ -528,7 +636,6 @@ fn void Lit.finish(&self) {
         if (env_term.id) env_term = env_term * nodes::clamp(found * strength, 0, 1).one_minus();
         self.ind_s = env_term.id ? env_term + mirror_term : mirror_term;
     }
-    Node result = self.lights;
     if (env_term.id) result = result + env_term;
     if (mirror_term.id) result = result + mirror_term;
     self.outc = self.highlights.id ? result + self.highlights : result;
@@ -768,20 +875,50 @@ fn Node Lit.rect_lights(&self, Node outc, Node spec) {
     Node[4] q   = { to + hw - hh, to - hw - hh, to - hw + hh, to + hw + hh };
     Node c      = color.xyz();
     if (key.fog) c = c * shading::fog_transmittance(key, shading::fog_distance(key, pos.xyz(), self.world));
-    // RectAreaLight.shadow, cast from its centre (not looked up for a point behind the light)
+    // RectAreaLight.shadow: hardware ray-traced mask (key.rt_shadows) or cube-map shadow from centre.
     Node[3] pre;
     int np;
-    if (key.point_shadows) {
+    if (key.point_shadows || key.rt_shadows) {
         Node shade = nodes::variable(nodes::num(1));
-        Node si    = nodes::convert(shadow.x(), INT);
-        Node lit = nodes::mix(
-            1,
-            self.shadow.rect(pos.xyz(), hw, hh, si, self.geo_n, self.world, self.dpdx, self.dpdy, self.frag),
-            shadow.y()
-        );
         pre[np++] = nodes::if_then(behind, nodes::block(nodes::continue_()));
         pre[np++] = shade;
-        pre[np++] = nodes::if_then(si.greater_than_equal(nodes::int_(0)), nodes::block(shade.assign(lit)));
+        if (key.rt_shadows && key.point_shadows) {
+            Node ch     = nodes::convert(shadow.w(), INT) - nodes::int_(1);
+            Node rt_lit = nodes::mix(1, rt_shadow(ch, self.frag), shadow.y());
+            Node si     = nodes::convert(shadow.x(), INT);
+            Node map_lit = nodes::mix(
+                1,
+                self.shadow.rect(pos.xyz(), hw, hh, si, self.geo_n, self.world, self.dpdx, self.dpdy, self.frag),
+                shadow.y()
+            );
+            Node on_rt  = shadow.w().greater_than(nodes::num(0.5f));
+            Node on_map = si.greater_than_equal(nodes::int_(0));
+            if (key.deferred_light) {
+                on_rt = nodes::logical_and(self.df_shadow, on_rt);
+                on_map = nodes::logical_and(self.df_shadow, on_map);
+            }
+            pre[np++] = nodes::if_then(
+                on_rt,
+                nodes::block(shade.assign(rt_lit)),
+                nodes::block(nodes::if_then(on_map, nodes::block(shade.assign(map_lit))))
+            );
+        } else if (key.rt_shadows) {
+            Node ch     = nodes::convert(shadow.w(), INT) - nodes::int_(1);
+            Node rt_lit = nodes::mix(1, rt_shadow(ch, self.frag), shadow.y());
+            Node on_rt  = shadow.w().greater_than(nodes::num(0.5f));
+            if (key.deferred_light) on_rt = nodes::logical_and(self.df_shadow, on_rt);
+            pre[np++] = nodes::if_then(on_rt, nodes::block(shade.assign(rt_lit)));
+        } else {
+            Node si = nodes::convert(shadow.x(), INT);
+            Node map_lit = nodes::mix(
+                1,
+                self.shadow.rect(pos.xyz(), hw, hh, si, self.geo_n, self.world, self.dpdx, self.dpdy, self.frag),
+                shadow.y()
+            );
+            Node on_map = si.greater_than_equal(nodes::int_(0));
+            if (key.deferred_light) on_map = nodes::logical_and(self.df_shadow, on_map);
+            pre[np++] = nodes::if_then(on_map, nodes::block(shade.assign(map_lit)));
+        }
         c = c * shade;
         behind = { };
     }
@@ -863,15 +1000,18 @@ fn Node ltc_edge(Node v1, Node v2) @local {
     return nodes::cross(v1, v2) * nodes::select(x.greater_than(nodes::num(0)), k, far);
 }
 
-// Direct diffuse and specular lighting from `radiance` arriving along `l` (matching
-// shaders/shader_core.glsl's direct() and three's physical light units).
+// Direct diffuse and specular lighting from `radiance` arriving along `l` (three's physical light units).
 fn Node[2] Lit.direct(&self, Node l, Node radiance, Sized* size = null) {
     MaterialKey key = self.key;
     Node n          = self.n;
     Node v          = self.v;
     Node ndl        = nodes::dot(n, l);
     Node nol;
-    if (key.foliage) {
+    if (key.deferred_light) {
+        Node through = nodes::select((nodes::dot(n, v) * ndl).less_than(nodes::num(0)), 0.5f, 1.0f);
+        Node fol     = through * (nodes::abs(ndl) * 0.9f + 0.1f);
+        nol = nodes::select(self.df_foliage, fol, nodes::clamp(ndl, 0, 1));
+    } else if (key.foliage) {
         // thin leaves and blades, lit from either side: on the side the light falls on, as any
         // surface, with a little of it wrapping round; from the other, about half of it
         Node through = nodes::select((nodes::dot(n, v) * ndl).less_than(nodes::num(0)), 0.5f, 1.0f);
@@ -971,7 +1111,9 @@ fn Node[2] Lit.direct(&self, Node l, Node radiance, Sized* size = null) {
         d = nodes::select(on, d_ggx_aniso(at, a, noh, nodes::dot(t, h), nodes::dot(b, h)), d);
     }
     Node highlight = irradiance * fresnel * vis * d;
-    return { result, norm.id ? highlight * norm : highlight };
+    if (norm.id) highlight = highlight * norm;
+    if (key.deferred_light) highlight = nodes::select(self.df_mode.equal(nodes::int_(1)), nodes::vec3(0), highlight);
+    return { result, highlight };
 }
 
 // The light the highlight of a light with a size keeps at roughness alpha `a`: a / a' along a
@@ -1061,10 +1203,10 @@ fn Node env_blur(Node rough) @local {
     );
 }
 
-// Environment reflection along `d`, blurred for `rough` (matching shaders/shader_core.glsl's
-// env_reflection): samples the material's env_map (with optional box projection and depth
-// marching) or blends scene reflection probes (`key.probes`) around `world`. `facing` is the
-// surface normal, `frag` is fragment position, and `probe_fn` caches the probe helper (-1 = new).
+// Environment reflection along `d`, blurred for `rough`: samples the material's env_map (with
+// optional box projection and depth marching) or blends scene reflection probes (`key.probes`)
+// around `world`. `facing` is the surface normal, `frag` is fragment position, and `probe_fn`
+// caches the probe helper (-1 = new).
 fn Node env_sample(MaterialKey key, int* probe_fn, Node d, Node rough, Node world, Node frag, Node facing) @local {
     if (key.probes) return probe_reflection(probe_fn, d, rough, world, frag, facing);
     if (key.env_box) {
@@ -1252,7 +1394,7 @@ fn Node EnvSource.behind(&self, Node q) {
     return len - env_texel(self.layer, shading::env_uv(q / len), nodes::num(0)).w() * self.range;
 }
 
-// Interleaved gradient noise (Jimenez), matching shaders/shader_core.glsl's ssr_noise.
+// Interleaved gradient noise (Jimenez).
 fn Node shading_noise(
     Node p
 ) @local => nodes::fract(nodes::fract(nodes::dot(p, nodes::vec2(0.06711056f, 0.00583715f))) * 52.9829189f);
@@ -1318,8 +1460,7 @@ fn Node toon_gradient(MaterialKey key, Node ndl) @local {
     return nodes::mix(0.7f, 1.0f, nodes::smoothstep(nodes::num(0.7f) - fw, fw + 0.7f, x));
 }
 
-// Smooth distance cutoff window (0 = infinite reach) and power-law falloff by `decay`
-// (matching shaders/shader_core.glsl's distance_window and distance_attenuation).
+// Smooth distance cutoff window (0 = infinite reach) and power-law falloff by `decay`.
 fn Node distance_window(Node d, Node cutoff) @local {
     Node r = d / cutoff;
     Node f = nodes::clamp((r * r * r * r).one_minus(), 0, 1);
@@ -1377,7 +1518,7 @@ fn Node v_smith(Node nov, Node nol, Node a) @local {
     return 0.5f / nodes::max(gv + gl, 1e-6f);
 }
 
-// Flat cluster index for world position `p` (matching shaders/shader_core.glsl's cluster_of).
+// Flat cluster index for world position `p`.
 fn Node cluster_of(Node p) @local {
     Node grid  = nodes::convert(fs_in("cluster_grid", VEC3), IVEC3);
     Node clip  = fs_in("cluster_view_proj", MAT4) * nodes::vec4(p, 1);

@@ -1,5 +1,5 @@
-// Shared RadianceCascades GLSL blocks included by shaders/shader_core.glsl,
-// shaders/radiance_cs.glsl, and shaders/radiance_rays_cs.glsl (regenerate with `just shaders`).
+// Shared RadianceCascades GLSL blocks included by shaders/radiance_cs.glsl and
+// shaders/radiance_rays_cs.glsl (regenerate with `just shaders`).
 //
 //   rc_key_common    32-bit spatial hash and probe key packing (shared with material shaders)
 //   rc_pack_common   voxel, brick, light, and fp16 radiance structs and packing helpers

@@ -1,8 +1,8 @@
 // Shared tone mapping, gamut conversion, HDR boost, sRGB encoding, and color-grade log shaper
-// blocks (`tonemapping` and `grade_shaper`), matching three.js's tone mapping curves. Included by
-// shaders/shader.glsl, shaders/shader_deferred.glsl, shaders/output.glsl, and shaders/grade.glsl
-// (regenerate their generated/*.c3 bindings with `just shaders`). `mode` is drei::ToneMapping's
-// ordinal and `exposure` is Renderer.tone_mapping_exposure.
+// blocks (`tonemapping` and `grade_shaper`), matching three.js's tone mapping curves and
+// `src/nodes/shading.c3`. Included by shaders/output.glsl and shaders/grade.glsl (regenerate
+// their generated/*.c3 bindings with `just shaders`). `mode` is drie::ToneMapping's ordinal and
+// `exposure` is Renderer.tone_mapping_exposure.
 @block tonemapping
 #define TONE_NONE 0
 #define TONE_LINEAR 1

@@ -387,6 +387,11 @@ fn void Renderer.pump_pipeline_cache(&self) {
             (void)gen_shadow_pipeline(gen);
             continue;
         }
+        if (r.key.deferred_light) {
+            RenderTarget target = { .samples = 1, .format = r.target_format, .mrt = r.target_mrt };
+            (void)deferred_pipeline(&target, gen);
+            continue;
+        }
         // get_pipeline() reads VSM mode off the renderer.
         self.shadow_type = r.vsm ? ShadowType.VSM : shadow_type == VSM ? ShadowType.PCF : shadow_type;
         RenderTarget target = { .samples = r.target_samples, .format = r.target_format, .mrt = r.target_mrt };

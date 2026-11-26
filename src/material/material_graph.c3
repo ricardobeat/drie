@@ -363,10 +363,9 @@ fn Node parallax_shadow(Parallax* px, FragUv* f, Node n, Node l) @private {
 }
 
 // Shadow map program: runs the material's vertex stage from the light (VsParams filled by
-// draw_shadow_item) and the alpha-test cutout matching shaders/shader_core.glsl's shadow_fs
-// (color map alpha, opacity, and alpha map green via ShadowFsParams). A node material (`build`)
-// applies position_node and cuts the same holes as its color step (mask_node, color_node,
-// opacity_node).
+// draw_shadow_item) and the alpha-test cutout (color map alpha, opacity, and alpha map green via
+// ShadowFsParams). A node material (`build`) applies position_node and cuts the same holes as its
+// color step (mask_node, color_node, opacity_node).
 fn void build_shadow_graph(MaterialKey key, ProgramGraph* graph, NodeBuild* build, UserBinds* binds) @private {
     VertexValues vtx = vertex_stage(key, build, binds);
     graph.position = vtx.position;
@@ -860,6 +859,66 @@ fn void build_material_graph(
     }
 
     Node fog_color = fs_in("fog_color");
+    Node[4] fogged = apply_fog(key, camera, world, v, depth, fc.xy(), outc, ind_d, ind_s);
+    outc = fogged[0];
+    ind_d = fogged[1];
+    ind_s = fogged[2];
+    Node display_fog_t = fogged[3];
+
+    outc = nodes::max(outc, nodes::vec3(0));
+    if (key.bake) {
+        // the light map: the new sample blended into the last map's texel, in linear light
+        Node uv1  = nodes::varying(vtx.uv1);
+        Node prev = node_sample(SAMPLE, shaders::VIEW_SSR_COLOR, shaders::SMP_SSR_SMP, TEX_2D, uv1).xyz();
+        graph.colors[0] = nodes::vec4(
+            nodes::mix(prev, nodes::min(outc, nodes::vec3(60000)), fs_in("bake_params", FLOAT, 1)),
+            1
+        );
+        if (ncuts) graph.fragment = drie::node_block(cuts[:ncuts]);
+        return;
+    }
+    Node indirect = nodes::vec4(0, 0, rough, metal);
+    if (key.mrt && ind_d.id) {
+        Node lw    = nodes::vec3(0.2126f, 0.7152f, 0.0722f);
+        Node total = nodes::max(nodes::dot(outc, lw), 1e-6f);
+        Node rg = nodes::clamp(
+            nodes::vec2(nodes::dot(nodes::max(ind_d, 0), lw), nodes::dot(nodes::max(ind_s, 0), lw)) / total,
+            0,
+            1
+        );
+        indirect = nodes::vec4(rg, rough, metal);
+    }
+    Node shown_alpha = alpha;
+    // a light source (emissive far over white) leaves the target's alpha at 0
+    Node glow        = fs_in("emissive", VEC3);
+    alpha = alpha * nodes::smoothstep(4, 16, nodes::max(glow.x(), nodes::max(glow.y(), glow.z()))).one_minus();
+    Node shown = encode_output(key, outc, camera.w(), fog_color.xyz(), display_fog_t);
+    Node color = nodes::vec4(shown, alpha);
+    // Material.premultiplied_alpha: the color as it is shown, times its opacity
+    if (key.premultiplied) color = nodes::vec4(color.xyz() * shown_alpha, color.w());
+    graph.colors[0] = color;
+    if (key.mrt) {
+        graph.colors[1] = mrt_normal;
+        graph.colors[2] = velocity;
+        graph.colors[3] = indirect;
+    }
+    if (ncuts) graph.fragment = drie::node_block(cuts[:ncuts]);
+}
+
+// Applies volumetric or analytic fog (with optional height falloff, sun scattering, shafts, and
+// light glow) to `outc`, `ind_d`, and `ind_s`. Returns `{ outc, ind_d, ind_s, display_fog_t }`.
+fn Node[4] apply_fog(
+    MaterialKey key,
+    Node camera,
+    Node world,
+    Node v,
+    Node depth,
+    Node frag,
+    Node outc,
+    Node ind_d,
+    Node ind_s
+) @private {
+    Node fog_color = fs_in("fog_color");
     Node display_fog_t;
     if (key.fog_volume) {
         // volumetric fog: what it scatters towards the camera in front of the point, and how
@@ -902,7 +961,7 @@ fn void build_material_graph(
                     camera.xyz(),
                     world,
                     fs_in("fog_params", FLOAT, 2) * fd / nodes::max(len, 1e-4f),
-                    fc.xy()
+                    frag
                 );
                 sunlit = sunlit * nodes::mix(nodes::num(1), in_sun, fs_in("fog_sun_color", FLOAT, 3));
             }
@@ -926,64 +985,32 @@ fn void build_material_graph(
             ind_s = ind_s * t;
         }
     }
-
-    outc = nodes::max(outc, nodes::vec3(0));
-    if (key.bake) {
-        // the light map: the new sample blended into the last map's texel, in linear light
-        Node uv1  = nodes::varying(vtx.uv1);
-        Node prev = node_sample(SAMPLE, shaders::VIEW_SSR_COLOR, shaders::SMP_SSR_SMP, TEX_2D, uv1).xyz();
-        graph.colors[0] = nodes::vec4(
-            nodes::mix(prev, nodes::min(outc, nodes::vec3(60000)), fs_in("bake_params", FLOAT, 1)),
-            1
-        );
-        if (ncuts) graph.fragment = drie::node_block(cuts[:ncuts]);
-        return;
-    }
-    Node indirect = nodes::vec4(0, 0, rough, metal);
-    if (key.mrt && ind_d.id) {
-        Node lw    = nodes::vec3(0.2126f, 0.7152f, 0.0722f);
-        Node total = nodes::max(nodes::dot(outc, lw), 1e-6f);
-        Node rg = nodes::clamp(
-            nodes::vec2(nodes::dot(nodes::max(ind_d, 0), lw), nodes::dot(nodes::max(ind_s, 0), lw)) / total,
-            0,
-            1
-        );
-        indirect = nodes::vec4(rg, rough, metal);
-    }
-    Node shown_alpha = alpha;
-    // a light source (emissive far over white) leaves the target's alpha at 0
-    Node glow        = fs_in("emissive", VEC3);
-    alpha = alpha * nodes::smoothstep(4, 16, nodes::max(glow.x(), nodes::max(glow.y(), glow.z()))).one_minus();
-    Node shown;
-    if (key.linear) {
-        shown = nodes::min(outc, nodes::vec3(60000));
-        if (display_fog_t.id) shown = nodes::mix(fog_color.xyz(), shown, display_fog_t);
-    } else {
-        // (three mixes the fog in the colors as they are shown)
-        shown = shading::tone_map_gamut(outc, key.tone, camera.w(), key.display != shading::DISPLAY_SRGB);
-        bool hdr = key.display == shading::DISPLAY_HDR;
-        if (!hdr) shown = shading::linear_to_srgb(shown);
-        if (display_fog_t.id) shown = nodes::mix(
-            hdr ? fog_color.xyz() : shading::linear_to_srgb(fog_color.xyz()),
-            shown,
-            display_fog_t
-        );
-    }
-    Node color = nodes::vec4(shown, alpha);
-    // Material.premultiplied_alpha: the color as it is shown, times its opacity
-    if (key.premultiplied) color = nodes::vec4(color.xyz() * shown_alpha, color.w());
-    graph.colors[0] = color;
-    if (key.mrt) {
-        graph.colors[1] = mrt_normal;
-        graph.colors[2] = velocity;
-        graph.colors[3] = indirect;
-    }
-    if (ncuts) graph.fragment = drie::node_block(cuts[:ncuts]);
+    return { outc, ind_d, ind_s, display_fog_t };
 }
 
-// Deferred G-buffer's four targets (MaterialKey.gbuffer, matching shaders/shader_core.glsl's
-// GBUFFER): albedo and AO; octahedral shaded normal, roughness, and metalness; self-emitted
-// light and lighting-pass flags; motion vectors and octahedral geometry normal.
+// Clamps linear HDR targets or tone-maps and encodes SDR/HDR display output, mixing display-space
+// fog when `display_fog_t` is present.
+fn Node encode_output(MaterialKey key, Node outc, Node exposure, Node fog_color, Node display_fog_t) @private {
+    if (key.linear) {
+        Node shown = nodes::min(outc, nodes::vec3(60000));
+        if (display_fog_t.id) shown = nodes::mix(fog_color, shown, display_fog_t);
+        return shown;
+    }
+    // (three mixes the fog in the colors as they are shown)
+    Node shown = shading::tone_map_gamut(outc, key.tone, exposure, key.display != shading::DISPLAY_SRGB);
+    bool hdr   = key.display == shading::DISPLAY_HDR;
+    if (!hdr) shown = shading::linear_to_srgb(shown);
+    if (display_fog_t.id) shown = nodes::mix(
+        hdr ? fog_color : shading::linear_to_srgb(fog_color),
+        shown,
+        display_fog_t
+    );
+    return shown;
+}
+
+// Deferred G-buffer's four targets (MaterialKey.gbuffer, unpacked by `build_deferred_graph`):
+// albedo and AO; octahedral shaded normal, roughness, and metalness; self-emitted light and
+// lighting-pass flags; motion vectors and octahedral geometry normal.
 fn void gbuffer_out(
     MaterialKey key,
     ProgramGraph* graph,
@@ -1049,5 +1076,5 @@ fn void gbuffer_out(
 // Whether the key holds a slot for any map role.
 fn bool MaterialKey.has_maps(self) => (bitcast(self, KeyWords).hi >> 64) != 0;
 
-// Samples map role `role` at the material's UV (matching shaders/shader_core.glsl's material_map).
+// Samples map role `role` at the material's UV.
 fn Node role_texel(MaterialKey key, FragUv* f, int role) @private => shading::ext_texel(f, key.slot(role) - 1);

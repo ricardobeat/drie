@@ -1,7 +1,7 @@
 // GPU per-instance frustum culling (Renderer.gpu_culling) and shared instance matrix arena.
 // CPU collect() culls whole meshes by aggregate bounding sphere; cull_dispatch() then runs
 // cull_cs (shaders/kernels.glsl) to test each instance sphere against camera and shadow frusta
-// and compact visible indices for fetch_instance() in shaders/shader.glsl. Because sokol lacks
+// and compact visible indices for the vertex stage (src/material/material_graph.c3). Because sokol lacks
 // indirect draws, draw counts come from a 3-frame async readback ring with padding, and the
 // vertex shader discards excess instances. Static meshes live in one shared InstanceArena; meshes
 // whose instances change after two uploads get dedicated buffers and skip per-instance culling.

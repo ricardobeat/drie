@@ -342,21 +342,21 @@ TBD. Currently the demo, with all advanced features on, runs at 40-60FPS on a Ma
 
 ## Editing the shaders
 
-The materials' programs are written in C3 as node graphs: material assembly in `src/material/`
-(`material_graph.c3`, `material_lit.c3`, `layers.c3`, `shadow_lookup.c3`), shading functions
-(BRDFs, lights, shadows, fog, tone mapping) in `src/nodes/shading.c3`, and the Metal, HLSL, and
-GLSL printers in `src/nodes/printer.c3` and `src/nodes/program.c3`. They need no build step.
-`DRIE_TRACE_PROGRAMS=1` prints each program as it is built.
+Forward materials, the deferred G-Buffer pass, the deferred fullscreen lighting pass, and shadow
+maps are written in C3 as node graphs: material assembly in `src/material/` (`material_key.c3`,
+`material_graph.c3`, `material_lit.c3`, `material_deferred.c3`, `layers.c3`, `shadow_lookup.c3`),
+shared shading helpers (sway, UV transforms, hex tiling, octahedral normals, fog, tone mapping)
+in `src/nodes/shading.c3`, and the Metal, HLSL, GLSL, and WGSL printers in `src/nodes/printer.c3`
+and `src/nodes/program.c3`. Shared uniform layouts and binding slots live in
+`src/renderer/shader_types.c3`. Node programs need no shader build step; `DRIE_TRACE_PROGRAMS=1`
+prints each program as it is built.
 
-`shaders/shader_core.glsl` is the shared GLSL shader core included by `shaders/shader.glsl`
-(which supplies the structs and binding slots plus the depth, shadow, and clear programs) and
-`shaders/shader_deferred.glsl` (deferred fullscreen lighting). Run `just shaders` (`sokol-shdc`
-from sokol-tools) to regenerate `generated/*.c3` from `shaders/*.glsl` (`shader`,
-`shader_deferred`, `kernels`, `output`, `gtao`, `taa`, `bloom`, `flare`, `grade`, `bokeh`,
-`radiance_cs`, `radiance_rays_cs`, `vsm`, `atlas`, `lightmap`, `gpu_cloth`); the recipe then
-fixes sokol-shdc's storage image slot constants with macOS `sed -i ''`. An application with its
-own copy of the shader core generates it into its own sources and regenerates it whenever
-`shaders/shader_core.glsl` changes.
+Standalone utility, compute, and post-processing shaders live in `shaders/*.glsl` (`clear_rect`,
+`depth_shadow`, `kernels`, `output`, `gtao`, `taa`, `bloom`, `flare`, `grade`, `bokeh`,
+`radiance_cs`, `radiance_rays_cs`, `vsm`, `atlas`, `lightmap`, `gpu_cloth`). Run `just shaders`
+(`sokol-shdc`, downloaded into `build/tools/` by `just shdc` if missing) to regenerate
+`generated/*.c3`, fix storage image slot constants, and gate each backend's shader text behind
+C3 `@feat(...)` blocks (`tools/shdc_gate.py`).
 
 ## RectAreaLight's tables
 

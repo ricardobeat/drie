@@ -1,20 +1,15 @@
 // Deferred G-Buffer allocation, item eligibility, and fullscreen lighting pass.
-// Uses generated/shader_deferred.c3 (`drie_shaders::deferred`), which lives outside `drie::*`
-// because C3 imports `drie::*` recursively and shaders/shader_deferred.glsl defines structs
-// (`FsParams`, `GpuPointLight`, etc.) that share names with `drie::shaders`. Renderer.render()
-// runs the 4-target RGBA16F G-Buffer pass, optional ray-traced shadows and sparse radiance
-// updates, then draw_deferred_lighting() before forward-shading remaining opaque and transparent
-// items. Reconstructs camera-relative world position from depth using `depth_zero_to_one()`.
+//
+// Renderer.render() runs the 4-target RGBA16F G-Buffer pass, optional ray-traced shadows and
+// sparse radiance updates, then draw_deferred_lighting() before forward-shading remaining opaque
+// and transparent items. The fullscreen lighting shader is built through `material_program()`
+// (src/material/material_deferred.c3) so forward and deferred shading share one node-graph
+// implementation. Reconstructs camera-relative world position from depth using `depth_zero_to_one()`.
 module drie;
 import std::math, std::collections::list;
-import sokol, drie_shaders::deferred;
+import sokol;
 
-// Shared view and sampler slots: forward transmission binds the opaque scene copy here, while
-// the deferred lighting pass binds the target's depth texture in the same view slot.
-const int VIEW_TEX_TRANSMISSION @private = deferred::VIEW_TEX_TRANSMISSION;
-const int SMP_TRANSMISSION_SMP @private  = 5;
-
-// Per-pass camera and screen uniforms for shaders/shader_deferred.glsl (uniform block 0).
+// Per-pass camera and screen uniforms for the deferred fullscreen lighting pass (NodeSource.DEFERRED).
 struct DeferredLightParams @align(16) @packed @private {
     Mat4 inv_view_proj;
     Vec4 view_origin; // xyz = camera world position, w = 1 on [0,1] depth backends else 0.
@@ -22,7 +17,6 @@ struct DeferredLightParams @align(16) @packed @private {
     Vec4 screen_info; // xy = inv target size, z = 1 on [0,1] depth backends, w = frame % 64.
     Mat4 view_proj;
 }
-
 
 // A bilinear sampler, clamped to the edge (made at first use).
 fn SgSampler clamp_sampler() @private {
@@ -32,11 +26,6 @@ fn SgSampler clamp_sampler() @private {
         );
     }
     return state.clamp_sampler;
-}
-
-fn SgShaderDesc split_deferred_shader_desc(bool mrt, bool vsm, SgBackend backend) @private {
-    if (vsm) return mrt ? deferred::deferred_mrt_vsm_shader_desc(backend) : deferred::deferred_vsm_shader_desc(backend);
-    return mrt ? deferred::deferred_mrt_shader_desc(backend) : deferred::deferred_shader_desc(backend);
 }
 
 // Allocates or resizes the 4 single-sampled RGBA16F G-Buffer color attachments and nearest sampler.
@@ -112,6 +101,93 @@ fn bool is_deferred_item(DrawItem* item) @private {
     return true;
 }
 
+// Builds the `MaterialKey` for the deferred fullscreen lighting pass matching the active scene
+// lights, shadows, GI, probes, SSR, fog, and output encoding.
+fn MaterialKey deferred_key_of(Renderer* r, Scene* scene, FsParams* fs, RenderTarget* rt) @private {
+    Texture* env_map = scene.environment;
+    if (env_map) (void)ready(env_map);
+    bool probes     = state.probes_view.id != 0;
+    int fog         = (int)fs.fog_params.w;
+    bool fog_volume = fog && fs.fog_grid.w > 0;
+    bool shafts     = !fog_volume && fog == 3 && fs.fog_sun_dir.w > 0 && fs.fog_sun_color.w > 0
+        && fs.dir_shadow_params.x > 0.5f;
+    bool shadows    = lights_gpu.shadows.len() > 0 || fs.dir_shadow_params.x > 0.5f;
+    bool linear     = fs.output_params.x > 0.5f;
+    return {
+        .type = (char)MaterialType.STANDARD,
+        .mrt = rt.mrt,
+        .deferred_light = true,
+        .dir_lights = fs.counts.x > 0,
+        .point_lights = fs.counts.y > 0,
+        .spot_lights = fs.counts.z > 0,
+        .rect_lights = fs.counts.w > 0,
+        .sized = lights_gpu.sized,
+        .tubes = lights_gpu.tubes,
+        .shadows = shadows,
+        .vsm = (shadows || shafts) && vsm_on(),
+        .soft_shadows = shadows && lights_gpu.soft_shadows,
+        .sun_shadow = shadows && fs.dir_shadow_params.x > 0.5f,
+        .dir_tiles = shadows && lights_gpu.dir_tiles,
+        .point_shadows = shadows && lights_gpu.point_shadows,
+        .spot_shadows = shadows && lights_gpu.spot_shadows,
+        .debug_cascades = fs.dir_cascade_params.z > 0.5f && fs.dir_shadow_params.x > 0.5f,
+        .contact_shadows = lights_gpu.contact_shadows,
+        .rt_shadows = lights_gpu.rt_shadows,
+        .env_light = !probes && env_map && env_map.has_env_sh,
+        .env_reflect = probes || env_map != null,
+        .probes = probes,
+        .gi = state.gi_count > 0,
+        .rc = fs.rc_size.w > 0,
+        .ssr = r.ssr_color.id != 0 && r.ssr_depth.id != 0,
+        .fog = (char)fog,
+        .fog_box = fog && fs.fog_box_min.w >= 0.5f,
+        .fog_height = fog && fs.fog_height.y > 0,
+        .fog_sun = fog && fs.fog_sun_dir.w > 0,
+        .display_fog = fog && !fog_volume && fs.fog_height.z > 0.5f,
+        .fog_volume = fog_volume,
+        .fog_glow = fog && !fog_volume && fs.fog_color.w > 0,
+        .fog_shafts = shafts,
+        .linear = linear,
+        .tone = linear ? 0 : (char)fs.output_params.z,
+        .display = linear ? 0 : (char)fs.output_params.w,
+    };
+}
+
+// Looks up or creates the fullscreen deferred lighting pipeline on `gen` for `rt`.
+fn SgPipeline deferred_pipeline(RenderTarget* rt, MaterialProgram* gen) @private {
+    SgPixelFormat fmt = rt.pixel_format();
+    bool mrt          = rt.mrt;
+    ulong pkey        = (ulong)(uint)fmt | (mrt ? 1UL << 8 : 0UL);
+    if (try found = gen.pipelines[pkey]) return found;
+    record_pipeline(
+        {
+            .key = gen.key,
+            .target_samples = 1,
+            .target_format = fmt,
+            .target_mrt = mrt,
+        }
+    );
+    SgPipelineDesc desc = {
+        .depth = { .pixel_format = NONE, .write_enabled = false, .compare = ALWAYS },
+        .sample_count = 1,
+        .color_count = mrt ? 1 + MRT_COUNT : 1,
+        .label = "drie-deferred-light",
+    };
+    desc.colors[0].pixel_format = fmt;
+    if (mrt) {
+        for (int i = 0; i < MRT_COUNT; i++) desc.colors[i + 1].pixel_format = mrt_format(i);
+    }
+    if (pipeline_warmup) {
+        pipeline_warmup.start_generated(gen.program, &desc);
+        return { };
+    }
+    desc.shader = gen.program.make();
+    SgPipeline pip = sg::make_pipeline(&desc);
+    if (!pip.id) abort("drie: sokol's pipeline pool is full (pipeline_pool_size in setup_gfx)");
+    gen.pipelines[pkey] = pip;
+    return pip;
+}
+
 // Shades the G-Buffer in a single fullscreen triangle pass into `r.render_target` (plus MRT
 // attachments when enabled), binding clustered lights, shadows, GI, SSR, fog, and RT shadow mask.
 fn void draw_deferred_lighting(
@@ -119,33 +195,15 @@ fn void draw_deferred_lighting(
     Scene* scene,
     Camera* camera,
     Mat4 view_proj_rel,
-    shaders::FsParams* fs,
+    FsParams* fs,
     Vector3 clear,
     float clear_alpha
 ) @private {
-    RenderTarget* rt = r.render_target;
-    bool mrt         = rt.mrt;
-    bool vsm         = vsm_on();
-    int sidx         = (mrt ? 1 : 0) | (vsm ? 2 : 0);
-    if (!state.deferred_shaders[sidx].id) {
-        state.deferred_shaders[sidx] = make_program(split_deferred_shader_desc(mrt, vsm, sg::query_backend()));
-    }
-    int pidx = sidx | (rt.is_linear() ? 4 : 0);
-    if (!state.deferred_pipelines[pidx].id) {
-        SgPipelineDesc desc = {
-            .shader = state.deferred_shaders[sidx],
-            .depth = { .pixel_format = NONE, .write_enabled = false, .compare = ALWAYS },
-            .sample_count = 1,
-            .color_count = mrt ? 1 + MRT_COUNT : 1,
-            .label = "drie-deferred-light",
-        };
-        desc.colors[0].pixel_format = rt.pixel_format();
-        if (mrt) {
-            for (int i = 0; i < MRT_COUNT; i++) desc.colors[i + 1].pixel_format = mrt_format(i);
-        }
-        state.deferred_pipelines[pidx] = sg::make_pipeline(&desc);
-    }
-    sg::apply_pipeline(state.deferred_pipelines[pidx]);
+    RenderTarget* rt     = r.render_target;
+    bool vsm             = vsm_on();
+    MaterialKey key      = deferred_key_of(r, scene, fs, rt);
+    MaterialProgram* gen = material_program(key);
+    sg::apply_pipeline(deferred_pipeline(rt, gen));
 
     Texture* none = ready(state.white);
     if (!state.no_probes.id) {
@@ -156,44 +214,44 @@ fn void draw_deferred_lighting(
         state.no_probes = sg::make_view(&&{ .texture = { .image = state.no_probes_image } });
     }
 
-    SgBindings bind;
-    bind.views[shaders::VIEW_TEX_MAP] = state.gb_tex[0];
-    bind.views[shaders::VIEW_TEX_NORMAL] = state.gb_tex[1];
-    bind.views[shaders::VIEW_TEX_ARM] = state.gb_tex[2];
-    bind.views[shaders::VIEW_TEX_PARALLAX] = state.gb_tex[3];
-    bind.views[VIEW_TEX_TRANSMISSION] = rt.depth_texture;
-    bind.samplers[shaders::SMP_TEX_SMP] = state.gb_sampler;
-    bind.samplers[SMP_TRANSMISSION_SMP] = state.gb_sampler;
-    for (int k = 0; k < 6; k++) bind.views[shaders::VIEW_TEX_EXT0 + k] = none.view;
-    // Ray-traced shadow visibility mask from rt_trace (rt_shadow in shaders/shader_deferred.glsl).
-    bind.views[shaders::VIEW_TEX_EXT5] = rt_mask(none.view);
+    SgBindings classic;
+    classic.views[shaders::VIEW_TEX_MAP] = state.gb_tex[0];
+    classic.views[shaders::VIEW_TEX_NORMAL] = state.gb_tex[1];
+    classic.views[shaders::VIEW_TEX_ARM] = state.gb_tex[2];
+    classic.views[shaders::VIEW_TEX_PARALLAX] = state.gb_tex[3];
+    classic.views[shaders::VIEW_TEX_TRANSMISSION] = rt.depth_texture;
+    classic.samplers[shaders::SMP_TEX_SMP] = state.gb_sampler;
+    classic.samplers[shaders::SMP_TRANSMISSION_SMP] = state.gb_sampler;
+    for (int k = 0; k < 6; k++) classic.views[shaders::VIEW_TEX_EXT0 + k] = none.view;
+    // Ray-traced shadow visibility mask from rt_trace (rt_shadow in src/material/shadow_lookup.c3).
+    classic.views[shaders::VIEW_TEX_EXT5] = rt_mask(none.view);
     if (vsm) {
-        bind.views[shaders::VIEW_VSM_MAP] = state.vsm_spot.view;
-        bind.views[shaders::VIEW_VSM_ATLAS] = state.vsm_atlas.view;
-        bind.views[shaders::VIEW_VSM_SUN] = state.vsm_sun.view;
-        bind.samplers[shaders::SMP_VSM_SMP] = state.vsm_sampler;
+        classic.views[shaders::VIEW_VSM_MAP] = state.vsm_spot.view;
+        classic.views[shaders::VIEW_VSM_ATLAS] = state.vsm_atlas.view;
+        classic.views[shaders::VIEW_VSM_SUN] = state.vsm_sun.view;
+        classic.samplers[shaders::SMP_VSM_SMP] = state.vsm_sampler;
     } else {
-        bind.views[shaders::VIEW_SHADOW_MAP] = state.shadow_view;
-        bind.views[shaders::VIEW_SHADOW_ATLAS] = state.atlas_view;
-        bind.views[shaders::VIEW_SUN_SHADOW] = state.sun_view;
+        classic.views[shaders::VIEW_SHADOW_MAP] = state.shadow_view;
+        classic.views[shaders::VIEW_SHADOW_ATLAS] = state.atlas_view;
+        classic.views[shaders::VIEW_SUN_SHADOW] = state.sun_view;
     }
-    bind.samplers[shaders::SMP_SHADOW_SMP] = state.shadow_sampler;
-    bind.views[shaders::VIEW_FOG_VOLUME] = state.fog_view;
+    classic.samplers[shaders::SMP_SHADOW_SMP] = state.shadow_sampler;
+    classic.views[shaders::VIEW_FOG_VOLUME] = state.fog_view;
     bool ssr = r.ssr_color.id != 0 && r.ssr_depth.id != 0;
-    bind.views[shaders::VIEW_SSR_COLOR] = ssr ? r.ssr_color : none.view;
-    bind.views[shaders::VIEW_SSR_DEPTH] = ssr ? r.ssr_depth : none.view;
-    bind.views[shaders::VIEW_SSR_BACK] = ssr && r.ssr_back.id ? r.ssr_back : none.view;
-    // SpotLight.map projection texture (light_cookies in shaders/shader_core.glsl).
-    bind.views[shaders::VIEW_LIGHT_COOKIES] = lights_gpu.cookie ? lights_gpu.cookie.view : none.view;
-    bind.samplers[shaders::SMP_SSR_SMP] = clamp_sampler();
-    bind.views[shaders::VIEW_TEX_GI] = state.gi_view;
-    bind.views[shaders::VIEW_RC_PROBES] = state.radiance_view;
-    bind.samplers[shaders::SMP_GI_SMP] = state.irradiance.sampler;
+    classic.views[shaders::VIEW_SSR_COLOR] = ssr ? r.ssr_color : none.view;
+    classic.views[shaders::VIEW_SSR_DEPTH] = ssr ? r.ssr_depth : none.view;
+    classic.views[shaders::VIEW_SSR_BACK] = ssr && r.ssr_back.id ? r.ssr_back : none.view;
+    // SpotLight.map projection texture (light_cookies).
+    classic.views[shaders::VIEW_LIGHT_COOKIES] = lights_gpu.cookie ? lights_gpu.cookie.view : none.view;
+    classic.samplers[shaders::SMP_SSR_SMP] = clamp_sampler();
+    classic.views[shaders::VIEW_TEX_GI] = state.gi_view;
+    classic.views[shaders::VIEW_RC_PROBES] = state.radiance_view;
+    classic.samplers[shaders::SMP_GI_SMP] = state.irradiance.sampler;
 
-    shaders::FsParams df = *fs;
-    Texture* env_map     = scene.environment;
-    Texture* env         = ready(env_map);
-    bool env_diffuse     = false;
+    FsParams df      = *fs;
+    Texture* env_map = scene.environment;
+    Texture* env     = ready(env_map);
+    bool env_diffuse = false;
     if (env_map && env_map.has_env_sh) {
         env_diffuse = true;
         EnvLight* el = &env_map.env_light;
@@ -201,10 +259,11 @@ fn void draw_deferred_lighting(
         foreach (i, c : el.sh) df.env_sh[i] = { ...c, i < 6 ? sun[i] : 0 };
     }
     bool probes = state.probes_view.id != 0;
-    bind.views[shaders::VIEW_TEX_ENV] = env.view;
-    bind.views[shaders::VIEW_TEX_PROBES] = probes ? state.probes_view : state.no_probes;
-    bind.samplers[shaders::SMP_ENV_SMP] = probes ? state.probes_sampler : env.sampler;
-    lights_gpu.bind(&bind);
+    classic.views[shaders::VIEW_TEX_ENV] = env.view;
+    classic.views[shaders::VIEW_TEX_PROBES] = probes ? state.probes_view : state.no_probes;
+    classic.samplers[shaders::SMP_ENV_SMP] = probes ? state.probes_sampler : env.sampler;
+    lights_gpu.bind(&classic);
+    SgBindings bind = program_bindings(gen.program, &classic);
     sg::apply_bindings(&bind);
 
     bool zo = depth_zero_to_one();
@@ -215,7 +274,6 @@ fn void draw_deferred_lighting(
         .screen_info = { 1.0f / rt.width, 1.0f / rt.height, zo ? 1 : 0, (float)(state.frame % 64) },
         .view_proj = view_proj_rel,
     };
-    sg::apply_uniforms(0, &&{ .ptr = &dp, .size = DeferredLightParams::size });
 
     df.screen_params = { 1.0f / rt.width, 1.0f / rt.height, 0, 0 };
     df.surface_params = { 0, 0, 0, 0 };
@@ -232,7 +290,9 @@ fn void draw_deferred_lighting(
     df.ssr_params = { ssr ? 1.0f : 0.0f, r.ssr_reach, (float)(r.ssr_frame % 64), zo ? 1 : 0 };
     df.ssr_thickness = { ssr && r.ssr_back.id ? 1 : 0, r.ssr_reach, 0, 0 };
     df.quality_params = { r.shadow_sample_scale, r.ssr_steps, r.ssr_max_step, 0 };
-    sg::apply_uniforms(1, &&{ .ptr = &df, .size = shaders::FsParams::size });
+
+    apply_program_uniforms(gen.program, VERTEX, null, &df, dp: &dp);
+    apply_program_uniforms(gen.program, FRAGMENT, null, &df, dp: &dp);
 
     sg::draw(0, 3, 1);
     r.info.calls++;

@@ -1,9 +1,9 @@
 // Clustered lighting froxel grid and per-render GPU light storage buffers.
 // Partitions the camera frustum into CLUSTER_X x CLUSTER_Y screen tiles and CLUSTER_Z exponential
-// depth slices matching cluster_of() in shaders/shader.glsl, assigning point and spot lights via
+// depth slices matching `cluster_of()` in src/material/material_lit.c3, assigning point and spot lights via
 // cluster_lights_gpu (cluster_cs in shaders/kernels.glsl) or cluster_lights_cpu. LightData rotates
 // transient LightBufferSets per render within a frame and packs RectAreaLight entries plus the
-// LTC tables (generated/ltc.c3, read by ltc_tables in shaders/shader_core.glsl) after point lights
+// LTC tables (generated/ltc.c3, read by `ltc_tables()` in src/material/material_lit.c3) after point lights
 // in the point-light buffer. Connects to build_light_params(), draw_item(), and draw_deferred_lighting().
 module drie;
 import std::collections::list, std::math, std::io;
@@ -18,7 +18,7 @@ const int CLUSTER_COUNT  = CLUSTER_X * CLUSTER_Y * CLUSTER_Z; // Total clusters 
                                                              // Minimum depth (meters) where exponential slicing begins; closer fragments map to slice 0.
 const float CLUSTER_NEAR = 0.1f;
 
-// Camera frustum parameters for light clustering; matches cluster_of() in shaders/shader.glsl.
+// Camera frustum parameters for light clustering; matches `cluster_of()` in src/material/material_lit.c3.
 struct ClusterGrid {
     Mat4 view; // World space to camera view space (looking down -Z).
     Mat4 projection; // Camera view space to clip space.
@@ -329,6 +329,8 @@ struct LightData @private {
     bool spot_shadows; // True when any spot light casts shadows.
     bool dir_tiles; // True when any secondary directional light uses an atlas tile.
     bool soft_shadows; // True when any shadowed light uses PCSS (softness > 0).
+    bool contact_shadows; // True when any light enables screen-space contact shadows.
+    bool rt_shadows; // True when any rect area light uses hardware ray-traced shadows.
     Texture* cookie; // Active SpotLight.map projection texture for this frame, or null.
     List{LightBufferSet*} sets; // Per-render buffer sets rotated within a frame.
     int used;
@@ -368,6 +370,8 @@ fn void LightData.clear(&self) {
     self.spot_shadows = false;
     self.dir_tiles = false;
     self.soft_shadows = false;
+    self.contact_shadows = false;
+    self.rt_shadows = false;
     self.cookie = null;
 }
 
@@ -491,7 +495,7 @@ fn bool LightData.room(&self, sz count, int cap) {
 GpuPointLight[] ltc_packed @local;
 
 // Packs the LTC lookup tables (generated/ltc.c3) as GpuPointLight entries appended to the point
-// light buffer (read by `ltc_tables` in shaders/shader_core.glsl; avoids consuming a texture slot).
+// light buffer (read by `ltc_tables()` in src/material/material_lit.c3; avoids consuming a texture slot).
 // Each entry stores one LTC_1 texel in `pos` and one LTC_2 texel in `color`.
 fn GpuPointLight[] ltc_entries() @private {
     if (ltc_packed.len) return ltc_packed;

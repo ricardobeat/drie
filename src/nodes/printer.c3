@@ -60,20 +60,25 @@ fn void ProgramGen.uses_view(&self, int v) {
     if (!self.body.views.contains(v)) self.body.views.push(v);
 }
 
-// Allocates or reuses a filtering or comparison sampler slot for the active stage.
-fn int ProgramGen.sampler(&self, int source, bool compare) {
+// Allocates or reuses a filtering, comparison, or nonfiltering sampler slot for the active stage.
+fn int ProgramGen.sampler(&self, int source, bool compare, bool nonfiltering = false) {
     ShaderProgram* p = self.p;
     int n;
     foreach (i, s : p.samplers) {
         if (s.stage != self.stage) continue;
         if (s.source == source) {
-            if (s.compare != compare) abort("drie: nodes: sampler %d used to compare and to filter", source);
+            if (s.compare != compare || s.nonfiltering != nonfiltering) abort(
+                "drie: nodes: sampler %d used with conflicting sampler types",
+                source
+            );
             if (!self.body.samplers.contains((int)i)) self.body.samplers.push((int)i);
             return (int)i;
         }
         n++;
     }
-    p.samplers.push({ .stage = self.stage, .source = source, .compare = compare, .msl = n });
+    p.samplers.push(
+        { .stage = self.stage, .source = source, .compare = compare, .nonfiltering = nonfiltering, .msl = n }
+    );
     int at = (int)p.samplers.len() - 1;
     self.body.samplers.push(at);
     return at;
@@ -175,7 +180,7 @@ fn String ProgramGen.sample(&self, Node n, NodeData* d) {
     NodeSampling how     = (NodeSampling)d.kind;
     NodeTextureKind kind = (NodeTextureKind)d.res[2];
     int v                = self.view(d.res[0], false, kind, VOID);
-    int s                = self.sampler(d.res[1], kind == TEX_DEPTH);
+    int s                = self.sampler(d.res[1], kind == TEX_DEPTH, kind == TEX_UNFILTERABLE);
     String t             = string::tformat("t%d", v);
     String smp           = string::tformat("s%d", s);
     // (WGSL's pairs: none in its source, but sokol checks each sampler is in one)
@@ -566,7 +571,8 @@ fn String msl_view_type(ProgramView* v) @local {
         }
     }
     switch (v.kind) {
-        case TEX_2D: return "texture2d<float>";
+        case TEX_2D:
+        case TEX_UNFILTERABLE: return "texture2d<float>";
         case TEX_3D: return "texture3d<float>";
         case TEX_ARRAY: return "texture2d_array<float>";
         case TEX_DEPTH: return "depth2d<float>";
@@ -1044,7 +1050,13 @@ fn String ProgramGen.resource_decls(&self) {
                     elems[e]
                 );
             } else {
-                String[*] types = { "texture_2d<f32>", "texture_3d<f32>", "texture_2d_array<f32>", "texture_depth_2d" };
+                String[*] types = {
+                    "texture_2d<f32>",
+                    "texture_3d<f32>",
+                    "texture_2d_array<f32>",
+                    "texture_depth_2d",
+                    "texture_2d<f32>"
+                };
                 s.appendf("@group(1) @binding(%d) var t%d: %s;\n", wgsl_view_binding((int)i), i, types[v.kind.ordinal]);
             }
         }
@@ -1080,7 +1092,8 @@ fn String ProgramGen.resource_decls(&self) {
                         "Texture2D<float4>",
                         "Texture3D<float4>",
                         "Texture2DArray<float4>",
-                        "Texture2D<float>"
+                        "Texture2D<float>",
+                        "Texture2D<float4>"
                     };
                     s.appendf("%s t%d : register(t%d);\n", types[v.kind.ordinal], i, v.hlsl);
                 }
@@ -1105,7 +1118,7 @@ fn String ProgramGen.resource_decls(&self) {
         foreach (i, pr : p.pairs) {
             if (pr.stage != self.stage) continue;
             ProgramView* v  = p.views.get_ref(pr.view);
-            String[*] types = { "sampler2D", "sampler3D", "sampler2DArray", "sampler2DShadow" };
+            String[*] types = { "sampler2D", "sampler3D", "sampler2DArray", "sampler2DShadow", "sampler2D" };
             s.appendf("layout(binding = %d) uniform %s %s;\n", i, types[v.kind.ordinal], (ZString)pr.name);
         }
     }

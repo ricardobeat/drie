@@ -1,7 +1,7 @@
 // Volumetric fog compute pass (`fog_cs` in `shaders/kernels.glsl`) for scenes with
 // `VolumetricFog` enabled. Marches fog through a perspective froxel grid tiled into a 2D RGBA16F
 // storage atlas before the main pass; each slice stores accumulated linear in-scattered light
-// (RGB) and transmittance (A) to its far edge. `fog_volume_at` in `shaders/shader_core.glsl`
+// (RGB) and transmittance (A) to its far edge. `fog_volume_at` in `src/material/layers.c3`
 // samples the atlas before tone mapping, covering opaque and transparent surfaces without a
 // pre-pass depth buffer. Up to four volumes are cached by `(cells_x, cells_y, slices)` and
 // reused across frames.

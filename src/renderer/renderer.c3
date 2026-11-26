@@ -352,14 +352,12 @@ struct RendererState @private {
     bool shadow_plain;
     // Built-in depth (`render_back_faces`) and shadow (`clear_atlas_tile`) shaders.
     SgShader[2] engine_programs;
-    // Deferred G-Buffer targets and fullscreen lighting shaders/pipelines.
+    // Deferred G-Buffer targets and nearest sampler.
     int gb_width;
     int gb_height;
     SgImage[4] gb_color;
     SgView[4] gb_att;
     SgView[4] gb_tex;
-    SgShader[4] deferred_shaders;
-    SgPipeline[8] deferred_pipelines;
     SgSampler gb_sampler;
     // Two-pass separable box blur for VSM shadow moments (shaders/vsm.glsl).
     SgShader vsm_blur_shader;

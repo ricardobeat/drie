@@ -1,13 +1,14 @@
 // Material specialization keys, generated program caching, and node-material builtin bindings.
 //
 // MaterialKey packs every feature flag that alters shader code into 32 bytes (two uint128 words):
-// bits 0..88 hold boolean and enum feature fields matching shaders/shader_core.glsl, and bits
-// 192..254 hold 3-bit shared texture slot indices (`slot + 1`, 0 = absent) for 21 MAP_* roles
-// (MAP_CUSTOM uses a dedicated node texture view instead of a shared slot). Uniform row macros
-// (`fs_row`, `vs_row`, `fs_in`, `vs_in`) index 16-byte Vec4 rows of FsParams and VsParams.
+// bits 0..91 hold boolean and enum feature fields for forward, shadow, G-Buffer, and deferred
+// lighting programs, and bits 192..254 hold 3-bit shared texture slot indices (`slot + 1`, 0 =
+// absent) for 21 MAP_* roles (MAP_CUSTOM uses a dedicated node texture view instead of a shared
+// slot). Uniform row macros (`fs_row`, `vs_row`, `deferred_row`, `fs_in`, `vs_in`, `deferred_in`)
+// index 16-byte Vec4 rows of FsParams, VsParams, and DeferredLightParams.
 // VIEW_MORPH_DELTAS (32) and VIEW_MORPH_WEIGHTS (33) occupy logical view IDs between engine slots
 // (< 32) and NODE_USER_VIEW (64). Delegates graph construction to src/material/material_graph.c3
-// and compiles ShaderPrograms via src/nodes/program.c3, caching node programs on NodeBuild.
+// and src/material/material_deferred.c3, and compiles ShaderPrograms via src/nodes/program.c3.
 module drie;
 import sokol, drie::nodes, drie::shading, std::collections::map, std::io, std::os::env, std::thread;
 
@@ -25,15 +26,28 @@ macro int vs_row($name) {
     return (int)((usz)&p.$eval($name) / 16);
 }
 
+// 16-byte Vec4 row offset of field `$name` inside DeferredLightParams.
+macro int deferred_row($name) {
+    DeferredLightParams* p = null;
+    return (int)((usz)&p.$eval($name) / 16);
+}
+
 // Reads FsParams field `$name` as type `t`, starting at component `comp` and array row offset `k`.
 macro Node fs_in($name, NodeType t = VEC4, int comp = 0, int k = 0) => node_input(FS, fs_row($name) + k, t, comp);
 // Reads VsParams field `$name` as type `t`, starting at component `comp` and array row offset `k`.
 macro Node vs_in($name, NodeType t = VEC4, int comp = 0, int k = 0) => node_input(VS, vs_row($name) + k, t, comp);
+// Reads DeferredLightParams field `$name` as type `t`, starting at component `comp` and row offset `k`.
+macro Node deferred_in(
+    $name,
+    NodeType t = VEC4,
+    int comp = 0,
+    int k = 0
+) => node_input(DEFERRED, deferred_row($name) + k, t, comp);
 
 // ---- Material key and program cache
 
 // Feature bits and shared map slots (`tex_ext0..5`, stored as `slot + 1`, 0 = absent) for each
-// map role in shaders/shader_core.glsl (`MAP_*`).
+// `MAP_*` role.
 bitstruct MaterialKey : char[32] {
     char type : 0..3; // MaterialType's ordinal
     bool mrt : 4; // a target with MRT: normal, motion and indirect light too
@@ -123,11 +137,16 @@ bitstruct MaterialKey : char[32] {
     bool morph : 85; // GPU morph targets (BufferGeometry.morph_view + Mesh.morph_weights_view)
     bool flat_shading : 86; // flat face normals via screen-space derivatives (Material.flat_shading)
     // Deferred G-buffer program (gbuffer_key): writes surface data into the four targets read by
-    // the deferred lighting pass (shaders/shader_core.glsl's GBUFFER), without direct lights.
+    // the deferred lighting pass (build_deferred_graph), without direct lights.
     bool gbuffer : 87;
     // Shadow atlas map (MaterialKey.shadow): rendered into ATLAS_FORMAT as linear distance from
     // the light's plane over its reach (see build_shadow_graph).
     bool atlas_depth : 88;
+    // Deferred fullscreen lighting pass (build_deferred_graph): unpacks the G-Buffer and evaluates
+    // scene lighting over a fullscreen triangle using the same shading graph as forward materials.
+    bool deferred_light : 89;
+    bool contact_shadows : 90; // Screen-space contact shadows in the deferred lighting pass.
+    bool rt_shadows : 91; // Hardware ray-traced rect area light shadow mask (VIEW_TEX_EXT5).
 }
 
 // Logical view ID for the GPU morph delta buffer (between engine slots < 32 and NODE_USER_VIEW).
@@ -135,7 +154,7 @@ const int VIEW_MORPH_DELTAS  = 32;
 // Logical view ID for the GPU morph weight buffer (between engine slots < 32 and NODE_USER_VIEW).
 const int VIEW_MORPH_WEIGHTS = 33;
 
-// Shared map role for ambient occlusion (shaders/shader_core.glsl's MAP_AO).
+// Shared map role for ambient occlusion.
 const int MAP_AO                    = 0;
 // Shared map role for KHR_materials_specular color tint.
 const int MAP_SPECULAR_COLOR        = 1;
@@ -248,7 +267,7 @@ fn void program_signature(DString* out, ShaderProgram* p) @local {
         v.kind.ordinal,
         v.elem.ordinal
     );
-    foreach (sm : p.samplers) out.appendf("s%d %d %d;", sm.stage.ordinal, sm.source, sm.compare);
+    foreach (sm : p.samplers) out.appendf("s%d %d %d %d;", sm.stage.ordinal, sm.source, sm.compare, sm.nonfiltering);
 }
 
 // The signature of `mp`'s programs, in the temporary memory.
@@ -285,7 +304,9 @@ fn MaterialProgram* material_program(MaterialKey key, NodeBuild* build = null) @
     ProgramGraph graph;
     ProgramGraph prepass;
     UserBinds binds;
-    if (key.shadow) {
+    if (key.deferred_light) {
+        build_deferred_graph(key, &graph);
+    } else if (key.shadow) {
         build_shadow_graph(key, &graph, build, &binds);
     } else {
         build_material_graph(key, &graph, &prepass, build, &binds);
@@ -435,20 +456,23 @@ fn void apply_program_uniforms(
     VsParams* vs,
     FsParams* fs,
     ShadowFsParams* sfs = null,
-    Vec4[] user = { }
+    Vec4[] user = { },
+    DeferredLightParams* dp = null
 ) @private {
     int rows = p.block_rows[st.ordinal];
     if (!rows) return;
     void*[NodeSource::len] src;
     sz[NodeSource::len] sizes;
     src[NodeSource.VS.ordinal] = vs;
-    sizes[NodeSource.VS.ordinal] = VsParams::size;
+    sizes[NodeSource.VS.ordinal] = vs ? VsParams::size : 0;
     src[NodeSource.FS.ordinal] = fs;
-    sizes[NodeSource.FS.ordinal] = FsParams::size;
+    sizes[NodeSource.FS.ordinal] = fs ? FsParams::size : 0;
     src[NodeSource.SHADOW_FS.ordinal] = sfs;
     sizes[NodeSource.SHADOW_FS.ordinal] = sfs ? ShadowFsParams::size : 0;
     src[NodeSource.USER.ordinal] = user.len ? user.ptr : null;
     sizes[NodeSource.USER.ordinal] = user.len * Vec4::size;
+    src[NodeSource.DEFERRED.ordinal] = dp;
+    sizes[NodeSource.DEFERRED.ordinal] = dp ? DeferredLightParams::size : 0;
     @pool() {
         Vec4[] block = mem::temp_array(Vec4, rows);
         p.gather(st, src, sizes, block);

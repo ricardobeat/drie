@@ -1,6 +1,6 @@
-// `drie::shading` node-graph shading library mirroring shaders/shader_core.glsl and
-// shaders/tonemapping.glsl: wind sway, UV slot transforms, hex tiling, equirectangular env
-// sampling, octahedral normal packing, analytic fog, tone mapping, and depth packing.
+// `drie::shading` node-graph shading library: wind sway, UV slot transforms, hex tiling,
+// equirectangular env sampling, octahedral normal packing/unpacking, analytic fog, tone mapping,
+// and depth packing (matching shaders/tonemapping.glsl for post-processing).
 //
 // `uv_rel` stores 2 Vec4 rows per map slot (0 = normal, 1 = ARM, 2..7 = `tex_ext0..5`), with
 // `r0.w > 0.5` selecting `uv1` and `r1.w` encoding software wrap modes (`0` = sampler default,
@@ -9,7 +9,7 @@
 module drie::shading;
 import drie, drie::nodes;
 
-// Wind (shaders/shader_core.glsl's apply_sway): `wp` bent sideways the higher `height` is.
+// Wind sway: bends `wp` sideways proportionally to `height * sqrt(height)`.
 fn Node apply_sway(Node wp, Node height, Node sway) {
     Node h     = nodes::max(height, 0);
     Node phase = wp.x() * 0.37f + wp.z() * 0.29f;
@@ -41,8 +41,7 @@ struct FragUv {
     Node hex_w;
 }
 
-// Transformed UV for `uv_rel` slot `u` (0 = normal, 1 = ARM, 2..7 = `tex_ext0..5`), matching
-// shaders/shader_core.glsl's `slot_uv`.
+// Transformed UV for `uv_rel` slot `u` (0 = normal, 1 = ARM, 2..7 = `tex_ext0..5`).
 fn Node slot_uv(FragUv* f, int u, Node shift = { }) {
     Node r0  = drie::fs_in("uv_rel", k: u * 2);
     Node r1  = drie::fs_in("uv_rel", k: u * 2 + 1);
@@ -266,6 +265,17 @@ fn Node pack_normal_octahedral(Node n) {
             .greater_than_equal(nodes::num(0)), 1.0f, -1.0f));
     Node folded = nodes::abs(m.swizzle("yx")).one_minus() * signs;
     return nodes::select(m.z().less_than(nodes::num(0)), folded, m.xy());
+}
+
+// Decodes a 2-component octahedral vector `e` in `[-1, 1]^2` back into a unit normal.
+fn Node unpack_normal_octahedral(Node e) {
+    Node z = (nodes::abs(e.x()) + nodes::abs(e.y())).one_minus();
+    Node signs = nodes::vec2(nodes::select(e.x()
+        .greater_than_equal(nodes::num(0)), 1.0f, -1.0f), nodes::select(e.y()
+            .greater_than_equal(nodes::num(0)), 1.0f, -1.0f));
+    Node folded = nodes::abs(e.swizzle("yx")).one_minus() * signs;
+    Node xy     = nodes::select(z.less_than(nodes::num(0)), folded, e);
+    return nodes::normalize(nodes::vec3(xy, z));
 }
 
 // Length of the part of the segment a-b that lies in the fog (fog_distance).

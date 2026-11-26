@@ -19,6 +19,7 @@ enum NodeSource : char {
     SHADOW_FS, // shaders::ShadowFsParams
     DEPTH_FS,  // shaders::DepthFsParams
     USER,      // a node material's uniforms (nodes::uniform), as its NodeBuild lists them
+    DEFERRED,  // DeferredLightParams (deferred fullscreen lighting pass)
 }
 
 // A node material's textures (nodes::texture) take the view sources from here on, in the order
@@ -251,6 +252,7 @@ struct ProgramSampler {
     ProgramStage stage;
     int source; // the engine's sampler slot (shaders::SMP_*)
     bool compare;
+    bool nonfiltering;
     int msl; // and HLSL's s register
 }
 
@@ -1152,12 +1154,22 @@ fn SgShaderDesc ShaderProgram.desc(&self) {
             d.vertex_func.entry = "main";
             d.fragment_func.entry = "main";
     }
-    // (every location the engine's vertex layouts have: D3D11's input layout names them all)
-    for (int i = 0; i < 16; i++) {
-        d.attrs[i].base_type = SgShaderAttrBaseType.FLOAT;
-        d.attrs[i].glsl_name = ATTR_GLSL_NAMES[i];
-        d.attrs[i].hlsl_sem_name = "TEXCOORD";
-        d.attrs[i].hlsl_sem_index = (char)i;
+    // (every location the engine's vertex layouts have: D3D11's input layout names them all;
+    // skipped for attribute-less fullscreen shaders)
+    bool has_attrs;
+    foreach (t : self.attrs) {
+        if (t != VOID) {
+            has_attrs = true;
+            break;
+        }
+    }
+    if (has_attrs) {
+        for (int i = 0; i < 16; i++) {
+            d.attrs[i].base_type = SgShaderAttrBaseType.FLOAT;
+            d.attrs[i].glsl_name = ATTR_GLSL_NAMES[i];
+            d.attrs[i].hlsl_sem_name = "TEXCOORD";
+            d.attrs[i].hlsl_sem_index = (char)i;
+        }
     }
     for (int st = 0; st < 2; st++) {
         if (!self.block_rows[st]) continue;
@@ -1187,11 +1199,13 @@ fn SgShaderDesc ShaderProgram.desc(&self) {
             t.stage = sg_stage(v.stage);
             switch (v.kind) {
                 case TEX_2D:
-                case TEX_DEPTH: t.image_type = SgImageType.TYPE_2D;
+                case TEX_DEPTH:
+                case TEX_UNFILTERABLE: t.image_type = SgImageType.TYPE_2D;
                 case TEX_3D: t.image_type = SgImageType.TYPE_3D;
                 case TEX_ARRAY: t.image_type = SgImageType.ARRAY;
             }
-            t.sample_type = v.kind == TEX_DEPTH ? SgImageSampleType.DEPTH : SgImageSampleType.FLOAT;
+            t.sample_type = v.kind == TEX_DEPTH ? SgImageSampleType.DEPTH
+                : (v.kind == TEX_UNFILTERABLE ? SgImageSampleType.UNFILTERABLE_FLOAT : SgImageSampleType.FLOAT);
             t.msl_texture_n = (char)v.msl;
             t.hlsl_register_t_n = (char)v.hlsl;
             t.wgsl_group1_binding_n = (char)wgsl_view_binding((int)i);
@@ -1200,7 +1214,8 @@ fn SgShaderDesc ShaderProgram.desc(&self) {
     if (self.samplers.len() > 14) abort("drie: a program uses more than 14 samplers");
     foreach (i, s : self.samplers) {
         d.samplers[i].stage = sg_stage(s.stage);
-        d.samplers[i].sampler_type = s.compare ? SgSamplerType.COMPARISON : SgSamplerType.FILTERING;
+        d.samplers[i].sampler_type = s.compare ? SgSamplerType.COMPARISON
+            : (s.nonfiltering ? SgSamplerType.NONFILTERING : SgSamplerType.FILTERING);
         d.samplers[i].msl_sampler_n = (char)s.msl;
         d.samplers[i].hlsl_register_s_n = (char)s.msl;
         d.samplers[i].wgsl_group1_binding_n = (char)wgsl_sampler_binding((int)i);
@@ -1331,7 +1346,13 @@ fn void ShaderProgram.write(&self, DString* out) {
             v.glsl
         );
     }
-    foreach (sm : self.samplers) out.appendf("%d %d %d %d\n", sm.stage.ordinal, sm.source, sm.compare ? 1 : 0, sm.msl);
+    foreach (sm : self.samplers) out.appendf(
+        "%d %d %d %d\n",
+        sm.stage.ordinal,
+        sm.source,
+        (sm.compare ? 1 : 0) | (sm.nonfiltering ? 2 : 0),
+        sm.msl
+    );
     foreach (pr : self.pairs) out.appendf("%d %d %d %s\n", pr.stage.ordinal, pr.view, pr.sampler, (ZString)pr.name);
 }
 
@@ -1396,7 +1417,7 @@ fn ShaderProgram*? read_program(String text, usz* at) {
     for (int i = 0; i < h[8] && ok; i++) {
         int[4] sm;
         ok = read_numbers(text, at, &sm) == 4 && sm[0] >= 0 && sm[0] < 2;
-        if (ok) p.samplers.push({ (ProgramStage)sm[0], sm[1], sm[2] == 1, sm[3] });
+        if (ok) p.samplers.push({ (ProgramStage)sm[0], sm[1], (sm[2] & 1) != 0, (sm[2] & 2) != 0, sm[3] });
     }
     for (int i = 0; i < h[9] && ok; i++) {
         sz? end = text[*at..].index_of_char('\n');

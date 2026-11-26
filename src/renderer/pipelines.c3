@@ -303,12 +303,14 @@ fn SgShader engine_program(bool shadow) @private {
 // render's background, opaque, and transparent draws so they overlap before draw submission.
 fn void start_material_programs(Renderer* r, Scene* scene, Camera* camera, FsParams* fs, bool prepass) @private {
     start_background_program(scene, camera, fs);
-    bool defer_ok = can_defer(r, true, true);
+    bool defer_ok     = can_defer(r, true, true);
+    bool has_deferred = false;
     for (int list = 0; list < 2; list++) {
         foreach (&item : list == 0 ? state.opaque : state.transparent) {
             // Match the DrawKind that Renderer.render() will select for each list.
             DrawKind kind = list == 1 || draws_lines(item) || has_holes(item) ? CUT : SOLID;
             if (list == 0 && defer_ok && is_deferred_item(item)) {
+                has_deferred = true;
                 start_item_program(item, kind, fs, true);
                 continue;
             }
@@ -316,6 +318,7 @@ fn void start_material_programs(Renderer* r, Scene* scene, Camera* camera, FsPar
             start_item_program(item, kind, fs);
         }
     }
+    if (has_deferred) material_program(deferred_key_of(r, scene, fs, r.render_target)).program.start();
 }
 
 // Starts compiling the generated shader (and depth prepass variant) for `item`; under background

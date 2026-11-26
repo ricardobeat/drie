@@ -1,5 +1,5 @@
-// Shadow lookup node-function builders matching shaders/shader_core.glsl's `light_shadow_of`,
-// `dir_shadow_in`, `dir_tile_shadow`, and PCF/PCSS/VSM taps.
+// Shadow lookup node-function builders: `light_shadow_of`, `dir_shadow_in`, `dir_tile_shadow`,
+// `contact_shadow`, `rt_shadow`, and PCF/PCSS/VSM taps.
 //
 // Each function ID in `ShadowFns` starts at -1 and emits its helper function once per program.
 // `VIEW_SPOT_SHADOWS` packs 7 Vec4 rows per `GpuSpotShadow` (4 matrix columns, params, rect,
@@ -18,11 +18,12 @@ struct ShadowFns @private {
     int light_fn; // light_shadow_of(light_pos, si, n, world, dpdx, dpdy, frag)
     int sun_in_fn; // dir_shadow_in(i, n, l, world, frag): the sun in cascade i
     int dir_tile_fn; // dir_tile_shadow(si, n, l, world, frag)
+    int contact_fn; // contact_shadow(l, len, geo_n, intensity, world, frag)
 }
 
 fn ShadowFns shadow_fns(
     MaterialKey key
-) @private => { .key = key, .tap_fn = -1, .light_fn = -1, .sun_in_fn = -1, .dir_tile_fn = -1 };
+) @private => { .key = key, .tap_fn = -1, .light_fn = -1, .sun_in_fn = -1, .dir_tile_fn = -1, .contact_fn = -1 };
 
 // Element `field` of shadow `si` in spot_shadows (a GpuSpotShadow: its matrix's four columns,
 // params, rect, soft).
@@ -576,4 +577,89 @@ fn Node ShadowFns.point(&self, Node pos, Node si, Node n, Node world, Node dpdx,
         .greater_than_equal(a.y()), a.x()
             .greater_than_equal(a.z())), fx, nodes::select(a.y().greater_than_equal(a.z()), fy, fz));
     return self.light(pos, si + face, n, world, dpdx, dpdy, frag);
+}
+
+// Screen-space contact shadow (LightShadow.contact_length): marches 12 jittered steps toward `l`
+// for `len` meters against the deferred depth buffer (`VIEW_TEX_TRANSMISSION`). Returns
+// `1 - intensity` on a thin-slab hit, or `1` when unoccluded.
+fn Node ShadowFns.contact(&self, Node l, Node len, Node geo_n, Node intensity, Node world, Node frag) {
+    if (self.contact_fn < 0) {
+        NodeType[6] types = { VEC3, FLOAT, VEC3, FLOAT, VEC3, VEC2 };
+        int f             = node_func("contact_shadow", FLOAT, &types);
+        Node pl           = node_param(f, 0);
+        Node plen         = node_param(f, 1);
+        Node pgeo         = node_param(f, 2);
+        Node pint         = node_param(f, 3);
+        Node pw           = node_param(f, 4);
+        Node pf           = node_param(f, 5);
+        Node origin       = deferred_in("view_origin");
+        Node sinfo        = deferred_in("screen_info");
+        Node vp           = deferred_in("view_proj", MAT4);
+        Node ivp          = deferred_in("inv_view_proj", MAT4);
+        Node eye          = origin.xyz();
+        Node jitter = nodes::fract(
+            nodes::fract(nodes::dot(pf + sinfo.w() * 5.588238f, nodes::vec2(0.06711056f, 0.00583715f))) * 52.9829189f
+        );
+        Node dist = nodes::length(pw - eye);
+        Node from = pw + pgeo * (0.002f + dist * 0.001f);
+        Node i    = nodes::loop_index();
+        Node p    = from + pl * (plen * (nodes::convert(i, FLOAT) + jitter) / 12.0f);
+        Node clip = vp * nodes::vec4(p - eye, 1);
+        Node ndc  = clip.xyz() / clip.w();
+        Node outside = nodes::logical_or(nodes::abs(ndc.x())
+            .greater_than(nodes::num(1)), nodes::abs(ndc.y()).greater_than(nodes::num(1)));
+        Node uv0 = ndc.xy() * 0.5f + 0.5f;
+        Node uv = nodes::select(sinfo.z()
+            .greater_than(nodes::num(0.5f)), nodes::vec2(uv0.x(), uv0.y().one_minus()), uv0);
+        Node tc = nodes::convert(uv / sinfo.xy(), IVEC2);
+        Node raw = node_sample(
+            FETCH,
+            shaders::VIEW_TEX_TRANSMISSION,
+            shaders::SMP_TRANSMISSION_SMP,
+            TEX_UNFILTERABLE,
+            tc,
+            nodes::int_(0)
+        )
+            .x();
+        Node ndc_z  = nodes::select(origin.w().greater_than(nodes::num(0.5f)), raw, raw * 2.0f - 1.0f);
+        Node q      = ivp * nodes::vec4(ndc.xy(), ndc_z, 1);
+        Node here   = nodes::length(p - eye);
+        Node behind = here - nodes::length(q.xyz() / q.w());
+        Node hit = nodes::logical_and(
+            behind.greater_than(0.002f + here * 0.0005f),
+            behind.less_than(0.02f + here * 0.01f + plen * 0.25f)
+        );
+        Node step = nodes::block(nodes::if_then(clip.w()
+            .less_than_equal(
+                nodes::num(0)
+            ), nodes::block(
+                nodes::break_()
+            )), nodes::if_then(
+                outside,
+                nodes::block(nodes::break_())
+            ), nodes::if_then(
+                raw.greater_than_equal(nodes::num(1)),
+                nodes::block(nodes::continue_())
+            ), nodes::if_then(hit, nodes::block(node_return(pint.one_minus()))));
+        Node body = nodes::block(
+            nodes::if_then(plen.less_than_equal(nodes::num(0)), nodes::block(node_return(nodes::num(1)))),
+            nodes::loop(i, 0, 12, step)
+        );
+        node_func_body(f, nodes::seq(body, nodes::num(1)));
+        self.contact_fn = f;
+    }
+    Node[6] args = { l, len, geo_n, intensity, world, frag };
+    return node_call_fn(self.contact_fn, &args);
+}
+
+// Reads channel `ch` (0..3) of the hardware ray-traced rect area light shadow mask (`VIEW_TEX_EXT5`).
+fn Node rt_shadow(Node ch, Node frag) @private {
+    Node size = node_sample(SIZE, shaders::VIEW_TEX_EXT5, shaders::SMP_TEX_SMP, TEX_2D, nodes::int_(0));
+    Node tc   = nodes::min(nodes::convert(frag, IVEC2), size - nodes::convert(nodes::int_(1), IVEC2));
+    Node m    = node_sample(FETCH, shaders::VIEW_TEX_EXT5, shaders::SMP_TEX_SMP, TEX_2D, tc, nodes::int_(0));
+    return nodes::select(
+        ch.equal(nodes::int_(0)),
+        m.x(),
+        nodes::select(ch.equal(nodes::int_(1)), m.y(), nodes::select(ch.equal(nodes::int_(2)), m.z(), m.w()))
+    );
 }

@@ -132,8 +132,9 @@ enum NodeSampling : char {
 enum NodeTextureKind : char {
     TEX_2D,
     TEX_3D,
-    TEX_ARRAY, // 2D layers: coordinates (u, v, layer)
-    TEX_DEPTH, // 2D depths, read with COMPARE
+    TEX_ARRAY,        // 2D layers: coordinates (u, v, layer)
+    TEX_DEPTH,        // 2D depths, read with COMPARE
+    TEX_UNFILTERABLE, // 2D unfilterable float (e.g. depth texture read with FETCH)
 }
 
 // The stage's own inputs.
