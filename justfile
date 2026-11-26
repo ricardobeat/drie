@@ -13,8 +13,8 @@ libs := "--libdir " + libdir + " --lib sokol"
 target := "drie-" + os()
 # where bindgen.c3l is (the folder holding bindgen.c3l/), for `just bindings`
 bindgen := "../bindgen.c3l"
-# sokol-shdc binary for `just shaders`: `just shdc=sokol-shdc shaders` if on PATH
-shdc := "../house/tools/sokol-shdc"
+# sokol-shdc binary for `just shaders`, fetched on demand into build/tools/ (`just shdc=path shaders` to override)
+shdc := "build/tools/sokol-shdc" + if os() == "windows" { ".exe" } else { "" }
 # the macOS c3c builds for: the one it runs on, as clang does for C without a target (and as
 # Homebrew's libdraco and boomkat's C are built), so that the linker finds nothing newer
 macos := if os() == "macos" { "--macos-min-version " + `sw_vers -productVersion 2>/dev/null || true` } else { "" }
@@ -77,8 +77,13 @@ bindings:
     build/cgltf/layout_c3 > build/cgltf/layout_c3.txt
     diff build/cgltf/layout_c.txt build/cgltf/layout_c3.txt && echo "cgltf.c3: the layout of $(grep -c '^cgltf' build/cgltf/layout_c.txt) structs matches C"
 
+# download the pinned sokol-shdc binary for this host into build/tools/
+shdc:
+    python3 tools/fetch_shdc.py "{{shdc}}"
+
 # regenerate generated/*.c3 from shaders/*.glsl with sokol-shdc (sokol-tools)
 shaders:
+    [ -x "{{shdc}}" ] || python3 tools/fetch_shdc.py "{{shdc}}"
     for s in radiance_cs radiance_rays_cs; do \
         {{shdc}} -i shaders/$s.glsl -o generated/$s.c3 -f sokol_c3 -l glsl430:hlsl5:metal_macos:metal_ios:metal_sim || exit 1; \
     done
