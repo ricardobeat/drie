@@ -5,13 +5,21 @@
 //
 //   - stretch: each point to its neighbours across and down
 //   - shear: the diagonals of each cell
-//   - bend: each point to the one two away, across and down (the rest shape's folds stay in)
+//   - bend: along each row and column, how far a point sits off the midpoint of its two
+//     neighbours, along the cloth's normal there, is held at the rest shape's (a signed
+//     curvature: a fold bulges back the way it did at rest, not either way)
 //   - tethers: no point gets further from its nearest pin than it is along the cloth at rest
+//   - self: with self_distance set, no two points come closer than that (collide_self), so
+//     a fold doesn't pass through the cloth
 //
 // Pinned points (inverse mass 0) are held where pin() or move_pin() puts them. Colliders are
 // spheres, capsules, boxes (turned any way: a door, a wall) and planes, moved with
 // move_collider() or move_box(); the points go where the collider was at each substep, so a
-// fast capsule or a swinging door does not pass through. The wind pushes on each triangle by
+// fast capsule or a swinging door does not pass through. collider_impulse() is the momentum the
+// cloth took from a collider in the last update; a sphere or capsule given a mass
+// (set_collider_mass) is pushed back by the cloth at every substep, and a ball thrown into a
+// sheet is caught by it. A collider faster than the links can follow at `substeps` stretches
+// them open: with the points ~6 cm apart, a 15 m/s ball needs 16 substeps. The wind pushes on each triangle by
 // how much the air crosses it, and gusts with a deterministic noise in time and space.
 // Everything is in world space, but the points are kept from `origin`, near them: a float 1 km
 // from the world's origin steps by 0.12 mm, and a cloth simulated there in world coordinates
@@ -29,7 +37,7 @@
 //     c.move_collider(body, a, b);
 //     c.update(delta);   // steps, and writes the mesh
 module drie::cloth;
-import std::math, std::collections::list, drie;
+import std::math, std::collections::list, std::thread, std::atomic, std::os, std::time, drie;
 
 const float STEP       = 1.0f / 60;
 const int MAX_STEPS    = 4;
@@ -60,6 +68,15 @@ struct Collider {
     Vector3 half;
     Vector3[3] from_axes;
     Vector3[3] axes;
+    // the momentum (kg m/s) the cloth's points took from it over the last update (see
+    // collider_impulse)
+    Vector3 impulse;
+    // 1 / its mass (kg), 0: kinematic (see set_collider_mass)
+    float inv_mass;
+    // a sphere or capsule with a mass: how far the cloth has pushed it off the path it was
+    // given in this update, and how much it has changed its velocity
+    Vector3 shift;
+    Vector3 dv;
 }
 
 struct Link {
@@ -67,6 +84,17 @@ struct Link {
     float rest;
     // each end's share of the correction: its inverse mass over (both + the compliance)
     float ka, kb;
+}
+
+// A point m between a and b along a row or column: (a + b - 2m) along the normal at m is held at
+// `rest`. The normal is m's across x down: s (b - a) x (d - c), c and d m's neighbours the other
+// way (m itself at an edge), s 1 along a row and -1 down a column.
+struct Bend {
+    uint a, m, b, c, d;
+    float s;
+    float rest;
+    // the compliance (over h²)
+    float alpha;
 }
 
 struct Tether {
@@ -96,7 +124,7 @@ struct Cloth {
     float[] gust_rows;
     List{Link} stretch;
     List{Link} shear;
-    List{Link} bend;
+    List{Bend} bend;
     List{Tether} tethers;
     bool tethers_dirty;
     // the compliances (over h²) the links' ka and kb were worked out for; -1: not yet
@@ -104,7 +132,8 @@ struct Cloth {
     List{Collider} colliders;
 
     int substeps;
-    // compliance (m/N, 0 rigid) of the three kinds of links
+    // compliance (m/N, 0 rigid) of the stretch and shear links, and of the bends (m/N of the
+    // curvature offset)
     float stretch_compliance;
     float shear_compliance;
     float bend_compliance;
@@ -112,6 +141,9 @@ struct Cloth {
     float tether_slack;
     // velocity lost per second (0..)
     float damping;
+    // of the difference in velocity between neighbours, the share lost each step (0..1): stills
+    // the cloth's quick small wobbles and leaves its swing to `damping`
+    float internal_damping;
     Vector3 gravity;
     // the air's velocity (m/s); `gust` scales its variation (0 steady, 1 between 0 and twice)
     Vector3 wind;
@@ -124,6 +156,36 @@ struct Cloth {
     float friction;
     // a floor (y up) the points stay above; -1e30: none
     float floor_y;
+    // as friction, on the floor
+    float floor_friction;
+    // points of the cloth are kept this far apart (m; 0: the cloth passes through itself), or
+    // as far as they are along the cloth at rest when that is less; checked every
+    // `self_every` substeps (see collide_self)
+    float self_distance;
+    int self_every;
+    // the spatial hash collide_self sorts the points into: each point's bucket, the points in
+    // bucket order, and where each bucket starts in that order
+    uint[] self_bucket;
+    uint[] self_order;
+    uint[] self_start;
+    // for update_all: the points in the world as the frame began, hashed as collide_self
+    // hashes its own, and the other cloths whose bounds meet this one's
+    Vector3[] snap;
+    uint[] snap_bucket;
+    uint[] snap_order;
+    uint[] snap_start;
+    uint snap_mask;
+    List{Cloth*} touching;
+    // a cloth whose fastest point stays under sleep_speed (m/s; 0: never) for sleep_time
+    // seconds sleeps: update() leaves it as it is, until a collider comes into its bounds or a
+    // pin moves. Asleep, the wind doesn't move it either.
+    float sleep_speed;
+    float sleep_time;
+    float still_for;
+    bool asleep;
+    // the points' bounds (from origin) at the last substep, grown by `thickness`: the colliders
+    // outside them are skipped
+    Vector3 lo, hi;
     float mass;
 
     double time;
@@ -196,10 +258,11 @@ fn Cloth* from_positions(int cols, int rows, Vector3[] rest, float mass = 0.4f) 
     c.bend.allocator = mem;
     c.tethers.allocator = mem;
     c.colliders.allocator = mem;
+    c.touching.allocator = mem;
     c.substeps = 8;
     c.stretch_compliance = 0;
     c.shear_compliance = 1e-3f;
-    c.bend_compliance = 1e-2f;
+    c.bend_compliance = 1e-1f;
     c.tether_slack = 0.02f;
     c.damping = 0.6f;
     c.gravity = { 0, -9.81f, 0 };
@@ -207,6 +270,11 @@ fn Cloth* from_positions(int cols, int rows, Vector3[] rest, float mass = 0.4f) 
     c.thickness = 0.02f;
     c.friction = 0.3f;
     c.floor_y = -FAR;
+    c.floor_friction = 0.3f;
+    c.self_every = 2;
+    c.sleep_time = 0.5f;
+    c.lo = { -FAR, -FAR, -FAR };
+    c.hi = { FAR, FAR, FAR };
     c.mass = mass;
     c.links_alpha = { -1, -1, -1 };
     c.origin = rest[0];
@@ -229,13 +297,26 @@ fn Cloth* from_positions(int cols, int rows, Vector3[] rest, float mass = 0.4f) 
                 c.link(&c.shear, i, c.index(k + 1, r + 1));
                 c.link(&c.shear, c.index(k + 1, r), c.index(k, r + 1));
             }
-            if (k + 2 < cols) c.link(&c.bend, i, c.index(k + 2, r));
-            if (r + 2 < rows) c.link(&c.bend, i, c.index(k, r + 2));
+        }
+    }
+    // in runs, rows then columns, at every third middle point along the bends and every third
+    // point across them, so that bends next to each other share no point (see color_links)
+    for (int phase = 0; phase < 9; phase++) {
+        for (int r = phase / 3; r < rows; r += 3) {
+            for (int k = 1 + phase % 3; k + 1 < cols; k += 3) {
+                c.add_bend(c.index(k - 1, r), c.index(k, r), c.index(k + 1, r), c.index(k, math::max(r - 1, 0)), c.index(k, math::min(r + 1, rows - 1)), 1);
+            }
+        }
+    }
+    for (int phase = 0; phase < 9; phase++) {
+        for (int r = 1 + phase % 3; r + 1 < rows; r += 3) {
+            for (int k = phase / 3; k < cols; k += 3) {
+                c.add_bend(c.index(k, r - 1), c.index(k, r), c.index(k, r + 1), c.index(math::max(k - 1, 0), r), c.index(math::min(k + 1, cols - 1), r), -1);
+            }
         }
     }
     color_links(&c.stretch, n);
     color_links(&c.shear, n);
-    color_links(&c.bend, n);
     return c;
 }
 
@@ -370,6 +451,14 @@ fn void Cloth.link(&self, List{Link}* list, uint a, uint b) {
     list.push({ a, b, (self.pos[a] - self.pos[b]).length(), 0, 0 });
 }
 
+fn void Cloth.add_bend(&self, uint a, uint m, uint b, uint c, uint d, float s) {
+    Vector3* p = self.pos.ptr;
+    Vector3 n  = (p[b] - p[a]).cross(p[d] - p[c]) * s;
+    float n2   = n.dot(n);
+    float rest = n2 > 1e-24f ? (p[a] + p[b] - p[m] * 2).dot(n) / math::sqrt(n2) : 0;
+    self.bend.push({ a, m, b, c, d, s, rest, 0 });
+}
+
 fn void Cloth.free(&self) {
     free(self.pos);
     free(self.prev);
@@ -389,6 +478,14 @@ fn void Cloth.free(&self) {
     free(self.shown);
     free(self.marked);
     free(self.drawn);
+    free(self.self_bucket);
+    free(self.self_order);
+    free(self.self_start);
+    free(self.snap);
+    free(self.snap_bucket);
+    free(self.snap_order);
+    free(self.snap_start);
+    self.touching.free();
     if (self.detail) {
         Detail* d = self.detail;
         free(d.rest);
@@ -421,10 +518,20 @@ fn void Cloth.unpin(&self, uint i) {
     self.inv_mass[i] = (float)self.count() / math::max(self.mass, 1e-6f);
     self.tethers_dirty = true;
     self.links_alpha = { -1, -1, -1 };
+    self.wake();
 }
 
 // Moves pinned point `i`: it gets there at the next fixed step.
-fn void Cloth.move_pin(&self, uint i, Vector3 to) => self.pin_to[i] = to - self.origin;
+fn void Cloth.move_pin(&self, uint i, Vector3 to) {
+    Vector3 at = to - self.origin;
+    if (at != self.pin_to[i]) self.wake();
+    self.pin_to[i] = at;
+}
+
+fn void Cloth.wake(&self) {
+    self.asleep = false;
+    self.still_for = 0;
+}
 
 fn int Cloth.add_sphere(&self, Vector3 center, float radius) {
     center -= self.origin;
@@ -495,11 +602,49 @@ fn void Cloth.move_box(&self, int id, drie::Mat4 placement) {
     k.axes = axes;
 }
 
+// The momentum (kg m/s, in the world) the cloth took from collider `id` in the last update():
+// the sum over its pushes of a point's mass times how far it moved the point over the
+// substep's length. Two-way coupling: take it off the body the collider stands for (its
+// velocity -= impulse / its mass), and the cloth slows a ball, catches it or throws it back.
+fn Vector3 Cloth.collider_impulse(&self, int id) => self.colliders[id].impulse;
+
+// Gives a sphere or capsule a mass (kg; 0, the default: kinematic, it goes where it is moved
+// whatever the cloth does). Each push then moves the point and the collider apart by their
+// inverse masses, at every substep, and the collider goes on at the velocity the pushes left
+// it, so a fast ball meeting a taut sheet is stopped there, not a frame later when it is
+// through. After update(), the body moves by collider_shift() and its velocity changes by
+// -collider_impulse() / mass.
+fn void Cloth.set_collider_mass(&self, int id, float kg) => self.colliders[id].inv_mass = kg > 0 ? 1 / kg : 0;
+
+// How far the cloth pushed collider `id` (with a mass) off the path move_collider() gave it in
+// the last update(); where the cloth left it is where it was moved plus this.
+fn Vector3 Cloth.collider_shift(&self, int id) => self.colliders[id].shift;
+
 fn void Cloth.set_collider_active(&self, int id, bool active) => self.colliders[id].active = active;
 
 // Advances by `dt` seconds in fixed steps (at most MAX_STEPS) and writes the mesh, if it has
 // one. Returns the steps taken.
 fn int Cloth.update(&self, float dt) {
+    foreach (&k : self.colliders) {
+        k.impulse = {};
+        k.shift = {};
+        k.dv = {};
+    }
+    if (self.asleep) {
+        foreach (&k : self.colliders) {
+            if (k.active && self.near(k)) self.wake();
+        }
+    }
+    if (self.asleep) {
+        // (no sweep from where the colliders were when it wakes)
+        foreach (&k : self.colliders) {
+            k.from_a = k.a;
+            k.from_b = k.b;
+            k.from_axes = k.axes;
+        }
+        self.accumulator = 0;
+        return 0;
+    }
     self.accumulator += math::max(dt, 0.0f);
     int n = (int)(self.accumulator / STEP);
     if (n > MAX_STEPS) {
@@ -512,13 +657,105 @@ fn int Cloth.update(&self, float dt) {
     // (without a step, the colliders' move waits for the next one)
     if (n > 0) {
         foreach (&k : self.colliders) {
-            k.from_a = k.a;
-            k.from_b = k.b;
+            k.from_a = k.a + k.shift;
+            k.from_b = k.b + k.shift;
             k.from_axes = k.axes;
         }
     }
     if (self.mesh) self.write_mesh(self.accumulator / STEP);
+    if (self.sleep_speed > 0 && n > 0) {
+        // (how far each point went over the last step, not its velocity: a point the links and
+        // the self collisions push back and forth within a step goes nowhere)
+        float top = 0;
+        foreach (i, at : self.pos) {
+            Vector3 d = at - self.start[i];
+            top = math::max(top, d.x * d.x + d.y * d.y + d.z * d.z);
+        }
+        float reach = self.sleep_speed * STEP;
+        self.still_for = top < reach * reach ? self.still_for + n * STEP : 0;
+        if (self.still_for >= self.sleep_time) self.asleep = true;
+    }
     return n;
+}
+
+// Whether collider `k` (where it was and where it is going) is in the cloth's bounds.
+fn bool Cloth.near(&self, Collider* k) {
+    if (k.kind == BOX || k.kind == PLANE) return true;
+    Vector3 r  = { k.radius, k.radius, k.radius };
+    Vector3 lo = math::min(math::min(k.a, k.b), math::min(k.from_a, k.from_b)) - r;
+    Vector3 hi = math::max(math::max(k.a, k.b), math::max(k.from_a, k.from_b)) + r;
+    return lo.x <= self.hi.x && lo.y <= self.hi.y && lo.z <= self.hi.z && hi.x >= self.lo.x && hi.y >= self.lo.y && hi.z >= self.lo.z;
+}
+
+struct UpdateJob @local {
+    Cloth* cloth;
+    float dt;
+    Atomic{int}* left;
+}
+
+ThreadPool update_pool @local;
+bool update_pool_ready @local;
+
+fn void update_job(void* arg) @local {
+    UpdateJob* job = arg;
+    job.cloth.update(job.dt);
+    job.left.sub(1);
+}
+
+// update() on each of `cloths`, the cloths shared out between worker threads (the caller's
+// among them) and all done when it returns. They must not share points, colliders or a mesh.
+fn void update_all(Cloth*[] cloths, float dt) {
+    if (cloths.len == 0) return;
+    // the cloths with self_distance set keep apart from each other too: each sees where the
+    // others' points were as the frame began, in a hash built here
+    foreach (c : cloths) {
+        c.touching.clear();
+        if (c.self_distance <= 0) continue;
+        if (c.snap.len != (sz)c.count()) {
+            free(c.snap);
+            c.snap = mem::new_array(Vector3, c.count());
+        }
+        foreach (i, at : c.pos) c.snap[i] = c.origin + at;
+        c.snap_mask = build_hash(c.snap.ptr, c.count(), c.self_distance, &c.snap_bucket, &c.snap_order, &c.snap_start);
+    }
+    foreach (i, a : cloths) {
+        if (a.self_distance <= 0) continue;
+        foreach (j, b : cloths) {
+            if (i == j || b.self_distance <= 0) continue;
+            float d = math::max(a.self_distance, b.self_distance);
+            Vector3 alo = a.origin + a.lo;
+            Vector3 ahi = a.origin + a.hi;
+            Vector3 blo = b.origin + b.lo;
+            Vector3 bhi = b.origin + b.hi;
+            if (alo.x > bhi.x + d || alo.y > bhi.y + d || alo.z > bhi.z + d) continue;
+            if (blo.x > ahi.x + d || blo.y > ahi.y + d || blo.z > ahi.z + d) continue;
+            a.touching.push(b);
+            // (a cloth that comes down on a sleeping one wakes it)
+            if (a.asleep && !b.asleep) a.wake();
+        }
+    }
+    if (cloths.len == 1) {
+        cloths[0].update(dt);
+        return;
+    }
+    if (!update_pool_ready) {
+        int workers = math::clamp(os::num_cpu() - 1, 1, 15);
+        if (catch update_pool.init(mem, workers, keep_alive: (Duration)0)) {
+            foreach (c : cloths) c.update(dt);
+            return;
+        }
+        update_pool_ready = true;
+    }
+    Atomic{int} left;
+    left.store((int)cloths.len - 1);
+    UpdateJob[] jobs = mem::new_array(UpdateJob, cloths.len - 1);
+    defer free(jobs);
+    for (sz i = 0; i + 1 < cloths.len; i++) {
+        jobs[i] = { cloths[i], dt, &left };
+        if (catch update_pool.add_task(&update_job, &jobs[i])) update_job(&jobs[i]);
+    }
+    cloths[cloths.len - 1].update(dt);
+    while (left.load() > 0) thread::yield();
 }
 
 // One fixed step. The colliders go from `from` to `until` (0..1) of their way from where they
@@ -545,7 +782,7 @@ fn void Cloth.step_once(&self, float from = 0, float until = 1) {
         self.links_alpha = alpha;
         prepare_links(&self.stretch, w, alpha[0]);
         prepare_links(&self.shear, w, alpha[1]);
-        prepare_links(&self.bend, w, alpha[2]);
+        prepare_bends(&self.bend, alpha[2]);
     }
     for (int s = 0; s < self.substeps; s++) {
         for (uint i = 0; i < n; i++) {
@@ -556,15 +793,156 @@ fn void Cloth.step_once(&self, float from = 0, float until = 1) {
         }
         solve_links(p, &self.stretch);
         solve_links(p, &self.shear);
-        solve_links(p, &self.bend);
+        solve_bends(p, w, &self.bend);
         self.solve_tethers();
+        if (self.self_distance > 0 && (s + 1) % math::max(self.self_every, 1) == 0) self.collide_self();
         self.collide(from + (until - from) * (float)(s + 1) * step_frac, from + (until - from) * (float)s * step_frac);
         for (uint i = 0; i < n; i++) {
             if (w[i] != 0) v[i] = (p[i] - q[i]) * keep;
         }
     }
+    if (self.internal_damping > 0) damp_links(v, &self.stretch, self.internal_damping);
     self.time += STEP;
     self.steps++;
+}
+
+fn uint self_hash(int x, int y, int z, uint mask) @local @inline {
+    return (((uint)x * 73856093u) ^ ((uint)y * 19349663u) ^ ((uint)z * 83492791u)) & mask;
+}
+
+// Keeps the cloth's points `self_distance` apart, or as far as they are along the cloth at rest
+// when that is less (neighbours along it are left to the links): the points are sorted into a
+// spatial hash of cells that size, and each is pushed away from the points in the 27 cells
+// round it, by their inverse masses. Only points: a fold thinner than self_distance that
+// crosses a cell of the cloth between them in one substep goes through.
+fn void Cloth.collide_self(&self) {
+    uint n     = self.count();
+    Vector3* p = self.pos.ptr;
+    Vector3* r = self.rest.ptr;
+    float* w   = self.inv_mass.ptr;
+    float d    = self.self_distance;
+    float inv_d = 1 / d;
+    uint mask  = build_hash(p, n, d, &self.self_bucket, &self.self_order, &self.self_start);
+    uint* order = self.self_order.ptr;
+    uint* start = self.self_start.ptr;
+    float d2 = d * d;
+    // each pair once: a point's own bucket (the points after it there) and the 13 cells on
+    // one side of it
+    for (uint i = 0; i < n; i++) {
+        int cx = (int)math::floor(p[i].x * inv_d);
+        int cy = (int)math::floor(p[i].y * inv_d);
+        int cz = (int)math::floor(p[i].z * inv_d);
+        for (int m = 13; m < 27; m++) {
+            uint b = self_hash(cx + m % 3 - 1, cy + (m / 3) % 3 - 1, cz + m / 9 - 1, mask);
+            for (uint k = start[b]; k < start[b + 1]; k++) {
+                uint j = order[k];
+                if (m == 13 && j <= i) continue;
+                float wsum = w[i] + w[j];
+                if (wsum == 0) continue;
+                Vector3 e = p[i] - p[j];
+                float e2  = e.x * e.x + e.y * e.y + e.z * e.z;
+                if (e2 >= d2 || e2 < 1e-12f) continue;
+                Vector3 f   = r[i] - r[j];
+                float f2    = f.x * f.x + f.y * f.y + f.z * f.z;
+                float min_d = f2 < d2 ? math::sqrt(f2) : d;
+                if (e2 >= min_d * min_d) continue;
+                float len = math::sqrt(e2);
+                Vector3 c = e * ((min_d - len) / (len * wsum));
+                p[i] += c * w[i];
+                p[j] -= c * w[j];
+            }
+        }
+    }
+    foreach (other : self.touching) self.collide_other(other);
+}
+
+// Sorts the n points p into a spatial hash of cells `d` across: each point's bucket, the points
+// in bucket order, and where each bucket starts in it (the arrays grown as needed). Returns
+// the mask of its buckets.
+fn uint build_hash(Vector3* p, uint n, float d, uint[]* bucket_arr, uint[]* order_arr, uint[]* start_arr) @local {
+    uint size = 1;
+    while (size < n * 2) size <<= 1;
+    uint mask = size - 1;
+    if (bucket_arr.len != (sz)n) {
+        free(*bucket_arr);
+        free(*order_arr);
+        *bucket_arr = mem::new_array(uint, n);
+        *order_arr  = mem::new_array(uint, n);
+    }
+    if (start_arr.len != (sz)size + 1) {
+        free(*start_arr);
+        *start_arr = mem::new_array(uint, (sz)size + 1);
+    }
+    uint* bucket = bucket_arr.ptr;
+    uint* order  = order_arr.ptr;
+    uint* start  = start_arr.ptr;
+    float inv_d  = 1 / d;
+    for (uint k = 0; k <= size; k++) start[k] = 0;
+    for (uint i = 0; i < n; i++) {
+        uint b    = self_hash((int)math::floor(p[i].x * inv_d), (int)math::floor(p[i].y * inv_d), (int)math::floor(p[i].z * inv_d), mask);
+        bucket[i] = b;
+        start[b + 1]++;
+    }
+    for (uint k = 0; k < size; k++) start[k + 1] += start[k];
+    for (uint i = 0; i < n; i++) order[start[bucket[i]]++] = i;
+    for (uint k = size; k > 0; k--) start[k] = start[k - 1];
+    start[0] = 0;
+    return mask;
+}
+
+// Pushes the points away from `other`'s points as they were when the frame began (its
+// snapshot), to self_distance: each cloth moves its own points half the way, and the other
+// does the same from its side in its own update.
+fn void Cloth.collide_other(&self, Cloth* other) {
+    uint n      = self.count();
+    Vector3* p  = self.pos.ptr;
+    float* w    = self.inv_mass.ptr;
+    float d     = self.self_distance;
+    float d2    = d * d;
+    float inv_d = 1 / d;
+    Vector3* o  = other.snap.ptr;
+    uint* order = other.snap_order.ptr;
+    uint* start = other.snap_start.ptr;
+    uint mask   = other.snap_mask;
+    // (the snapshot is hashed in cells of the other's self_distance: look as far as this one's)
+    float od    = other.self_distance;
+    int reach   = (int)math::ceil(d / od);
+    float inv_od = 1 / od;
+    for (uint i = 0; i < n; i++) {
+        if (w[i] == 0) continue;
+        Vector3 at = self.origin + p[i];
+        if (at.x < other.lo.x + other.origin.x - d || at.y < other.lo.y + other.origin.y - d || at.z < other.lo.z + other.origin.z - d) continue;
+        if (at.x > other.hi.x + other.origin.x + d || at.y > other.hi.y + other.origin.y + d || at.z > other.hi.z + other.origin.z + d) continue;
+        int cx = (int)math::floor(at.x * inv_od);
+        int cy = (int)math::floor(at.y * inv_od);
+        int cz = (int)math::floor(at.z * inv_od);
+        for (int dz = -reach; dz <= reach; dz++) {
+            for (int dy = -reach; dy <= reach; dy++) {
+                for (int dx = -reach; dx <= reach; dx++) {
+                    uint b = self_hash(cx + dx, cy + dy, cz + dz, mask);
+                    for (uint k = start[b]; k < start[b + 1]; k++) {
+                        Vector3 e = at - o[order[k]];
+                        float e2  = e.x * e.x + e.y * e.y + e.z * e.z;
+                        if (e2 >= d2 || e2 < 1e-12f) continue;
+                        float len = math::sqrt(e2);
+                        Vector3 c = e * ((d - len) * 0.5f / len);
+                        p[i] += c;
+                        at += c;
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Takes `share` of the difference in velocity off each pair of linked points, split by their
+// inverse masses (a stretch link's ka and kb: they add up to 1, its compliance being 0).
+fn void damp_links(Vector3* v, List{Link}* links, float share) @local {
+    foreach (&l : *links) {
+        Vector3 dv = (v[l.b] - v[l.a]) * share;
+        v[l.a] += dv * l.ka;
+        v[l.b] -= dv * l.kb;
+    }
 }
 
 fn void prepare_links(List{Link}* links, float* w, float alpha) @local {
@@ -587,6 +965,55 @@ fn void solve_links(Vector3* p, List{Link}* links) @local {
         Vector3 c = d * (1 - l.rest / math::sqrt(d2));
         p[l.a] -= c * l.ka;
         p[l.b] += c * l.kb;
+    }
+}
+
+fn void prepare_bends(List{Bend}* bends, float alpha) @local {
+    foreach (&b : *bends) b.alpha = alpha;
+}
+
+macro float dot(Vector3 x, Vector3 y) @local => x.x * y.x + x.y * y.y + x.z * y.z;
+
+// One pass of XPBD over the bends. The gradient takes in how the normal turns as a, b, c and d
+// move, as well as the move along it, so that the correction is a force's: one along a normal
+// taken as fixed does work round a swing and keeps the cloth going. Every point's gradient is along the normal (the normal's turning moves (a + b - 2m)'s
+// part in the cloth's plane out of it), so each is a number: a's 1 - ge, b's 1 + ge, m's -2,
+// c's -gf and d's gf.
+fn void solve_bends(Vector3* p, float* w, List{Bend}* bends) @local {
+    Bend* b  = bends.entries;
+    sz count = bends.len();
+    for (sz i = 0; i < count; i++, b++) {
+        Vector3 e  = p[b.b] - p[b.a];
+        Vector3 f  = p[b.d] - p[b.c];
+        Vector3 nn = (e.yzx * f.zxy - e.zxy * f.yzx) * b.s;
+        float n2   = dot(nn, nn);
+        if (n2 < 1e-24f) continue;
+        float inv2 = 1 / n2;
+        Vector3 n  = nn * math::sqrt(inv2);
+        Vector3 dv = p[b.a] + p[b.b] - p[b.m] * 2;
+        float c    = dot(dv, n) - b.rest;
+        float ef   = dot(e, f);
+        float de   = dot(dv, e);
+        float df   = dot(dv, f);
+        float ge   = (df * ef - de * dot(f, f)) * inv2;
+        float gf   = (de * ef - df * dot(e, e)) * inv2;
+        float ga   = 1 - ge;
+        float gb   = 1 + ge;
+        float gm   = -2;
+        float gc   = -gf;
+        // (at an edge c or d is m)
+        if (b.c == b.m) gm += gc;
+        if (b.d == b.m) gm += gf;
+        float sum = w[b.a] * ga * ga + w[b.b] * gb * gb + w[b.m] * gm * gm + b.alpha;
+        if (b.c != b.m) sum += w[b.c] * gc * gc;
+        if (b.d != b.m) sum += w[b.d] * gf * gf;
+        if (sum <= 0) continue;
+        Vector3 l = n * (-c / sum);
+        p[b.a] += l * (ga * w[b.a]);
+        p[b.b] += l * (gb * w[b.b]);
+        p[b.m] += l * (gm * w[b.m]);
+        if (b.c != b.m) p[b.c] += l * (gc * w[b.c]);
+        if (b.d != b.m) p[b.d] += l * (gf * w[b.d]);
     }
 }
 
@@ -741,8 +1168,21 @@ fn void Cloth.collide(&self, float t, float t_prev = 0) {
     Vector3* p = self.pos.ptr;
     Vector3* q = self.prev.ptr;
     float* w   = self.inv_mass.ptr;
+    // over the substep's length: a push's velocity
+    float h     = STEP / self.substeps;
+    float inv_h = 1 / h;
+    Vector3 min_p = { FAR, FAR, FAR };
+    Vector3 max_p = { -FAR, -FAR, -FAR };
+    for (uint i = 0; i < n; i++) {
+        min_p = math::min(min_p, p[i]);
+        max_p = math::max(max_p, p[i]);
+    }
+    Vector3 pad = { self.thickness, self.thickness, self.thickness };
+    self.lo = min_p - pad;
+    self.hi = max_p + pad;
     foreach (&k : self.colliders) {
         if (!k.active) continue;
+        if (!self.near(k)) continue;
         if (k.kind == BOX) {
             self.collide_box(k, t, t_prev);
             continue;
@@ -751,14 +1191,19 @@ fn void Cloth.collide(&self, float t, float t_prev = 0) {
             self.collide_plane(k, t);
             continue;
         }
-        Vector3 a  = k.from_a + (k.a - k.from_a) * t;
-        Vector3 b  = k.from_b + (k.b - k.from_b) * t;
+        // carried on by the velocity the pushes gave it
+        k.shift += k.dv * h;
+        Vector3 a  = k.from_a + (k.a - k.from_a) * t + k.shift;
+        Vector3 b  = k.from_b + (k.b - k.from_b) * t + k.shift;
         float r    = k.radius + self.thickness;
         // the box around it, for a cheap test first
         Vector3 lo = math::min(a, b) - (Vector3) { r, r, r };
         Vector3 hi = math::max(a, b) + (Vector3) { r, r, r };
         Vector3 ab = b - a;
         float ab2  = ab.dot(ab);
+        Vector3 was_a  = k.from_a + (k.a - k.from_a) * t_prev + k.shift - k.dv * h;
+        Vector3 was_ab = (k.from_b - k.from_a) + (k.b - k.from_b - k.a + k.from_a) * t_prev;
+        float was_ab2  = was_ab.dot(was_ab);
         for (uint i = 0; i < n; i++) {
             Vector3 pi = p[i];
             if (pi.x < lo.x || pi.y < lo.y || pi.z < lo.z || pi.x > hi.x || pi.y > hi.y || pi.z > hi.z) continue;
@@ -770,11 +1215,25 @@ fn void Cloth.collide(&self, float t, float t_prev = 0) {
             if (d2 >= r * r) continue;
             float len     = math::sqrt(d2);
             Vector3 nrm   = len > 1e-6f ? d / len : (Vector3) { 0, 0, 1 };
+            // a point the collider has overtaken within the substep (it is past the axis, on
+            // the far side from where it was a substep ago) goes back out the side it was on
+            Vector3 qa = was_a;
+            if (was_ab2 > 1e-12f) qa = was_a + was_ab * clamp((q[i] - was_a).dot(was_ab) / was_ab2, 0, 1);
+            Vector3 e = q[i] - qa;
+            if (e.dot(e) >= r * r * 0.25f && e.dot(nrm) < 0) nrm = e.normalize();
             Vector3 out   = c + nrm * r;
             // friction: of the substep's move along the surface, keep (1 - friction)
             Vector3 moved = out - q[i];
             Vector3 along = moved - nrm * moved.dot(nrm);
-            p[i] = out - along * self.friction;
+            // the push, shared by the point and the collider by their inverse masses
+            Vector3 push  = (out - along * self.friction - pi) * (1 / (1 + k.inv_mass / w[i]));
+            Vector3 back  = push * (k.inv_mass / w[i]);
+            k.impulse += push * (inv_h / w[i]);
+            k.shift -= back;
+            k.dv -= back * inv_h;
+            a -= back;
+            b -= back;
+            p[i] = pi + push;
         }
     }
     if (self.floor_y > -FAR) {
@@ -783,8 +1242,8 @@ fn void Cloth.collide(&self, float t, float t_prev = 0) {
             if (p[i].y >= y || w[i] == 0) continue;
             p[i].y = y;
             Vector3 moved = p[i] - q[i];
-            p[i].x -= moved.x * self.friction;
-            p[i].z -= moved.z * self.friction;
+            p[i].x -= moved.x * self.floor_friction;
+            p[i].z -= moved.z * self.floor_friction;
         }
     }
 }
@@ -856,7 +1315,9 @@ fn void Cloth.collide_box(&self, Collider* k, float t, float t_prev) {
         // friction: of the substep's move along the surface, keep (1 - friction)
         Vector3 moved = out - q[i];
         Vector3 along = moved - nrm * moved.dot(nrm);
-        p[i] = out - along * self.friction;
+        Vector3 to    = out - along * self.friction;
+        k.impulse += (to - pi) * (self.substeps / STEP / w[i]);
+        p[i] = to;
     }
 }
 
@@ -873,7 +1334,9 @@ fn void Cloth.collide_plane(&self, Collider* k, float t) {
         Vector3 out   = p[i] - nrm * d;
         Vector3 moved = out - q[i];
         Vector3 along = moved - nrm * moved.dot(nrm);
-        p[i] = out - along * self.friction;
+        Vector3 to    = out - along * self.friction;
+        k.impulse += (to - p[i]) * (self.substeps / STEP / w[i]);
+        p[i] = to;
     }
 }
 
