@@ -33,7 +33,7 @@ const float BOUNCE = 0.6f;
 // a ball's place while it is not in play, away from the cloth
 const int PANELS = 2;
 const Color[PANELS] PANEL_COLORS = { 0x5a1420, 0x5a1420 };
-const cloth::BendModel[PANELS] PANEL_BEND = { SIGNED, DISTANCE };
+const BendModel[PANELS] PANEL_BEND = { SIGNED, DISTANCE };
 // each model's compliance (on its own scale), as the house's light trap had them
 const float[PANELS] PANEL_BEND_COMPLIANCE = { 0.3f, 5e-3f };
 // the rail each hangs from (m), its height, and the pleats: their period along the rail and
