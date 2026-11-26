@@ -159,7 +159,7 @@ fn void Raycaster.visit(&self, Object3D* object, HitSink* sink, bool recursive) 
     if (self.visible_only && !object.visible) return;
     switch (object.kind) {
         case MESH:
-            self.intersect_mesh((Mesh*)object, sink);
+            if (!((Mesh*)object).shadow_only) self.intersect_mesh((Mesh*)object, sink);
         case LOD:
             // the level the ray's origin sees, as the renderer would pick it for a camera there
             Lod* l = (Lod*)object;
