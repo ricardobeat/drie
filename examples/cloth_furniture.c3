@@ -98,7 +98,7 @@ fn void furniture() {
 }
 
 // The sheet, flat and a little turned and tilted, above everything.
-gpu_cloth::BendModel bend = DISTANCE;
+BendModel bend = DISTANCE;
 float distance_bend = 0.05f;
 float signed_bend = SIGNED_BEND;
 

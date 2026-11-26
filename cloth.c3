@@ -106,11 +106,6 @@ struct Tether {
     float rest;
 }
 
-enum BendModel : char {
-    SIGNED,
-    DISTANCE,
-}
-
 struct Cloth {
     int cols, rows;
     // where the points are kept from (the rest shape's first point): a point at p is at
