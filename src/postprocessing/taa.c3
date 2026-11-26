@@ -12,7 +12,7 @@ import sokol, drie;
 // ---- TAAPass
 
 // Motion-reprojected temporal antialiasing and upscaling pass operating in linear light.
-// 
+//
 //   TAAPass* taa = postprocessing::taa_pass();
 //   // Each frame:
 //   taa.jitter(camera);
@@ -20,7 +20,7 @@ import sokol, drie;
 //   renderer.render(scene, camera);
 //   taa.render(scene_rt);
 //   output.set_source(taa.texture());
-// 
+//
 // When `width` and `height` exceed the input target's dimensions, increase `jitter_samples` to
 // roughly `8 * (out_pixels / in_pixels)` for even subpixel coverage.
 struct TAAPass {

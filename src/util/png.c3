@@ -2,7 +2,7 @@
 // uncompressed deflate stored blocks by default (`compress: true` enables deflate compression),
 // tags color space via `sRGB` or Display P3 `cICP`/`cHRM`/`gAMA` chunks, and supports custom
 // ancillary chunks via `extra` and `png::find_chunk()`.
-// 
+//
 //   png::write("shot.png", pixels, w, h, p3: true);
 //   char[] data;
 //   if (png::find_chunk(file_bytes, "abCd", &data)) ...

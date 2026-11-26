@@ -2,7 +2,7 @@
 // Evaluates per pixel on the GPU via a `drie::nodes` graph on a back-side MeshBasicMaterial;
 // `update()` only uploads uniforms when parameters change, and `follow()` keeps the dome centered
 // on the camera just inside its far plane.
-// 
+//
 //   Sky* sky = objects::sky();
 //   sky.rayleigh = 3;
 //   sky.sun_position = { -0.8, 0.19, 0.56 };

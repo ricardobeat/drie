@@ -1,6 +1,6 @@
 // Shader source emission for node programs: resource slot allocation, expression printing, and
 // Metal/HLSL/GLSL stage source assembly (`build_program`, `vertex_source`, `fragment_source`).
-// 
+//
 // `build_program` emits the fragment stage before the vertex stage so `p.varyings` captures
 // every interpolated value needed. Metal assigns textures `texture(0..)` and storage buffers
 // `buffer(8..)` and passes resources explicitly into functions; HLSL assigns per-stage `t`/`s`

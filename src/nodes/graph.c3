@@ -1,6 +1,6 @@
 // Shader node graph IR (`Node`, `NodeData`, `NodeFunction`), operator/swizzle methods, and
 // per-material graph builds (`NodeBuild`, `node_build_of`).
-// 
+//
 // Nodes are immutable uint handles (0 = none) stored in a monotonic arena; only `UNIFORM` nodes
 // mutate in place via `Node.set*`, updating parameters without rebuilding shaders. A material
 // binds at most 6 custom node textures (`NODE_TEXTURES`) across its 15 `*_node` slots
@@ -13,7 +13,7 @@ import std::collections::list, std::collections::map, std::io, std::os::env, sok
 
 // Handle to an immutable shader graph node (0 = none); only uniform values mutate via `Node.set*`.
 // Constructed through `drie::nodes`, e.g.:
-// 
+//
 //   Node wave = nodes::sin(nodes::position_local().y() * 8 + nodes::time() * 2);
 //   mat.color_node = nodes::mix(nodes::color(0x2266ff), nodes::color(0xffffff), wave * 0.5f + 0.5f);
 //   mat.position_node = nodes::position_local() + nodes::normal_local() * (wave * 0.05f);
@@ -609,8 +609,9 @@ fn Node node_assign(Node target, Node value) {
     // (a varying of a variable: the variable, in the vertex stage)
     if (t.op == VARYING && node_data({ t.args[0] }).op == VAR) target = { t.args[0] };
     t = node_data(target);
-    if (t.op != VAR && !(t.op == SWIZZLE && node_data({ t.args[0] })
-        .op == VAR)) abort("drie: nodes: assign() to a variable (or its components)");
+    if (t.op != VAR && !(t.op == SWIZZLE && node_data(
+        { t.args[0] }
+    ).op == VAR)) abort("drie: nodes: assign() to a variable (or its components)");
     return add_node({ .op = ASSIGN, .type = VOID, .count = 2, .args = { target.id, value.id, 0, 0 } });
 }
 
@@ -669,8 +670,9 @@ fn Node node_block(Node[] stmts) {
 // Appends `stmt` after `last` (a block's last statement) and returns it (the new last).
 // (a block: worked out there, as in node_block)
 fn Node node_append(Node last, Node stmt) {
-    if (node_data(stmt)
-        .type != VOID || node_data(stmt).next) stmt = node_eval(stmt.type() == VOID ? node_seq(stmt) : stmt);
+    if (node_data(
+        stmt
+    ).type != VOID || node_data(stmt).next) stmt = node_eval(stmt.type() == VOID ? node_seq(stmt) : stmt);
     if (last.id) node_data(last).next = stmt.id;
     return stmt;
 }

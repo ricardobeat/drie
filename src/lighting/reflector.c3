@@ -9,7 +9,7 @@ module drie;
 import std::math, sokol;
 
 // Planar reflection target and plane definition assigned to surfaces via `Material.reflector`.
-// 
+//
 //   Reflector* mirror = drie::reflector({ 0, 1, 0 }, FLOOR_Y);
 //   floor_material.reflector = mirror;
 //   // Each frame, with the renderer's target set as for the main render:

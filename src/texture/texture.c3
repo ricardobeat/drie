@@ -49,7 +49,7 @@ enum ColorSpace {
 }
 
 // 2D GPU image, sampler configuration, UV transform, and optional equirectangular `EnvLight`.
-// 
+//
 //   Texture* t = drie::load_texture("assets/textures/bark_diff.jpg");
 //   t.repeat = { 4, 4 };
 //   material.map = t;
@@ -194,7 +194,7 @@ fn Texture* float_texture(float[] rgba, int width, int height) {
 
 // Offscreen RGBA8 render target usable as any material map (for example an in-world display).
 // Draw with sokol between `begin()` and `end()` outside any other render pass:
-// 
+//
 //   CanvasTexture* screen = drie::canvas_texture(256, 144);
 //   material.map = screen.texture;
 //   screen.begin(0x001000); sdtx::draw(); screen.end();

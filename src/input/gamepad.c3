@@ -1,11 +1,11 @@
 // Game controller input over `drie::gamectl` (Apple GameController on macOS, XInput on Windows),
 // merged with on-screen buttons from `input::touch_controls()`. Polled automatically before each
 // frame via `drie::add_frame_hook()`.
-// 
+//
 //   Gamepad* pad = input::gamepad();
 //   if (pad.connected) walk(pad.left_x, pad.left_y);  // sticks in [-1, 1], +Y up, dead zone removed
 //   if (pad.pressed(input::PAD_SOUTH)) jump();        // pressed this frame
-// 
+//
 // When `keys` is true (default), D-pad, south, east, and menu buttons also emit sokol key events
 // (arrow keys, Enter, Backspace, Escape) so keyboard-driven menus work unchanged.
 module drie::input;

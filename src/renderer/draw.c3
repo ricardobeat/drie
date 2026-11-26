@@ -875,8 +875,11 @@ fn void shadow_key_of(DrawItem* item, MaterialKey* key, bool plain = false) @loc
         .morph = m.geometry.morph_view.id != 0 && m.morph_weights_view.id != 0,
         .foliage = build && mat.foliage,
         .gpu_cull = item.job > 0 && cull.active,
-        .displacement = displacement_params(mat)
-        .z > 0.5f, .sway = mat.sway > 0, .alpha_test = cut, .map = cut && mat.map, };
+        .displacement = displacement_params(mat).z > 0.5f,
+        .sway = mat.sway > 0,
+        .alpha_test = cut,
+        .map = cut && mat.map,
+    };
     if (cut && mat.alpha_map) key.set_slot(MAP_ALPHA, 1);
 }
 
@@ -952,75 +955,61 @@ fn void material_key_of(
         .tone = linear || !mat.tone_mapped ? 0 : (char)fs.output_params.z,
         .display = linear ? 0 : (char)fs.output_params.w,
         .gpu_cull = item.job > 0 && cull.active,
-        .displacement = displacement_params(mat)
-        .z > 0.5f, .sway = mat.sway > 0, .outline = mat.outline > 0, .motion = rt && rt.mrt
-            && state.motion, .dir_lights = lit
-                && fs.counts.x > 0, .point_lights = lit
-                    && fs.counts.y > 0, .spot_lights = lit
-                        && fs.counts.z > 0, .channels = lit
-                            && mat.light_channels
-                                != 0, .map_emissive = lit
-                                    && mat
-                                        .map_emissive, // Material.vertex_light reads vertex colors even when `vertex_colors` is false.
-                                        .baked = lit
-                                        && mat.vertex_light > 0, .normal_map = type != BASIC
-                                            && mat.normal_map
-                                                != null, // gen_bake_pipeline() omits the tangent vertex attribute.
-                                                .tangents = type
-                                                    != BASIC
-                                                    && !state.bake.on
-                                                    && uses_tangents(
-            item
-        ), .depth_packing = type == DEPTH ? (char)mat.depth_packing.ordinal
-            : 0, .env_light = standard && env_map
-                && env_map.has_env_sh, .env_reflect = env_reflect, .glass = mat.glass, .defocus = mat.defocus
-                    && r.focus_map
-                    && r.focus_aperture > 0, .hex = mat.hex_tiling > 0
-                        && mat.alpha_test <= 0, .probes = probes, .gi = lit
-                            && state
-                                .gi_count > 0, // Lightmap baking reuses `ssr_color` for the previous lightmap accumulation texture.
-                                .ssr = !state
-                                    .bake
-                                    .on
-                                && !mat.glass
-                                && r.ssr_color.id
-                                && r.ssr_depth.id
-                                && mat.ssr > 0, .reflector = !mat.glass && mat.reflector && mat.reflector.rendered
-                                    && mat.reflector.target, .rc = lit
-                                        && fs.rc_size.w > 0, .env_box = env_reflect && env_map
-                                            && mat.env_box_min
-                                                != mat.env_box_max, .toon_nearest = type == TOON && mat.gradient_map
-                                                    && mat.gradient_map.nearest, .bake = state.bake.on, .nodes = !plain
-                                                        && draw_build(
-                mat
-            ) != null, .morph = m.geometry.morph_view.id != 0
-                && m.morph_weights_view.id
-                    != 0, .flat_shading = mat.flat_shading, .shadows = shadows, .vsm = (shadows || shafts)
-                        && vsm_on(), .soft_shadows = shadows
-                            && lights_gpu.soft_shadows, .sun_shadow = shadows
-                                && fs.dir_shadow_params.x > 0.5f, .dir_tiles = shadows
-                                    && lights_gpu.dir_tiles, .point_shadows = shadows
-                                        && lights_gpu.point_shadows, .spot_shadows = shadows
-                                            && lights_gpu.spot_shadows, .debug_cascades = lit
-                                                && fs.dir_cascade_params.z > 0.5f
-                                                && fs.dir_shadow_params.x > 0.5f, .sized = standard
-                                                    && lights_gpu.sized, .tubes = lit
-                                                        && lights_gpu.tubes, .rect_lights = standard
-                                                            && fs.counts.w > 0, .parallax = standard
-                                                                && mat.parallax_map
-                                                                && mat.parallax_scale > 0, .clearcoat = standard
-                                                                    && coated(
-                mat
-            ), .sheen = standard && mat.sheen > 0
-                && (mat.sheen_color.x > 0 || mat.sheen_color.y > 0
-                    || mat.sheen_color.z > 0), .iridescence = standard
-                        && mat.iridescence > 0, .anisotropy = standard
-                            && mat.anisotropy > 0, .transmission = standard && !mat.glass && mat.transmission > 0
-                                && state.transmission_mips.id
-                                    != 0, .arm_ao = (bool)mat.arm_map, .arm_rough = mat.arm_map
-                                        || mat.roughness_map, .arm_metal = mat.arm_map
-                                            || (mat.metalness_map
-                                                && (mat.roughness_map ?: mat.metalness_map) == mat.metalness_map), };
+        .displacement = displacement_params(mat).z > 0.5f,
+        .sway = mat.sway > 0,
+        .outline = mat.outline > 0,
+        .motion = rt && rt.mrt && state.motion,
+        .dir_lights = lit && fs.counts.x > 0,
+        .point_lights = lit && fs.counts.y > 0,
+        .spot_lights = lit && fs.counts.z > 0,
+        .channels = lit && mat.light_channels != 0,
+        .map_emissive = lit
+            && mat.map_emissive, // Material.vertex_light reads vertex colors even when `vertex_colors` is false.
+        .baked = lit && mat.vertex_light > 0,
+        .normal_map = type != BASIC
+            && mat.normal_map != null, // gen_bake_pipeline() omits the tangent vertex attribute.
+        .tangents = type != BASIC && !state.bake.on && uses_tangents(item),
+        .depth_packing = type == DEPTH ? (char)mat.depth_packing.ordinal : 0,
+        .env_light = standard && env_map && env_map.has_env_sh,
+        .env_reflect = env_reflect,
+        .glass = mat.glass,
+        .defocus = mat.defocus && r.focus_map && r.focus_aperture > 0,
+        .hex = mat.hex_tiling > 0 && mat.alpha_test <= 0,
+        .probes = probes,
+        .gi = lit
+            && state.gi_count > 0, // Lightmap baking reuses `ssr_color` for the previous lightmap accumulation texture.
+        .ssr = !state.bake.on && !mat.glass && r.ssr_color.id && r.ssr_depth.id && mat.ssr > 0,
+        .reflector = !mat.glass && mat.reflector && mat.reflector.rendered && mat.reflector.target,
+        .rc = lit && fs.rc_size.w > 0,
+        .env_box = env_reflect && env_map && mat.env_box_min != mat.env_box_max,
+        .toon_nearest = type == TOON && mat.gradient_map && mat.gradient_map.nearest,
+        .bake = state.bake.on,
+        .nodes = !plain && draw_build(mat) != null,
+        .morph = m.geometry.morph_view.id != 0 && m.morph_weights_view.id != 0,
+        .flat_shading = mat.flat_shading,
+        .shadows = shadows,
+        .vsm = (shadows || shafts) && vsm_on(),
+        .soft_shadows = shadows && lights_gpu.soft_shadows,
+        .sun_shadow = shadows && fs.dir_shadow_params.x > 0.5f,
+        .dir_tiles = shadows && lights_gpu.dir_tiles,
+        .point_shadows = shadows && lights_gpu.point_shadows,
+        .spot_shadows = shadows && lights_gpu.spot_shadows,
+        .debug_cascades = lit && fs.dir_cascade_params.z > 0.5f && fs.dir_shadow_params.x > 0.5f,
+        .sized = standard && lights_gpu.sized,
+        .tubes = lit && lights_gpu.tubes,
+        .rect_lights = standard && fs.counts.w > 0,
+        .parallax = standard && mat.parallax_map && mat.parallax_scale > 0,
+        .clearcoat = standard && coated(mat),
+        .sheen = standard && mat.sheen > 0
+            && (mat.sheen_color.x > 0 || mat.sheen_color.y > 0 || mat.sheen_color.z > 0),
+        .iridescence = standard && mat.iridescence > 0,
+        .anisotropy = standard && mat.anisotropy > 0,
+        .transmission = standard && !mat.glass && mat.transmission > 0 && state.transmission_mips.id != 0,
+        .arm_ao = (bool)mat.arm_map,
+        .arm_rough = mat.arm_map || mat.roughness_map,
+        .arm_metal = mat.arm_map
+            || (mat.metalness_map && (mat.roughness_map ?: mat.metalness_map) == mat.metalness_map),
+    };
     for (int role = 0; role < MAP_ROLES; role++) {
         float slot = (*map_slots)[role / 4][role % 4];
         if (slot >= 0) key.set_slot(role, (int)slot + 1);

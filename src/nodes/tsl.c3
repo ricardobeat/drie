@@ -1,5 +1,5 @@
 // `drie::nodes` shader graph constructors mirroring three.js TSL in snake_case.
-// 
+//
 // Expression macros accept either `Node` handles or numeric scalars via `to_node`, e.g.
 // `nodes::mix(a, b, 0.5f)` or `nodes::vec3(x, 0, 1)`. Color helpers (`color`, `uniform_color`)
 // convert sRGB hex to linear RGB; `function()` bodies cannot read stage builtins or varyings
@@ -409,7 +409,7 @@ fn Node continue_() => drie::node_jump(1);
 fn Node discard() => drie::node_jump(2);
 
 // Evaluates statement `block` and yields `value` (or `VOID` if omitted), e.g.:
-// 
+//
 //   Node sum = nodes::variable(nodes::num(0));
 //   Node i = nodes::loop_index();
 //   Node total = nodes::seq(nodes::block(
@@ -426,7 +426,7 @@ fn Node seq(Node block, Node value = { }) => drie::node_seq(block, value);
 // emitted once per stage that calls it. Bodies may read uniforms, textures (`material_map`
 // included), statements without `discard`, and other functions, but must take builtins (`uv()`,
 // `position_world()`, `time()`, ...) and varyings as parameters, e.g.:
-// 
+//
 //   NodeFunction hash = nodes::function("hash", FLOAT, VEC2);
 //   Node p = hash.param(0);
 //   hash.returns(nodes::fract(nodes::sin(nodes::dot(p, nodes::vec2(127.1f, 311.7f))) * 43758.5453f));

@@ -3,7 +3,7 @@
 // flight, and aggregates milliseconds by pass label. Metal samples pass stage boundaries via
 // `lib/sokol.c3l/LOCAL_PATCHES`; D3D11 and GL timestamp pass starts and frame end. Set
 // `DRIE_GPU_TIMER=<n>` in the environment to auto-enable and print every `n` frames (1 => 120).
-// 
+//
 //   gpu_timer::enabled = true;
 //   gpu_timer::report();
 module drie::gpu_timer;
@@ -138,8 +138,7 @@ fn void poll() {
             t.ms += ms[p];
             total += ms[p];
         }
-        for (int n = 0; n < gt_name_count; n++) if (gt_names[n]
-            .last_ms > gt_names[n].max_ms) gt_names[n].max_ms = gt_names[n].last_ms;
+        for (int n = 0; n < gt_name_count; n++) if (gt_names[n].last_ms > gt_names[n].max_ms) gt_names[n].max_ms = gt_names[n].last_ms;
         gt_frame_ms = total;
         gt_frames++;
         if (report_every > 0 && ++gt_since_report >= report_every) {

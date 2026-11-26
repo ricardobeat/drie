@@ -2,7 +2,7 @@
 // `State`. Records each frame's input and `dt` alongside periodic state snapshots every
 // `key_interval` seconds; seeking loads the nearest prior snapshot and replays forward with
 // `replay = true` so the step function can suppress one-shot side effects.
-// 
+//
 //   alias GameTimeline = drie::timeline::Timeline{MyInput, MyState};
 //   GameTimeline tl;
 //   tl.init(&step, &save, &load, length: 30);

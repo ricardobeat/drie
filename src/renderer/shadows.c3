@@ -390,8 +390,14 @@ fn Mat4 point_shadow_view_proj(Light* l, int face, bool relative = false) @local
     Mat4 world  = mat4_look_at(pos, pos + CUBE_FORWARD[face], CUBE_UP[face], true);
     world[3] = { pos.x, pos.y, pos.z, 1 };
     if (relative) world[3] = { 0, 0, 0, 1 };
-    Mat4 proj = mat4_perspective(POINT_SHADOW_FOV, 1, math::max(light_shadow(l)
-        .near, 0.01f), point_shadow_far(l), 1, depth_zero_to_one());
+    Mat4 proj = mat4_perspective(
+        POINT_SHADOW_FOV,
+        1,
+        math::max(light_shadow(l).near, 0.01f),
+        point_shadow_far(l),
+        1,
+        depth_zero_to_one()
+    );
     return proj.mul(world.invert());
 }
 
@@ -415,8 +421,14 @@ fn Mat4 rect_shadow_view_proj(Light* l, int face, bool relative = false) @local 
     Vector3 pos = m.get_position();
     Mat4 world  = mat4_look_at(pos, pos + dir, up, true);
     world[3] = relative ? (Vec4) { 0, 0, 0, 1 } : (Vec4) { pos.x, pos.y, pos.z, 1 };
-    Mat4 proj = mat4_perspective(POINT_SHADOW_FOV, 1, math::max(light_shadow(l)
-        .near, 0.01f), point_shadow_far(l), 1, depth_zero_to_one());
+    Mat4 proj = mat4_perspective(
+        POINT_SHADOW_FOV,
+        1,
+        math::max(light_shadow(l).near, 0.01f),
+        point_shadow_far(l),
+        1,
+        depth_zero_to_one()
+    );
     if (face > 0) {
         // Asymmetric vertical frustum from -RECT_SIDE_BEHIND up to the front face corner.
         float top    =  math::tan(POINT_SHADOW_FOV * DEG2RAD * 0.5f);

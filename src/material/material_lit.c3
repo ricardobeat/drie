@@ -1,6 +1,6 @@
 // Lit material node-graph builders: Lambert, Phong, Toon, and Standard/Physical shading, direct
 // light loops, LTC rect area lights, environment SH/IBL, reflection probes, and tangent frames.
-// 
+//
 // RectAreaLight records and the two 64x64 LTC lookup tables are packed after point lights in
 // VIEW_POINT_LIGHTS. `tangent_frame` flips the cotangent frame by the screen-space determinant
 // sign so Metal/HLSL top-down dFdy matches GLSL. `Lit.coat_d` and `Lit.sheen_d` are transient

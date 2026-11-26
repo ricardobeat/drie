@@ -1,7 +1,7 @@
 // Material definitions, shading enums, subtype wrappers, and named-argument constructors
 // mirroring three.js parameter objects, e.g.:
 //   drie::mesh_standard_material(color: 0x44aa88, roughness: 0.4)
-// 
+//
 // MaterialType integer values match the shader `mode` constant. MaterialMap sentinel pointers
 // returned by `material_map_mark` are never dereferenced directly; NodeBuild.texture resolves
 // them to each material's own map via Material.own_map. MaterialKey (src/material/material_key.c3)

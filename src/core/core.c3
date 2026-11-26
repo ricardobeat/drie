@@ -1159,8 +1159,7 @@ fn DirectionalLight* directional_light(Color color = 0xffffff, float intensity =
     l.init_light(DIRECTIONAL, color, intensity);
     l.position = { 0, 1, 0 };
     l.target = object3d();
-    l
-        .shadow = { .map_size = 2048, .normal_bias = 0.03f, .radius = 2, .blur_samples = 8, .intensity = 1, .near = 0.5f, .far = 300, .auto_update = true,
+    l.shadow = { .map_size = 2048, .normal_bias = 0.03f, .radius = 2, .blur_samples = 8, .intensity = 1, .near = 0.5f, .far = 300, .auto_update = true,
         .cascades = 4, .split_lambda = 0.7f, .max_distance = 150, .cascade_blend = 0.1f };
     l.shadow_extent = 30;
     return l;

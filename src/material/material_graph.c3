@@ -1,6 +1,6 @@
 // Vertex and fragment node-graph builders for forward materials, depth prepasses, shadow maps,
 // lightmap baking, and the deferred G-buffer.
-// 
+//
 // `vertex_stage` evaluates morph targets, vertex displacement, instance transforms, position_node,
 // model transforms, and sway in order. When `key.prepassed` is set, the depth prepass fragment
 // stage is built first so its varyings lead the main pass's varying list. `atlas_depth` linearizes

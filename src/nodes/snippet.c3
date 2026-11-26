@@ -1,6 +1,6 @@
 // Text expression parser (`drie::nodes::snippet`) compiling GLSL-like expressions with `let`
 // bindings into shader `Node` graphs, plus error reporting (`SNIPPET_ERROR`, `snippet_error`).
-// 
+//
 // Validates operand types, swizzles, and arity before calling `drie::nodes` constructors so
 // syntax or type mistakes return `SNIPPET_ERROR~` with `"line:col: message"` instead of
 // aborting. Supports up to 32 `let` bindings and 4 arguments per call. Emits nodes through
@@ -35,14 +35,14 @@ struct Snippet @local {
 
 // Parses GLSL-like expression text `src` (with optional leading `let name = expr;` bindings and
 // external `names`) into a shader `Node`, returning `SNIPPET_ERROR~` on failure:
-// 
+//
 //   Node dirt = nodes::snippet(`
 //       let h = position_world.y - floor_y;
 //       let d = smoothstep(0.6, 0.0, h) * amount;
 //       mix(material_color.rgb, vec3(0.2, 0.17, 0.12), d)
 //   `, { { "floor_y", floor_y }, { "amount", amount } })!!;
 //   mat.color_node = nodes::vec4(dirt, 1);
-// 
+//
 // Supports numbers, `+ - * / % < <= > >= == != && || ! ?: ()`, swizzles (`.x`, `.xy`, `.rgb`,
 // ...), `vec2`/`vec3`/`vec4`, `drie::nodes` math functions (`sin`..`smoothstep`, `one_minus`),
 // and shader builtins (`uv`, `uv1`, `position_local`, `position_world`, `normal_local`,

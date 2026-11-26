@@ -26,7 +26,7 @@ struct ReflectionProbe {
 
 // Collection of up to `MAX_REFLECTION_PROBES` equirectangular probes uploaded as one 2D array
 // texture and assigned via `Scene.reflection_probes`.
-// 
+//
 //   ReflectionProbes* probes = drie::reflection_probes();
 //   probes.add(renderer.capture_environment(scene, room_center), room_center, room_min, room_max);
 //   probes.add(renderer.capture_environment(scene, outside), outside);
