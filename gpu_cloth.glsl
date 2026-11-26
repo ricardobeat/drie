@@ -171,6 +171,7 @@ void main() {
 layout(binding=0) readonly buffer gc_forces_pos { gc_point pos[]; };
 layout(binding=1) readonly buffer gc_forces_vel { gc_point vel[]; };
 layout(binding=2) buffer gc_forces_acc { gc_point acc[]; };
+layout(binding=3) readonly buffer gc_forces_pins { gc_pin pins[]; };
 layout(local_size_x=128) in;
 
 // -1..1, smooth across the cloth and in time (as Cloth's gust_at)
@@ -210,6 +211,10 @@ vec3 gc_air(int a, int b, int d, int c, int r) {
 void main() {
     int i = int(gl_GlobalInvocationID.x);
     if (i >= gc_counts.x) return;
+    if (pins[i].p.w == 0.0) {
+        acc[i].p = vec4(0.0);
+        return;
+    }
     vec3 f = gc_gravity.xyz;
     if (gc_wind.w > 0.0) {
         int cols = gc_counts.y;
@@ -268,8 +273,8 @@ void main() {
     gc_link l = links[gc_range.x + k];
     float wa = pins[l.a].p.w;
     float wb = pins[l.b].p.w;
+    if (wa + wb == 0.0) return;
     float sum = wa + wb + gc_step.z;
-    if (sum <= 0.0) return;
     vec3 pa = pos[l.a].p.xyz;
     vec3 pb = pos[l.b].p.xyz;
     vec3 d = pa - pb;
@@ -294,6 +299,12 @@ void main() {
     int k = int(gl_GlobalInvocationID.x);
     if (k >= gc_range.y) return;
     gc_bend b = bends[gc_range.x + k];
+    float wa = pins[b.a].p.w;
+    float wb = pins[b.b].p.w;
+    float wm = pins[b.m].p.w;
+    float wc = pins[b.c].p.w;
+    float wd = pins[b.d].p.w;
+    if (wa + wb + wm + wc + wd == 0.0) return;
     vec3 pa = pos[b.a].p.xyz;
     vec3 pb = pos[b.b].p.xyz;
     vec3 pm = pos[b.m].p.xyz;
@@ -322,11 +333,6 @@ void main() {
     bool d_edge = b.d == b.m;
     if (c_edge) gm += gc;
     if (d_edge) gm += gf;
-    float wa = pins[b.a].p.w;
-    float wb = pins[b.b].p.w;
-    float wm = pins[b.m].p.w;
-    float wc = pins[b.c].p.w;
-    float wd = pins[b.d].p.w;
     float sum = wa * ga * ga + wb * gb * gb + wm * gm * gm + gc_step.z;
     if (!c_edge) sum += wc * gc * gc;
     if (!d_edge) sum += wd * gf * gf;
@@ -344,12 +350,13 @@ void main() {
 @include_block gc_common
 layout(binding=0) buffer gc_teth_pos { gc_point pos[]; };
 layout(binding=1) readonly buffer gc_teth_tethers { gc_tether tethers[]; };
+layout(binding=2) readonly buffer gc_teth_pins { gc_pin pins[]; };
 layout(local_size_x=128) in;
 void main() {
     int i = int(gl_GlobalInvocationID.x);
     if (i >= gc_counts.x) return;
     gc_tether t = tethers[i];
-    if (t.pin == GC_NONE) return;
+    if (t.pin == GC_NONE || pins[i].p.w == 0.0) return;
     vec3 p = pos[i].p.xyz;
     vec3 d = p - pos[t.pin].p.xyz;
     float most = t.rest * (1.0 + gc_self.z);

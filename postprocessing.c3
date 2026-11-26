@@ -503,6 +503,9 @@ struct OutputPass {
     // A 1x1 texture whose red channel multiplies the exposure (an auto exposure's meter, say),
     // read on the GPU so the meter never has to come back to the CPU. None: {}.
     SgView exposure_map;
+    // The color grade (grading.c3): its LUT, baked with the renderer's tone mapping, takes the
+    // place of the tone mapping (not on an HDR screen). Null: none.
+    ColorGrade* grade;
     // Leave the result linear (0..1) instead of encoding it as sRGB, for more passes after it
     // that work in linear light.
     bool keep_linear;
@@ -546,14 +549,15 @@ fn void OutputPass.update(&self) {
         .params2 = {
             self.hdr || self.color_space == DISPLAY_P3_COLOR_SPACE ? 1 : 0,
             self.hdr ? r.output_headroom() : 0,
-            0,
-            0
+            self.grade && !self.hdr ? 1 : 0,
+            GRADE_LUT
         },
     };
     self.set_uniforms(UB_OUTPUT_PARAMS, &p);
     // (an unused slot still needs a texture)
     self.bindings.views[VIEW_OUTPUT_EXPOSURE] = self.exposure_map.id ? self.exposure_map
         : self.bindings.views[VIEW_OUTPUT_SRC];
+    self.bindings.views[VIEW_OUTPUT_LUT] = self.grade && self.grade.lut.id ? self.grade.lut_texture : empty_lut();
 }
 
 fn void OutputPass.render(
@@ -564,6 +568,7 @@ fn void OutputPass.render(
     float clear_alpha = 1
 ) {
     if (!target) self.match_window();
+    if (self.grade && !self.hdr) self.grade.prepare(self.renderer.tone_mapping, self.color_space == DISPLAY_P3_COLOR_SPACE);
     self.update();
     self.shader_pass.render(target, load, clear, clear_alpha);
 }
@@ -814,6 +819,68 @@ fn void UnrealBloomPass.dispose(&self) {
     self.down.dispose();
     self.up.dispose();
     foreach (m : self.mips) if (m) m.dispose();
+}
+
+// A lens's ghosts and halo of what is bright (see flare.glsl): render() makes them from a
+// blurred bright picture, one of the bloom's smaller levels, say (the blurrier, the softer the
+// ghosts), and adds them to the target's picture.
+//
+//   LensFlarePass* flare = postprocessing::lens_flare_pass();
+//   bloom.render(hdr_target);
+//   flare.render(hdr_target, bloom.mips[3]);
+struct LensFlarePass {
+    // how much of the flare is added
+    float strength;
+    // the brightness (linear light) the flare is made from above
+    float threshold;
+    // ghosts (up to 8), their spacing along the line through the middle (a part of the
+    // picture), the halo's radius (a part of the picture's height), and how far apart red,
+    // green and blue are (a part of the picture)
+    int ghosts;
+    float spacing;
+    float halo;
+    float dispersion;
+    RenderTarget* flare;
+    ShaderPass make;
+    ShaderPass add;
+}
+
+fn LensFlarePass* lens_flare_pass(float strength = 0.4, float threshold = 2) {
+    LensFlarePass* p = mem::new(LensFlarePass);
+    *p = { .strength = strength, .threshold = threshold, .ghosts = 5, .spacing = 0.32f, .halo = 0.42f, .dispersion = 0.006f };
+    p.make.init(flare_shader_desc(sg::query_backend()), "drie-flare");
+    p.make.set_sampler(SMP_FLARE_SMP, linear_sampler());
+    p.add.init(bloom_up_shader_desc(sg::query_backend()), "drie-flare-add", ADDITIVE_BLEND);
+    p.add.set_sampler(SMP_BLOOM_UP_SMP, linear_sampler());
+    return p;
+}
+
+// Adds the flare of `bright` (a blurred picture of the target's, any size) to `target`.
+fn void LensFlarePass.render(&self, RenderTarget* target, RenderTarget* bright) {
+    int w = target.width / 4 > 1 ? target.width / 4 : 1;
+    int h = target.height / 4 > 1 ? target.height / 4 : 1;
+    if (!self.flare) self.flare = drie::render_target(w, h, 1, RGBA16F, false);
+    self.flare.set_size(w, h, 1);
+    FlareParams p = {
+        .size = { w, h, self.threshold, (float)target.width / target.height },
+        .tune = { self.ghosts < 0 ? 0 : (self.ghosts > 8 ? 8 : self.ghosts), self.spacing, self.halo, self.dispersion },
+    };
+    self.make.set_texture(VIEW_FLARE_SRC, bright.texture);
+    self.make.set_uniforms(UB_FLARE_PARAMS, &p);
+    self.make.render(self.flare);
+    BloomUpParams u = {
+        .size = { target.width, target.height, 1.0f / w, 1.0f / h },
+        .tune = { self.strength, 0, 0, 0 },
+    };
+    self.add.set_texture(VIEW_BLOOM_UP_SRC, self.flare.texture);
+    self.add.set_uniforms(UB_BLOOM_UP_PARAMS, &u);
+    self.add.render_over(target);
+}
+
+fn void LensFlarePass.dispose(&self) {
+    self.make.dispose();
+    self.add.dispose();
+    if (self.flare) self.flare.dispose();
 }
 
 // In an EffectComposer (RGBA16F): adds the glow to the picture, which the next pass reads.

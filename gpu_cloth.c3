@@ -135,6 +135,8 @@ struct PanelMesh {
     int panel;
     Mesh* mesh;
     int detail;
+    // updates written since its panel last changed while every point of it was pinned
+    int quiet;
 }
 
 // The compute kernels, made once for every cloth.
@@ -173,6 +175,10 @@ struct GpuCloth {
     // per point: the inverse mass (0 pinned) and a pinned point's place
     float[] inv_mass;
     Vector3[] pin_to;
+    // per panel: how many of its points are free, and whether a pin or a reset has changed it
+    // since its mesh was last written (a panel with none free and no change is not written)
+    int[] panel_free;
+    bool[] panel_changed;
     List{shaders::GcLink} links;
     List{shaders::GcBend} bends;
     List{Batch} batches;
@@ -371,6 +377,9 @@ fn GpuCloth* from_positions(int cols, int rows, Vector3[] rest, float mass = 0.4
         c.pin_to[i] = c.rest[i];
         c.inv_mass[i] = w;
     }
+    c.panel_free = mem::new_array(int, c.cols / c.panel_cols);
+    c.panel_changed = mem::new_array(bool, c.cols / c.panel_cols);
+    foreach (&f : c.panel_free) *f = c.panel_cols * rows;
     @pool() {
         List{shaders::GcLink}[3] kinds;
         for (int k = 0; k < 3; k++) kinds[k].allocator = tmem;
@@ -470,6 +479,8 @@ fn void GpuCloth.add_colored(&self, List{shaders::GcLink}* list, int kind, sz po
 fn void GpuCloth.free(&self) {
     free(self.rest);
     free(self.inv_mass);
+    free(self.panel_free);
+    free(self.panel_changed);
     free(self.pin_to);
     free(self.watched);
     free(self.start_from);
@@ -496,7 +507,15 @@ fn void GpuCloth.free(&self) {
 }
 
 // Holds point `i` where it is at rest, or where move_pin puts it.
+fn int GpuCloth.panel_of(&self, uint i) @inline => (int)(i % (uint)self.cols) / self.panel_cols;
+
+// Whether every point of `panel` is pinned (it is not solved, and its mesh is not written again
+// until a pin of it moves).
+fn bool GpuCloth.panel_asleep(&self, int panel) => self.panel_free[panel] == 0;
+
 fn void GpuCloth.pin(&self, uint i) {
+    if (self.inv_mass[i] != 0) self.panel_free[self.panel_of(i)]--;
+    self.panel_changed[self.panel_of(i)] = true;
     self.inv_mass[i] = 0;
     self.pin_to[i] = self.rest[i];
     self.tethers_dirty = true;
@@ -508,6 +527,8 @@ fn void GpuCloth.pin_row(&self, int row) {
 }
 
 fn void GpuCloth.unpin(&self, uint i) {
+    if (self.inv_mass[i] == 0) self.panel_free[self.panel_of(i)]++;
+    self.panel_changed[self.panel_of(i)] = true;
     self.inv_mass[i] = (float)self.count() / math::max(self.mass, 1e-6f);
     self.tethers_dirty = true;
     self.pins_dirty = true;
@@ -516,12 +537,14 @@ fn void GpuCloth.unpin(&self, uint i) {
 // Moves pinned point `i`: it gets there at the next fixed step.
 fn void GpuCloth.move_pin(&self, uint i, Vector3 to) {
     self.pin_to[i] = to - self.origin;
+    self.panel_changed[self.panel_of(i)] = true;
     self.pins_dirty = true;
 }
 
 // Puts every point back where it is at rest, still, and the bodies where they are moved to.
 fn void GpuCloth.reset(&self) {
     self.state_dirty = true;
+    foreach (&c : self.panel_changed) *c = true;
     self.accumulator = 0;
     self.time = 0;
     foreach (&r : self.body_reset) *r = self.updates;
@@ -906,7 +929,7 @@ fn Mesh* GpuCloth.make_mesh(&self, Material* material = null, int panel = 0, int
     m.matrix_world_auto_update = false;
     m.matrix = drie::mat4_identity();
     m.matrix_world = drie::mat4_identity();
-    self.meshes.push({ panel, m, detail });
+    self.meshes.push({ panel, m, detail, 0 });
     return m;
 }
 
@@ -1041,6 +1064,7 @@ fn void GpuCloth.bind(&self) {
     k.forces.set_buffer(shaders::VIEW_GC_FORCES_POS, self.pos);
     k.forces.set_buffer(shaders::VIEW_GC_FORCES_VEL, self.vel);
     k.forces.set_buffer(shaders::VIEW_GC_FORCES_ACC, self.acc);
+    k.forces.set_buffer(shaders::VIEW_GC_FORCES_PINS, self.pins);
     k.integrate.set_buffer(shaders::VIEW_GC_INT_POS, self.pos);
     k.integrate.set_buffer(shaders::VIEW_GC_INT_PREV, self.prev);
     k.integrate.set_buffer(shaders::VIEW_GC_INT_VEL, self.vel);
@@ -1054,6 +1078,7 @@ fn void GpuCloth.bind(&self) {
     k.bends.set_buffer(shaders::VIEW_GC_BENDS_PINS, self.pins);
     k.tethers.set_buffer(shaders::VIEW_GC_TETH_POS, self.pos);
     k.tethers.set_buffer(shaders::VIEW_GC_TETH_TETHERS, self.tether_buf);
+    k.tethers.set_buffer(shaders::VIEW_GC_TETH_PINS, self.pins);
     k.clear.set_buffer(shaders::VIEW_GC_CLEAR_CELLS, self.cells);
     k.count.set_buffer(shaders::VIEW_GC_COUNT_POS, self.pos);
     k.count.set_buffer(shaders::VIEW_GC_COUNT_CELLS, self.cells);
@@ -1262,7 +1287,12 @@ fn int GpuCloth.update(&self, float dt) {
     for (int s = 0; s < n; s++) self.step_once((float)s / n, (float)(s + 1) / n);
     u = self.params(1, 1);
     u.gc_origin[3] = self.accumulator / STEP;
-    foreach (pm : self.meshes) {
+    foreach (&pm : self.meshes) {
+        // (an asleep panel's points reach their pins at the next step, and the mesh, drawn
+        // between the last two, there the update after: written twice more after a change)
+        if (self.panel_changed[pm.panel] || !self.panel_asleep(pm.panel)) pm.quiet = 0;
+        if (pm.quiet >= 2) continue;
+        if (n > 0) pm.quiet++;
         SgView target = pm.mesh.geometry.gpu_vertices_target();
         if (!target.id) continue;
         kernels.write.set_view(shaders::VIEW_GC_WRITE_VERTS, target);
@@ -1271,6 +1301,7 @@ fn int GpuCloth.update(&self, float dt) {
         wu.gc_grid[2] = pm.detail;
         dispatch(kernels.write, &wu, ((self.panel_cols - 1) * pm.detail + 1) * ((self.rows - 1) * pm.detail + 1));
     }
+    foreach (&c : self.panel_changed) *c = false;
     foreach (sh : self.shapes) {
         Collider* c = &self.colliders[sh.collider];
         BufferGeometry* g = sh.mesh.geometry;
