@@ -158,17 +158,58 @@ fn void park_balls() {
 }
 
 // The cloth laid flat again and held along its near edge, the balls taken away.
+uint drop_seed = 1;
+
 fn void hang_cloth() {
     sheet.pin_row(0);
-    sheet.reset();
+    drop_clock = -1;
+    sheet.reset_scattered(drop_seed++, ripple: 0.04f, shift: 0, turn: 0, tilt: 0);
     park_balls();
 }
 
 // Lets go of every panel's pins.
+float[] let_go_at;
+float drop_clock = -1;
+
+fn float rand01(uint x) {
+    x ^= x >> 16;
+    x *= 0x7feb352d;
+    x ^= x >> 15;
+    x *= 0x846ca68b;
+    x ^= x >> 16;
+    return (float)(x & 0xffffff) / (float)0x1000000;
+}
+
 fn void drop_cloth() {
+    if (let_go_at.len != sheet.count()) let_go_at = mem::new_array(float, sheet.count());
+    int pc = sheet.cols / sheet.panel_count();
     for (uint i = 0; i < sheet.count(); i++) {
-        if (sheet.inv_mass[i] == 0) sheet.unpin(i);
+        let_go_at[i] = -1;
+        if (sheet.inv_mass[i] != 0) continue;
+        int col = (int)i % sheet.cols;
+        uint panel = (uint)(col / pc);
+        float u = (float)(col % pc) / (float)(pc - 1);
+        uint s = drop_seed * 7919 + panel * 104729;
+        if (rand01(s) < 0.5f) u = 1 - u;
+        let_go_at[i] = rand01(s + 1) * 0.25f + u * (0.1f + rand01(s + 2) * 0.35f) + rand01(s + 3 + i) * 0.03f;
     }
+    drop_clock = 0;
+}
+
+fn void let_go(float dt) {
+    if (drop_clock < 0) return;
+    drop_clock += dt;
+    bool left;
+    foreach (i, &t : let_go_at) {
+        if (*t < 0) continue;
+        if (*t <= drop_clock) {
+            sheet.unpin((uint)i);
+            *t = -1;
+        } else {
+            left = true;
+        }
+    }
+    if (!left) drop_clock = -1;
 }
 
 fn void build_scene() {
@@ -258,6 +299,7 @@ fn void step(float dt) {
         fly(&b.pos, &b.vel, dt);
         sheet.move_collider(b.collider, b.pos);
     }
+    let_go(dt);
     sheet.update(dt);
     // the cloth pushes back: a ball goes where the cloth left it, and loses the momentum the
     // cloth took from it (as the GPU has told so far)

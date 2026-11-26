@@ -97,6 +97,8 @@ struct Collider {
     int body;
     // put somewhere new (place_collider): its body starts over at the next update
     bool restart;
+    // its own friction coefficient (see `friction`); -1: the cloth's
+    float friction;
     // what the last update found the cloth did to it (collider_shift, collider_impulse)
     Vector3 shift;
     Vector3 dv;
@@ -132,6 +134,7 @@ struct Batch {
 struct PanelMesh {
     int panel;
     Mesh* mesh;
+    int detail;
 }
 
 // The compute kernels, made once for every cloth.
@@ -179,6 +182,8 @@ struct GpuCloth {
     bool pins_dirty;
     // the points' state must be written to the GPU (at the start and by reset)
     bool state_dirty;
+    // where reset_to puts the points instead of at rest (empty: at rest)
+    Vector3[] start_from;
     bool has_tethers;
 
     int substeps;
@@ -198,8 +203,15 @@ struct GpuCloth {
     Vector3 wind;
     float gust;
     float drag;
+    // the air's push across its flow on a triangle it meets at an angle, of `drag`'s (0: none;
+    // about 0.5 makes a falling sheet glide and swoop)
+    float lift;
     // points stay this far from the colliders' surfaces
     float thickness;
+    // friction against the colliders: a point stays put on one while its slide over a substep
+    // is under `friction` times how far the collider pushed it out (static), and past that
+    // keeps at most (1 - friction) of the slide (cloth on upholstery about 0.8, on wood 0.4).
+    // The floor keeps (1 - friction) of a point's slide.
     float friction;
     // a floor (y up) the points stay above; -1e30: none
     float floor_y;
@@ -239,6 +251,11 @@ struct GpuCloth {
     int table;
     // the readback slot of read_points (-1: none yet)
     int read_slot;
+    // watch_points: the points read back each update without waiting (seen_points), their slot
+    bool watching;
+    int[3] watch_slot;
+    ulong[3] watch_update;
+    drie::Vec4[] watched;
 
     // the bodies (colliders with a mass): their state on the GPU, the partial sums of the pushes
     // on them, the readback slots, the corrections told to the CPU, and the update each body
@@ -342,6 +359,7 @@ fn GpuCloth* from_positions(int cols, int rows, Vector3[] rest, float mass = 0.4
     c.self_friction = 0.2f;
     c.self_every = 1;
     c.read_slot = -1;
+    c.watch_slot = { -1, -1, -1 };
     c.shapes.allocator = mem;
     c.applied_through = -1;
     for (int k = 0; k < RING; k++) c.ring_slot[k] = -1;
@@ -453,6 +471,8 @@ fn void GpuCloth.free(&self) {
     free(self.rest);
     free(self.inv_mass);
     free(self.pin_to);
+    free(self.watched);
+    free(self.start_from);
     free(self.tether_data);
     self.links.free();
     self.bends.free();
@@ -508,16 +528,83 @@ fn void GpuCloth.reset(&self) {
     foreach (&k : self.colliders) k.restart = k.body >= 0;
 }
 
+// As reset, with the points (in the world, count() of them) where `points` puts them, still;
+// their rest shape stays as it was.
+fn void GpuCloth.reset_to(&self, Vector3[] points) {
+    sz n = self.count();
+    if (self.start_from.len != n) {
+        free(self.start_from);
+        self.start_from = mem::new_array(Vector3, n);
+    }
+    foreach (i, &p : self.start_from) *p = points[i] - self.origin;
+    self.reset();
+}
+
+fn float hash01(uint x) @local {
+    x ^= x >> 16;
+    x *= 0x7feb352d;
+    x ^= x >> 15;
+    x *= 0x846ca68b;
+    x ^= x >> 16;
+    return (float)(x & 0xffffff) / (float)0x1000000;
+}
+
+// As reset, with each panel a little off its rest, by `seed` (each seed its own): smooth waves
+// of about `ripple` m across it, and the panel moved up to `shift` m sideways, turned up to
+// `turn` radians about the vertical and tilted up to `tilt` radians, about its middle. A cloth
+// dropped flat then folds differently each time. Pinned points stay where they are held (pass
+// shift, turn and tilt 0 for a panel that hangs from them).
+fn void GpuCloth.reset_scattered(&self, uint seed, float ripple = 0.03f, float shift = 0.15f, float turn = 0.2f, float tilt = 0.1f) {
+    sz n = self.count();
+    Vector3[] points = mem::new_array(Vector3, n);
+    defer free(points);
+    int pc = self.panel_cols > 0 ? self.panel_cols : self.cols;
+    for (int panel = 0; panel < self.cols / pc; panel++) {
+        uint s = (seed * 7919 + (uint)panel * 104729) * 31;
+        float[10] r;
+        foreach (k, &v : r) *v = hash01(s + (uint)k) * 2 - 1;
+        int c0 = panel * pc;
+        Vector3 mid;
+        for (int row = 0; row < self.rows; row++) {
+            for (int c = 0; c < pc; c++) mid += self.rest[self.index(c0 + c, row)];
+        }
+        mid = mid * (1.0f / (float)(pc * self.rows));
+        Vector3 across = self.rest[self.index(c0 + pc - 1, 0)] - self.rest[self.index(c0, 0)];
+        Vector3 down = self.rest[self.index(c0, self.rows - 1)] - self.rest[self.index(c0, 0)];
+        Vector3 normal = across.cross(down).normalize();
+        float yaw = r[0] * turn;
+        float cy = math::cos(yaw);
+        float sy = math::sin(yaw);
+        float pitch = r[1] * tilt;
+        Vector3 move = { r[2] * shift, 0, r[3] * shift };
+        for (int row = 0; row < self.rows; row++) {
+            float v = (float)row / (float)(self.rows - 1);
+            for (int c = 0; c < pc; c++) {
+                float u = (float)c / (float)(pc - 1);
+                uint i = self.index(c0 + c, row);
+                float wave = math::sin(u * 6.5f + r[4] * 3.2f) * math::sin(v * 5.3f + r[5] * 3.2f)
+                           + 0.6f * math::sin(u * 11.0f + v * 9.0f + r[6] * 3.2f)
+                           + 0.5f * math::sin(v * 13.0f - u * 4.0f + r[7] * 3.2f);
+                Vector3 q = self.rest[i] - mid + normal * (wave * ripple * 0.5f);
+                q.y += q.x * pitch;
+                Vector3 t = { q.x * cy + q.z * sy, q.y, -q.x * sy + q.z * cy };
+                points[i] = self.origin + mid + move + t;
+            }
+        }
+    }
+    self.reset_to(points);
+}
+
 fn int GpuCloth.add_sphere(&self, Vector3 center, float radius) {
     center -= self.origin;
-    self.colliders.push({ .kind = SPHERE, .radius = radius, .from_a = center, .from_b = center, .a = center, .b = center, .active = true, .body = -1 });
+    self.colliders.push({ .kind = SPHERE, .radius = radius, .from_a = center, .from_b = center, .a = center, .b = center, .active = true, .body = -1, .friction = -1 });
     return (int)self.colliders.len() - 1;
 }
 
 fn int GpuCloth.add_capsule(&self, Vector3 a, Vector3 b, float radius) {
     a -= self.origin;
     b -= self.origin;
-    self.colliders.push({ .kind = CAPSULE, .radius = radius, .from_a = a, .from_b = b, .a = a, .b = b, .active = true, .body = -1 });
+    self.colliders.push({ .kind = CAPSULE, .radius = radius, .from_a = a, .from_b = b, .a = a, .b = b, .active = true, .body = -1, .friction = -1 });
     return (int)self.colliders.len() - 1;
 }
 
@@ -526,7 +613,7 @@ fn Vector3 column(drie::Mat4 m, int i) @local => { m[i][0], m[i][1], m[i][2] };
 // A box of half size `half`, placed by `placement` (centered on its origin, its axes along the
 // matrix's columns; their length is left out).
 fn int GpuCloth.add_box(&self, Vector3 half, drie::Mat4 placement) {
-    Collider k = { .kind = BOX, .half = half, .active = true, .body = -1 };
+    Collider k = { .kind = BOX, .half = half, .active = true, .body = -1, .friction = -1 };
     k.a = column(placement, 3) - self.origin;
     for (int i = 0; i < 3; i++) k.axes[i] = column(placement, i).normalize();
     k.from_a = k.a;
@@ -538,7 +625,7 @@ fn int GpuCloth.add_box(&self, Vector3 half, drie::Mat4 placement) {
 // A plane through `point`: the points stay on the side `normal` faces (thickness away).
 fn int GpuCloth.add_plane(&self, Vector3 point, Vector3 normal) {
     point -= self.origin;
-    Collider k = { .kind = PLANE, .a = point, .from_a = point, .active = true, .body = -1 };
+    Collider k = { .kind = PLANE, .a = point, .from_a = point, .active = true, .body = -1, .friction = -1 };
     k.axes[0] = normal.normalize();
     k.from_axes = k.axes;
     self.colliders.push(k);
@@ -576,6 +663,9 @@ fn void GpuCloth.move_box(&self, int id, drie::Mat4 placement) {
 }
 
 fn void GpuCloth.set_collider_active(&self, int id, bool active) => self.colliders[id].active = active;
+
+// Collider `id`'s own friction coefficient (see GpuCloth.friction); -1: the cloth's.
+fn void GpuCloth.set_collider_friction(&self, int id, float friction) => self.colliders[id].friction = friction;
 
 // Gives a sphere or capsule a mass (kg; 0: kinematic, it goes where it is moved whatever the
 // cloth does): each push then moves the point and the collider apart by their inverse masses,
@@ -745,14 +835,19 @@ fn HeapEntry heap_pop(List{HeapEntry}* h) @local {
 // are (its matrix is the identity: add it anywhere in the scene), its vertices written on the
 // GPU. Use a DOUBLE_SIDE material to see both faces. Its uvs are in meters along the cloth at
 // rest, as Cloth's. Its bounding sphere (for culling and shadows) is centered on the panel at
-// rest, as wide as its diagonal.
-fn Mesh* GpuCloth.make_mesh(&self, Material* material = null, int panel = 0) {
+// rest, as wide as its diagonal. With `detail` above 1 it is finer than the points, `detail`
+// vertices to a cell's side, on a smooth surface through them (as Cloth's from_fine, without
+// simulating more): round folds and edges from a coarse grid.
+fn Mesh* GpuCloth.make_mesh(&self, Material* material = null, int panel = 0, int detail = 1) {
     int cols = self.panel_cols;
     int rows = self.rows;
     int first = panel * cols;
+    detail = math::max(detail, 1);
     BufferGeometry* g = drie::buffer_geometry();
     g.dynamic = true;
     g.gpu_vertices = true;
+    Vector2[] uv = mem::new_array(Vector2, (sz)cols * rows);
+    defer free(uv);
     float[] down = mem::new_array(float, cols);
     defer free(down);
     Vector3 lo = { 1e30f, 1e30f, 1e30f };
@@ -766,13 +861,32 @@ fn Mesh* GpuCloth.make_mesh(&self, Material* material = null, int panel = 0) {
             Vector3 p = self.origin + self.rest[i];
             lo = math::min(lo, p);
             hi = math::max(hi, p);
-            g.add_vertex(p, { 0, 0, 1 }, { across, -down[k] });
+            uv[r * cols + k] = { across, -down[k] };
         }
     }
-    for (int r = 0; r + 1 < rows; r++) {
-        for (int k = 0; k + 1 < cols; k++) {
-            uint a = (uint)(r * cols + k);
-            uint b = a + (uint)cols;
+    int fw = (cols - 1) * detail + 1;
+    int fh = (rows - 1) * detail + 1;
+    for (int fr = 0; fr < fh; fr++) {
+        int r0 = math::min(fr / detail, rows - 2);
+        float tv = (float)(fr - r0 * detail) / (float)detail;
+        for (int fk = 0; fk < fw; fk++) {
+            int k0 = math::min(fk / detail, cols - 2);
+            float tu = (float)(fk - k0 * detail) / (float)detail;
+            int a = r0 * cols + k0;
+            Vector2 top = uv[a] + (uv[a + 1] - uv[a]) * tu;
+            Vector2 bottom = uv[a + cols] + (uv[a + cols + 1] - uv[a + cols]) * tu;
+            Vector3 pa = self.rest[self.index(first + k0, r0)];
+            Vector3 pb = self.rest[self.index(first + k0 + 1, r0)];
+            Vector3 pc = self.rest[self.index(first + k0, r0 + 1)];
+            Vector3 pd = self.rest[self.index(first + k0 + 1, r0 + 1)];
+            Vector3 p = self.origin + (pa + (pb - pa) * tu) * (1 - tv) + (pc + (pd - pc) * tu) * tv;
+            g.add_vertex(p, { 0, 0, 1 }, top + (bottom - top) * tv);
+        }
+    }
+    for (int r = 0; r + 1 < fh; r++) {
+        for (int k = 0; k + 1 < fw; k++) {
+            uint a = (uint)(r * fw + k);
+            uint b = a + (uint)fw;
             uint c = b + 1;
             uint d = a + 1;
             // (the diagonal alternates, so the folds have no grain)
@@ -792,7 +906,7 @@ fn Mesh* GpuCloth.make_mesh(&self, Material* material = null, int panel = 0) {
     m.matrix_world_auto_update = false;
     m.matrix = drie::mat4_identity();
     m.matrix_world = drie::mat4_identity();
-    self.meshes.push({ panel, m });
+    self.meshes.push({ panel, m, detail });
     return m;
 }
 
@@ -866,7 +980,7 @@ fn void GpuCloth.sync(&self) {
         foreach (i, p : self.rest) data[i] = { p.x, p.y, p.z, 0 };
         self.rest_buf.write(data.ptr, vec4s);
         foreach (i, &d : data) {
-            Vector3 p = self.inv_mass[i] == 0 ? self.pin_to[i] : self.rest[i];
+            Vector3 p = self.inv_mass[i] == 0 ? self.pin_to[i] : self.start_from.len == n ? self.start_from[i] : self.rest[i];
             *d = { p.x, p.y, p.z, 0 };
         }
         self.pos.write(data.ptr, vec4s);
@@ -899,7 +1013,7 @@ fn void GpuCloth.write_colliders(&self) {
     foreach (i, k : self.colliders) {
         data[i] = {
             .info = { (float)(int)k.kind, k.radius, k.active ? 1 : 0, (float)k.body },
-            .mass = { k.inv_mass, k.restart ? 1 : 0, 0, 0 },
+            .mass = { k.inv_mass, k.restart ? 1 : 0, k.friction, 0 },
             .corr_off = v4(k.shift),
             .corr_dv = v4(k.dv),
             .from_a = v4(k.from_a),
@@ -1003,7 +1117,8 @@ fn shaders::GcParams GpuCloth.params(&self, float t, float t_prev) {
         .gc_origin = { self.origin.x, self.origin.y, self.origin.z, 1 },
         .gc_gust = { self.gust, (float)self.time, span, drop },
         .gc_self = { 1 / cell, self.self_stiffness, self.tether_slack, self.self_friction },
-        .gc_grid = { self.panel_cols, 0, 0, 0 },
+        .gc_grid = { self.panel_cols, 0, 1, 0 },
+        .gc_mode = { 0, self.lift, 0, 0 },
     };
 }
 
@@ -1153,7 +1268,8 @@ fn int GpuCloth.update(&self, float dt) {
         kernels.write.set_view(shaders::VIEW_GC_WRITE_VERTS, target);
         shaders::GcParams wu = u;
         wu.gc_grid[1] = pm.panel * self.panel_cols;
-        dispatch(kernels.write, &wu, self.panel_cols * self.rows);
+        wu.gc_grid[2] = pm.detail;
+        dispatch(kernels.write, &wu, ((self.panel_cols - 1) * pm.detail + 1) * ((self.rows - 1) * pm.detail + 1));
     }
     foreach (sh : self.shapes) {
         Collider* c = &self.colliders[sh.collider];
@@ -1186,6 +1302,11 @@ fn int GpuCloth.update(&self, float dt) {
             a.dv[c.body] = c.dv;
         }
     }
+    if (self.watching) {
+        int k = (int)(self.updates % 3);
+        if (self.watch_slot[k] < 0) self.watch_slot[k] = drie::readback_slot();
+        if (self.watch_slot[k] >= 0 && self.pos.track(self.watch_slot[k])) self.watch_update[k] = (ulong)self.updates + 1;
+    }
     drie::end_compute();
     // (without a step, the colliders' move waits for the next one; a body's from where the CPU
     // will put it)
@@ -1201,6 +1322,39 @@ fn int GpuCloth.update(&self, float dt) {
     }
     self.updates++;
     return n;
+}
+
+// Reads the points back at every update from now on, without waiting for the GPU: seen_points
+// gives them a frame or two late. (A copy of the points each frame: for a few of them on the
+// CPU, as a handle at a corner.)
+fn void GpuCloth.watch_points(&self) => self.watching = true;
+
+// The points (in the world, count() of them) as the last readback that has arrived left them;
+// false while none has.
+fn bool GpuCloth.seen_points(&self, Vector3[] out) {
+    if (out.len < self.count()) return false;
+    sz n = self.count();
+    if (self.watched.len != n) {
+        free(self.watched);
+        self.watched = mem::new_array(drie::Vec4, n);
+    }
+    int[3] order = { 0, 1, 2 };
+    for (int i = 0; i < 3; i++) {
+        for (int j = i + 1; j < 3; j++) {
+            if (self.watch_update[order[j]] > self.watch_update[order[i]]) {
+                int t = order[i];
+                order[i] = order[j];
+                order[j] = t;
+            }
+        }
+    }
+    foreach (k : order) {
+        if (self.watch_slot[k] < 0 || !self.watch_update[k]) continue;
+        if (!drie::read_back(self.watch_slot[k], self.watched.ptr, (sz)n * 16)) continue;
+        foreach (i, p : self.watched) out[i] = self.origin + (Vector3) { p.x, p.y, p.z };
+        return true;
+    }
+    return false;
 }
 
 // Copies the points (in the world) into `out` (count() of them), waiting for the GPU: for tests
