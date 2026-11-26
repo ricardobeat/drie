@@ -1,5 +1,6 @@
-// Copies a D3D11 texture (BGRA8/RGBA8) into CPU memory through a staging texture.
-// (Built on every platform from the same list of C files: empty where it is not Windows.)
+// D3D11 GPU readback and headless device helpers for drie::readback: copies textures through a
+// staging resource, creates a hardware or WARP D3D11 device for headless rendering, and tracks
+// non-blocking buffer readbacks across 64 staging slots. Compiles empty outside Windows.
 #if defined(_WIN32)
 #define COBJMACROS
 #include <d3d11.h>

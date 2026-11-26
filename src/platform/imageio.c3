@@ -1,16 +1,18 @@
-// Image decoding (PNG, JPEG, ...) through the platform's decoder (ImageIO on macOS), and lines of
-// text set in the platform's fonts.
+// Platform image decoding and single-line text rasterization backed by `platform/imageio.c`
+// (ImageIO and CoreText on macOS) and `platform/imageio_win.c` (WIC on Windows).
 module drie::imageio @link(env::DARWIN, "ImageIO.framework", "CoreGraphics.framework", "CoreText.framework", "CoreFoundation.framework");
 
-// Decodes an encoded image into newly malloc'ed 8-bit RGBA (non-premultiplied, top row first).
-// Returns null on failure. Free the result with imageio::free_pixels.
+// Decodes an encoded image (PNG, JPEG, WebP where supported) into newly allocated 8-bit straight
+// RGBA pixels, top row first. Returns null on failure; release with `imageio::free_pixels()`.
 extern fn char* decode(void* data, usz len, CInt* width, CInt* height) @cname("imageio_decode") @link(env::WIN32, "windowscodecs", "ole32");
+
+// Frees a pixel buffer returned by `imageio::decode()`.
 extern fn void free_pixels(char* pixels) @cname("imageio_free") @link(env::WIN32, "windowscodecs", "ole32");
 
-// A line of text (UTF-8, zero-terminated) in a font family (or a CSS generic family:
-// sans-serif, serif, monospace), `size` pixels tall: metrics = its width, and how far it reaches
-// above and below the baseline (CoreText on macOS; not on Windows yet).
+// Measures a single UTF-8 line in `family` (font name or CSS generic: sans-serif, serif,
+// monospace) at `size` pixels. Writes width, ascent, and descent into `metrics` (macOS CoreText).
 extern fn void text_metrics(ZString text, ZString family, float size, CInt bold, CInt italic, float* metrics) @cname("imageio_text_metrics") @link(env::WIN32, "windowscodecs", "ole32");
-// Draws it into `mask` (w x h, a byte a pixel, top row first: how much of each pixel it
-// covers), its baseline starting at (x, y) from the top left.
+
+// Rasterizes a single UTF-8 line into an 8-bit alpha `mask` (`w` x `h`, top row first) with the
+// baseline starting at `(x, y)` from the top-left corner (macOS CoreText).
 extern fn void text(ZString text, ZString family, float size, CInt bold, CInt italic, char* mask, CInt w, CInt h, float x, float y) @cname("imageio_text") @link(env::WIN32, "windowscodecs", "ole32");

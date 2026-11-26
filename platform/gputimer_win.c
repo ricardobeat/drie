@@ -1,7 +1,6 @@
-// GPU time per pass on D3D11 (gpu_timer.c3): a timestamp query at the start of each pass and one
-// at the end of the frame, inside a disjoint query, per frame in flight; read back without
-// flushing a few frames later. A pass's time runs to the next pass's start. (Built on every
-// platform from the same list of C files: empty where it is not Windows.)
+// Per-pass GPU timing on D3D11 for drie::gpu_timer: issues timestamp queries at each pass start
+// and frame end inside a disjoint query per frame in flight, resolving without flushing a few
+// frames later so each pass spans to the next pass start. Compiles empty outside Windows.
 #if defined(_WIN32)
 #define COBJMACROS
 #include <d3d11.h>

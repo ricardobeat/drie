@@ -1,11 +1,9 @@
-// The overlay layer drawn on top of the window, and the sokol_debugtext / sokol_gl setup that
-// games and examples share for text and shapes of their own.
+// Window overlay layer and shared `sokol_debugtext` / `sokol_gl` initialization. Registered via
+// `drie::add_overlay()` at startup so `render()` and post-processing `end_screen()` automatically
+// draw enabled touch controls (`input::touch_controls()`) and screen transitions
+// (`transitions::screen_fade`) over the final window pass.
 //
-// draw() is one of the renderer's overlays: render() to the window and postprocessing's
-// end_screen() call it. It draws the touch controls once they are enabled (input::touch_controls)
-// and then the screen transitions (transitions::screen_fade) over everything.
-//
-//   ui::setup();                       // sdtx with the FONT_* fonts, sgl, the blend pipeline
+//   ui::setup();
 //   sdtx::font(ui::FONT_KC853);
 //   ui::text(2, 2, "HELLO", 1, 1, 1);
 module drie::ui;
@@ -19,16 +17,21 @@ struct UiState @local {
 
 UiState ui @local;
 
+// Built-in `sokol_debugtext` font slot: KC85/3.
 const int FONT_KC853 = 0;
+// Built-in `sokol_debugtext` font slot: KC85/4.
 const int FONT_KC854 = 1;
+// Built-in `sokol_debugtext` font slot: Z1013.
 const int FONT_Z1013 = 2;
+// Built-in `sokol_debugtext` font slot: Amstrad CPC.
 const int FONT_CPC   = 3;
+// Built-in `sokol_debugtext` font slot: Commodore 64.
 const int FONT_C64   = 4;
+// Built-in `sokol_debugtext` font slot: Oric.
 const int FONT_ORIC  = 5;
 
-// Sets up sokol_debugtext (with the FONT_* fonts) and sokol_gl, once. Call it instead of
-// sdtx::setup / sgl::setup when the game draws text or shapes of its own as well.
-// Needs the GPU (call it from a frame, or after init_headless).
+// Initializes `sokol_debugtext` (with all `FONT_*` slots), `sokol_gl`, and the alpha-blend
+// pipeline once. Requires an active GPU context (call from a frame or after `init_headless()`).
 fn void setup() {
     if (ui.ready) return;
     sdtx::setup(

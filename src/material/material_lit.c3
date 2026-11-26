@@ -1,9 +1,16 @@
-// Lit material graph builders: Lambert, Phong, and Standard/Physical shading, direct
-// lights, area lights, and environment reflections.
+// Lit material node-graph builders: Lambert, Phong, Toon, and Standard/Physical shading, direct
+// light loops, LTC rect area lights, environment SH/IBL, reflection probes, and tangent frames.
+//
+// RectAreaLight records and the two 64x64 LTC lookup tables are packed after point lights in
+// VIEW_POINT_LIGHTS. `tangent_frame` flips the cotangent frame by the screen-space determinant
+// sign so Metal/HLSL top-down dFdy matches GLSL. `Lit.coat_d` and `Lit.sheen_d` are transient
+// per-light outputs consumed and cleared by `Lit.light_body`. Driven by `build_material_graph`
+// (src/material/material_graph.c3); calls physical BRDFs, GI/RC, transmission, and mirrors in
+// src/material/layers.c3 and shadow lookups in src/material/shadow_lookup.c3.
 module drie;
 import sokol, drie::nodes, drie::shading, std::collections::map, std::io, std::os::env, std::thread;
 
-// ---- the lit materials (lambert, phong, standard)
+// ---- Lit materials
 
 // A lit material's surface and what its light comes to (the material shader's lighting).
 struct Lit @private {
@@ -312,8 +319,8 @@ fn void Lit.shade(&self, FragUv* f, Node rgb, Node map_rgb, Node v_color) {
             Node[4] pre;
             int np;
             {
-                // SpotLight.map (shader_core.glsl's spot_cookie): the picture it projects, from
-                // light_cookies
+                // SpotLight.map (shaders/shader_core.glsl's spot_cookie): projected cookie texture
+                // sampled from VIEW_LIGHT_COOKIES.
                 Node map = node_storage(shaders::VIEW_SPOT_LIGHTS, VEC4, at + nodes::uint_(5));
                 Node map_u = node_storage(shaders::VIEW_SPOT_LIGHTS, VEC4, at + nodes::uint_(6));
                 Node map_v = node_storage(shaders::VIEW_SPOT_LIGHTS, VEC4, at + nodes::uint_(7));
@@ -500,9 +507,8 @@ fn void Lit.finish(&self) {
     }
 }
 
-// The environment's reflection `env` in direction `dir` at roughness `rough`, or a node
-// material's env_node in its place (node_env), which reads them as ENV_DIRECTION and
-// ENV_ROUGHNESS.
+// Environment reflection `env` in direction `dir` at roughness `rough`, or the material's
+// `env_node` override with ENV_DIRECTION, ENV_ROUGHNESS, and ENV_COLOR bound.
 fn Node Lit.env_node(&self, Node env, Node dir, Node rough) {
     if (!self.user_env.id) return env;
     return bound(nodes::convert(self.user_env, VEC3), { rebind(ENV_DIRECTION, dir), rebind(ENV_ROUGHNESS, rough),
@@ -616,13 +622,12 @@ fn Node Lit.light_body(&self, Node shadow, Node[2] d, Node outc, Node spec, Node
     return drie::node_block(st[:n]);
 }
 
-// RectAreaLight, as three's (lights_physical_pars_fragment: LTC_Uv, LTC_Evaluate and
-// RE_Direct_RectArea_Physical), with linearly transformed cosines (Heitz, Dupuy, Hill and
-// Neubelt 2016). The lights are in point_lights after the point lights: pos = centre + half
-// width's x, color = color * intensity + half width's y, shadow.z = its channels, params = half
-// width's z + half height; and after them the two LTC tables (clusters.c3's ltc_entries), a
-// texel an entry (pos = LTC_1's, color = LTC_2's), read here with the bilinear filter three's
-// textures have. The loop adds their diffuse light to `outc` and their highlights to `spec`.
+// RectAreaLight evaluation using linearly transformed cosines (Heitz, Dupuy, Hill, and Neubelt
+// 2016; three's LTC_Uv, LTC_Evaluate, and RE_Direct_RectArea_Physical). Rect lights sit in
+// VIEW_POINT_LIGHTS after point lights (pos = center + hw.x, color = color * intensity + hw.y,
+// shadow.z = channels, params = hw.z + hh), followed by the two 64x64 LTC tables packed by
+// `ltc_entries` in src/renderer/clusters.c3 (pos = LTC_1, color = LTC_2) and filtered bilinearly.
+// Adds diffuse light to `outc` and specular highlights to `spec`.
 fn Node Lit.rect_lights(&self, Node outc, Node spec) {
     MaterialKey key = self.key;
     Node n = self.n;
@@ -744,8 +749,8 @@ fn Node ltc_edge(Node v1, Node v2) @local {
     return nodes::cross(v1, v2) * nodes::select(x.greater_than(nodes::num(0)), k, far);
 }
 
-// The light of `radiance` from direction `l` (toward it) on the surface: its diffuse light and
-// its highlight (shader_core.glsl's direct(), three's physically based light units).
+// Direct diffuse and specular lighting from `radiance` arriving along `l` (matching
+// shaders/shader_core.glsl's direct() and three's physical light units).
 fn Node[2] Lit.direct(&self, Node l, Node radiance, Sized* size = null) {
     MaterialKey key = self.key;
     Node n = self.n;
@@ -844,8 +849,8 @@ fn Node light_norm(Node k, Node a) @local {
     return a / nodes::clamp(a + k.x(), 0, 1) * kb * kb;
 }
 
-// The light the scene's environment puts on a surface facing n, but for its sun (env_sun):
-// env_sh's 9 spherical harmonics, in the order of texture.c3's sh_basis.
+// Environment diffuse irradiance for normal `n` (excluding `env_sun`), evaluated from `env_sh`'s
+// 9 spherical harmonics in the order of `sh_basis` (src/texture/texture.c3).
 fn Node env_irradiance(Node n) @local {
     Node e = fs_in("env_sh", VEC3) + fs_in("env_sh", VEC3, k: 1) * n.y() + fs_in("env_sh", VEC3, k: 2) * n.z()
         + fs_in("env_sh", VEC3, k: 3) * n.x() + fs_in("env_sh", VEC3, k: 4) * (n.x() * n.y())
@@ -878,11 +883,10 @@ fn Node env_blur(Node rough) @local {
     return nodes::select(rough.greater_than_equal(nodes::num(0.8f)), nodes::mix(0.526f, 0.582f, (rough - 0.8f) / 0.2f), b);
 }
 
-// What the surface mirrors in direction d, blurred for `rough` (shader_core.glsl's
-// env_reflection): the material's own map, box projected (the ray met with the room's walls
-// first, or with what a map with distances saw in the room); or the scene's reflection probes
-// (key.probes), mixed by the boxes `world` is in. `facing` is the surface's normal, `frag` the
-// pixel's position in the target; `probe_fn` the probes' function (-1: not made yet).
+// Environment reflection along `d`, blurred for `rough` (matching shaders/shader_core.glsl's
+// env_reflection): samples the material's env_map (with optional box projection and depth
+// marching) or blends scene reflection probes (`key.probes`) around `world`. `facing` is the
+// surface normal, `frag` is fragment position, and `probe_fn` caches the probe helper (-1 = new).
 fn Node env_sample(MaterialKey key, int* probe_fn, Node d, Node rough, Node world, Node frag, Node facing) @local {
     if (key.probes) return probe_reflection(probe_fn, d, rough, world, frag, facing);
     if (key.env_box) {
@@ -1034,7 +1038,7 @@ fn Node EnvSource.behind(&self, Node q) {
     return len - env_texel(self.layer, shading::env_uv(q / len), nodes::num(0)).w() * self.range;
 }
 
-// Interleaved gradient noise (Jimenez's), as shader_core.glsl's ssr_noise.
+// Interleaved gradient noise (Jimenez), matching shaders/shader_core.glsl's ssr_noise.
 fn Node shading_noise(Node p) @local
     => nodes::fract(nodes::fract(nodes::dot(p, nodes::vec2(0.06711056f, 0.00583715f))) * 52.9829189f);
 
@@ -1091,8 +1095,8 @@ fn Node toon_gradient(MaterialKey key, Node ndl) @local {
     return nodes::mix(0.7f, 1.0f, nodes::smoothstep(nodes::num(0.7f) - fw, fw + 0.7f, x));
 }
 
-// three's window: the light fades out to nothing at `cutoff` (0: never), and the falloff by
-// `decay` (shader_core.glsl's distance_window, distance_attenuation).
+// Smooth distance cutoff window (0 = infinite reach) and power-law falloff by `decay`
+// (matching shaders/shader_core.glsl's distance_window and distance_attenuation).
 fn Node distance_window(Node d, Node cutoff) @local {
     Node r = d / cutoff;
     Node f = nodes::clamp((r * r * r * r).one_minus(), 0, 1);
@@ -1150,7 +1154,7 @@ fn Node v_smith(Node nov, Node nol, Node a) @local {
     return 0.5f / nodes::max(gv + gl, 1e-6f);
 }
 
-// The light cluster `p` is in (shader_core.glsl's cluster_of).
+// Flat cluster index for world position `p` (matching shaders/shader_core.glsl's cluster_of).
 fn Node cluster_of(Node p) @local {
     Node grid = nodes::convert(fs_in("cluster_grid", VEC3), IVEC3);
     Node clip = fs_in("cluster_view_proj", MAT4) * nodes::vec4(p, 1);

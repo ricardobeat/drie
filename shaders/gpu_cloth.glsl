@@ -1,5 +1,5 @@
-// The kernels of GpuCloth (gpu_cloth.c3): XPBD cloth in small steps, all of it on the GPU.
-// just shaders turns this into generated/gpu_cloth.c3.
+// Compute kernels for GpuCloth (drie::gpu_cloth): XPBD cloth solved in small substeps on the GPU.
+// Regenerate generated/gpu_cloth.c3 with `just shaders`.
 //
 //   gc_begin_cs       per point, at a step's start: where it starts from (the mesh is drawn
 //                     between there and the step's end), a pinned point put on its pin

@@ -1,5 +1,6 @@
-// Decodes images with ImageIO into straight (non-premultiplied) RGBA8.
-// (Built on every platform from the same list of C files: empty where it is not Apple.)
+// Apple image decoding and text rasterization for drie::imageio: decodes images via ImageIO into
+// straight (non-premultiplied) RGBA8 and measures/renders UTF-8 glyph masks with CoreText.
+// Compiles empty outside Apple platforms so every target shares the same C source list.
 #if defined(__APPLE__)
 #include <ImageIO/ImageIO.h>
 #include <CoreGraphics/CoreGraphics.h>

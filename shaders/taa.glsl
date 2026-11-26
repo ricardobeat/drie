@@ -1,16 +1,7 @@
-// TAAPass (postprocessing.c3): temporal antialiasing. Each frame the camera is shifted by a
-// fraction of a pixel (Camera.jitter, a Halton sequence); this blends the new frame into the
-// frames before, found again with the motion vectors of a target rendered with MRT. What the
-// history has that the new frame's neighbourhood does not (a thing that moved away, a light
-// that went off) is clipped to the neighbourhood's spread of colors (variance clipping, in
-// YCoCg), and the history is read with a Catmull-Rom filter so it stays sharp.
-//
-// The picture can be larger than the frames rendered (temporal upscaling, as in UE's TAAU or
-// FSR 2): each of its pixels is then made from the rendered pixels around it, weighted by how
-// near what each shows (the camera was shifted) lies to its middle, and the frame's share of
-// the average is as large as the nearest of them is near. Over the frames, the shifts put a
-// sample near every pixel of the picture.
-// Regenerate generated/taa.c3 with: just shaders
+// TAAPass (drie::postprocessing): temporal antialiasing and optional upscaling. Each frame
+// jitters the camera (Camera.jitter, Halton sequence) and blends into MRT-reprojected history
+// using Catmull-Rom filtering and YCoCg variance clipping (weighting nearby jittered samples
+// when upscaling). Regenerate generated/taa.c3 with `just shaders`.
 @header module drie::postprocessing;
 @header import drie;
 

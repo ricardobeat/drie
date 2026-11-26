@@ -1,8 +1,16 @@
-// Materials. Constructors take named arguments, mirroring three's parameter objects:
+// Material definitions, shading enums, subtype wrappers, and named-argument constructors
+// mirroring three.js parameter objects, e.g.:
 //   drie::mesh_standard_material(color: 0x44aa88, roughness: 0.4)
+//
+// MaterialType integer values match the shader `mode` constant. MaterialMap sentinel pointers
+// returned by `material_map_mark` are never dereferenced directly; NodeBuild.texture resolves
+// them to each material's own map via Material.own_map. MaterialKey (src/material/material_key.c3)
+// compiles materials into shader programs, and NodeBuild (src/nodes/graph.c3) tracks the 15
+// `*_node` graph slots.
 module drie;
 import sokol, std::collections::map;
 
+// Which triangle faces a material renders (three's FrontSide, BackSide, DoubleSide).
 enum Side {
     FRONT_SIDE,
     BACK_SIDE,
@@ -34,6 +42,8 @@ enum BlendEquation {
     MAX_EQUATION,
 }
 
+// Source and destination multipliers for `CUSTOM_BLENDING` (three's blendSrc, blendDst,
+// blendSrcAlpha, and blendDstAlpha).
 enum BlendFactor {
     ZERO_FACTOR,
     ONE_FACTOR,
@@ -101,6 +111,7 @@ enum DepthPacking {
     RG_DEPTH_PACKING,
 }
 
+// Surface shading state shared by every mesh, line, and custom shader material.
 struct Material {
     MaterialType type;
     Color color;
@@ -332,7 +343,7 @@ struct Material {
     // is left to the environment map or the reflector
     float ssr_reach;
     // A Reflector whose plane the surface lies on: it mirrors that picture of the scene (see
-    // reflector.c3), and screen-space reflections (if on) only where they find something
+    // src/lighting/reflector.c3), and screen-space reflections (if on) only where they hit.
     Reflector* reflector;
     // Vertex colors as occlusion (not in three.js): besides tinting the surface (vertex_colors),
     // their brightness dims all the light it gets, its reflections and highlights included, so
@@ -370,8 +381,8 @@ struct Material {
     // BokehPass). For a transparent surface near the lens, a dirty pane, which a depth of field
     // pass sees through: there, the blur goes by what is behind it.
     bool defocus;
-    // Node graphs (nodes.c3, drie::nodes; three's NodeMaterial and TSL), each in place of a part
-    // of the material where it is set:
+    // Node graphs (src/nodes/graph.c3, drie::nodes; three's NodeMaterial and TSL), each in
+    // place of a part of the material where it is set:
     //   color_node     the color, rgb or rgba (instead of color, the color map and vertex colors)
     //   opacity_node   its alpha
     //   normal_node    the normal it is shaded with, in the world (after the normal map)
@@ -461,6 +472,8 @@ enum MaterialMap : char {
 // drawn, that the material's build swaps for its texture (NodeBuild.texture).
 Texture[MaterialMap::len] material_map_marks @local;
 
+// Sentinel Texture pointer representing material map `m` inside a node graph; resolved to the
+// bound material's own texture by NodeBuild.texture.
 fn Texture* material_map_mark(MaterialMap m) => &material_map_marks[m.ordinal];
 
 // Which map `t` is a mark of, if it is one.
@@ -470,6 +483,7 @@ fn MaterialMap? map_of_mark(Texture* t) {
     return (MaterialMap)(t - first);
 }
 
+// Returns the texture assigned to map slot `m` on this material, or null if unset.
 fn Texture* Material.own_map(&self, MaterialMap m) {
     switch (m) {
         case MAP: return self.map;
@@ -485,40 +499,52 @@ fn Texture* Material.own_map(&self, MaterialMap m) {
     }
 }
 
+// Unlit flat-color mesh material (inline Material).
 struct MeshBasicMaterial {
     inline Material material;
 }
+// Diffuse-only Lambertian mesh material (inline Material).
 struct MeshLambertMaterial {
     inline Material material;
 }
+// Blinn-Phong specular mesh material (inline Material).
 struct MeshPhongMaterial {
     inline Material material;
 }
+// Physically based metalness-roughness mesh material (inline Material).
 struct MeshStandardMaterial {
     inline Material material;
 }
+// Diagnostic mesh material encoding view-space normals as RGB (inline Material).
 struct MeshNormalMaterial {
     inline Material material;
 }
+// View-space sphere-map (matcap) mesh material (inline Material).
 struct MeshMatcapMaterial {
     inline Material material;
 }
+// Stepped cel-shaded mesh material (inline Material).
 struct MeshToonMaterial {
     inline Material material;
 }
+// Depth-output mesh material with configurable channel packing (inline Material).
 struct MeshDepthMaterial {
     inline Material material;
 }
+// Unlit solid line material (inline Material).
 struct LineBasicMaterial {
     inline Material material;
 }
+// Unlit dashed line material (inline Material).
 struct LineDashedMaterial {
     inline Material material;
 }
+// User-supplied sokol shader material (inline Material).
 struct ShaderMaterial {
     inline Material material;
 }
 
+// Initializes shared defaults on a newly allocated Material of the given type.
 fn void Material.init_base(
     &self,
     MaterialType type,

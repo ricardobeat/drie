@@ -1,19 +1,25 @@
-// The deferred lighting pass's shader (shader_deferred.glsl), in a module of its own so that
-// its generated uniform structs don't collide with drie::shaders'.
+// Deferred G-Buffer allocation, item eligibility, and fullscreen lighting pass.
+// Uses generated/shader_deferred.c3 (`drie_shaders::deferred`), which lives outside `drie::*`
+// because C3 imports `drie::*` recursively and shaders/shader_deferred.glsl defines structs
+// (`FsParams`, `GpuPointLight`, etc.) that share names with `drie::shaders`. Renderer.render()
+// runs the 4-target RGBA16F G-Buffer pass, optional ray-traced shadows and sparse radiance
+// updates, then draw_deferred_lighting() before forward-shading remaining opaque and transparent
+// items. Reconstructs camera-relative world position from depth using `depth_zero_to_one()`.
 module drie;
 import std::math, std::collections::list;
 import sokol, drie_shaders::deferred;
 
-// what a transmission material refracts: a view slot and a sampler slot the engine's shaders
-// leave free (the lighting pass reads the depth in the same view slot)
+// Shared view and sampler slots: forward transmission binds the opaque scene copy here, while
+// the deferred lighting pass binds the target's depth texture in the same view slot.
 const int VIEW_TEX_TRANSMISSION @private = deferred::VIEW_TEX_TRANSMISSION;
 const int SMP_TRANSMISSION_SMP @private = 5;
 
+// Per-pass camera and screen uniforms for shaders/shader_deferred.glsl (uniform block 0).
 struct DeferredLightParams @align(16) @packed @private {
     Mat4 inv_view_proj;
-    Vec4 view_origin;
+    Vec4 view_origin;   // xyz = camera world position, w = 1 on [0,1] depth backends else 0.
     Vec4 clear_color;
-    Vec4 screen_info;
+    Vec4 screen_info;   // xy = inv target size, z = 1 on [0,1] depth backends, w = frame % 64.
     Mat4 view_proj;
 }
 
@@ -22,6 +28,7 @@ fn SgShaderDesc split_deferred_shader_desc(bool mrt, bool vsm, SgBackend backend
     return mrt ? deferred::deferred_mrt_shader_desc(backend) : deferred::deferred_shader_desc(backend);
 }
 
+// Allocates or resizes the 4 single-sampled RGBA16F G-Buffer color attachments and nearest sampler.
 fn void ensure_gbuffer(int w, int h) @private {
     if (state.gb_width == w && state.gb_height == h) return;
     if (state.gb_width) {
@@ -59,12 +66,15 @@ fn void ensure_gbuffer(int w, int h) @private {
     }
 }
 
+// True when this render can use the deferred path: single-sampled offscreen target with depth,
+// full-target clear, no active lightmap bake, and no sub-viewport.
 fn bool can_defer(Renderer* self, bool clears, bool first) @private {
     RenderTarget* rt = self.render_target;
     return self.deferred && rt && rt.samples == 1 && rt.depth_buffer && clears
         && (!self.scissor_test || first) && !state.bake.on && self.viewport[2] == 0 && self.viewport[3] == 0;
 }
 
+// True when `item` can be encoded into the G-Buffer without losing material features.
 fn bool is_deferred_item(DrawItem* item) @private {
     Mesh* m = item.mesh;
     Material* mat = m.material;
@@ -89,6 +99,8 @@ fn bool is_deferred_item(DrawItem* item) @private {
     return true;
 }
 
+// Shades the G-Buffer in a single fullscreen triangle pass into `r.render_target` (plus MRT
+// attachments when enabled), binding clustered lights, shadows, GI, SSR, fog, and RT shadow mask.
 fn void draw_deferred_lighting(
     Renderer* r,
     Scene* scene,
@@ -150,7 +162,7 @@ fn void draw_deferred_lighting(
     bind.samplers[shaders::SMP_TEX_SMP] = state.gb_sampler;
     bind.samplers[SMP_TRANSMISSION_SMP] = state.gb_sampler;
     for (int k = 0; k < 6; k++) bind.views[shaders::VIEW_TEX_EXT0 + k] = none.view;
-    // (the ray-traced shadows' mask, rt_shadow)
+    // Ray-traced shadow visibility mask from rt_trace (rt_shadow in shaders/shader_deferred.glsl).
     bind.views[shaders::VIEW_TEX_EXT5] = rt_mask(none.view);
     if (vsm) {
         bind.views[shaders::VIEW_VSM_MAP] = state.vsm_spot.view;
@@ -168,7 +180,7 @@ fn void draw_deferred_lighting(
     bind.views[shaders::VIEW_SSR_COLOR] = ssr ? r.ssr_color : none.view;
     bind.views[shaders::VIEW_SSR_DEPTH] = ssr ? r.ssr_depth : none.view;
     bind.views[shaders::VIEW_SSR_BACK] = ssr && r.ssr_back.id ? r.ssr_back : none.view;
-    // SpotLight.map (shader_core.glsl's light_cookies)
+    // SpotLight.map projection texture (light_cookies in shaders/shader_core.glsl).
     bind.views[shaders::VIEW_LIGHT_COOKIES] = lights_gpu.cookie ? lights_gpu.cookie.view : none.view;
     bind.samplers[shaders::SMP_SSR_SMP] = state.clamp_sampler;
     bind.views[shaders::VIEW_TEX_GI] = state.gi_view;

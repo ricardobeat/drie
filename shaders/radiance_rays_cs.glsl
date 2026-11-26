@@ -1,16 +1,19 @@
-// Split Radiance Cascades (Freeman, Sannikov & Pitt-Francis, arXiv:2607.20384):
-//   0. rc_rays_clear_cs        zero hash table, probe meta, free stacks, history and accumulators
-//   1. rc_rays_rebuild_cs      rebuild hash table every frame from live meta slots; evict stale/OOB
-//   2. rc_rays_alloc_cs        per traced G-Buffer pixel: touch nearest L0 probe, count rays
-//   2b. rc_rays_cache_alloc_cs seed the secondary cache's L0 probes from this frame's trace hits
-//   3. rc_rays_propagate_cs    bottom-up: each active probe touches its single parent (c >> 1)
-//   4. rc_rays_offsets_cs      top-down hierarchical R2 prefix segments (Algorithm 3)
-//   5. rc_rays_trace_cs        surface-driven R2 ray march + multi-cascade interval deposit
-//   6. rc_rays_merge_cs        top-down resolve, per-bin temporal blend, sparse trilinear merge,
-//                              and L0 6-face irradiance integration
+// Split Radiance Cascades compute kernels for RadianceCascades (drie), after Freeman, Sannikov &
+// Pitt-Francis (arXiv:2607.20384). Primary and secondary bounce-cache cascades share passes 2-6
+// via a bit in rc_dims.w. Regenerate generated/radiance_rays_cs.c3 with `just shaders`.
 //
-// The primary and the secondary cache both run 2-6 through the same kernels; a bit in
-// rc_dims.w says which one a dispatch is for.
+// Kept in `drie_shaders::rc_rays` outside `drie::*` because C3 imports `drie::*` recursively;
+// placing it under `drie::shaders::*` would collide generated uniform/SSBO types with drie::shaders.
+//
+//   0.  rc_rays_clear_cs        zero hash table, probe meta, free stacks, history, and accumulators
+//   1.  rc_rays_rebuild_cs      rebuild hash table per frame from live meta slots; evict stale/OOB
+//   2.  rc_rays_alloc_cs        per traced G-Buffer pixel: touch nearest L0 probe, count rays
+//   2b. rc_rays_cache_alloc_cs  seed the secondary cache's L0 probes from this frame's trace hits
+//   3.  rc_rays_propagate_cs    bottom-up: each active probe touches its single parent (c >> 1)
+//   4.  rc_rays_offsets_cs      top-down hierarchical R2 prefix segments (Algorithm 3)
+//   5.  rc_rays_trace_cs        surface-driven R2 ray march + multi-cascade interval deposit
+//   6.  rc_rays_merge_cs        top-down resolve, per-bin temporal blend, sparse trilinear merge,
+//                               and L0 6-face irradiance integration
 @header module drie_shaders::rc_rays;
 @header import drie;
 

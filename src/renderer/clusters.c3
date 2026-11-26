@@ -1,57 +1,49 @@
-// Clustered forward lighting: the lights of a render go to the GPU in storage buffers, and the
-// view is cut into a grid of clusters (froxels: tiles of the screen, each cut into slices of
-// view depth that grow exponentially). Every cluster gets the list of the point and spot lights
-// that can reach it, and a fragment only looks at its own cluster's lights, so there is no
-// limit on the number of lights in a scene, only on how many light one spot.
-//
-// The assignment runs behind ClusterAssignFn: it takes the grid and the lights' bounding
-// spheres and fills the clusters and the index list, the two buffers the fragment shader
-// reads. cluster_lights_gpu (the default where there are compute shaders) does it in a compute
-// shader (cluster_cs in kernels.glsl), cluster_lights_cpu on the CPU, with the same result.
+// Clustered lighting froxel grid and per-render GPU light storage buffers.
+// Partitions the camera frustum into CLUSTER_X x CLUSTER_Y screen tiles and CLUSTER_Z exponential
+// depth slices matching cluster_of() in shaders/shader.glsl, assigning point and spot lights via
+// cluster_lights_gpu (cluster_cs in shaders/kernels.glsl) or cluster_lights_cpu. LightData rotates
+// transient LightBufferSets per render within a frame and packs RectAreaLight entries plus the
+// LTC tables (generated/ltc.c3, read by ltc_tables in shaders/shader_core.glsl) after point lights
+// in the point-light buffer. Connects to build_light_params(), draw_item(), and draw_deferred_lighting().
 module drie;
 import std::collections::list, std::math, std::io;
 import sokol;
 
-// The cluster grid: tiles across and up the screen, and slices of depth.
-const int CLUSTER_X      = 16;
-const int CLUSTER_Y      = 9;
-const int CLUSTER_Z      = 24;
-const int CLUSTER_COUNT  = CLUSTER_X * CLUSTER_Y * CLUSTER_Z;
-// The slices of depth start here (m) whatever the camera's near plane: nearer than this,
-// everything is in the first slice.
+// ---- Cluster grid and bounds
+
+const int CLUSTER_X      = 16;                                // Screen-space cluster tiles horizontally.
+const int CLUSTER_Y      = 9;                                 // Screen-space cluster tiles vertically.
+const int CLUSTER_Z      = 24;                                // Exponential view-depth cluster slices.
+const int CLUSTER_COUNT  = CLUSTER_X * CLUSTER_Y * CLUSTER_Z; // Total clusters in the froxel grid.
+// Minimum depth (meters) where exponential slicing begins; closer fragments map to slice 0.
 const float CLUSTER_NEAR = 0.1f;
 
-// The view to cluster for. Matches cluster_of() in shader.glsl.
+// Camera frustum parameters for light clustering; matches cluster_of() in shaders/shader.glsl.
 struct ClusterGrid {
-    // world -> the camera's view space, and view space -> clip space
-    Mat4 view;
-    Mat4 projection;
-    // where the first slice of depth starts and the last ends (m)
-    float near;
-    float far;
-    // slices per unit of log(depth / near)
-    float log_scale;
+    Mat4 view;          // World space to camera view space (looking down -Z).
+    Mat4 projection;    // Camera view space to clip space.
+    float near;         // Depth (m) where slice 0 starts (>= CLUSTER_NEAR).
+    float far;          // Depth (m) where the last slice ends.
+    float log_scale;    // CLUSTER_Z / ln(far / near).
 }
 
-// What can be lit by a light: a sphere in world space. radius < 0: everywhere.
+// World-space bounding sphere of a light's reach; `radius < 0` means unbounded, `0` skips it.
 struct LightBounds {
-    Vector3 center;
-    float radius;
+    Vector3 center;     // World-space sphere center.
+    float radius;       // Reach radius in meters (< 0 unbounded, 0 inactive).
 }
 
-// Where an assignment puts the clusters (CLUSTER_COUNT of them) and the index list: per
-// cluster its point lights, then its spot lights. On the CPU in the lists, on the GPU in the
-// buffers (`gpu_ranges` is there for the assignment's own input).
+// Destination buffers for ClusterAssignFn: each cluster lists its point lights, then spot lights.
 struct ClusterOutput {
-    List{GpuLightCluster}* clusters;
-    List{GpuLightIndex}* indices;
-    StorageBuffer* gpu_clusters;
-    StorageBuffer* gpu_indices;
-    StorageBuffer* gpu_ranges;
+    List{GpuLightCluster}* clusters;   // CPU output: per-cluster offset and light counts.
+    List{GpuLightIndex}* indices;      // CPU output: flat list of light buffer indices.
+    StorageBuffer* gpu_clusters;       // GPU compute output: per-cluster offset and counts.
+    StorageBuffer* gpu_indices;        // GPU compute output: flat light index buffer.
+    StorageBuffer* gpu_ranges;         // Transient CPU-to-GPU input: per-light cluster AABBs.
 }
 
-// Sorts lights into clusters. `points` and `spots` are indices into the lights' storage
-// buffers by position. Returns true if it filled out.gpu_*, false if it filled the lists.
+// Callback that assigns point and spot lights (indexed by slice position) into clusters.
+// Returns true when results were written into `out.gpu_*`, or false when written to CPU lists.
 alias ClusterAssignFn = fn bool(ClusterGrid* grid, LightBounds[] points, LightBounds[] spots, ClusterOutput* out);
 
 fn ClusterGrid cluster_grid(Camera* camera) @private {
@@ -77,9 +69,9 @@ fn int cluster_tile(float ndc, int n) @private {
     return t < 0 ? 0 : (t >= n ? n - 1 : t);
 }
 
-// The clusters a light's sphere touches, as ranges [lo, hi] along x, y and slices.
+// Projects light sphere `b` into inclusive froxel bounds `[lo, hi]`; returns false if outside view.
 fn bool cluster_range(ClusterGrid* grid, LightBounds b, int[<3>]* lo, int[<3>]* hi) @private {
-    // (lights that add nothing)
+    // Inactive light (intensity <= 0).
     if (b.radius == 0) return false;
     if (b.radius < 0) {
         *lo = { 0, 0, 0 };
@@ -88,7 +80,7 @@ fn bool cluster_range(ClusterGrid* grid, LightBounds b, int[<3>]* lo, int[<3>]* 
     }
     Vector3 c  =  grid.view.transform_point(b.center);
     float r    =  b.radius;
-    // view space looks down -z
+    // Camera view space looks down -Z.
     float zmin = -c.z - r;
     float zmax = -c.z + r;
     if (zmax <= 0) return false;
@@ -96,14 +88,14 @@ fn bool cluster_range(ClusterGrid* grid, LightBounds b, int[<3>]* lo, int[<3>]* 
     hi.z = cluster_slice(grid, zmax);
     Mat4 p = grid.projection;
     if (zmin <= 1e-3f) {
-        // around the camera: anywhere on the screen
+        // Sphere straddles the near plane: cover all screen tiles.
         lo.x = 0;
         lo.y = 0;
         hi.x = CLUSTER_X - 1;
         hi.y = CLUSTER_Y - 1;
         return true;
     }
-    // the corners of the sphere's box, all in front of the camera, through the projection
+    // Project the 8 view-space AABB corners (all in front of the camera) to NDC.
     float x0 =  1e30f;
     float y0 =  1e30f;
     float x1 = -1e30f;
@@ -129,7 +121,9 @@ fn bool cluster_range(ClusterGrid* grid, LightBounds b, int[<3>]* lo, int[<3>]* 
     return true;
 }
 
-// The CPU version of ClusterAssignFn.
+// ---- Light assignment
+
+// CPU implementation of ClusterAssignFn; populates `out.clusters` and `out.indices`.
 fn bool cluster_lights_cpu(ClusterGrid* grid, LightBounds[] points, LightBounds[] spots, ClusterOutput* out) {
     fill_clusters(grid, points, spots, out.clusters, out.indices);
     return false;
@@ -138,9 +132,9 @@ fn bool cluster_lights_cpu(ClusterGrid* grid, LightBounds[] points, LightBounds[
 ComputePass* cluster_kernel @local;
 List{LightRange} cluster_ranges @local;
 
-// The compute version of ClusterAssignFn (falls back on the CPU without compute shaders). The
-// clusters each light reaches are found here, as for the CPU (cluster_range); the lists are
-// filled on the GPU, one thread per run of clusters.
+// Compute-shader implementation of ClusterAssignFn (falls back to cluster_lights_cpu when
+// compute is unavailable). Computes per-light froxel ranges on the CPU via cluster_range(), then
+// dispatches `cluster_cs` (shaders/kernels.glsl) to populate `out.gpu_clusters` and `out.gpu_indices`.
 fn bool cluster_lights_gpu(ClusterGrid* grid, LightBounds[] points, LightBounds[] spots, ClusterOutput* out) {
     if (!compute_supported() || !out.gpu_clusters) return cluster_lights_cpu(grid, points, spots, out);
     if (!cluster_kernel) cluster_kernel = compute_pass(
@@ -162,7 +156,7 @@ fn bool cluster_lights_gpu(ClusterGrid* grid, LightBounds[] points, LightBounds[
             cluster_ranges.push(r);
         }
     }
-    // the kernel's input can't be empty
+    // Keep at least one dummy entry so the storage buffer is never zero-sized.
     if (!cluster_ranges.len()) cluster_ranges.push({ });
     out.gpu_ranges.write(cluster_ranges.entries, cluster_ranges.len() * LightRange::size);
     out.gpu_clusters.ensure((sz)CLUSTER_COUNT * (sz)GpuLightCluster::size);
@@ -182,7 +176,8 @@ fn bool cluster_lights_gpu(ClusterGrid* grid, LightBounds[] points, LightBounds[
     return true;
 }
 
-// Sorts on the CPU: two passes over the lights, counting and then filling.
+// Two-pass CPU light assignment: counts lights per cluster, computes prefix offsets, then writes
+// point-light indices followed by spot-light indices into `indices`.
 fn void fill_clusters(
     ClusterGrid* grid,
     LightBounds[] points,
@@ -193,7 +188,7 @@ fn void fill_clusters(
     clusters.clear();
     for (int i = 0; i < CLUSTER_COUNT; i++) clusters.push({ });
     GpuLightCluster* cl = clusters.entries;
-    // pass 1: how many lights of each kind per cluster (range.y: points, range.z: spots)
+    // Pass 1: count touching lights per cluster (range[1] = points, range[2] = spots).
     for (int kind = 0; kind < 2; kind++) {
         LightBounds[] list = kind == 0 ? points : spots;
         foreach (b : list) {
@@ -211,14 +206,14 @@ fn void fill_clusters(
     for (int i = 0; i < CLUSTER_COUNT; i++) {
         cl[i].range[0] = total;
         total += cl[i].range[1] + cl[i].range[2];
-        // range.w: the next free entry while filling
+        // range[3] serves as a scratch write cursor during pass 2.
         cl[i].range[3] = 0;
     }
     indices.clear();
-    // at least one entry: a storage buffer can't be empty
+    // Reserve at least one entry so the GPU storage buffer is never zero-sized.
     for (uint i = 0; i < math::max(total, 1u); i++) indices.push({ });
     GpuLightIndex* out = indices.entries;
-    // pass 2: points first in each cluster, then spots after all of its points
+    // Pass 2: write point indices first, then spot indices after each cluster's points.
     for (int kind = 0; kind < 2; kind++) {
         LightBounds[] list = kind == 0 ? points : spots;
         foreach (uint li, b : list) {
@@ -240,19 +235,19 @@ fn void fill_clusters(
     }
 }
 
-// The sphere a point light can light: all of space without a distance cutoff.
+// World-space bounding sphere for a point (or tube) light; radius -1 when distance == 0.
 fn LightBounds point_light_bounds(PointLight* pl) @private {
-    // (a tube reaches as far from either end)
+    // Tube lights extend half their length from center along their X axis.
     return { pl.matrix_world.get_position(), pl.distance > 0 ? pl.distance + math::max(pl.length, 0.0f) * 0.5f : -1 };
 }
 
-// The sphere around a spot light's cone.
+// Minimal bounding sphere enclosing a spot light's cone (plus source radius); -1 when unbounded.
 fn LightBounds spot_light_bounds(SpotLight* sl) @private {
     Vector3 pos = sl.matrix_world.get_position();
     if (sl.distance <= 0) return { pos, -1 };
     float a     = clamp(sl.angle, 0, PI / 2);
     float range = sl.distance;
-    // (a source with a size lights a little beyond its cone)
+    // Account for area-source radius extending illumination slightly past the cone.
     float extra = math::max(sl.radius, 0.0f);
     Vector3 dir = spot_direction(sl);
     if (a > PI / 4) return { pos + dir * (range * math::cos(a)), range * math::sin(a) + extra };
@@ -260,8 +255,10 @@ fn LightBounds spot_light_bounds(SpotLight* sl) @private {
     return { pos + dir * r, r + extra };
 }
 
-// One storage buffer the shader reads, grown as needed. Written once per frame at most
-// (sokol's transient writes), so each render() in a frame takes a set of its own.
+// ---- GPU light buffers and LTC packing
+
+// Growable transient storage buffer written at most once per frame (each render in a frame uses
+// its own LightBufferSet).
 struct LightBuffer @private {
     SgBuffer buffer;
     SgView view;
@@ -270,7 +267,7 @@ struct LightBuffer @private {
 
 fn void LightBuffer.write(&self, void* data, sz bytes) {
     usz size = (usz)bytes;
-    // a storage buffer can't be empty
+    // Storage buffers cannot be zero-sized.
     char[16] zero;
     if (!size) {
         data = &zero;
@@ -301,12 +298,12 @@ struct LightBufferSet @private {
     LightBuffer shadows;
     LightBuffer clusters;
     LightBuffer indices;
-    // filled by a compute shader instead (when `on_gpu`)
+    // Compute-populated cluster buffers (bound when `on_gpu` is true).
     StorageBuffer gpu_clusters;
     StorageBuffer gpu_indices;
     StorageBuffer gpu_ranges;
     bool on_gpu;
-    // Renderer.check_compute: the CPU's result of the last frame, to compare with the GPU's
+    // Renderer.check_compute: CPU reference results and readback slots from the prior frame.
     List{GpuLightCluster} check_clusters;
     List{GpuLightIndex} check_indices;
     int check_slot;
@@ -314,39 +311,32 @@ struct LightBufferSet @private {
     bool check_pending;
 }
 
-// The lights of one render(), as the shader gets them.
+// Staged lights, shadows, and cluster sets for the current render().
 struct LightData @private {
     List{GpuDirLight} dirs;
     List{GpuPointLight} points;
     List{GpuSpotLight} spots;
-    // the RectAreaLights, which go into the point lights' buffer after them, and after them
-    // the LTC tables (only when there are some)
+    // RectAreaLights appended to `points` on upload, followed by packed LTC tables when non-empty.
     List{GpuPointLight} rects;
     List{GpuSpotShadow} shadows;
     List{LightBounds} point_bounds;
     List{LightBounds} spot_bounds;
     List{GpuLightCluster} clusters;
     List{GpuLightIndex} indices;
-    // a point or spot light with a size (a radius, or a tube's length), and a tube among them
-    bool sized;
-    bool tubes;
-    // the shadows among them: point lights', spot lights', directional lights' in the atlas,
-    // and from sources with a size (PCSS)
-    bool point_shadows;
-    bool spot_shadows;
-    bool dir_tiles;
-    bool soft_shadows;
-    // SpotLight.map: the texture the spot lights project (the first one met), or null
-    Texture* cookie;
-    // the sets of buffers, one per render() in a frame; `used` of them this frame
-    List{LightBufferSet*} sets;
+    bool sized;           // True when any point/spot light has non-zero radius or tube length.
+    bool tubes;           // True when any point light is a tube light (length > 0).
+    bool point_shadows;   // True when any point or rect area light has atlas cube shadows.
+    bool spot_shadows;    // True when any spot light casts shadows.
+    bool dir_tiles;       // True when any secondary directional light uses an atlas tile.
+    bool soft_shadows;    // True when any shadowed light uses PCSS (softness > 0).
+    Texture* cookie;      // Active SpotLight.map projection texture for this frame, or null.
+    List{LightBufferSet*} sets;  // Per-render buffer sets rotated within a frame.
     int used;
     uint frame;
     bool warned;
     LightBufferSet* current;
-    // Renderer.check_compute: comparisons made, and how many differed
-    int checks;
-    int check_failures;
+    int checks;           // Renderer.check_compute: cluster grids verified.
+    int check_failures;   // Renderer.check_compute: cluster grids with mismatches.
 }
 
 LightData lights_gpu @private;
@@ -381,8 +371,8 @@ fn void LightData.clear(&self) {
     self.cookie = null;
 }
 
-// Sorts the lights into clusters and writes them all to a set of buffers of their own.
-// `check`: also sorts them on the CPU and compares (a frame later) with the GPU's result.
+// Assigns lights to clusters and uploads all light/shadow/cluster buffers into a fresh
+// LightBufferSet for this render. With `check`, also runs CPU clustering and tracks GPU readback.
 fn void LightData.upload(&self, ClusterGrid* grid, ClusterAssignFn assign, bool check = false) {
     if (!assign) assign = &cluster_lights_gpu;
     uint frame = sg::query_stats().prev_frame.frame_index;
@@ -406,7 +396,7 @@ fn void LightData.upload(&self, ClusterGrid* grid, ClusterAssignFn assign, bool 
     ClusterOutput out = { &self.clusters, &self.indices, &s.gpu_clusters, &s.gpu_indices, &s.gpu_ranges };
     s.on_gpu = assign(grid, self.point_bounds.array_view(), self.spot_bounds.array_view(), &out);
     if (self.rects.len()) {
-        // (the clusters index the point lights by position: these come after all of them)
+        // Append rect lights and LTC tables after point lights so cluster point indices stay intact.
         self.points.add_all(&self.rects);
         foreach (e : ltc_entries()) self.points.push(e);
     }
@@ -427,7 +417,7 @@ fn void LightData.upload(&self, ClusterGrid* grid, ClusterAssignFn assign, bool 
         );
         if (s.check_slot < 0) s.check_slot = readback_slot();
         if (s.check_slot2 < 0) s.check_slot2 = readback_slot();
-        // (an empty compute pass, just to track the buffers in)
+        // Empty compute pass used solely to attach readback tracking to the cluster buffers.
         begin_compute("drie-clusters-check");
         s.check_pending = s.gpu_clusters.track(s.check_slot) && s.gpu_indices.track(s.check_slot2);
         end_compute();
@@ -435,7 +425,7 @@ fn void LightData.upload(&self, ClusterGrid* grid, ClusterAssignFn assign, bool 
     self.current = s;
 }
 
-// Renderer.check_compute: compares the GPU's clusters of the last frame with the CPU's.
+// Compares the GPU cluster grid read back from the previous frame against the CPU reference.
 fn void LightBufferSet.compare_with_gpu(&self) {
     self.check_pending = false;
     sz nc               = self.check_clusters.len();
@@ -460,7 +450,7 @@ fn void LightBufferSet.compare_with_gpu(&self) {
     for (sz i = 0; i < nc; i++) {
         if (c[i].range != self.check_clusters[i].range) bad_clusters++;
     }
-    // (only where the CPU's index list has entries: the GPU's may be longer)
+    // Compare only the populated CPU prefix; the GPU buffer may hold excess capacity.
     for (sz i = 0; i < ni; i++) {
         if (ix[i].index != self.check_indices[i].index) bad_entries++;
     }
@@ -487,7 +477,7 @@ fn void LightData.bind(&self, SgBindings* bind) {
     bind.views[shaders::VIEW_LIGHT_INDICES] = s.on_gpu ? s.gpu_indices.view : s.indices.view;
 }
 
-// Room for one more light of a kind, up to Renderer.max_lights (a one-time warning past it).
+// Checks whether another light fits under `cap` (Renderer.max_lights), warning once if exceeded.
 fn bool LightData.room(&self, sz count, int cap) {
     if (cap <= 0 || count < cap) return true;
     if (!self.warned) io::eprintfn(
@@ -500,9 +490,9 @@ fn bool LightData.room(&self, sz count, int cap) {
 
 GpuPointLight[] ltc_packed @local;
 
-// The LTC tables (generated/ltc.c3) as the shader reads them from the point lights' buffer
-// (ltc_tables in shader_core.glsl): a texel an entry, LTC_1's in pos, LTC_2's in color (params
-// unused: one load per texel and table). There is no view slot left for textures of their own.
+// Packs the LTC lookup tables (generated/ltc.c3) as GpuPointLight entries appended to the point
+// light buffer (read by `ltc_tables` in shaders/shader_core.glsl; avoids consuming a texture slot).
+// Each entry stores one LTC_1 texel in `pos` and one LTC_2 texel in `color`.
 fn GpuPointLight[] ltc_entries() @private {
     if (ltc_packed.len) return ltc_packed;
     usz texels = LTC_1.len / 4;

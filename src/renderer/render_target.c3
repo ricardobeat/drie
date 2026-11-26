@@ -1,64 +1,53 @@
-// Offscreen render targets (RenderTarget): MSAA, linear HDR, and MRT attachments.
+// Offscreen render targets (RenderTarget): color, optional MSAA resolve, depth, and MRT buffers.
+// RGBA8 targets hold tone-mapped sRGB output; RGBA16F targets stay in linear HDR light for
+// drie::postprocessing passes (OutputPass, GTAOPass, TAAPass). With `mrt`, attachments 1..3
+// store world-space octahedral normals, screen-space motion vectors, and indirect lighting
+// shares (requires RGBA16F). Connects to Renderer.set_render_target and get_pipeline; render
+// targets have a top-left row origin on depth-[0,1] backends, so as_map() flips V accordingly.
 module drie;
 import sokol;
 
-// An offscreen image to render into, like three's WebGLRenderTarget.
-// Use `texture` (a sokol texture view) to sample the result in your own passes.
+// Offscreen render surface with optional MSAA, depth buffer, and MRT auxiliary attachments.
+// Sample `texture` directly in post-processing passes or call as_map() for a material Texture.
 struct RenderTarget {
-    int width;
-    int height;
-    int samples;
-    // its pixel format (like three's `type` and `format` options; 0 is RGBA8) and whether it
-    // has a depth buffer (`depthBuffer`). A scene can be rendered into RGBA8 (tone mapped and
-    // sRGB, ready to show) or RGBA16F (linear light, like three's HalfFloatType: tone map it
-    // with an OutputPass at the end), either with depth.
+    int width;                      // Target width in pixels.
+    int height;                     // Target height in pixels.
+    int samples;                    // MSAA sample count (1 or 4 for scene rendering).
+    // Pixel format (DEFAULT selects RGBA8). RGBA8 holds tone-mapped sRGB; RGBA16F holds linear
+    // HDR light for post-processing passes such as drie::postprocessing OutputPass.
     SgPixelFormat format;
-    bool depth_buffer;
-    SgImage color;
-    SgImage resolve;
-    SgImage depth;
-    SgView color_view;
-    SgView resolve_view;
-    SgView depth_view;
-    SgView texture;
-    // The resolved image that `texture` reads from.
-    SgImage texture_image;
-    // For post-processing: the depth of the last render (multisampled if the target is), and
-    // an attachment for drawing over the resolved picture.
-    SgView depth_texture;
-    SgView overlay_view;
-    // see as_map
-    Texture* map_texture;
-    // Multiple render targets, like three's `scenePass.setMRT(mrt({ output, normal, velocity }))`:
-    // a scene rendered into an RGBA16F target with `mrt` set also writes
-    //   normal_texture    RG16SN (RG16F where that can't be drawn into): the surface's normal
-    //                     in world space (after its normal map), packed into two numbers like
-    //                     three's packNormalToOctahedral (unpack_octahedral_normal in gtao.glsl)
-    //   velocity_texture  RG16F: how far it moved across the picture since the last frame
-    //                     drawn with MRT, in texture coordinates (uv now - uv then), with the
-    //                     camera's motion, each mesh's and a dynamic geometry's vertices'
-    //                     (BufferGeometry.dynamic); instances and skinned vertices are taken
-    //                     to stand still
-    //   indirect_texture  RGBA8: the share of the pixel's light that is indirect, r = diffuse
-    //                     (ambient, hemisphere, irradiance volume, baked vertex light), g =
-    //                     specular (environment map and screen-space reflections): what ambient
-    //                     occlusion darkens (GTAOPass in postprocessing.c3); b = the surface's
-    //                     roughness, a = its metalness
-    // Set it before the first set_size. See-through materials write none of them.
+    bool depth_buffer;              // Whether a depth attachment and depth_texture are allocated.
+    SgImage color;                  // Primary color attachment image (multisampled when samples > 1).
+    SgImage resolve;                // Single-sampled resolve target when samples > 1.
+    SgImage depth;                  // Depth attachment image (DEPTH format).
+    SgView color_view;              // Color attachment view for `color`.
+    SgView resolve_view;            // Resolve attachment view for `resolve`.
+    SgView depth_view;              // Depth-stencil attachment view for `depth`.
+    SgView texture;                 // Sampleable texture view of the resolved color image.
+    SgImage texture_image;          // Resolved image backing `texture` (`resolve` or `color`).
+    SgView depth_texture;           // Sampleable depth view (multisampled if `samples > 1`).
+    SgView overlay_view;            // Color attachment view over `texture_image` for post overlays.
+    Texture* map_texture;           // Cached Texture wrapper returned by as_map().
+    // Enables three extra attachments on an RGBA16F target (set before the first set_size()):
+    //   normal_texture    RG16SN (RG16F fallback): world-space shaded normal packed with
+    //                     octahedral encoding (see unpack_octahedral_normal in shaders/gtao.glsl)
+    //   velocity_texture  RG16F: UV delta (current - previous) from camera motion, mesh motion,
+    //                     and dynamic geometry vertices; instances and skinned vertices report 0
+    //   indirect_texture  RGBA8: r = diffuse indirect share, g = specular indirect share (used
+    //                     by GTAOPass in drie::postprocessing), b = roughness, a = metalness
+    // Transparent materials do not write to MRT attachments.
     bool mrt;
-    // the frame it was last drawn into (see first_pass)
-    uint drawn_frame;
+    uint drawn_frame;               // Engine frame counter + 1 of the last pass into this target.
     SgImage[MRT_COUNT] mrt_color;
     SgImage[MRT_COUNT] mrt_resolve;
     SgView[MRT_COUNT] mrt_color_view;
     SgView[MRT_COUNT] mrt_resolve_view;
-    SgView normal_texture;
-    SgView velocity_texture;
-    SgView indirect_texture;
+    SgView normal_texture;          // Sampleable MRT attachment 1: world-space octahedral normals.
+    SgView velocity_texture;        // Sampleable MRT attachment 2: screen-space motion vectors.
+    SgView indirect_texture;        // Sampleable MRT attachment 3: indirect shares, rough, metal.
 }
 
-// RenderTarget.mrt's extra pictures (after the color, at attachments 1, 2, 3) and their pixel
-// formats: normal, velocity, indirect.
+// Number of extra MRT color attachments after color (attachments 1..3: normal, velocity, indirect).
 const int MRT_COUNT = 3;
 fn SgPixelFormat mrt_format(int i) @private {
     switch (i) {
@@ -68,9 +57,8 @@ fn SgPixelFormat mrt_format(int i) @private {
     }
 }
 
-// The picture as a Texture, for any material's map, like three's `renderTarget.texture`: a
-// screen in the scene showing what another camera sees, say. It follows set_size. Call it
-// once the target has a size.
+// Exposes this render target as a material Texture (updated automatically on set_size()).
+// Call after the target has a non-zero size.
 //   RenderTarget* feed = drie::render_target(256, 144);
 //   screen_material.map = feed.as_map();
 //   renderer.set_render_target(feed); renderer.render(scene, other_camera);
@@ -86,7 +74,7 @@ fn Texture* RenderTarget.as_map(&self) {
         t.sampler = sg::make_sampler(
             &&{ .min_filter = LINEAR, .mag_filter = LINEAR, .wrap_u = CLAMP_TO_EDGE, .wrap_v = CLAMP_TO_EDGE }
         );
-        // a render target's first row is at the top, except in GL
+        // Non-GL backends store row 0 at the top of render targets; flip V to match image UVs.
         if (depth_zero_to_one()) {
             t.repeat.y = -1;
             t.offset.y = 1;
@@ -100,14 +88,12 @@ fn Texture* RenderTarget.as_map(&self) {
     return self.map_texture;
 }
 
-// samples > 1 renders with MSAA and resolves into `texture`. A target for post-processing
-// passes takes a format of its own (RGBA16F, RG16F, R16F...) and no depth buffer:
-//   drie::render_target(w, h, format: RGBA16F, depth_buffer: false)
-// A scene rendered into an RGBA16F target keeps its light as it is, brighter than white where
-// it is (see OutputPass in postprocessing.c3), and with `mrt` it also writes its normals and
-// motion (see RenderTarget.mrt):
+// Allocates a RenderTarget of `width` x `height` pixels. Pass `samples > 1` for MSAA with
+// automatic resolve into `texture`, `format: RGBA16F` for linear HDR output (tone-mapped later
+// by OutputPass in drie::postprocessing), `depth_buffer: false` for post-processing buffers, and
+// `mrt: true` on RGBA16F targets to also record normals, velocity, and indirect shares.
 //   drie::render_target(w, h, 4, RGBA16F, mrt: true)
-// Must be called after the window opened.
+// Must be called after GPU initialization.
 fn RenderTarget* render_target(
     int width,
     int height,
@@ -124,11 +110,13 @@ fn RenderTarget* render_target(
     return rt;
 }
 
+// Effective color pixel format, resolving DEFAULT to RGBA8.
 fn SgPixelFormat RenderTarget.pixel_format(&self) => self.format == DEFAULT ? RGBA8 : self.format;
 
-// Whether a scene rendered into it is left in linear light (a half-float target).
+// True when scenes rendered into this target stay in linear HDR light (RGBA16F).
 fn bool RenderTarget.is_linear(&self) => self.pixel_format() == RGBA16F;
 
+// Destroys all GPU images and views while preserving format, depth_buffer, mrt, and map_texture.
 fn void RenderTarget.dispose(&self) {
     if (self.texture.id) sg::destroy_view(self.texture);
     if (self.color_view.id) sg::destroy_view(self.color_view);
@@ -155,6 +143,8 @@ fn void RenderTarget.dispose(&self) {
     *self = { .map_texture = map, .format = format, .depth_buffer = depth_buffer, .mrt = mrt };
 }
 
+// Recreates the target's GPU images and views when dimensions or sample count change, and updates
+// any Texture returned by as_map().
 fn void RenderTarget.set_size(&self, int width, int height, int samples = 1) {
     if (self.width == width && self.height == height && self.samples == samples) return;
     self.dispose();
@@ -239,6 +229,7 @@ fn void RenderTarget.set_size(&self, int width, int height, int samples = 1) {
     if (self.map_texture) self.as_map();
 }
 
+// Builds the sokol SgAttachments struct (color, optional MSAA resolves, depth, and MRT slots).
 fn SgAttachments RenderTarget.attachments(&self) {
     SgAttachments a;
     a.colors[0] = self.color_view;

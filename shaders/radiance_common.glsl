@@ -1,9 +1,11 @@
-// Shared Radiance Cascades building blocks included by shader_core.glsl, radiance_cs.glsl,
-// radiance_rays_cs.glsl and the material shaders.
+// Shared RadianceCascades GLSL blocks included by shaders/shader_core.glsl,
+// shaders/radiance_cs.glsl, and shaders/radiance_rays_cs.glsl (regenerate with `just shaders`).
 //
 //   rc_key_common    32-bit spatial hash and probe key packing (shared with material shaders)
-//   rc_pack_common   voxel, brick, light and fp16 radiance structs and packing helpers
-//   rc_trace_common  64-bit occupancy-mask brick DDA (rc_march) and RIS direct light
+//   rc_pack_common   voxel, brick, light, and fp16 radiance structs and packing helpers
+//   rc_cell_common   voxel grid bounds and 64-bit brick occupancy tests
+//   rc_march_common  64-bit occupancy-mask brick DDA (rc_march)
+//   rc_trace_common  sky evaluation and RIS direct lighting (rc_direct_light)
 
 @block rc_key_common
 const float RC_PI = 3.14159265;

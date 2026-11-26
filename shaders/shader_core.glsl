@@ -1,3 +1,7 @@
+// Shared GLSL shader core for forward, deferred lighting, depth pre-pass, and shadow passes:
+// uniform/SSBO layouts, PBR and physical material BRDFs, clustered lights, PCF/VSM/RT/contact
+// shadows, GI, reflections, and fog. Included by shaders/shader.glsl and shader_deferred.glsl;
+// regenerate generated/shader.c3 and generated/shader_deferred.c3 with `just shaders`.
 @include radiance_common.glsl
 
 // Shared by the main and the shadow vertex shaders, so both move vertices identically.
@@ -15,7 +19,7 @@ in vec4 inst2;
 // this times the displacement's scale, plus its bias (see displaced)
 in float height;
 
-// Instances culled on the GPU (renderer.c3, kernels.glsl cull_cs) are not read from the
+// Instances culled on the GPU (Renderer, shaders/kernels.glsl cull_cs) are not read from the
 // attributes above but from the storage buffers below: instance i of the draw is
 // rows[3 * visible[first + i]], if i is under counts[job] (the cull's survivors; the draw may
 // ask for more, its count comes from an earlier frame).
@@ -109,7 +113,7 @@ layout(binding=0) uniform vs_params {
     vec4 motion;        // x = 0: as if nothing moved, 1: only the camera moved, 2: the mesh may have
                         //   moved or sways too; y = the last frame's sway time; zw = the camera's
                         //   jitter (in clip space, per unit of w), left out of the motion
-    vec4 bake;          // x = 1: baking a light map (lightmap.c3): drawn where v_uv1 is in it,
+    vec4 bake;          // x = 1: baking a light map (ProgressiveLightMap): drawn where v_uv1 is in it,
                         //   y = 1: the target's row 0 is its top (texel row r at v = (r + 0.5) / size)
     vec4 surface_vs;    // x = Material.outline: how far the vertices are pushed out along their
                         //   normals, in clip space per unit of w (0: not); yzw = the displacement
@@ -266,8 +270,8 @@ layout(binding=6) uniform texture3D tex_gi;
 layout(binding=7) uniform texture2D ssr_color;   // the last frame: tone mapped, sRGB, a = 0 at light sources
 layout(binding=8) uniform texture2D ssr_depth;   // g = its distance from the camera's plane (m)
 #ifdef VSM
-// Renderer.shadow_type = VSM: the maps' moments (mean depth, its standard deviation; vsm.glsl)
-// in place of their depths, on the same slots (the fog's kernel reads the depths)
+// Renderer.shadow_type = VSM: the maps' moments (mean depth, its standard deviation;
+// shaders/vsm.glsl) in place of their depths, on the same slots (the fog kernel reads the depths)
 layout(binding=3) uniform texture2D vsm_map;
 layout(binding=5) uniform texture2D vsm_atlas;
 layout(binding=9) uniform texture2D vsm_sun;
@@ -278,9 +282,9 @@ layout(binding=9) uniform texture2D sun_shadow;  // the directional light's map:
 #endif
 layout(binding=21) uniform texture2D light_cookies; // the spot lights' SpotLight.map (an atlas, see spot_cookie)
 layout(binding=20) uniform texture2D ssr_back;    // r = the nearest back face's distance from the camera's plane (m), 0: none
-layout(binding=23) uniform texture2DArray tex_probes; // the scene's reflection probes (reflection_probes.c3)
+layout(binding=23) uniform texture2DArray tex_probes; // the scene's reflection probes (ReflectionProbes)
 layout(binding=24) uniform texture2D tex_parallax; // Material.parallax_map: the surface's height, 1 = top
-layout(binding=19) uniform texture2D fog_volume; // volumetric fog: the froxel grid (fog.c3, fog_cs in kernels.glsl)
+layout(binding=19) uniform texture2D fog_volume; // volumetric fog: the froxel grid (Fog, fog_cs in shaders/kernels.glsl)
 layout(binding=25) uniform texture2D tex_transmission; // the scene behind the transmission materials, with mip levels
 // The material's other maps (ao_map, specular_color_map, clearcoat_map...): six slots they
 // share, which holds which in map_slots (see material_map)
@@ -367,13 +371,13 @@ layout(binding=1) uniform fs_params {
                            //   z = noise seed, w = 1: the last frame's row 0 is its top
     vec4 ssr_thickness;    // x = 1: ssr_back has the last frame's back faces, y = this material's reach (m)
     vec4 quality_params;   // x = Renderer.shadow_sample_scale, y = ssr_steps, z = ssr_max_step (px)
-    mat4 reflector_view_proj;  // world -> the Reflector's picture's clip space (reflector.c3)
+    mat4 reflector_view_proj;  // world -> the Reflector's picture's clip space (Reflector)
     vec4 reflector_params;     // x = strength (0: no reflector), y = distortion (m), z = blur
     vec4 probe_info;           // x = the scene's reflection probes (0: none; env_params.x = 2: this material uses them)
     vec4 probe_pos[4];         // where each was captured, w = meters its map's alpha 1 stands for
     vec4 probe_min[4];         // its box (min == max: everywhere else), w = blend width (m)
     vec4 probe_max[4];         // w = intensity
-    vec4 rc_min;               // radiance cascades (radiance.c3): the box's corner, w = probe spacing (m)
+    vec4 rc_min;               // radiance cascades (RadianceCascades): the box's corner, w = probe spacing (m)
     vec4 rc_size;              // xyz = probes, w = intensity (0: none)
     vec4 parallax_params;      // Material.parallax_map: x = depth (m; 0: none), y = distance (m) where
                                //   it has faded out, z = self-shadowing toward the sun (0..1);
@@ -408,7 +412,7 @@ layout(binding=1) uniform fs_params {
                                //   refraction ratio (0: it mirrors), w = 1: on
     vec4 focus_params;         // Material.defocus: x = Renderer.focus_aperture (0: not), y = focus_maxblur
     vec4 shadow_ext;           // x = the shadow casting directional light's shadow.bias (VSM)
-    vec4 bake_params;          // baking a light map (lightmap.c3): x = 1, y = the new sample's
+    vec4 bake_params;          // baking a light map (ProgressiveLightMap): x = 1, y = the new sample's
                                //   share (1 / blend window); ssr_color holds the last map
     vec4 uv_rel[16];           // per map slot (0: tex_normal, 1: tex_arm, 2..7: tex_ext0..5), its uv
                                //   from the color map's (g_uv; each texture has its own
@@ -496,8 +500,8 @@ layout(binding=12) readonly buffer spot_lights { gpu_spot_light spots[]; };
 layout(binding=13) readonly buffer spot_shadows { gpu_spot_shadow spot_shadow_data[]; };
 layout(binding=14) readonly buffer light_clusters { gpu_light_cluster clusters[]; };
 layout(binding=15) readonly buffer light_indices { gpu_light_index cluster_lights[]; };
-// RadianceCascades (radiance.c3): per probe of cascade 0, the light arriving on surfaces
-// facing +x -x +y -y +z -z (w = 0: the probe is inside something)
+// RadianceCascades (drie): per probe of cascade 0, the light arriving on surfaces facing
+// +x -x +y -y +z -z (w = 0: the probe is inside something)
 struct rc_probe {
     vec4 e;
 };
@@ -938,7 +942,7 @@ vec3 direct(int mode, vec3 n, vec3 v, vec3 l, float dist, vec3 radiance, vec3 di
 // RE_Direct_RectArea_Physical), with linearly transformed cosines (Heitz, Dupuy, Hill and
 // Neubelt 2016). The lights are in point_lights after the point lights, three vec4s each:
 // pos = centre + half width's x, color = color * intensity + half width's y, params = half
-// width's z + half height; and after them the two LTC tables (clusters.c3's ltc_entries),
+// width's z + half height; and after them the two LTC tables (drie::ltc_entries),
 // a texel an entry (pos = LTC_1's, color = LTC_2's), read here with the bilinear filter
 // three's textures have.
 
@@ -1077,8 +1081,7 @@ float shadow_depth(float d, vec4 soft, bool linear) {
 }
 
 // The cluster that holds world position `p`: its tile of the screen, and its slice of view
-// depth (slices grow exponentially from cluster_depth.x to .z). Matches cluster_lights_cpu in
-// renderer.c3.
+// depth (slices grow exponentially from cluster_depth.x to .z). Matches drie::cluster_lights_cpu.
 int cluster_of(vec3 p) {
     ivec3 grid = ivec3(cluster_grid.xyz);
     vec4 clip = cluster_view_proj * vec4(p, 1.0);
@@ -1265,8 +1268,8 @@ float contact_shadow(vec3 l, float len, vec3 geo_n, float intensity) {
     return 1.0;
 }
 
-// A ray-traced rect area light's shadow (ray_shadows.c3): channel `ch` of its mask, in
-// tex_ext5 in the lighting pass (lit elsewhere).
+// A ray-traced rect area light's shadow (RectAreaLight.shadow.ray_traced): channel `ch` of its
+// mask, in tex_ext5 during the deferred lighting pass (lit elsewhere).
 float rt_shadow(int ch) {
 #ifdef DEFERRED_LIGHT
     ivec2 size = textureSize(sampler2D(tex_ext5, tex_smp), 0);
@@ -1313,8 +1316,8 @@ float point_shadow(gpu_point_light pl, vec3 n) {
 }
 
 // Shadow of a rect area light: the map that the point is in of its cube turned with the light
-// (renderer.c3's rect_shadow_view_proj: its front, 0, and the front halves of its sides, +x,
-// -x, +y and -y, 1 to 4).
+// (rect_shadow_view_proj in Renderer: its front, 0, and the front halves of its sides, +x, -x,
+// +y and -y, 1 to 4).
 float rect_shadow(gpu_point_light ra, vec3 n) {
     int si = int(ra.shadow.x);
     if (si < 0 || (flags() & 4) == 0) return 1.0;
@@ -1681,11 +1684,11 @@ float ssr_depth_at(vec2 uv) {
 // returns what it runs into there (linear, as the camera saw it); `found` is 0 when it leaves
 // the picture or hits nothing. A rough surface sends its one ray somewhere in a wider cone,
 // which shows as noise until something downstream (a temporal filter, a tape) evens it out.
-// A Reflector's picture (reflector.c3) where the ray from here along the normal's reflection
-// would be seen: exact for a flat surface, and for a bumpy one as if what it mirrors were
-// reflector_params.y away. Blurred by roughness; `found` fades out at the picture's edges.
-// A Reflector's mirrored render (linear) is in one of the material's map slots, tex_ext0..5:
-// reflector_params.w's (see reflector_slot in renderer.c3).
+// A Reflector's picture where the ray from here along the normal's reflection would be seen:
+// exact for a flat surface, and for a bumpy one as if what it mirrors were reflector_params.y
+// away. Blurred by roughness; `found` fades out at the picture's edges. The mirrored render
+// (linear) is in one of the material's map slots, tex_ext0..5, chosen by reflector_params.w
+// (matching drie::reflector_slot).
 vec2 reflector_size() {
     int slot = int(reflector_params.w);
     if (slot == 0) return vec2(textureSize(sampler2D(tex_ext0, ssr_smp), 0));
@@ -2127,7 +2130,7 @@ vec2 env_uv(vec3 d) {
 }
 
 // The light the scene's environment puts on a surface facing n, but for its sun (env_sun):
-// env_sh's 9 spherical harmonics, in the order of texture.c3's sh_basis.
+// env_sh's 9 spherical harmonics, in the order of drie's sh_basis.
 vec3 env_irradiance(vec3 n) {
     vec3 e = env_sh[0].rgb + env_sh[1].rgb * n.y + env_sh[2].rgb * n.z + env_sh[3].rgb * n.x
            + env_sh[4].rgb * (n.x * n.y) + env_sh[5].rgb * (n.y * n.z) + env_sh[6].rgb * (3.0 * n.z * n.z - 1.0)
@@ -3294,11 +3297,10 @@ void main() {
 }
 @end
 
-// The depth prepass (renderer.c3, Renderer.depth_prepass): depth only, for what has holes in
-// it (alpha tested, LOD cross-fades, the cull box). The main pass then draws those with
-// fs_opaque and an EQUAL depth test, so that no shader of the main pass discards (a shader
-// that can discard costs the GPU its early depth test, whatever it draws). Cuts out exactly
-// what fs does.
+// The depth prepass (Renderer.depth_prepass): depth only, for what has holes in it (alpha
+// tested, LOD cross-fades, the cull box). The main pass then draws those with fs_opaque and an
+// EQUAL depth test, so that no shader of the main pass discards (a shader that can discard costs
+// the GPU its early depth test, whatever it draws). Cuts out exactly what fs does.
 @block depth_main
 layout(binding=0) uniform texture2D tex_map;
 layout(binding=1) uniform texture2D tex_alpha;

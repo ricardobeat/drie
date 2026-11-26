@@ -1,33 +1,37 @@
+// Linear HDR bloom (`UnrealBloomPass`, `shaders/bloom.glsl`) and screen-space lens flare
+// (`LensFlarePass`, `shaders/flare.glsl`). `UnrealBloomPass` builds a progressive mip chain of
+// up to 8 half-resolution `RGBA16F` targets and upsamples back through a tent filter with
+// additive blending into the source target; `LensFlarePass` derives quarter-resolution chromatic
+// ghosts and a halo from a blurred bright input (such as `bloom.mips[3]`) and adds them over the
+// target. Both run in linear light before `OutputPass`; call `dispose()` to free GPU resources.
+
 module drie::postprocessing;
 import std::collections::list;
 import sokol, drie;
 
-// The glow round what is bright, like three's UnrealBloomPass (strength, radius, threshold),
-// made as Call of Duty's and Unreal's bloom is (see bloom.glsl): the picture (linear light)
-// halved `levels` times, then added back up, each level through a tent filter into the one
-// above, and the result added to the picture. With threshold 0 everything glows a little, by
-// how bright it is, as through a real lens (keep strength low then: 0.02 to 0.1); a threshold
-// makes only what is brighter glow.
+// ---- UnrealBloomPass
+
+// Progressive downsample/upsample bloom pass (`shaders/bloom.glsl`, after Call of Duty/Unreal
+// bloom) operating in place on a linear HDR `RenderTarget`.
 //
 //   UnrealBloomPass* bloom = postprocessing::unreal_bloom_pass(strength: 0.05, threshold: 0);
-//   bloom.render(hdr_target);           // adds the glow to its picture
+//   bloom.render(hdr_target);
+//
+// With `threshold == 0`, all brightness levels contribute proportionally (use low `strength`,
+// around `0.02..0.1`); a positive threshold restricts bloom to brighter highlights.
 struct UnrealBloomPass {
     inline Pass pass;
-    // how much of the glow is added
-    float strength;
-    // how far it spreads, 0..1: each level, twice as wide as the one above, counts this much
-    // of it (1: all as much)
-    float radius;
-    // the brightness (linear light) above which things glow, and how softly they start to
-    float threshold;
-    float knee;
-    // levels of halving (1..8): more spreads the glow further
-    int levels;
-    RenderTarget*[8] mips;
-    ShaderPass down;
-    ShaderPass up;
+    float strength; // Normalized multiplier on the final upsampled glow added to the target.
+    float radius; // Per-mip upsample weight (`0..1`): each coarser level contributes `radius^i`.
+    float threshold; // Linear luminance threshold above which pixels enter the bloom chain.
+    float knee; // Soft-threshold transition width around `threshold` (default `0.5`).
+    int levels; // Number of half-resolution mip levels (`1..8`); more levels widen the halo.
+    RenderTarget*[8] mips; // Lazily allocated `RGBA16F` mip chain (also reusable as `LensFlarePass` input).
+    ShaderPass down; // 13-tap downsample and threshold pass.
+    ShaderPass up; // 9-tap tent upsample pass using `ADDITIVE_BLEND`.
 }
 
+// Allocates an `UnrealBloomPass` with the given `strength`, `radius`, `threshold`, and `levels`.
 fn UnrealBloomPass* unreal_bloom_pass(float strength = 1, float radius = 0.4, float threshold = 0.85, int levels = 6) {
     UnrealBloomPass* p = mem::new(UnrealBloomPass);
     *p = {
@@ -46,7 +50,8 @@ fn UnrealBloomPass* unreal_bloom_pass(float strength = 1, float radius = 0.4, fl
     return p;
 }
 
-// Adds the glow of `target`'s picture (linear light) to it.
+// Downsamples `target` (linear light) through `levels` mips and additively composites the
+// upsampled bloom back over `target`.
 fn void UnrealBloomPass.render(&self, RenderTarget* target) {
     int n = self.levels < 1 ? 1 : (self.levels > 8 ? 8 : self.levels);
     int w = target.width;
@@ -57,7 +62,7 @@ fn void UnrealBloomPass.render(&self, RenderTarget* target) {
         if (!self.mips[i]) self.mips[i] = drie::render_target(w, h, 1, RGBA16F, false);
         self.mips[i].set_size(w, h, 1);
     }
-    // down, each level from the one above
+    // Downsample chain, applying the brightness threshold on level 0.
     SgView src = target.texture;
     int sw = target.width;
     int sh = target.height;
@@ -74,7 +79,7 @@ fn void UnrealBloomPass.render(&self, RenderTarget* target) {
         sw = m.width;
         sh = m.height;
     }
-    // up, each level added into the one above it; the levels' weights 1, r, r^2...
+    // Upsample chain, accumulating level `i` into `i - 1` with geometric weights `1, r, r^2, ...`.
     float r = self.radius < 0 ? 0 : (self.radius > 1 ? 1 : self.radius);
     float total = 1;
     float k = 1;
@@ -103,36 +108,34 @@ fn void UnrealBloomPass.render(&self, RenderTarget* target) {
     self.up.render_over(target);
 }
 
+// Disposes the downsample/upsample shaders and all allocated mip targets.
 fn void UnrealBloomPass.dispose(&self) {
     self.down.dispose();
     self.up.dispose();
     foreach (m : self.mips) if (m) m.dispose();
 }
 
-// A lens's ghosts and halo of what is bright (see flare.glsl): render() makes them from a
-// blurred bright picture, one of the bloom's smaller levels, say (the blurrier, the softer the
-// ghosts), and adds them to the target's picture.
+// ---- LensFlarePass
+
+// Screen-space lens ghosts and halo (`shaders/flare.glsl`) rendered at quarter resolution from a
+// blurred bright image and additively composited onto the HDR target.
 //
 //   LensFlarePass* flare = postprocessing::lens_flare_pass();
 //   bloom.render(hdr_target);
 //   flare.render(hdr_target, bloom.mips[3]);
 struct LensFlarePass {
-    // how much of the flare is added
-    float strength;
-    // the brightness (linear light) the flare is made from above
-    float threshold;
-    // ghosts (up to 8), their spacing along the line through the middle (a part of the
-    // picture), the halo's radius (a part of the picture's height), and how far apart red,
-    // green and blue are (a part of the picture)
-    int ghosts;
-    float spacing;
-    float halo;
-    float dispersion;
-    RenderTarget* flare;
-    ShaderPass make;
-    ShaderPass add;
+    float strength; // Additive multiplier applied when compositing `flare` over `target`.
+    float threshold; // Linear brightness threshold above which highlights generate flare features.
+    int ghosts; // Number of mirrored lens ghosts (`0..8`, default 5).
+    float spacing; // Ghost step size along the vector through screen center (UV fraction).
+    float halo; // Halo ring radius as a fraction of screen height.
+    float dispersion; // Chromatic RGB channel separation as a UV fraction.
+    RenderTarget* flare; // Quarter-resolution `RGBA16F` scratch target holding generated flare.
+    ShaderPass make; // Flare generation pass (`shaders/flare.glsl`).
+    ShaderPass add; // Additive tent upsample pass reusing `shaders/bloom.glsl`.
 }
 
+// Allocates a `LensFlarePass` with the given `strength` and linear brightness `threshold`.
 fn LensFlarePass* lens_flare_pass(float strength = 0.4, float threshold = 2) {
     LensFlarePass* p = mem::new(LensFlarePass);
     *p = { .strength = strength, .threshold = threshold, .ghosts = 5, .spacing = 0.32f, .halo = 0.42f, .dispersion = 0.006f };
@@ -143,7 +146,8 @@ fn LensFlarePass* lens_flare_pass(float strength = 0.4, float threshold = 2) {
     return p;
 }
 
-// Adds the flare of `bright` (a blurred picture of the target's, any size) to `target`.
+// Generates ghosts and halo from `bright` (typically a coarser `UnrealBloomPass.mips[i]`) and
+// additively composites them over `target`.
 fn void LensFlarePass.render(&self, RenderTarget* target, RenderTarget* bright) {
     int w = target.width / 4 > 1 ? target.width / 4 : 1;
     int h = target.height / 4 > 1 ? target.height / 4 : 1;
@@ -165,13 +169,14 @@ fn void LensFlarePass.render(&self, RenderTarget* target, RenderTarget* bright) 
     self.add.render_over(target);
 }
 
+// Disposes the flare shader passes and quarter-resolution scratch target.
 fn void LensFlarePass.dispose(&self) {
     self.make.dispose();
     self.add.dispose();
     if (self.flare) self.flare.dispose();
 }
 
-// In an EffectComposer (RGBA16F): adds the glow to the picture, which the next pass reads.
+// `EffectComposer` entry point: adds bloom in place to `read` for downstream passes.
 fn void unreal_bloom_pass_render(
     Pass* pass,
     EffectComposer* composer,

@@ -1,8 +1,7 @@
-// GPU time per pass on Metal (gpu_timer.c3): a counter sample buffer per frame in flight, sampled
-// at the start and end of each pass's encoder (stage boundaries, all Apple GPUs allow; drie's
-// sokol patch sg_mtl_set_pass_timestamps), read back once the frame's command buffer has
-// completed. Compiled as Objective-C (ARC) on Apple; gputimer_win.c and gputimer_gl.c are the
-// D3D11 and GL versions, with the same functions.
+// Per-pass GPU timing on Metal for drie::gpu_timer: allocates one MTLCounterSampleBuffer per
+// frame in flight, samples pass encoder stage boundaries via sokol's sg_mtl_set_pass_timestamps
+// patch, and resolves elapsed ms once the command buffer completes. Compiled as Objective-C (ARC)
+// on Apple; platform/gputimer_win.c and platform/gputimer_gl.c provide D3D11 and GL equivalents.
 #if defined(__APPLE__)
 #import <Metal/Metal.h>
 #include <stdbool.h>

@@ -1,18 +1,9 @@
-// Writes pictures as PNG files (8 bits per channel, RGB, deflate's stored blocks: quick, not
-// small), for captures and the rendering tests:
-// 
-//   png::write("shot.png", pixels, width, height);              // RGBA, sRGB
-//   png::write("shot.png", pixels, width, height, p3: true);    // RGBA, in Display P3's colors
-// 
-// `compress: true` deflates the pixels (smaller, slower to write).
+// Minimal 8-bit RGB PNG writer and chunk reader for captures and rendering tests. Writes fast
+// uncompressed deflate stored blocks by default (`compress: true` enables deflate compression),
+// tags color space via `sRGB` or Display P3 `cICP`/`cHRM`/`gAMA` chunks, and supports custom
+// ancillary chunks via `extra` and `png::find_chunk()`.
 //
-// A picture in Display P3 says so in a cICP chunk (P3's primaries and white, sRGB's curve),
-// with cHRM and gAMA for readers that predate it; one in sRGB says so in an sRGB chunk.
-//
-// Chunks of your own go in with `extra` (text in an iTXt, data in a private chunk), and
-// find_chunk() gets one back out of a file's bytes:
-//
-//   png::write("shot.png", pixels, w, h, extra: { { "iTXt", text }, { "abCd", data } });
+//   png::write("shot.png", pixels, w, h, p3: true);
 //   char[] data;
 //   if (png::find_chunk(file_bytes, "abCd", &data)) ...
 module drie::png;
@@ -58,17 +49,16 @@ fn void chromaticities(List{char}* out, uint[8] xy) @local {
     chunk(out, "cHRM", data.entries[:(sz)data.len()]);
 }
 
-// A chunk to write along with the picture: `type` is its four letters (see the PNG spec for
-// what their case means; lowercase-uppercase-uppercase-lowercase, "abCd", is a private chunk
-// that readers skip and editors keep).
+// Extra PNG chunk written before `IDAT`. Use PNG's four-letter casing rules (for example,
+// `"abCd"` is a private safe-to-copy chunk that decoders ignore).
 struct Chunk {
-    String type;
-    char[] data;
+    String type; // Four-byte ASCII chunk type.
+    char[] data; // Raw chunk payload bytes.
 }
 
-// Writes `pixels` (top row first, `channels` bytes each: 4 for RGBA, 3 for RGB; alpha is left
-// out) to `path`. `bgra`: blue comes first. `p3`: the colors are Display P3's (the output of a
-// pass with DISPLAY_P3_COLOR_SPACE), not sRGB's.
+// Writes 8-bit RGB PNG data from `pixels` (top row first, `channels` bytes per pixel: 3 or 4,
+// dropping alpha) to `path`. Set `bgra` for BGRA byte order, `p3` to tag Display P3 (`cICP` +
+// `cHRM`/`gAMA`) instead of sRGB, `extra` for custom chunks, and `compress` for deflate output.
 fn bool write(String path, char[] pixels, int width, int height, bool p3 = false, bool bgra = false, int channels = 4,
                Chunk[] extra = {}, bool compress = false) {
     // raw scanlines: filter byte + RGB

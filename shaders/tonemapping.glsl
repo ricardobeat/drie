@@ -1,10 +1,8 @@
-// Tone mapping and output encoding, as three.js's tonemapping_pars_fragment and
-// colorspace_pars_fragment: the material shader uses it when it draws into the window or an
-// 8-bit target, OutputPass after post-processing in linear light. An application's own passes
-// can @include it too (`@include_block tonemapping` inside a shader block).
-//
-// `mode` is the ToneMapping enum's ordinal (renderer.c3); `exposure` is
-// renderer.tone_mapping_exposure.
+// Shared tone mapping, gamut conversion, HDR boost, sRGB encoding, and color-grade log shaper
+// blocks (`tonemapping` and `grade_shaper`), matching three.js's tone mapping curves. Included by
+// shaders/shader.glsl, shaders/shader_deferred.glsl, shaders/output.glsl, and shaders/grade.glsl
+// (regenerate their generated/*.c3 bindings with `just shaders`). `mode` is drei::ToneMapping's
+// ordinal and `exposure` is Renderer.tone_mapping_exposure.
 @block tonemapping
 #define TONE_NONE 0
 #define TONE_LINEAR 1
@@ -173,7 +171,7 @@ vec3 encode_for_display(vec3 srgb, int display) {
 }
 @end
 
-// The log shaper of the color grading's LUT (grade.glsl, output.glsl)
+// The log shaper of the color grading LUT (shaders/grade.glsl, shaders/output.glsl)
 @block grade_shaper
 // the log shaper: GRADE_LOW stops under middle grey to GRADE_LOW + GRADE_RANGE over it, 0..1
 const float GRADE_GREY = 0.18;

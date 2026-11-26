@@ -1,13 +1,18 @@
-// Render pipelines, vertex layouts, blend states, and background program warmup.
+// Render pipeline creation, vertex buffer layouts, blend state packing, and shader warmup.
+// Defines the 7-buffer vertex layout (0: mesh vertices, 1: instance 3x4 rows, 2: uv1, 3: tangents,
+// 4: displacement heights, 5: instance colors, 6: previous-frame positions), caches forward,
+// depth-prepass, deferred G-Buffer, and shadow pipelines on MaterialProgram, and coordinates
+// worker-thread shader compilation with `material_program()` and `pipeline_warmup`. Connects to
+// draw_item(), draw_shadow_item(), Renderer.render(), and pipeline cache recording.
 module drie;
 import std::collections::list, std::collections::map, std::math;
 import sokol, drie::nodes;
 
-// position, normal, uv, color, uv1, tangent, the instance's three rows, the height, the
-// instance's color and the position a frame ago. Buffer 0: the geometry's vertices, 1: the
-// instances, 2: the second uv set, 3: the tangents, 4: the heights, 5: the instances' colors,
-// 6: the vertices a frame ago (see bind_instances); the tangent, the instance color and the
-// position a frame ago only for a program that reads them (-1: none).
+// ---- Vertex layout and blend state
+
+// Builds the shared 7-buffer vertex layout for attribute locations: [position, normal, uv, color,
+// uv1, tangent, inst0, inst1, inst2, height, instance_color, prev_position]. Optional slots
+// (tangent, instance_color, prev_position) are omitted when their attribute index is -1.
 fn SgVertexLayoutState vertex_layout(int[12] attrs) @private {
     SgVertexLayoutState layout;
     layout.buffers[0].stride = FLOATS_PER_VERTEX * float::size;
@@ -38,21 +43,17 @@ fn SgVertexLayoutState vertex_layout(int[12] attrs) @private {
     return layout;
 }
 
-// How a draw of the main pass is made (see Renderer.depth_prepass).
+// Pass mode for main-pass draws (see Renderer.depth_prepass).
 enum DrawKind : char @private {
-    // the shader that can cut holes (transparent things, or without a depth prepass)
-    CUT,
-    // the shader that cuts none, for what has no holes
-    SOLID,
-    // the same, where the depth prepass has drawn: an EQUAL depth test, no depth written
-    PRETESTED,
-    // the depth prepass: depth only, holes cut
-    DEPTH,
+    CUT,        // Shader may discard fragments (alpha test, dither, cull box, or transparent).
+    SOLID,      // No fragment discard; preserves hardware early-Z.
+    PRETESTED,  // Shaded after depth prepass with EQUAL depth test and depth writes disabled.
+    DEPTH,      // Depth-only prepass with color writes masked off and discard enabled.
 }
 
-// The blend state a material draws with, packed (0: none), as three's setBlending: a normal
-// material blends only when transparent. 1 + 2 * mode + premultiplied for the modes, or the
-// custom one's equations and factors above bit 4.
+// Packs a material's blend configuration into an integer key (0 disables blending; normal
+// blending activates only when `transparent` is set). Preset modes pack into 1..15; custom
+// equations and factors pack above bit 4.
 fn ulong blend_key(Material* mat) @private {
     if (mat.blending == NO_BLENDING || (mat.blending == NORMAL_BLENDING && !mat.transparent)) return 0;
     if (mat.blending != CUSTOM_BLENDING) return 1 + 2 * (ulong)mat.blending.ordinal + (mat.premultiplied_alpha ? 1UL : 0UL);
@@ -87,7 +88,7 @@ fn SgBlendOp sg_op(ulong e) @local {
     }
 }
 
-// The blend state of blend_key's key (three's setBlending).
+// Unpacks a blend_key() value into a sokol SgBlendState.
 fn SgBlendState blend_state(ulong key) @private {
     if (key == 0) return { };
     if (key >= 16) {
@@ -128,8 +129,10 @@ fn SgBlendState blend_state(ulong key) @private {
     }
 }
 
-// Whether `mat` draws with the physical material's layers (clear coat, sheen, iridescence,
-// anisotropy, transmission, glass), which the deferred G-buffer doesn't hold.
+// ---- Main and G-Buffer pipelines
+
+// True when `mat` uses physical surface layers not representable in the deferred G-Buffer
+// (clearcoat, sheen, iridescence, anisotropy, transmission, or glass).
 fn bool physical_layers(Material* mat) @private {
     return mat.type == STANDARD && (mat.clearcoat > 0 || mat.clearcoat_node.id || mat.clearcoat_roughness_node.id
         || mat.sheen > 0 || mat.sheen_color_map != null || mat.sheen_roughness_map != null
@@ -139,9 +142,9 @@ fn bool physical_layers(Material* mat) @private {
         || mat.glass);
 }
 
-// The pipeline of generated program `gen` (its depth prepass's for DrawKind.DEPTH) with this
-// state; `gbuffer`: into the deferred G-buffer. None while a pipeline cache being loaded
-// compiles it in the background.
+// Looks up or creates a cached SgPipeline on `gen` for the requested raster, depth, target, and
+// deferred G-Buffer state. Dispatches background compilation and returns `{}` during pipeline
+// cache warmup.
 fn SgPipeline get_pipeline(
     Side side,
     bool transparent,
@@ -159,7 +162,7 @@ fn SgPipeline get_pipeline(
     if (rt && rt.samples != 1 && rt.samples != 4) abort("drie: render targets support 1 or 4 samples");
     if (rt && rt.pixel_format() != RGBA8 && !rt.is_linear()) abort("drie: a scene renders into RGBA8 or RGBA16F");
     int samples   = rt ? rt.samples : sapp::sample_count();
-    // after the prepass, the coverage of the cut-out's edge is in the depth buffer's samples
+    // Pretested draws rely on per-sample depth written by the depth prepass instead of A2C.
     bool a2c      = alpha_test && !transparent && samples > 1 && kind != PRETESTED;
     if (kind == DEPTH) blend = 0;
     bool vsm      = kind != DEPTH && !gbuffer && state.renderer && state.renderer.shadow_type == VSM;
@@ -252,7 +255,7 @@ fn SgPipeline get_pipeline(
             desc.color_count = 1 + MRT_COUNT;
             for (int i = 0; i < MRT_COUNT; i++) {
                 desc.colors[i + 1].pixel_format = mrt_format(i);
-                // what can be seen through leaves the normal, motion and light of what is behind it
+                // Transparent and depth-only passes preserve underlying MRT normal/velocity/indirect.
                 if (kind == DEPTH || transparent) desc.colors[i + 1].write_mask = NONE;
             }
         }
@@ -270,8 +273,7 @@ fn SgPipeline get_pipeline(
     return pip;
 }
 
-// The engine's depth (render_back_faces) and shadow (clear_atlas_tile) programs, made the
-// first time.
+// Lazily creates the built-in depth shader (`render_back_faces`) or shadow shader (`clear_atlas_tile`).
 fn SgShader engine_program(bool shadow) @private {
     SgShader* s = &state.engine_programs[shadow ? 1 : 0];
     if (!s.id) {
@@ -281,17 +283,16 @@ fn SgShader engine_program(bool shadow) @private {
     return *s;
 }
 
-// Starts compiling, all at once on worker threads, the generated programs (materials_nodes.c3)
-// that this render's draws will take and that aren't made yet: a draw then waits for its own
-// only, rather than each compiling in turn on this thread (from tens of milliseconds to a
-// second or more each, the first time: the driver keeps them after that). `fs` is the
-// render's light parameters (build_light_params), which the programs' keys read.
+// ---- Background program warmup and node uniforms
+
+// Kicks off parallel worker-thread compilation for all unbuilt material programs needed by this
+// render's background, opaque, and transparent draws so they overlap before draw submission.
 fn void start_material_programs(Renderer* r, Scene* scene, Camera* camera, FsParams* fs, bool prepass) @private {
     start_background_program(scene, camera, fs);
     bool defer_ok = can_defer(r, true, true);
     for (int list = 0; list < 2; list++) {
         foreach (&item : list == 0 ? state.opaque : state.transparent) {
-            // (the kinds the main pass draws them with, see render)
+            // Match the DrawKind that Renderer.render() will select for each list.
             DrawKind kind = list == 1 || draws_lines(item) || has_holes(item) ? CUT : SOLID;
             if (list == 0 && defer_ok && is_deferred_item(item)) {
                 start_item_program(item, kind, fs, true);
@@ -303,10 +304,8 @@ fn void start_material_programs(Renderer* r, Scene* scene, Camera* camera, FsPar
     }
 }
 
-// Starts compiling the generated program (and its depth prepass's) that draw_item takes for
-// `item` drawn as `kind` with `fs`, into the current render target (`gbuffer`: the deferred
-// G-buffer), if it isn't made yet; a node material's compiled in the background, the plain
-// material's too, which its draws take until then.
+// Starts compiling the generated shader (and depth prepass variant) for `item`; under background
+// compilation, also starts the plain fallback program for node materials.
 fn void start_item_program(DrawItem* item, DrawKind kind, FsParams* fs, bool gbuffer = false) @private {
     Texture*[6] slots;
     Vec4[6] map_slots;
@@ -321,24 +320,21 @@ fn void start_item_program(DrawItem* item, DrawKind kind, FsParams* fs, bool gbu
     }
 }
 
-// start_item_program for the scene's background and the lit fog's backdrop (draw_background,
-// draw_backdrop), where it has them.
+// Starts compiling programs for the scene background and fog backdrop meshes, if present.
 fn void start_background_program(Scene* scene, Camera* camera, FsParams* fs) @private {
     DrawItem item;
     if (background_item(scene, camera, &item)) start_item_program(&item, CUT, fs);
     if (backdrop_item(scene, camera, &item)) start_item_program(&item, has_holes(&item) ? CUT : SOLID, fs);
 }
 
-// (a pipeline cache being loaded compiles in the background whatever the renderer's setting)
+// True when shaders should compile asynchronously (Renderer.compile_in_background or cache warmup).
 fn bool background() @private => (state.renderer && state.renderer.compile_in_background) || pipeline_warmup != null;
 
-// The node material build whose graphs a draw of `mat` takes (none in a light map's bake,
-// which draws the material without them).
+// Returns the compiled node graph build for `mat`, or null during lightmap baking.
 fn NodeBuild* draw_build(Material* mat) @private => state.bake.on ? null : node_build_of(mat);
 
-// A node material's USER block for a draw of `m` (its generated programs' NodeSource.USER):
-// the render's view and projection, the mesh's matrix_world, the camera's position and the
-// time (NODE_USER_HEADER), then its graphs' uniforms. In the temporary memory.
+// Packs a node material's USER uniform block in temporary memory: view/proj/model matrices,
+// camera position + time (NODE_USER_HEADER), followed by graph uniform values.
 fn Vec4[] user_block(NodeBuild* b, Mesh* m) @private {
     int rows = NODE_USER_HEADER;
     foreach (u : b.uniforms) rows += u.type() == MAT4 ? 4 : 1;
@@ -355,20 +351,16 @@ fn Vec4[] user_block(NodeBuild* b, Mesh* m) @private {
     return out;
 }
 
-// The views of a node material's textures (NodeBuild.textures; none without a build).
+// Returns the texture views bound to a node material's custom texture slots.
 fn SgView[NODE_TEXTURES] user_views(NodeBuild* b) @private {
     SgView[NODE_TEXTURES] v;
     for (int k = 0; k < NODE_TEXTURES; k++) v[k] = ready(b && k < b.texture_count ? b.texture(k) : null).view;
     return v;
 }
 
-// Whether node material `b`'s draws take the plain material's programs (the material without
-// its graphs) in this render while its own compile in the background
-// (Renderer.compile_in_background), in every pass alike (one render's busy_epoch: a mesh the
-// depth prepass drew plain is drawn plain in the main pass too): `mp`'s compile is started
-// here if it isn't made yet. Without background compiling, the programs are made when first
-// drawn. The plain material draws the mesh with its color, map, vertex colors and alpha test,
-// without position_node; such a draw is counted in RenderInfo.waiting.
+// True when node material `b` has programs compiling in the background and should draw with its
+// plain fallback for this entire render (`node_epoch` keeps prepass and main pass consistent).
+// Starts compilation of `mp` if not yet started.
 fn bool material_busy(NodeBuild* b, MaterialProgram* mp) @private {
     if (!background()) return false;
     if (b.busy_epoch != node_epoch) {
@@ -384,7 +376,9 @@ fn bool material_busy(NodeBuild* b, MaterialProgram* mp) @private {
     return b.busy_now;
 }
 
-// The shadow maps' pipelines' description (no shader yet).
+// ---- Shadow pipelines
+
+// Base descriptor for depth-only shadow pipelines (no color attachments, culling disabled).
 fn SgPipelineDesc shadow_pipeline_desc() @local {
     return {
         .shader = { },
@@ -418,8 +412,8 @@ fn SgPipelineDesc shadow_pipeline_desc() @local {
     };
 }
 
-// A caster's generated program's shadow pipeline (MaterialKey.shadow): none while a pipeline
-// cache being loaded compiles it in the background.
+// Looks up or creates the shadow pipeline for `gen` (`MaterialKey.shadow`), using ATLAS_FORMAT
+// for shadow-atlas tiles and DEPTH for the sun and primary spot maps. Returns `{}` during warmup.
 fn SgPipeline gen_shadow_pipeline(MaterialProgram* gen) @private {
     if (try found = gen.pipelines[0]) return found;
     SgPipelineDesc desc = shadow_pipeline_desc();
@@ -435,7 +429,6 @@ fn SgPipeline gen_shadow_pipeline(MaterialProgram* gen) @private {
     return pip;
 }
 
-// The shadow atlas's depth (and its cache's): 16 bits. Its perspective maps hold the distance
-// from the light's plane over their reach (build_shadow_graph), as even as the light's reach
-// is long; the sun's cascades keep 32-bit maps of their own.
+// 16-bit depth format for the shadow atlas and static caster cache; perspective atlas maps store
+// linear distance over light reach, while sun cascades and the primary spot map use 32-bit DEPTH.
 const SgPixelFormat ATLAS_FORMAT @private = DEPTH16;

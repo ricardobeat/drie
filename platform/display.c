@@ -1,6 +1,6 @@
-// The display the window is on: how far over SDR white it can show (EDR headroom) and which
-// colors, and the color space the window's layer takes its pixels in. macOS only; elsewhere
-// the screen is taken to be SDR sRGB. See display.c3.
+// Queries display capabilities and sets the swapchain color space on macOS (EDR headroom,
+// Display P3 gamut, and CAMetalLayer color space / EDR flags). Non-macOS targets compile stub
+// fallbacks that report SDR sRGB. Used by drie::display_headroom and drie::set_display_color_space.
 #if defined(__APPLE__)
 #include <TargetConditionals.h>
 #endif

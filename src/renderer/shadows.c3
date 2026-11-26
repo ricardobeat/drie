@@ -1,15 +1,23 @@
-// Shadow maps: cascaded sun shadows, live spot shadow, VSM blur, and caster gathering.
+// Shadow map allocation, projection math, VSM filtering, and frame shadow orchestration.
+// Owns the 32-bit DEPTH maps for the primary auto-updated spot light and cascaded directional sun
+// (1 box or 2x2 cascades), the atlas depth-copy and tile-clear passes (shaders/atlas.glsl), and
+// the separable 2-pass VSM moment blur (shaders/vsm.glsl, RG32F or RG16F). Computes view-projection
+// matrices for spot cones, 6-face point cubes (96-deg FOV), 5-face rect area lights, and
+// texel-snapped directional boxes, respecting depth_zero_to_one() ([0,1] vs [-1,1]). Connects to
+// update_shadow_atlas(), cull_dispatch(), build_light_params(), and Renderer.render().
 module drie;
 import std::collections::list, std::math, std::io;
 import sokol;
 
-// Set while draw_atlas_casters draws into the atlas: the near and far of the map's light (far 0:
-// an orthographic map, its window depth as it is).
+// ---- Shadow map targets and tile operations
+
+// Active atlas draw state read by draw_shadow_item(); `atlas_far == 0` selects orthographic depth.
 bool atlas_drawing @private;
 float atlas_near @private;
 float atlas_far @private;
 
-// Clears the atlas's tile at the current viewport to the far depth (a pass clears all of it).
+// Clears the active viewport/scissor tile of the shadow atlas to far depth (z = 1) without
+// clearing the entire atlas texture.
 fn void clear_atlas_tile() @private {
     if (!state.tile_clear_pipeline.id) {
         state.tile_clear_pipeline = sg::make_pipeline(
@@ -59,8 +67,7 @@ fn void clear_atlas_tile() @private {
     bind.views[shaders::VIEW_S_ALPHA] = white.view;
     bind.samplers[shaders::SMP_S_ALPHA_SMP] = white.sampler;
     sg::apply_bindings(&bind);
-    // the quad's x and y as they are, at depth 1 (clip z = w: the far plane in both of the
-    // depth ranges)
+    // Keep quad XY in [-1, 1] and force clip z = w (far plane in both [0,1] and [-1,1] depth).
     Mat4 to_far = mat4_identity();
     to_far[2][2] = 0;
     to_far[3][2] = 1;
@@ -76,8 +83,7 @@ fn void clear_atlas_tile() @private {
     sg::draw(0, (int)g.index_count, 1);
 }
 
-// The size a light's shadow map is drawn at: its shadow.map_size times
-// Renderer.shadow_map_scale.
+// Scales a light's requested `map_size` by Renderer.shadow_map_scale, clamped to [4, 16384].
 fn int shadow_map_size(int map_size) @private {
     float scale = state.renderer.shadow_map_scale > 0 ? state.renderer.shadow_map_scale : 1;
     return math::clamp((int)(map_size * scale + 0.5f), 4, 16384);
@@ -135,17 +141,18 @@ fn void ensure_sun_map(int size) @local {
     state.sun_view = sg::make_view(&&{ .texture = { .image = state.sun_image } });
 }
 
-// Makes the atlas's texture `width` x `height`, with what the one before had where it was.
+// Ensures the shadow atlas texture is `width` x `height`, preserving existing texels at (0, 0).
 fn void ensure_shadow_atlas(int width, int height) @private {
     grow_depth(&state.atlas_image, &state.atlas_attachment, &state.atlas_view, &state.atlas_width, &state.atlas_height, width, height);
 }
 
-// The same for the maps' caches.
+// Ensures the static caster cache texture is `width` x `height`, preserving existing texels at (0, 0).
 fn void ensure_atlas_cache(int width, int height) @private {
     grow_depth(&state.cache_image, &state.cache_attachment, &state.cache_view, &state.cache_width, &state.cache_height, width, height);
 }
 
-// Makes `image` a `width` x `height` depth texture, with what the one before had where it was.
+// Reallocates a DEPTH16 texture to `width` x `height` and copies overlapping texels from the
+// existing texture into the top-left corner via copy_depth().
 fn void grow_depth(SgImage* image, SgView* attachment, SgView* view, int* cur_width, int* cur_height, int width, int height) @local {
     if (*cur_width == width && *cur_height == height) return;
     SgImage old_image = *image;
@@ -181,8 +188,8 @@ fn void grow_depth(SgImage* image, SgView* attachment, SgView* view, int* cur_wi
     sg::destroy_image(old_image);
 }
 
-// Copies `w` x `h` texels of the depth texture `src` from (sx, sy) to (dx, dy) of the depth
-// target of the pass being drawn (atlas.glsl).
+// Copies a `w` x `h` depth rectangle from `(sx, sy)` of `src` to `(dx, dy)` of the active depth
+// attachment using shaders/atlas.glsl.
 fn void copy_depth(SgView src, int sx, int sy, int dx, int dy, int w, int h) @private {
     if (!state.atlas_copy_pipeline.id) {
         state.atlas_copy_sampler = sg::make_sampler(
@@ -212,11 +219,13 @@ fn void copy_depth(SgView src, int sx, int sy, int dx, int dy, int w, int h) @pr
     sg::draw(0, 3, 1);
 }
 
-// The shadows are VSM (Renderer.shadow_type).
+// ---- Variance shadow map blur
+
+// True when Renderer.shadow_type is set to VSM.
 fn bool vsm_on() @private => state.renderer && state.renderer.shadow_type == VSM;
 
-// Makes `v` the moments of a `width` x `height` depth map (RG32F where the GPU can draw and
-// filter it, else RG16F as three's). True when they are new: nothing is in them yet.
+// Ensures `v` holds moment and scratch targets sized `width` x `height` (RG32F when renderable
+// and filterable, otherwise RG16F). Returns true when newly allocated or resized.
 fn bool ensure_vsm(VsmMaps* v, int width, int height) @private {
     if (v.width == width && v.height == height) return false;
     if (!state.vsm_format) {
@@ -264,8 +273,7 @@ fn bool ensure_vsm(VsmMaps* v, int width, int height) @private {
     return true;
 }
 
-// A tile of a depth map to blur into its moments (vsm_blur): where it is (texels, as the
-// viewport of its shadow pass), its blur radius (texels) and taps.
+// Tile rectangle and blur settings passed to vsm_blur() (texel coordinates match shadow viewports).
 struct VsmTile @private {
     int x;
     int y;
@@ -275,9 +283,9 @@ struct VsmTile @private {
     int samples;
 }
 
-// Turns `tiles` of the depth map `depth` into their moments in `v`, as three's VSMPass: a box
-// blur along y from the depths into v.scratch, then along x into v.image. `load`: the other
-// tiles of v.image keep what they have.
+// Converts `tiles` of depth texture `depth` into VSM moments in `v` via shaders/vsm.glsl:
+// vertical box blur from `depth` into `v.scratch`, then horizontal blur into `v.image`.
+// When `load` is true, untouched tiles in `v.image` preserve their existing moments.
 fn void vsm_blur(VsmMaps* v, SgView depth, VsmTile[] tiles, bool load) @private {
     if (!tiles.len) return;
     bool top_left = depth_zero_to_one();
@@ -315,7 +323,9 @@ fn void vsm_blur(VsmMaps* v, SgView depth, VsmTile[] tiles, bool load) @private 
     }
 }
 
-// The shadow settings of a spot, point, rect area or directional light.
+// ---- Light shadow projections and cascades
+
+// Returns the LightShadow block for a spot, point, rect area, or directional light.
 fn LightShadow* light_shadow(Light* l) @private {
     switch (l.light_type) {
         case SPOT: return &((SpotLight*)l).shadow;
@@ -325,15 +335,13 @@ fn LightShadow* light_shadow(Light* l) @private {
     }
 }
 
-// A light whose shadow is a cube of six maps round its position: a point light's, and a rect
-// area light's (from its centre).
+// True for lights that project multi-face cube/hemisphere shadow maps (point and rect area).
 fn bool casts_cube(Light* l) @private => l.light_type == POINT || l.light_type == RECT_AREA;
 
-// The directions of a point light's six shadow maps (+x -x +y -y +z -z) and their up.
+// Basis directions (+X, -X, +Y, -Y, +Z, -Z) for the 6 faces of a point light shadow cube.
 const Vector3[6] CUBE_FORWARD @local = { { 1, 0, 0 }, { -1, 0, 0 }, { 0, 1, 0 }, { 0, -1, 0 }, { 0, 0, 1 }, { 0, 0, -1 } };
 const Vector3[6] CUBE_UP @local = { { 0, 1, 0 }, { 0, 1, 0 }, { 0, 0, -1 }, { 0, 0, 1 }, { 0, 1, 0 }, { 0, 1, 0 } };
-// A point light's maps see a little more than a quarter turn: the taps of a soft edge by a
-// face's border stay inside its tile.
+// Slightly wider than 90 degrees so PCF taps near a face edge remain inside the tile.
 const float POINT_SHADOW_FOV @local = 96;
 
 fn float point_shadow_far(Light* l) @private {
@@ -343,8 +351,7 @@ fn float point_shadow_far(Light* l) @private {
     return 50.0f;
 }
 
-// View-projection of face `face` of a point (or rect area) light's shadow (`relative`: of
-// world - the light's position, as shadow_view_proj's).
+// View-projection matrix for face `face` of a point light cube (`relative`: camera at origin).
 fn Mat4 point_shadow_view_proj(Light* l, int face, bool relative = false) @local {
     Vector3 pos = l.matrix_world.get_position();
     Mat4 world  = mat4_look_at(pos, pos + CUBE_FORWARD[face], CUBE_UP[face], true);
@@ -355,10 +362,8 @@ fn Mat4 point_shadow_view_proj(Light* l, int face, bool relative = false) @local
     return proj.mul(world.invert());
 }
 
-// A rect area light's shadow maps: a cube turned with the light, without the face behind it
-// (the light shines from its front only). Map 0 looks out of its front; maps 1 to 4 out of its
-// sides (+x, -x, +y, -y of the light), each only the front half of a cube's face (and this
-// tangent of a turn behind the light's plane), so half as tall.
+// Tangent margin behind a rect area light's plane included in its 4 half-height side shadow maps
+// (face 0 looks forward along -Z; faces 1..4 look along +X, -X, +Y, -Y with asymmetric frusta).
 const float RECT_SIDE_BEHIND @local = 0.1f;
 
 fn Mat4 rect_shadow_view_proj(Light* l, int face, bool relative = false) @local {
@@ -380,7 +385,7 @@ fn Mat4 rect_shadow_view_proj(Light* l, int face, bool relative = false) @local 
     Mat4 proj = mat4_perspective(POINT_SHADOW_FOV, 1, math::max(light_shadow(l).near, 0.01f), point_shadow_far(l), 1,
                                  depth_zero_to_one());
     if (face > 0) {
-        // from RECT_SIDE_BEHIND below the light's plane up to the cube's corner
+        // Asymmetric vertical frustum from -RECT_SIDE_BEHIND up to the front face corner.
         float top = math::tan(POINT_SHADOW_FOV * DEG2RAD * 0.5f);
         float bottom = -RECT_SIDE_BEHIND;
         proj[1][1] = 2 / (top - bottom);
@@ -389,21 +394,19 @@ fn Mat4 rect_shadow_view_proj(Light* l, int face, bool relative = false) @local 
     return proj.mul(world.invert());
 }
 
-// View-projection of map `face` of a point or rect area light's shadow.
+// Dispatches to rect_shadow_view_proj() or point_shadow_view_proj() for face `face`.
 fn Mat4 cube_view_proj(Light* l, int face, bool relative = false) @local {
     return l.light_type == RECT_AREA ? rect_shadow_view_proj(l, face, relative) : point_shadow_view_proj(l, face, relative);
 }
 
-// View-projection of a light's map in the atlas: a spot light's frustum (`relative`: of world
-// - the light's position, see shadow_view_proj), or a directional light's one box (world), its
-// texels the atlas's.
+// View-projection matrix for an atlas light (spot frustum, cube face, or directional box).
 fn Mat4 light_view_proj(Light* l, Camera* camera, bool relative = false, int face = 0, int size = 0) @private {
     if (l.light_type == SPOT) return shadow_view_proj((SpotLight*)l, relative);
     if (casts_cube(l)) return cube_view_proj(l, face, relative);
     return directional_shadow_view_proj((DirectionalLight*)l, camera, size);
 }
 
-// The one light whose shadow map is drawn every frame.
+// Returns the primary spot light that receives its own dedicated 32-bit shadow map each frame.
 fn SpotLight* shadow_light() @local {
     foreach (l : state.lights) {
         if (l.light_type != SPOT || !l.cast_shadow || !l.visible || l.intensity <= 0) continue;
@@ -412,7 +415,7 @@ fn SpotLight* shadow_light() @local {
     return null;
 }
 
-// The directional light to draw a shadow map for: the first that casts one.
+// Returns the first visible shadow-casting directional light (receives the dedicated sun map).
 fn DirectionalLight* directional_shadow_light() @local {
     foreach (l : state.lights) {
         if (l.light_type == DIRECTIONAL && l.cast_shadow && l.visible && l.intensity > 0) return (DirectionalLight*)l;
@@ -420,14 +423,14 @@ fn DirectionalLight* directional_shadow_light() @local {
     return null;
 }
 
-// View-projection of a directional light's shadow box, moved a texel of a `size` map at a time
-// (0: shadow.map_size).
+// Orthographic view-projection for a directional light's single shadow box, snapped to whole
+// texels of a `size`-wide map (defaults to shadow.map_size).
 fn Mat4 directional_shadow_view_proj(DirectionalLight* d, Camera* camera, int size = 0) @local {
     Vector3 target = d.target ? d.target.get_world_position() : (Vector3) { 0, 0, 0 };
     Vector3 dir    = (d.matrix_world.get_position() - target).normalize();
     float extent   = math::max(d.shadow_extent, 0.1f);
     Vector3 center = target;
-    // (a bake's box stays where the light points: the camera has nothing to do with it)
+    // Keep the box anchored on the target during lightmap baking regardless of camera position.
     if (d.shadow_follow && !state.bake.on) {
         Vector3 at    = camera.matrix_world.get_position();
         Mat4 cw       = camera.matrix_world;
@@ -437,8 +440,8 @@ fn Mat4 directional_shadow_view_proj(DirectionalLight* d, Camera* camera, int si
     return sun_box_view_proj(d, dir, center, extent, size ?: shadow_map_size(d.shadow.map_size));
 }
 
-// View-projection of a box of parallel rays towards `dir`, `radius` meters around `center`,
-// moved a whole texel of a `size` map at a time (or the shadows' edges crawl as it travels).
+// Builds a texel-snapped orthographic view-projection looking along `-dir` around `center` with
+// half-extent `radius`, preventing shadow edge shimmer as the camera translates.
 fn Mat4 sun_box_view_proj(DirectionalLight* d, Vector3 dir, Vector3 center, float radius, int size) @local {
     Vector3 up    = math::abs(dir.y) > 0.99f ? (Vector3) { 1, 0, 0 } : (Vector3) { 0, 1, 0 };
     Vector3 right = up.cross(dir).normalize();
@@ -461,15 +464,14 @@ fn Mat4 sun_box_view_proj(DirectionalLight* d, Vector3 dir, Vector3 center, floa
     return proj.mul(world.invert());
 }
 
-// Splits the camera's view up to shadow.max_distance into the light's cascades and fits a box
-// to each: around the sphere that holds the slice, so its size does not change as the camera
-// turns. Fills state.sun_*; returns how many there are (0: the camera is not a perspective
-// one, use one box).
+// Splits a perspective camera's view up to `d.shadow.max_distance` into 2..4 practical-split
+// cascades, fitting a rotation-invariant bounding sphere to each slice and populating
+// `state.sun_*`. Returns 0 for single-box mode or non-perspective cameras.
 fn int fit_sun_cascades(DirectionalLight* d, Camera* camera, Vector3 dir) @local {
     int n = math::min(math::max(d.shadow.cascades, 1), 4);
     if (n < 2 || camera.camera_type != PERSPECTIVE) return 0;
     Mat4 p = camera.projection_matrix;
-    // tangents of the half angles of the view
+    // Half-FOV tangents along X and Y.
     float tx = p[0][0] != 0 ? 1 / math::abs(p[0][0]) : 1;
     float ty = p[1][1] != 0 ? 1 / math::abs(p[1][1]) : 1;
     float k = tx * tx + ty * ty;
@@ -485,10 +487,10 @@ fn int fit_sun_cascades(DirectionalLight* d, Camera* camera, Vector3 dir) @local
     for (int i = 0; i < n; i++) {
         float f      = (float)(i + 1) / (float)n;
         float to     = lambda * near * math::pow(far / near, f) + (1 - lambda) * (near + (far - near) * f);
-        // the slice's sphere: centred on the view axis, as far from its near corners as from its far ones
+        // Minimal bounding sphere of the frustum slice, centered on the camera view axis.
         float z      = math::min((from + to) * (1 + k) * 0.5f, to);
         float radius = math::sqrt((to - z) * (to - z) + to * to * k);
-        // in steps, so that rounding does not change its size from one frame to the next
+        // Quantize radius to 1/16 m steps so texel size stays constant across camera rotations.
         radius = math::ceil(radius * 16) / 16;
         state.sun_view_proj[i] = sun_box_view_proj(d, dir, at + fwd * z, radius, tile);
         state.sun_rect[i] = { (float)(i % 2) * 0.5f, (float)(i / 2) * 0.5f, 0.5f, 0.5f };
@@ -498,8 +500,8 @@ fn int fit_sun_cascades(DirectionalLight* d, Camera* camera, Vector3 dir) @local
     return n;
 }
 
-// Gathers what to draw into the directional light's shadow map: its cascades, each into a tile
-// of a 2x2 atlas with the casters inside its own box (state.sun_casters), or one box.
+// Fits sun cascade projections, allocates the 2x2 (or 1x1) sun depth texture, and gathers casters
+// per cascade into `state.sun_casters`.
 fn void prepare_sun_shadow(Scene* scene, Camera* camera, DirectionalLight* sun) @local {
     foreach (&l : state.sun_casters) l.clear();
     if (!sun) {
@@ -523,14 +525,15 @@ fn void prepare_sun_shadow(Scene* scene, Camera* camera, DirectionalLight* sun) 
     }
 }
 
-// Draws what prepare_sun_shadow gathered.
+// Renders gathered casters into `state.sun_attachment` and runs VSM blur when VSM is active.
 fn void draw_sun_shadow(DirectionalLight* sun) @local {
     if (!sun) return;
     int n         = state.sun_cascades;
     int tile      = shadow_map_size(sun.shadow.map_size);
     bool top_left = depth_zero_to_one();
     profile::begin_pass(
-        &&{ // depth is not stored by default: ask for it, the main pass samples this map
+        &&{
+            // Store depth explicitly so the main and deferred passes can sample the shadow map.
             .action = { .depth = { .load_action = CLEAR, .store_action = STORE, .clear_value = 1 } },
             .attachments = { .depth_stencil = state.sun_attachment },
             .label = "drie-sun-cascades",
@@ -545,8 +548,7 @@ fn void draw_sun_shadow(DirectionalLight* sun) @local {
     }
     sg::end_pass();
     if (!vsm_on()) return;
-    // VSM: each cascade blurred in its tile; as dir_shadow_in's taps, the far ones (bigger
-    // texels) over fewer texels, down to one
+    // Scale VSM blur radius down for coarser far cascades (down to 1 texel) to match world-space softness.
     ensure_vsm(&state.vsm_sun, state.sun_size, state.sun_size);
     VsmTile[4] tiles;
     for (int i = 0; i < math::max(n, 1); i++) {
@@ -564,8 +566,9 @@ fn void draw_sun_shadow(DirectionalLight* sun) @local {
     vsm_blur(&state.vsm_sun, state.sun_view, tiles[:math::max(n, 1)], false);
 }
 
-// Gathers the shadow casters inside `frustum` into `out`, their instances culled on the GPU
-// for it.
+// ---- Caster gathering and GPU packing
+
+// Collects shadow casters overlapping `frustum` into `out` and registers GPU instance cull jobs.
 fn void gather_casters(
     Scene* scene,
     Camera* camera,
@@ -586,8 +589,8 @@ fn void gather_casters(
     state.casters.clear();
 }
 
-// Adds the shadow casters inside `frustum` to state.casters: the scene's, or a bake's objects
-// (state.caster_roots).
+// Collects shadow casters inside `frustum` into `state.casters` from `scene` (or `state.caster_roots`
+// during lightmap baking).
 fn void collect_casters(Scene* scene, Camera* camera, Frustum* frustum) @private {
     Vector3 from = camera.matrix_world.get_position();
     if (!state.bake.on) {
@@ -597,7 +600,7 @@ fn void collect_casters(Scene* scene, Camera* camera, Frustum* frustum) @private
     foreach (o : state.caster_roots) collect(o, camera.matrix_world_inverse, frustum, from, true);
 }
 
-// Clip space -> shadow map uv (v points down outside of GL) and 0..1 depth.
+// Maps clip space to shadow texture UV (flipping V on depth-[0,1] backends) and [0,1] depth.
 fn Mat4 shadow_bias() @private {
     bool zo   = depth_zero_to_one();
     Mat4 bias = mat4_identity();
@@ -615,9 +618,8 @@ fn Vector3 spot_direction(SpotLight* sl) @private {
     return (target - sl.matrix_world.get_position()).normalize();
 }
 
-// A point or rect area light's six shadow maps (+x -x +y -y +z -z), from the tile of the
-// first (see update_shadow_atlas), into the render's shadows, and where they are into its
-// GPU entry's `shadow` (x = the first, y = intensity; left as it is when it has none).
+// Packs the atlas shadow faces of a point (6 faces) or rect area (5 faces) light into `g.shadows`
+// and writes the base index and faded intensity into `shadow.xy`.
 fn void cube_shadows(Light* l, Vec4* shadow, LightData* g, bool vsm) @private {
     if (!atlas_has_shadow(l)) return;
     AtlasSlot* slot = atlas_slot_of(l);
@@ -639,20 +641,17 @@ fn void cube_shadows(Light* l, Vec4* shadow, LightData* g, bool vsm) @private {
     }
 }
 
-// (whether spot_map has said that two maps met in a frame)
-bool cookie_told @local;
+bool cookie_told @local;  // Guards the one-time warning when multiple SpotLight.map textures appear.
 
-// SpotLight.map into the light's GPU entry: its part of the render's one map texture (the
-// first met; a light with another gets none), and the axes of the picture, scaled so that
-// the cone's edge is at the middle of its sides.
+// Packs `sl.map` (spot cookie projection) and its rotated cone-scaled UV axes into `gs`. All
+// cookies in a frame must share one texture (atlas sub-rects via `map_rect`).
 fn void spot_map(SpotLight* sl, GpuSpotLight* gs, LightData* g) @private {
     if (!sl.map) return;
     Texture* t = ready(sl.map);
-    // (still loading: the light shines without it meanwhile)
+    // Texture still loading asynchronously: skip cookie projection until ready.
     if (t == state.white || !t.view.id) return;
     if (!g.cookie) g.cookie = t;
     if (g.cookie != t) {
-        // (said once: a light whose map isn't the frame's one shines without it)
         if (!cookie_told) io::eprintfn("drie: spot lights with different maps in one frame: only the first map is used; put them on one texture and pick each light's part with map_rect");
         cookie_told = true;
         return;
@@ -676,11 +675,10 @@ fn void spot_map(SpotLight* sl, GpuSpotLight* gs, LightData* g) @private {
     gs.map_v = { rv.y, rv.z, math::log2(size), 0 };
 }
 
-// View-projection of the shadow casting spot light. `relative`: of world - the light's
-// position, as the shadow pass and the lookups take it (see relative_view_proj).
-// How far a spot light's shadow map reaches.
+// Far clip distance for a spot light's shadow frustum.
 fn float spot_shadow_far(SpotLight* sl) @private => sl.shadow.far > 0 ? sl.shadow.far : (sl.distance > 0 ? sl.distance : 50.0f);
 
+// View-projection matrix for a spot light's shadow map (`relative`: translates light to origin).
 fn Mat4 shadow_view_proj(SpotLight* sl, bool relative = false) @private {
     Vector3 pos = sl.matrix_world.get_position();
     Vector3 dir = spot_direction(sl);
@@ -694,18 +692,17 @@ fn Mat4 shadow_view_proj(SpotLight* sl, bool relative = false) @private {
     return proj.mul(world.invert());
 }
 
-// The shadow maps of a render: gathers the casters of the spot light's map and of the sun's
-// cascades, culls their instances, and draws those maps and the atlas's tiles (all with
-// Renderer.shadow_map_auto_update; without, makes sure that the maps the shaders read exist).
-// Returns the spot light with the map of its own.
-// `bake` (render_bake): the bake's shadowed lights only get tiles of the atlas (the spot
-// light's and the sun's maps stay the main render's), their casters state.caster_roots.
+// ---- Frame shadow orchestration
+
+// Prepares casters, runs GPU instance culling (`cull_dispatch`), and renders the primary spot
+// shadow map, sun cascades, and shadow atlas tiles (plus VSM blurs when enabled). Respects
+// `Renderer.shadow_map_auto_update` while ensuring placeholder maps always exist for shader
+// bindings. In `bake` mode (render_bake), renders only bake-scoped atlas tiles so main maps stay
+// intact. Returns the primary spot light, if any.
 fn SpotLight* prepare_and_draw_shadows(Scene* scene, Camera* camera, bool bake = false) @private {
     ulong pt          = profile::start();
-    // shadow map of the shadow casting spot light
     SpotLight* caster = bake ? null : shadow_light();
-    // without a caster keep whatever map there is: renders that switch shadows off (a portal
-    // view, say) must not reallocate it every frame
+    // Retain existing map size when no primary spot caster is active to avoid per-frame realloc.
     ensure_shadow_map(caster ? shadow_map_size(caster.shadow.map_size) : (state.shadow_size ?: 4));
     Mat4 caster_vp;
     bool shadows = state.renderer.shadow_map_auto_update || bake;
@@ -716,9 +713,9 @@ fn SpotLight* prepare_and_draw_shadows(Scene* scene, Camera* camera, bool bake =
         Frustum light_frustum = frustum_from(caster_vp);
         gather_casters(scene, camera, &light_frustum, caster.shadow.skip_instanced, &state.spot_casters);
     }
-    // the directional light's map is its own, so a sun and a spot light can both have shadows
     profile::stop("render: spot casters", pt);
     pt = profile::start();
+    // Dedicated sun shadow map allows a directional sun and primary spot to cast simultaneously.
     DirectionalLight* sun = shadows ? directional_shadow_light() : state.sun_caster;
     if (bake) sun = null;
     if (shadows && !bake) {
@@ -727,14 +724,15 @@ fn SpotLight* prepare_and_draw_shadows(Scene* scene, Camera* camera, bool bake =
     }
     profile::stop("render: sun casters", pt);
     pt = profile::start();
-    // every view's instances culled at once, before the passes that draw them
+    // Dispatch GPU instance culling once across camera, spot, and sun cascade views.
     cull_dispatch();
     profile::stop("render: cull dispatch", pt);
     pt = profile::start();
 
     if (caster && shadows) {
         profile::begin_pass(
-            &&{ // depth is not stored by default: ask for it, the main pass samples this map
+            &&{
+                // Store depth explicitly so the main and deferred passes can sample the spot map.
                 .action = { .depth = { .load_action = CLEAR, .store_action = STORE, .clear_value = 1 } },
                 .attachments = { .depth_stencil = state.shadow_attachment },
                 .label = "drie-spot-shadow",
@@ -757,13 +755,12 @@ fn SpotLight* prepare_and_draw_shadows(Scene* scene, Camera* camera, bool bake =
     profile::stop("render: sun shadow", pt);
     pt = profile::start();
     if (shadows) update_shadow_atlas(scene, camera, bake, caster);
-    // a render that draws no shadow maps (a reflector's, reusing the last frame's) can come
-    // before any that does: the shaders still sample the maps, so they must exist
+    // Ensure valid textures exist even when shadows are skipped (e.g. reflector views).
     if (!shadows || bake) {
         ensure_sun_map(state.sun_size ?: 4);
         if (!state.atlas_width) ensure_shadow_atlas(ATLAS_MIN_BLOCK, ATLAS_MIN_BLOCK);
     }
-    // VSM's moments, the size of the depth maps (the main pass binds them all)
+    // Keep VSM moment targets allocated and sized to match all three shadow textures.
     if (vsm_on()) {
         ensure_vsm(&state.vsm_spot, state.shadow_size, state.shadow_size);
         ensure_vsm(&state.vsm_sun, state.sun_size, state.sun_size);
@@ -774,14 +771,14 @@ fn SpotLight* prepare_and_draw_shadows(Scene* scene, Camera* camera, bool bake =
     return caster;
 }
 
-// The atlas's size, memory and lights into RenderInfo.
+// Records shadow atlas dimensions, GPU memory usage, and active light count into RenderInfo.
 fn void note_atlas_info() @local {
     RenderInfo* info = &state.renderer.info;
     info.atlas_width = state.atlas_width;
     info.atlas_height = state.atlas_height;
     usz pixels = (usz)info.atlas_width * (usz)info.atlas_height;
     info.atlas_bytes = (pixels + (usz)state.cache_width * (usz)state.cache_height) * 2;
-    // (the moments and their blur's scratch)
+    // Include VSM moment image plus scratch blur target when active.
     if (state.vsm_atlas.width) info.atlas_bytes += (usz)state.vsm_atlas.width * (usz)state.vsm_atlas.height * (usz)(state.vsm_format == RG32F ? 16 : 8);
     info.atlas_lights = 0;
     foreach (&s : state.atlas_slots) {

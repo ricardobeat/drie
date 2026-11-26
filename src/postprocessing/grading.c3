@@ -1,65 +1,60 @@
-// Color grading in HDR, before the tone curve: the grade, the tone mapping and the output
-// encoding baked into one 3D LUT (grade.glsl), which OutputPass reads in place of its tone
-// mapping. The scene's color (linear light, after the exposure) is looked up through a log
-// shaper (tonemapping.glsl's grade_shape): every stop, 10 under middle grey to 7 over, gets
-// the same room in the LUT, so the grade treats a highlight five stops up as finely as a
-// shadow, and the LUT's interpolation is even across exposure. The LUT is baked again on the GPU when a setting, the tone mapping or the output's
-// colors change. A look, a .cube LUT on the sRGB picture (as a grade from Resolve is exported),
-// can go on top.
-//
-//   ColorGrade* grade = postprocessing::color_grade();
-//   grade.temperature = 15;                       // warmer
-//   grade.contrast = 1.1;
-//   grade.load_look("look.cube")!!;
-//   output.grade = grade;                         // OutputPass
+// HDR color grading (`ColorGrade`, `shaders/grade.glsl`) baked together with tone mapping and
+// output encoding into a 32x32x32 `RGBA16F` 3D LUT sampled by `OutputPass` on SDR output.
+// Linear post-exposure scene colors enter the LUT through a log shaper (`grade_shape` in
+// `shaders/tonemapping.glsl`, spanning 10 stops below to 7 stops above middle grey) so precision
+// stays even across shadows and highlights. An optional `.cube` 3D look LUT (sRGB `0..1`) runs
+// after tone mapping; `prepare()` rebakes slices whenever settings, tone mapping, or P3 change.
+
 module drie::postprocessing;
 import std::io, std::math, std::collections::list;
 import sokol, drie;
 
+// ---- Grade settings & state
+
+// Edge length of the baked 3D grading LUT (`32 x 32 x 32` `RGBA16F`).
 const int GRADE_LUT = 32;
 
-// What is graded, in this order. Neutral: the defaults (color_grade()).
+// Color-grading parameters applied in field order before tone mapping (except `look_strength`,
+// applied after). `color_grade()` initializes all fields to neutral defaults.
 struct GradeSettings {
-    // White balance: temperature warms (+) or cools (-) the picture, tint pushes it to magenta
-    // (+) or green (-), -100..100. The gains are applied in LMS (the eye's cone responses),
-    // as the eye adapts to a light's color.
-    float temperature;
-    float tint;
-    // Contrast round middle grey, in stops (1: none; over 1 more).
-    float contrast;
-    // ASC CDL's slope, offset and power, per channel: gain multiplies the light, lift raises
-    // or lowers the log encoding (0.1 of it per 1), power bends it (over 1 darker mid-tones).
-    Vector3 gain;
-    Vector3 lift;
-    Vector3 power;
-    // In Oklab: saturation (1: as it is), a turn of the hue (radians), and the tints added to
-    // the shadows and to the highlights (Oklab a: green to red, b: blue to yellow; 0.02 is a
-    // clear tint).
-    float saturation;
-    float hue;
-    Vector2 shadows;
-    Vector2 highlights;
-    float look_strength;
+    float temperature; // White-balance warmth in LMS cone space (`-100..100`; positive = warmer).
+    float tint; // White-balance green/magenta axis in LMS space (`-100..100`; positive = magenta).
+    float contrast; // Contrast around middle grey in log stops (`1` = neutral; `> 1` = higher).
+    Vector3 gain; // Per-channel linear slope (ASC CDL gain; `{ 1, 1, 1 }` = neutral).
+    Vector3 lift; // Per-channel log-space offset (`0.1` of log range per `1.0`; `{ 0, 0, 0 }` = neutral).
+    Vector3 power; // Per-channel log-space power curve (`> 1` darkens midtones; `{ 1, 1, 1 }` = neutral).
+    float saturation; // Oklab chroma scale (`1` = neutral; `0` = monochrome).
+    float hue; // Oklab hue rotation in radians.
+    Vector2 shadows; // Oklab `(a, b)` tint added to shadows (~`0.02` produces a visible cast).
+    Vector2 highlights; // Oklab `(a, b)` tint added to highlights (~`0.02` produces a visible cast).
+    float look_strength; // Blend factor (`0..1`) for the optional `.cube` look LUT after tone mapping.
 }
 
+// Stateful HDR color grader and cached 3D LUT consumed by `OutputPass.grade`.
+//
+//   ColorGrade* grade = postprocessing::color_grade();
+//   grade.temperature = 15;
+//   grade.contrast = 1.1;
+//   grade.load_look("look.cube")!!;
+//   output.grade = grade;
 struct ColorGrade {
     inline GradeSettings settings;
-    SgImage lut;
-    SgView lut_texture;
-    SgView[GRADE_LUT] slices;
-    SgImage look;
-    SgView look_texture;
-    int look_size;
-    SgShader shader;
-    SgPipeline pipeline;
-    SgSampler sampler;
-    // what the LUT was baked with
-    GradeSettings baked;
-    int baked_tone;
-    bool baked_p3;
-    bool baked_once;
+    SgImage lut; // Baked `GRADE_LUT`^3 `RGBA16F` 3D LUT image.
+    SgView lut_texture; // 3D texture view sampled by `OutputPass`.
+    SgView[GRADE_LUT] slices; // Per-slice color attachment views used while baking `lut`.
+    SgImage look; // Optional `.cube` `RGBA8` 3D look texture.
+    SgView look_texture; // Texture view for `look`.
+    int look_size; // Edge length of `look` (`0` when no look is loaded).
+    SgShader shader; // Baking shader (`shaders/grade.glsl`).
+    SgPipeline pipeline; // Baking pipeline targeting `RGBA16F` slices.
+    SgSampler sampler; // Trilinear clamp-to-edge sampler for `look`.
+    GradeSettings baked; // Settings snapshot stored in `lut`.
+    int baked_tone; // `ToneMapping.ordinal` baked into `lut`.
+    bool baked_p3; // Display P3 flag baked into `lut`.
+    bool baked_once; // True once `lut` contains a valid bake.
 }
 
+// Allocates a `ColorGrade` initialized to neutral grading defaults.
 fn ColorGrade* color_grade() {
     ColorGrade* g = mem::new(ColorGrade);
     g.settings = {
@@ -71,6 +66,8 @@ fn ColorGrade* color_grade() {
     };
     return g;
 }
+
+// ---- LUT baking
 
 SgSampler grade_clamp @local;
 SgView grade_empty @local;
@@ -88,7 +85,7 @@ fn SgSampler grade_sampler() @local {
     return grade_clamp;
 }
 
-// A 1x1x1 3D texture, for a 3D slot with nothing in it.
+// Returns a shared 1x1x1 white `RGBA8` 3D texture view for binding unused 3D LUT slots.
 fn SgView empty_lut() {
     if (!grade_empty.id) {
         char[4] px = { 255, 255, 255, 255 };
@@ -107,8 +104,7 @@ fn SgView empty_lut() {
     return grade_empty;
 }
 
-// The gains in LMS that take the white of the temperature and tint (a point near the daylight
-// locus, the tint across it) to D65's.
+// Computes LMS cone gains mapping the `(temperature, tint)` white point to D65.
 fn Vector3 white_balance(float temperature, float tint) @local {
     float t1 = temperature / 65;
     float t2 = tint / 65;
@@ -124,8 +120,8 @@ fn Vector3 white_balance(float temperature, float tint) @local {
     return (Vector3) { 0.949237f, 1.03542f, 1.08728f } / lms;
 }
 
-// Bakes the LUT if a setting, the tone mapping or the output's colors have changed since.
-// Outside of any pass.
+// Rebakes the 32x32x32 3D LUT on the GPU if `settings`, `tone`, or `p3` changed since the last
+// bake. Must be called outside any active render pass.
 fn void ColorGrade.prepare(&self, ToneMapping tone, bool p3) {
     if (self.baked_once && mem::equals(&self.baked, &self.settings, GradeSettings::size) && self.baked_tone == tone.ordinal && self.baked_p3 == p3) return;
     if (!self.lut.id) {
@@ -185,10 +181,13 @@ fn void ColorGrade.prepare(&self, ToneMapping tone, bool p3) {
     self.baked_once = true;
 }
 
+// ---- Look loading
+
+// Returned by `ColorGrade.load_look()` when a `.cube` file has an invalid size or too few entries.
 faultdef BAD_CUBE;
 
-// A look from a .cube file (LUT_3D_SIZE n, then n³ lines of r g b, red fastest; its input the
-// sRGB picture, 0..1), applied after the tone mapping, look_strength of it.
+// Loads a 3D `.cube` look LUT (`LUT_3D_SIZE n` followed by `n^3` RGB triples, red fastest,
+// expecting sRGB `0..1` input after tone mapping), uploads it to the GPU, and marks `lut` dirty.
 fn void? ColorGrade.load_look(&self, String path) {
     char[] text = file::load_temp(path)!;
     int n;

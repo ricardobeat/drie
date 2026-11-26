@@ -1,48 +1,45 @@
+// Ground-truth ambient occlusion pass (`GTAOPass`, `shaders/gtao.glsl`, based on Intel XeGTAO)
+// for linear HDR render targets with `RenderTarget.mrt` and a depth buffer. Evaluates hemisphere
+// visibility from depth and world normals into `ao_target` (R: occlusion, G: linear camera-plane
+// distance in meters, B: `n.v`) and multiplies it over indirect lighting (`indirect_texture`)
+// while leaving direct lighting intact unless `direct_occlusion > 0`. In `EffectComposer`, place
+// right after an MRT `RenderPass`; call `dispose()` to free GPU targets and shaders.
+
 module drie::postprocessing;
 import std::collections::list;
 import sokol, drie;
 
-// Ambient occlusion, like three's GTAOPass (ground-truth AO, after Intel's XeGTAO), for a
-// scene rendered into a target with MRT (RenderTarget.mrt): from its depth and normals, it
-// darkens only the light the scene got indirectly (RenderTarget.indirect_texture: the ambient
-// and environment light, reflections), as the material shaders of three's WebGPU renderer do
-// with an `ao` context. Direct light is the shadows' business. Smooth surfaces keep their
-// reflections but at grazing angles (specular occlusion).
+// ---- GTAOPass
+
+// Screen-space ground-truth ambient occlusion pass over an MRT `RenderTarget`.
 //
 //   GTAOPass* ao = postprocessing::gtao_pass(camera);
 //   ao.radius = 0.5;
-//   renderer.set_render_target(scene_rt); renderer.render(scene, camera);
-//   ao.render(scene_rt);               // darkens scene_rt's picture where it is occluded
+//   renderer.set_render_target(scene_rt);
+//   renderer.render(scene, camera);
+//   ao.render(scene_rt); // darkens scene_rt where occluded
 //
-// In an EffectComposer it goes right after a RenderPass with `mrt` set. `ao_target` keeps the
-// occlusion (r), each pixel's distance from the camera's plane in meters (g) and n·v (b) until
-// the next render, for other passes that want the distance.
+// `ao_target` keeps occlusion (R), linear camera-plane distance in meters (G), and `n.v` (B)
+// until the next call, for downstream passes such as `BokehPass`.
 struct GTAOPass {
     inline Pass pass;
-    Camera* camera;
-    // how far around a point things darken it (m)
-    float radius;
-    // a power on the visibility: over 1 darker, under lighter, 0 none at all
-    float intensity;
-    // fades out between these distances (m); fade_end 0: never
-    float fade_start;
-    float fade_end;
-    // the share of the occlusion that darkens the direct light too: 0, as it should be; more
-    // for a look where corners darken however they are lit
-    float direct_occlusion;
-    bool specular_occlusion;
-    // slices of the hemisphere above each pixel (up to 8), and steps along each side of one (up
-    // to 24): more is less noise for the blur and the frames to even out, at the cost of
-    // slices * steps * 2 depth reads a pixel. Default 2 and 6.
-    int slices;
-    int steps;
-    RenderTarget* ao_target;
-    ShaderPass gtao;
-    ShaderPass gtao_ms;
-    ShaderPass apply;
-    int frame;
+    Camera* camera; // Camera whose projection and world basis match the rendered target.
+    float radius; // World-space occlusion sampling radius (m).
+    float intensity; // Exponent applied to visibility (`> 1` darker, `< 1` lighter, `0` disables).
+    float fade_start; // Distance from camera where occlusion begins fading out (m).
+    float fade_end; // Distance where occlusion reaches zero (m; `0` disables distance fade).
+    float direct_occlusion; // Fraction of occlusion also applied to direct lighting (`0` = indirect only).
+    bool specular_occlusion; // When true, preserves specular reflections except at grazing angles.
+    int slices; // Hemisphere azimuth slices per pixel (`1..8`, default 2).
+    int steps; // Depth samples per half-slice (`1..24`, default 6; total `slices * steps * 2` reads).
+    RenderTarget* ao_target; // `RGBA16F` output storing occlusion (R), linear depth in meters (G), and `n.v` (B).
+    ShaderPass gtao; // Single-sample depth/normal horizon integration pass.
+    ShaderPass gtao_ms; // Multisampled depth horizon integration pass.
+    ShaderPass apply; // Multiplicative composite pass over the scene target.
+    int frame; // Frame counter rotating spatial sampling noise (mod 64).
 }
 
+// Allocates a `GTAOPass` bound to `camera` with default radius `0.5` m, `2` slices, and `6` steps.
 fn GTAOPass* gtao_pass(Camera* camera) {
     GTAOPass* p = mem::new(GTAOPass);
     *p = {
@@ -65,8 +62,8 @@ fn GTAOPass* gtao_pass(Camera* camera) {
     return p;
 }
 
-// Works out the occlusion of what `target` (rendered from the pass's camera, with MRT) shows
-// into ao_target, and darkens the target's picture with it.
+// Computes ambient occlusion from `target` (MRT + depth) into `ao_target` and composites it
+// multiplicatively over `target`'s resolved color texture.
 fn void GTAOPass.render(&self, RenderTarget* target) {
     self.render_occlusion(target);
     self.apply.set_texture(VIEW_GTAO_AO, self.ao_target.texture);
@@ -78,7 +75,8 @@ fn void GTAOPass.render(&self, RenderTarget* target) {
     self.apply.render_over(target);
 }
 
-// Only the occlusion, into ao_target, leaving the picture as it is.
+// Evaluates occlusion and linear depth from `target` into `ao_target` without modifying `target`.
+// Aborts if `target` lacks MRT attachments or a depth buffer.
 fn void GTAOPass.render_occlusion(&self, RenderTarget* target) {
     if (!target.mrt || !target.depth_buffer) abort("drie: GTAOPass needs a target with MRT and a depth buffer");
     if (!self.ao_target) self.ao_target = drie::render_target(target.width, target.height, 1, RGBA16F, false);
@@ -101,6 +99,7 @@ fn void GTAOPass.render_occlusion(&self, RenderTarget* target) {
     g.render(self.ao_target);
 }
 
+// Disposes the internal shader passes and `ao_target`.
 fn void GTAOPass.dispose(&self) {
     self.gtao.dispose();
     self.gtao_ms.dispose();

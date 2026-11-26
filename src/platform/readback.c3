@@ -1,8 +1,11 @@
+// Platform GPU readback and headless device creation backed by `platform/readback.c` (Metal on
+// macOS) and `platform/readback_win.c` (D3D11 on Windows). Provides synchronous texture readback,
+// headless sokol_gfx environments, and slotted async storage-buffer readbacks for `StorageBuffer`.
 module drie::readback @link(env::DARWIN, "Metal.framework", "Foundation.framework");
 import sokol;
 
-// Reads `img` into `out` (width * height * bytes_per_pixel bytes): 4 for a BGRA8/RGBA8 sokol
-// image, 8 for RGBA16F. Waits for the GPU, so call it after sg::commit().
+// Copies `img` into `out` (`width * height * bytes_per_pixel` bytes: 4 for BGRA8/RGBA8, 8 for
+// RGBA16F). Blocks until the GPU finishes, so call after `sg::commit()`.
 fn bool read_image(SgImage img, CInt width, CInt height, char* out, CInt bytes_per_pixel = 4)
 {
     $if env::DARWIN:
@@ -14,8 +17,8 @@ fn bool read_image(SgImage img, CInt width, CInt height, char* out, CInt bytes_p
     $endif
 }
 
-// The GPU setup for sokol_gfx without a window: the system's default MTLDevice* on macOS, a new
-// D3D11 device and its immediate context on Windows.
+// Builds a windowless `SgEnvironment` backed by the default MTLDevice on macOS or a new D3D11
+// device and immediate context on Windows.
 fn SgEnvironment headless_environment()
 {
     SgEnvironment env = { .defaults = { .color_format = BGRA8, .depth_format = DEPTH_STENCIL, .sample_count = 1 } };
@@ -28,16 +31,20 @@ fn SgEnvironment headless_environment()
     return env;
 }
 
-// Copies a native texture (MTLTexture* / ID3D11Texture2D*) through `queue` (an MTLCommandQueue* /
-// ID3D11DeviceContext*) into `out`.
+// Copies a native texture (`MTLTexture*` or `ID3D11Texture2D*`) through `queue`
+// (`MTLCommandQueue*` or `ID3D11DeviceContext*`) into `out`.
 extern fn bool read_texture(void* tex, void* queue, CInt width, CInt height, CInt bytes_per_pixel, char* out) @cname("rb_read_texture") @link(env::WIN32, "d3d11");
-extern fn void* create_device() @cname("rb_create_device") @link(env::WIN32, "d3d11");
-extern fn void* device_context() @cname("rb_device_context") @link(env::WIN32, "d3d11"); // Windows only
 
-// Readback of a storage buffer without waiting for the GPU (see compute.c3). Call track()
-// after the work that writes `buf` is encoded: it queues a copy of the buffer after it. Then
-// fetch() in a later frame: false while the GPU has not got that far, unless `wait` (which
-// needs the frame committed). Up to 64 slots, the caller's to number.
+// Returns the platform graphics device pointer for headless rendering (`MTLDevice*` or
+// `ID3D11Device*`).
+extern fn void* create_device() @cname("rb_create_device") @link(env::WIN32, "d3d11");
+
+// Returns the D3D11 immediate device context paired with `create_device()` (Windows only).
+extern fn void* device_context() @cname("rb_device_context") @link(env::WIN32, "d3d11");
+
+// Queues an async readback copy of storage buffer `buf` into `slot` (0..63). Call after encoding
+// the compute work that writes `buf`, then retrieve bytes with `readback::fetch()` on a later
+// frame (or use `drie::StorageBuffer.track()` and `drie::read_back()`).
 fn bool track(SgBuffer buf, CInt slot)
 {
     $if env::DARWIN:
@@ -48,5 +55,9 @@ fn bool track(SgBuffer buf, CInt slot)
     $endif
 }
 
+// Native entry point behind `readback::track()`, taking a raw `MTLBuffer*` or `ID3D11Buffer*`.
 extern fn bool track_native(void* buf, CInt slot, void* queue_or_context) @cname("rb_track") @link(env::WIN32, "d3d11");
+
+// Copies `bytes` from readback `slot` into `out`. Returns false while the GPU copy is still in
+// flight unless `wait` is true (which requires the frame to have been committed).
 extern fn bool fetch(CInt slot, void* out, CInt bytes, bool wait) @cname("rb_fetch") @link(env::WIN32, "d3d11");

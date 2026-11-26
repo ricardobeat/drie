@@ -1,45 +1,43 @@
-// Progressive light maps, like three's ProgressiveLightMap: light baked into the objects' uv1
-// a little at a time, from lights that can move between updates (jittered across an area,
-// they give soft shadows and the light's spread as the samples add up). The lights live in a
-// scene of their own (`scene`), so the main scene has none; each update draws the objects in
-// their uv1 into a light map, lit and shadowed by them, and blends that into the last one.
-//
-//   ProgressiveLightMap* plm = drie::progressive_lightmap(renderer, 1024);
-//   plm.scene.add(light);                      // (or pass it to add_objects, as three's)
-//   Object3D*[2] objects = { floor, box };
-//   plm.add_objects(&objects);                 // uv1 = their uv, packed together
-//   // each frame, before render(): move the lights about, then
-//   plm.update(camera, blend_window: 100);
-//
-// The objects keep their own materials, with light_map set to texture(1) (channel 1: their
-// uv1). As three's, the updates take turns between two maps, and the objects show the second:
-// what they show changes every other update.
+// Progressive lightmap baker (`ProgressiveLightMap`, modeled after three.js's
+// `ProgressiveLightMap`). Accumulates jittered direct light and shadows in linear light into two
+// ping-pong floating-point render targets (`RGBA32F` when renderable and filterable, otherwise
+// `RGBA16F`) via `Renderer.render_bake` and `shaders/lightmap.glsl`. Lights live in the baker's
+// own `scene` rather than the main scene; each mesh samples `texture(1)` through its `uv1`
+// channel. Create after graphics init, call `update()` before `Renderer.render()`, and call
+// `dispose()` to free GPU targets and samplers.
+
 module drie;
 import std::collections::list, std::math;
 import sokol;
 
+// Progressive UV-space lightmap baker that blends samples across frames into ping-pong maps.
+//
+//   ProgressiveLightMap* plm = drie::progressive_lightmap(renderer, 1024);
+//   plm.scene.add(light);
+//   Object3D*[2] objects = { floor, box };
+//   plm.add_objects(&objects);
+//   // Each frame before render(): jitter or move lights, then:
+//   plm.update(camera, blend_window: 100);
+//
+// Updates alternate between the two targets while meshes stay bound to `texture(1)`, so visible
+// lighting advances every second `update()` call.
 struct ProgressiveLightMap {
-    Renderer* renderer;
-    // the light map's width and height (texels)
-    int res;
-    // the lights that the light map is baked with
-    Scene* scene;
-    // the meshes baked into it
-    List{Object3D*} objects;
-    // the two maps, as textures: texture(0) and texture(1)
-    RenderTarget*[2] targets;
-    Texture*[2] maps;
-    // what the objects are drawn with while baking: three's MeshPhongMaterial, white
-    Material* material;
-    // the next update draws into the first map (and reads the second)
-    bool first_active;
-    bool cleared;
-    // show_debug's plane
-    Mesh* debug_plane;
+    Renderer* renderer; // Renderer used for `render_bake` passes.
+    int res; // Lightmap width and height in texels.
+    Scene* scene; // Separate scene holding the lights used during baking.
+    List{Object3D*} objects; // Meshes registered for baking.
+    RenderTarget*[2] targets; // Ping-pong floating-point render targets (linear light, no depth).
+    Texture*[2] maps; // Texture wrappers over `targets`: index 0 for debug, index 1 (`uv1`) for meshes.
+    Material* material; // White un-fogged Phong material used while baking meshes.
+    bool first_active; // When true, the next `update()` writes `targets[0]` and reads `targets[1]`.
+    bool cleared; // True once both targets have been cleared on the first `update()`.
+    Mesh* debug_plane; // Unlit 100x100 preview plane created lazily by `show_debug()`.
 }
 
-// A light map of `res` x `res` texels (RGBA32F where the GPU can draw into it and filter it,
-// else RGBA16F). Must be called after the window opened (or init_headless).
+// ---- Baking
+
+// Allocates a `res` x `res` progressive lightmap (`RGBA32F` if renderable and filterable, else
+// `RGBA16F`). Must be called after the window opens or `init_headless()` completes.
 fn ProgressiveLightMap* progressive_lightmap(Renderer* renderer, int res = 1024) {
     ProgressiveLightMap* p = mem::new(ProgressiveLightMap);
     p.renderer = renderer;
@@ -51,7 +49,7 @@ fn ProgressiveLightMap* progressive_lightmap(Renderer* renderer, int res = 1024)
     SgPixelFormat format = f.render && f.filter ? SgPixelFormat.RGBA32F : SgPixelFormat.RGBA16F;
     for (int i = 0; i < 2; i++) {
         RenderTarget* rt = render_target(p.res, p.res, 1, format, depth_buffer: false);
-        // (not RenderTarget.as_map: row r of the map is at v = (r + 0.5) / res on every backend)
+        // Wrap directly instead of `as_map()` so row `r` stays at `v = (r + 0.5) / res` on all backends.
         Texture* t       = mem::new(Texture);
         *t = {
             .width = p.res,
@@ -75,13 +73,12 @@ fn ProgressiveLightMap* progressive_lightmap(Renderer* renderer, int res = 1024)
     return p;
 }
 
-// The light maps: 0 the one show_debug shows, 1 the one the objects show (channel 1).
+// Returns lightmap texture `0` (shown by `show_debug()`) or `1` (bound to meshes on `uv1`).
 fn Texture* ProgressiveLightMap.texture(&self, int i) => self.maps[i == 0 ? 0 : 1];
 
-// Bakes `objects` into the light map: their material's light_map becomes texture(1), and they
-// cast and receive shadows. The lights among them go to `scene`. With `pack` (three's) each
-// mesh's uv1 is its uv, in a square of its own among the others' (potpack), with a margin of
-// three texels; without, their uv1 is taken to be laid out already.
+// Registers meshes and lights from `objects`: lights are added to `scene`, and each mesh gets
+// `material.light_map = texture(1)` with shadows enabled. When `pack` is true, each mesh's `uv`
+// is packed into `uv1` via potpack with a 3-texel margin; when false, existing `uv1` is kept.
 fn void ProgressiveLightMap.add_objects(&self, Object3D*[] objects, bool pack = true) {
     List{PackBox} boxes;
     boxes.allocator = mem;
@@ -111,20 +108,18 @@ fn void ProgressiveLightMap.add_objects(&self, Object3D*[] objects, bool pack = 
             g.uv1.push((float)(((double)uv.x + b.x + padding) / size[0]));
             g.uv1.push((float)(((double)uv.y + b.y + padding) / size[1]));
         }
-        // uploaded again, with the new uv1
+        // Re-upload geometry buffers with the packed `uv1` coordinates.
         g.uploaded = false;
     }
 }
 
-// Draws one more sample of the light into the map: each object, lit by `scene`'s lights as
-// they are now (and seen from `camera`, for the highlights), blended into what the last update
-// left, 1 / blend_window of it the new sample (1: only the new one). `blur_edges` spreads the
-// light past the edges of each object's part of the map first, so its seams don't show.
-// Call it before render(), every frame or as often as the lights change.
+// Bakes one lighting sample from `scene` (viewed from `camera`) and blends it into the inactive
+// lightmap with weight `1 / blend_window` (`1` replaces previous samples). When `blur_edges` is
+// true, texels are dilated past UV chart edges first to hide seams. Call before `Renderer.render()`.
 fn void ProgressiveLightMap.update(&self, Camera* camera, float blend_window = 100, bool blur_edges = true) {
     if (!self.objects.len()) return;
     if (!self.cleared) {
-        // (a new image holds anything)
+        // Fresh GPU attachments have undefined contents; clear both ping-pong maps before first blend.
         foreach (rt : self.targets) {
             sg::begin_pass(
                 &&{
@@ -154,8 +149,8 @@ fn void ProgressiveLightMap.update(&self, Camera* camera, float blend_window = 1
     );
 }
 
-// Shows texture(0) on a 100 x 100 plane (both sides, unlit) next to the first object, in its
-// parent, at `position` (three's showDebugLightmap).
+// Toggles an unlit double-sided 100 x 100 debug plane displaying `texture(0)` at `position`
+// inside the first baked object's parent.
 fn void ProgressiveLightMap.show_debug(&self, bool visible, Vector3 position = { 0, 250, 0 }) {
     if (!self.objects.len()) return;
     if (!self.debug_plane) {
@@ -168,8 +163,8 @@ fn void ProgressiveLightMap.show_debug(&self, bool visible, Vector3 position = {
     self.debug_plane.visible = visible;
 }
 
-// Frees the maps, the material and the debug plane (the objects keep light_map: set it to
-// null first, if they stay).
+// Frees both render targets, their samplers, and the debug plane. Clear `material.light_map` on
+// any surviving meshes before calling `dispose()`.
 fn void ProgressiveLightMap.dispose(&self) {
     for (int i = 0; i < 2; i++) {
         sg::destroy_sampler(self.maps[i].sampler);
@@ -184,7 +179,9 @@ fn void ProgressiveLightMap.dispose(&self) {
     self.objects.free();
 }
 
-// A square of the light map for one mesh (add_objects), placed by potpack.
+// ---- UV packing
+
+// One mesh's UV square allocated by `add_objects()` and placed by `potpack()`.
 struct PackBox @local {
     double w;
     double h;
@@ -193,7 +190,7 @@ struct PackBox @local {
     Mesh* mesh;
 }
 
-// An empty space of potpack's.
+// Remaining free rectangle tracked during `potpack()`.
 struct PackSpace @local {
     double x;
     double y;
@@ -201,9 +198,8 @@ struct PackSpace @local {
     double h;
 }
 
-// potpack (Mapbox, ISC License), as three's ProgressiveLightMap uses it: places the boxes
-// (tallest first) in a container about square, each in the smallest empty space that holds
-// it. Returns the container's width and height.
+// Packs `boxes` (tallest first) into a roughly square atlas using Mapbox's potpack algorithm
+// (ISC License). Writes each box's `(x, y)` origin and returns the container `{ width, height }`.
 fn double[2] potpack(PackBox[] boxes) @local {
     double area;
     double max_width;
@@ -211,7 +207,7 @@ fn double[2] potpack(PackBox[] boxes) @local {
         area += b.w * b.h;
         max_width = math::max(max_width, b.w);
     }
-    // by height, the tallest first (keeping the order of equal ones, as JavaScript's sort)
+    // Stable insertion sort descending by height.
     for (usz i = 1; i < boxes.len; i++) {
         PackBox b = boxes[i];
         usz j     = i;
@@ -226,7 +222,7 @@ fn double[2] potpack(PackBox[] boxes) @local {
     double width;
     double height;
     foreach (&b : boxes) {
-        // backwards: the smaller spaces first
+        // Scan backwards to prefer smaller free rectangles first.
         for (sz i = (sz)spaces.len() - 1; i >= 0; i--) {
             PackSpace* s = &spaces[i];
             if (b.w > s.w || b.h > s.h) continue;

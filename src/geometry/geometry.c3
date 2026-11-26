@@ -1,82 +1,101 @@
-// Geometries. Vertices are interleaved: position (3), normal (3), uv (2), color (3).
+// Indexed mesh geometry (`BufferGeometry`), lazy GPU buffer uploads and dynamic vertex
+// streaming, and procedural shape builders (`box_geometry`, `plane_geometry`, `sphere_geometry`,
+// `lathe_geometry`, `cylinder_geometry`, `cone_geometry`, `torus_geometry`). Vertices are
+// interleaved as `FLOATS_PER_VERTEX` (12) floats: position (3), normal (3), UV (2), RGBA
+// color (4), using right-handed Y-up coordinates and counter-clockwise front faces. CPU lists
+// use the heap allocator (`mem`); GPU buffers are created by `Renderer.render` and freed by
+// `BufferGeometry.dispose()`.
 module drie;
 import std::collections::list, std::math;
 import sokol;
 
-// position 3, normal 3, uv 2, color 4 (rgba: the alpha is used by materials with vertex_colors,
-// like three.js's vertexAlphas)
+// Interleaved vertex stride in floats: position (3), normal (3), UV (2), RGBA color (4).
+// Alpha is consumed by materials with `vertex_colors` enabled.
 const int FLOATS_PER_VERTEX = 12;
 
+// CPU vertex/index arrays, optional auxiliary attributes (skinning, UV1, tangents, morph
+// targets), and lazily created GPU buffers for a `Mesh`.
 struct BufferGeometry {
+    // Interleaved vertex attributes (`FLOATS_PER_VERTEX` floats per vertex).
     List{float} vertices;
+    // Vertex indices defining triangles or line topologies.
     List{uint} indices;
-    // Skinning (see skeleton.c3): per vertex, four bones of a Skeleton and their weights, like
-    // three's skinIndex and skinWeight attributes. Empty unless set with set_skin / skin_range.
+    // Per-vertex bone indices (`BONES_PER_VERTEX` per vertex) for `Skeleton`/`SkinnedMesh`;
+    // empty until populated with `set_skin` or `skin_range`.
     List{ushort} skin_indices;
+    // Per-vertex bone weights (`BONES_PER_VERTEX` per vertex) matching `skin_indices`.
     List{float} skin_weights;
-    // A second uv per vertex (glTF's TEXCOORD_1, three's uv1), for the maps that read it (a
-    // Texture's channel 1), like light and ambient occlusion maps baked on their own unwrap.
-    // Empty without one: those maps read uv (0, 0).
+    // Secondary UV set (`TEXCOORD_1`, 2 floats per vertex) read by textures with `channel == 1`
+    // (e.g. baked light or AO maps); empty falls back to `(0, 0)`.
     List{float} uv1;
-    // Tangents per vertex (glTF's TANGENT, three's tangent attribute): x, y, z, the direction
-    // the uv's u grows along the surface, and w, the bitangent's sign (it is cross(normal,
-    // tangent) * w). The tangent frame of normal and anisotropy maps; empty without them, and
-    // the frame is then taken from how the position and the uv change across the screen.
+    // Per-vertex tangents (`x, y, z` along +U, `w` bitangent sign where `B = cross(N, T) * w`)
+    // for normal and anisotropy maps; when empty, shaders derive the frame from screen gradients.
     List{float} tangents;
-    // Morph targets (three's morphAttributes.position): T * V vec4s of (dx, dy, dz, 0) deltas.
+    // Morph target position deltas: `morph_targets * morph_vertex_count` vec4s of `(dx, dy, dz, 0)`.
     List{float} morph_positions;
+    // Number of morph targets stored in `morph_positions`.
     int morph_targets;
+    // Vertex count per morph target in `morph_positions`.
     int morph_vertex_count;
-    // GPU state, created lazily on first render.
+    // Active GPU vertex buffer (created lazily on first render).
     SgBuffer vbuf;
+    // GPU buffer for secondary `uv1` coordinates.
     SgBuffer uv1buf;
+    // GPU buffer for per-vertex `tangents`.
     SgBuffer tangent_buf;
+    // GPU storage buffer holding `morph_positions`.
     SgBuffer morph_buf;
+    // Storage view for `morph_buf`.
     SgView morph_view;
+    // True once `morph_buf` matches `morph_positions`.
     bool morph_uploaded;
+    // GPU triangle/segment index buffer.
     SgBuffer ibuf;
+    // GPU edge-list index buffer built on demand by `upload_wire` for wireframe materials.
     SgBuffer wire_ibuf;
+    // Number of indices in `wire_ibuf`.
     uint wire_count;
-    // a Line's or LineLoop's segments (see upload_lines), and which of the two
+    // GPU segment-pair index buffer built by `upload_lines` for `Line` and `LineLoop`.
     SgBuffer line_ibuf;
+    // Number of indices in `line_ibuf`.
     uint line_count;
+    // Whether `line_ibuf` closes the loop (`LINE_LOOP` vs `LINE_STRIP`).
     bool line_loop;
+    // Number of indices uploaded into `ibuf`.
     uint index_count;
+    // True while GPU buffers match CPU data; clear to force full re-upload on next render.
     bool uploaded;
-    // The vertices change often (three's DynamicDrawUsage; cloth, see cloth.c3). Set before
-    // the first upload, and keep the vertex count. After changing the vertices (and the
-    // tangents, if it has them), set needs_update (or call vertices_changed): the next render
-    // copies them to the GPU once, before its passes. Unmarked, the GPU keeps what it has.
-    // The copy is of the whole vertex: position, normal, uv and color.
+    // Marks frequently updated vertices (e.g. `drie::cloth`). Set before first upload and keep
+    // vertex count fixed; after mutating `vertices` (and `tangents`), set `needs_update` or call
+    // `vertices_changed` to stream them to the GPU once per frame before render passes.
     bool dynamic;
-    // three's attribute.needsUpdate, for a dynamic geometry. A change marked after the frame
-    // has copied the geometry once is copied in the next frame.
+    // Dirty flag for a `dynamic` geometry; updates flagged after a frame's copy apply next frame.
     bool needs_update;
-    // a dynamic geometry's other vertex buffer: the vertices before the last update (vbuf has
-    // the new ones), where the motion vectors find where each vertex was; `staging` is the
-    // buffer an update is written into, and copied from on the GPU
+    // Double-buffered vertex buffer holding the previous frame's vertices for motion vectors.
     SgBuffer prev_vbuf;
+    // Transient staging buffer used to copy `dynamic` CPU vertices (and tangents) to the GPU.
     SgBuffer staging;
-    // The vertices are written on the GPU (a compute kernel: gpu_cloth.c3), never copied from
-    // the CPU after the first upload. Set before it, with dynamic. Both vertex buffers are also
-    // storage buffers; gpu_vertices_target() gives the one a kernel writes this frame.
+    // Vertices are written directly on the GPU by compute kernels (`drie::gpu_cloth`) rather than
+    // streamed from the CPU. Set before first upload alongside `dynamic`; both vertex buffers are
+    // allocated as storage buffers and acquired via `gpu_vertices_target()`.
     bool gpu_vertices;
-    // the storage views of vbuf and prev_vbuf, for a geometry with gpu_vertices
+    // Storage view of `vbuf` when `gpu_vertices` is true.
     SgView vbuf_view;
+    // Storage view of `prev_vbuf` when `gpu_vertices` is true.
     SgView prev_view;
-    // the frame (state.frame + 1) of the last update
+    // `state.frame + 1` of the most recent dynamic or GPU vertex update.
     uint updated_frame;
-    // counts the changes of the vertices on the GPU (uploads and updates): what is worked out
-    // from the vertices knows when they change
+    // Monotonic counter incremented on every GPU upload or dynamic vertex update.
     uint version;
-    // counts the uploads only (every buffer made again: the uvs and indices may have changed)
+    // Monotonic counter incremented only on full buffer rebuilds (`upload`).
     uint upload_version;
-    // Bounding sphere in local space, computed on upload (or by compute_bounding_sphere).
+    // Local-space bounding sphere center computed on upload or via `compute_bounding_sphere`.
     Vector3 bounds_center;
+    // Local-space bounding sphere radius.
     float bounds_radius;
 }
 
-// Makes the vertex and index lists heap allocated (a plain List would use the temp allocator).
+// Configures all CPU attribute lists to use the heap allocator (`mem`) rather than temp memory.
 fn void BufferGeometry.init_lists(&self) {
     self.vertices.allocator = mem;
     self.indices.allocator = mem;
@@ -87,6 +106,8 @@ fn void BufferGeometry.init_lists(&self) {
     self.morph_positions.allocator = mem;
 }
 
+// Computes the local-space bounding sphere (`bounds_center`, `bounds_radius`) from vertex
+// positions using the AABB midpoint as center.
 fn void BufferGeometry.compute_bounding_sphere(&self) {
     Vector3 lo =  { 1e30f, 1e30f, 1e30f };
     Vector3 hi = -lo;
@@ -106,8 +127,8 @@ fn void BufferGeometry.compute_bounding_sphere(&self) {
     self.bounds_radius = math::sqrt(r2);
 }
 
-// Replaces the UVs with a box projection of the positions: each face is mapped along its
-// dominant normal axis, `tiles_per_unit` texture repeats per unit. Handy for walls and floors.
+// Replaces primary UVs with a tri-planar box projection chosen by each vertex's dominant normal
+// axis, scaled by `tiles_per_unit`. Marks geometry for re-upload and returns `self`.
 fn BufferGeometry* BufferGeometry.box_project_uv(&self, float tiles_per_unit = 1) {
     for (sz o = 0; o < self.vertices.len(); o += FLOATS_PER_VERTEX) {
         float[] v = self.vertices.entries[o:FLOATS_PER_VERTEX];
@@ -129,6 +150,7 @@ fn BufferGeometry* BufferGeometry.box_project_uv(&self, float tiles_per_unit = 1
     return self;
 }
 
+// Appends one interleaved vertex `(p, n, uv, color, alpha)` and returns `self`.
 fn BufferGeometry* BufferGeometry.add_vertex(
     &self,
     Vector3 p,
@@ -152,7 +174,7 @@ fn BufferGeometry* BufferGeometry.add_vertex(
     return self;
 }
 
-// Appends one indexed triangle of vertices already added (counter-clockwise from the front).
+// Appends a counter-clockwise triangle `(a, b, c)` to `indices`, marks dirty, and returns `self`.
 fn BufferGeometry* BufferGeometry.add_triangle(&self, uint a, uint b, uint c) {
     self.indices.push(a);
     self.indices.push(b);
@@ -161,24 +183,28 @@ fn BufferGeometry* BufferGeometry.add_triangle(&self, uint a, uint b, uint c) {
     return self;
 }
 
+// Returns the number of vertices stored in `vertices`.
 fn uint BufferGeometry.vertex_count(&self) => (uint)(self.vertices.len() / FLOATS_PER_VERTEX);
 
+// Returns primary texture coordinates for vertex `i`.
 fn Vector2 BufferGeometry.get_uv(&self, uint i) {
     sz at = (sz)i * FLOATS_PER_VERTEX + 6;
     return { self.vertices[at], self.vertices[at + 1] };
 }
 
+// Returns the local-space position of vertex `i`.
 fn Vector3 BufferGeometry.get_position(&self, uint i) {
     sz o = (sz)i * FLOATS_PER_VERTEX;
     return { self.vertices[o], self.vertices[o + 1], self.vertices[o + 2] };
 }
 
+// Returns the local-space normal of vertex `i`.
 fn Vector3 BufferGeometry.get_normal(&self, uint i) {
     sz o = (sz)i * FLOATS_PER_VERTEX + 3;
     return { self.vertices[o], self.vertices[o + 1], self.vertices[o + 2] };
 }
 
-// Sets one vertex's colour (or whatever else a material reads from that attribute).
+// Sets vertex `i`'s RGB color channels (leaving alpha unchanged) and marks for re-upload.
 fn void BufferGeometry.set_vertex_color(&self, uint i, Vector3 rgb) {
     sz o = (sz)i * FLOATS_PER_VERTEX;
     self.vertices[o + 8] = rgb.x;
@@ -187,6 +213,8 @@ fn void BufferGeometry.set_vertex_color(&self, uint i, Vector3 rgb) {
     self.uploaded = false;
 }
 
+// Writes the local-space normal of vertex `i` without altering `uploaded` (call
+// `vertices_changed()` when done).
 fn void BufferGeometry.set_normal(&self, uint i, Vector3 n) {
     sz o = (sz)i * FLOATS_PER_VERTEX + 3;
     self.vertices[o] = n.x;
@@ -194,7 +222,8 @@ fn void BufferGeometry.set_normal(&self, uint i, Vector3 n) {
     self.vertices[o + 2] = n.z;
 }
 
-// Recomputes smooth vertex normals from the triangles, like three's computeVertexNormals.
+// Recomputes area-weighted smooth vertex normals from `indices` (falling back to `+Y` for
+// degenerate vertices) and marks for re-upload.
 fn void BufferGeometry.compute_vertex_normals(&self) {
     uint n        = self.vertex_count();
     Vector3[] acc = mem::new_array(Vector3, n);
@@ -217,7 +246,7 @@ fn void BufferGeometry.compute_vertex_normals(&self) {
     self.uploaded = false;
 }
 
-// Moves every vertex, like three's geometry.translate(x, y, z). Call before first render.
+// Translates every vertex position in place by `(x, y, z)`, marks for re-upload, and returns `self`.
 fn BufferGeometry* BufferGeometry.translate(&self, float x, float y, float z) {
     for (sz o = 0; o < self.vertices.len(); o += FLOATS_PER_VERTEX) {
         self.vertices[o] += x;
@@ -228,7 +257,8 @@ fn BufferGeometry* BufferGeometry.translate(&self, float x, float y, float z) {
     return self;
 }
 
-// Rotates every vertex (and normal) by an XYZ Euler, like rotateX/Y/Z combined.
+// Rotates every vertex position and normal in place by XYZ Euler angles `(x, y, z)` in radians,
+// marks for re-upload, and returns `self`.
 fn BufferGeometry* BufferGeometry.rotate(&self, float x, float y, float z) {
     Mat4 r = mat4_compose({ 0, 0, 0 }, { x, y, z }, { 1, 1, 1 });
     for (sz o = 0; o < self.vertices.len(); o += FLOATS_PER_VERTEX) {
@@ -244,11 +274,15 @@ fn BufferGeometry* BufferGeometry.rotate(&self, float x, float y, float z) {
     self.uploaded = false;
     return self;
 }
+// Rotates every vertex and normal by `a` radians around X and returns `self`.
 fn BufferGeometry* BufferGeometry.rotate_x(&self, float a) => self.rotate(a, 0, 0);
+// Rotates every vertex and normal by `a` radians around Y and returns `self`.
 fn BufferGeometry* BufferGeometry.rotate_y(&self, float a) => self.rotate(0, a, 0);
+// Rotates every vertex and normal by `a` radians around Z and returns `self`.
 fn BufferGeometry* BufferGeometry.rotate_z(&self, float a) => self.rotate(0, 0, a);
 
-// Sets the vertex color of every vertex (used by materials with vertex_colors: true).
+// Sets RGB color channels on every vertex (leaving alpha unchanged) for materials with
+// `vertex_colors = true`, marks for re-upload, and returns `self`.
 fn BufferGeometry* BufferGeometry.set_color(&self, Vector3 rgb) {
     for (sz o = 0; o < self.vertices.len(); o += FLOATS_PER_VERTEX) {
         self.vertices[o + 8] = rgb.x;
@@ -259,8 +293,9 @@ fn BufferGeometry* BufferGeometry.set_color(&self, Vector3 rgb) {
     return self;
 }
 
-// Appends another geometry, transformed by `matrix` (like BufferGeometryUtils.mergeGeometries).
-// Vertex colors of the appended vertices are multiplied by `tint`.
+// Appends `other`'s vertices and indices transformed by `matrix` (normals via inverse-transpose),
+// multiplying appended RGB colors by `tint`. Auxiliary attributes (`uv1`, `tangents`, skinning)
+// are not copied. Returns `self`.
 fn BufferGeometry* BufferGeometry.merge(
     &self,
     BufferGeometry* other,
@@ -282,19 +317,21 @@ fn BufferGeometry* BufferGeometry.merge(
     return self;
 }
 
-// Frees CPU-side data (GPU buffers stay valid). Call after upload if the geometry is static.
+// Frees CPU `vertices` and `indices` lists while leaving uploaded GPU buffers intact (safe for
+// static geometry after `upload()`).
 fn void BufferGeometry.free_cpu(&self) {
     self.vertices.free();
     self.indices.free();
 }
 
-// Uploads vertex/index data to the GPU (called by the renderer).
+// Creates GPU vertex, index, UV1, tangent, morph, and dynamic staging buffers from CPU data.
+// Called lazily by `Renderer.render`; no-op when already `uploaded`.
 fn void BufferGeometry.upload(&self) {
     if (self.uploaded) return;
     self.version++;
     self.upload_version++;
     self.dispose();
-    // (nothing to draw: Metal makes no buffer of no bytes)
+    // Skip empty buffers: Metal rejects zero-byte buffer creation.
     if (!self.indices.len() || !self.vertices.len()) return;
     if (self.bounds_radius == 0) self.compute_bounding_sphere();
     self.index_count = (uint)self.indices.len();
@@ -337,8 +374,8 @@ fn void BufferGeometry.upload(&self) {
     self.uploaded = true;
 }
 
-// Marks the vertices changed: a dynamic geometry's are copied to the GPU in the next render
-// (needs_update), any other's are uploaded again (new buffers) when it is next drawn.
+// Marks vertex data dirty: flags `needs_update` for an uploaded `dynamic` geometry, or clears
+// `uploaded` on static geometries so buffers rebuild on next draw.
 fn void BufferGeometry.vertices_changed(&self) {
     if (self.dynamic && self.uploaded) {
         self.needs_update = true;
@@ -347,21 +384,19 @@ fn void BufferGeometry.vertices_changed(&self) {
     }
 }
 
-// The vertex buffer that holds where the vertices were a frame ago (for the motion vectors):
-// a dynamic geometry updated this frame has its vertices before the update there; any other,
-// the vertices it draws with.
+// Returns the vertex buffer holding the previous frame's positions for MRT motion vectors
+// (`prev_vbuf` if updated this frame, otherwise `vbuf`).
 fn SgBuffer BufferGeometry.prev_vertices(&self) {
     return self.dynamic && self.updated_frame == state.frame + 1 && self.prev_vbuf.id ? self.prev_vbuf : self.vbuf;
 }
 
-// Whether a dynamic geometry's vertices changed this frame (they move, for the motion vectors).
+// Returns true if this `dynamic` geometry received new vertices during the current frame.
 fn bool BufferGeometry.updated_now(&self) => self.dynamic && self.updated_frame == state.frame + 1;
 
-// The storage view of the vertex buffer a kernel writes this frame's vertices into, for a
-// geometry with gpu_vertices (uploaded first if it is not yet): the first call in a frame makes
-// the older of the two vertex buffers vbuf, the other keeping the last frame's vertices for the
-// motion vectors, and counts a change (version). Write every vertex: the buffer holds the ones
-// of two frames ago. A zero view without GPU buffers.
+// Returns the storage view a compute kernel writes this frame's vertices into (`gpu_vertices`
+// and `dynamic` required), uploading first if needed. On the first call per frame, rotates the
+// double buffer so `prev_vbuf` retains last frame's vertices and increments `version`; kernels
+// must overwrite every vertex (the target holds vertices from two frames ago).
 fn SgView BufferGeometry.gpu_vertices_target(&self) {
     if (!self.gpu_vertices || !self.dynamic) return { };
     self.upload();
@@ -379,10 +414,9 @@ fn SgView BufferGeometry.gpu_vertices_target(&self) {
     return self.vbuf_view;
 }
 
-// Copies a marked dynamic geometry's vertices (and tangents) to the GPU, outside any pass: written
-// into the staging buffer, copied from there into the vertex buffer the motion vectors don't
-// need (the older of the two), which becomes vbuf. Once a frame: a geometry already updated
-// this frame stays marked for the next. Returns the bytes copied.
+// Streams a dirty `dynamic` geometry's CPU `vertices` (and `tangents`) through `staging` into
+// the rotated vertex buffer outside any render pass, at most once per frame. Re-flags full
+// upload if byte size or tangent presence changed; returns bytes copied.
 fn usz BufferGeometry.update_vertices(&self) {
     if (!self.needs_update || !self.uploaded || !self.vbuf.id || self.gpu_vertices) return 0;
     if (self.updated_frame == state.frame + 1) return 0;
@@ -390,8 +424,7 @@ fn usz BufferGeometry.update_vertices(&self) {
     usz tbytes = self.tangent_buf.id ? (usz)self.vertex_count() * 4 * float::size : 0;
     bool tangents = (usz)self.tangents.len() >= (usz)self.vertex_count() * 4;
     if (vbytes != sg::query_buffer_size(self.vbuf) || tangents != (tbytes != 0)) {
-        // (another vertex count, or tangents added or gone: buffers made again where it is
-        // next drawn)
+        // Vertex count or tangent layout changed; rebuild buffers on the next draw.
         self.uploaded = false;
         self.needs_update = false;
         return 0;
@@ -415,7 +448,7 @@ fn usz BufferGeometry.update_vertices(&self) {
     return vbytes + tbytes;
 }
 
-// The dynamic geometries with GPU buffers (see update_dynamic).
+// Uploaded dynamic geometries tracked for per-frame `update_dynamic` transfers.
 List{BufferGeometry*} dynamic_geometries @private;
 
 fn void add_dynamic(BufferGeometry* g) @private {
@@ -433,8 +466,8 @@ fn void remove_dynamic(BufferGeometry* g) @private {
     }
 }
 
-// Copies the marked dynamic geometries' vertices to the GPU (BufferGeometry.needs_update).
-// Called outside any pass, at the start of a render. Returns how many, and the bytes.
+// Copies all dirty `dynamic` geometries to the GPU before render passes begin; returns count
+// updated and accumulates copied bytes into `*bytes`.
 fn int update_dynamic(usz* bytes) @private {
     int n;
     foreach (g : dynamic_geometries) {
@@ -446,7 +479,8 @@ fn int update_dynamic(usz* bytes) @private {
     return n;
 }
 
-// Sets position morph target deltas: `target_count * vertex_count` vec4s of (dx, dy, dz, 0).
+// Stores position morph target deltas (`target_count * vertex_count` vec4s of `(dx, dy, dz, 0)`)
+// and marks the GPU morph buffer dirty.
 fn void BufferGeometry.set_morph_positions(&self, float[] deltas, int target_count, int vertex_count) {
     self.morph_positions.clear();
     if (target_count <= 0 || vertex_count <= 0 || deltas.len < (usz)target_count * (usz)vertex_count * 4) {
@@ -463,7 +497,7 @@ fn void BufferGeometry.set_morph_positions(&self, float[] deltas, int target_cou
     self.morph_uploaded = false;
 }
 
-// Uploads morph target deltas to a GPU storage buffer (called by the renderer).
+// Uploads `morph_positions` to a GPU storage buffer and view (called by `upload` / renderer).
 fn void BufferGeometry.upload_morph(&self) {
     if (self.morph_uploaded) return;
     if (self.morph_view.id) sg::destroy_view(self.morph_view);
@@ -482,10 +516,9 @@ fn void BufferGeometry.upload_morph(&self) {
     self.morph_uploaded = true;
 }
 
-// Builds the edge index buffer used by wireframe materials (called by the renderer).
+// Builds and uploads the triangle-edge index buffer (`wire_ibuf`) used by wireframe materials.
 fn void BufferGeometry.upload_wire(&self) {
     if (self.wire_ibuf.id) return;
-    // edge list for wireframe rendering
     List{uint} wire;
     defer wire.free();
     for (sz i = 0; i + 2 < self.indices.len(); i += 3) {
@@ -508,9 +541,8 @@ fn void BufferGeometry.upload_wire(&self) {
     );
 }
 
-// Builds the segment index buffer of a Line (each index joined to the next) or, with `loop`,
-// of a LineLoop (and the last back to the first). Called by the renderer; LineSegments draw
-// the indices as they are.
+// Builds the segment-pair index buffer (`line_ibuf`) for `Line` (`loop == false`) or `LineLoop`
+// (`loop == true`). `LineSegments` renders `ibuf` directly without calling this.
 fn void BufferGeometry.upload_lines(&self, bool loop) {
     if (self.line_ibuf.id && self.line_loop == loop) return;
     if (self.line_ibuf.id) sg::destroy_buffer(self.line_ibuf);
@@ -537,7 +569,7 @@ fn void BufferGeometry.upload_lines(&self, bool loop) {
     );
 }
 
-// Frees GPU buffers. Geometry is re-uploaded if rendered again.
+// Destroys all GPU buffers and views and clears `uploaded`; geometry re-uploads if drawn again.
 fn void BufferGeometry.dispose(&self) {
     if (self.vbuf_view.id) sg::destroy_view(self.vbuf_view);
     if (self.prev_view.id) sg::destroy_view(self.prev_view);
@@ -569,8 +601,8 @@ fn void BufferGeometry.dispose(&self) {
     self.uploaded = false;
 }
 
-// Custom geometry from flat xyz positions (and optional triangle indices).
-// Without indices, every three positions form a triangle. Normals are computed.
+// Allocates a `BufferGeometry` from flat XYZ `positions` and optional triangle `indices`
+// (without `indices`, every three vertices form a triangle) and computes smooth normals.
 fn BufferGeometry* buffer_geometry(float[] positions = { }, uint[] indices = { }) {
     BufferGeometry* g = mem::new(BufferGeometry);
     g.init_lists();
@@ -587,38 +619,47 @@ fn BufferGeometry* buffer_geometry(float[] positions = { }, uint[] indices = { }
     return g;
 }
 
-// ----------------------------------------------------------------------------
-// Built-in shapes (parameters and defaults match three.js)
-// ----------------------------------------------------------------------------
+// ---- Built-in shapes
 
+// Axis-aligned box geometry centered at the origin.
 struct BoxGeometry {
     inline BufferGeometry geometry;
+    // Box dimensions along X, Y, and Z in meters.
     float width, height, depth;
 }
 
+// Subdivided rectangular quad in the XY plane facing +Z.
 struct PlaneGeometry {
     inline BufferGeometry geometry;
+    // Plane extent along X and Y in meters.
     float width, height;
 }
 
+// UV-mapped sphere centered at the origin.
 struct SphereGeometry {
     inline BufferGeometry geometry;
+    // Sphere radius in meters.
     float radius;
 }
 
+// Tapered cylinder centered at the origin along Y, with optional top and bottom caps.
 struct CylinderGeometry {
     inline BufferGeometry geometry;
+    // Top cap radius, bottom cap radius, and total height along Y in meters.
     float radius_top, radius_bottom, height;
 }
 
+// Cone geometry represented as a `CylinderGeometry` with `radius_top == 0`.
 alias ConeGeometry = CylinderGeometry;
 
+// Torus centered at the origin in the XY plane.
 struct TorusGeometry {
     inline BufferGeometry geometry;
+    // Major ring radius and minor tube cross-section radius in meters.
     float radius, tube;
 }
 
-// One face of a box/plane: a grid spanning u and v axes, offset along the normal.
+// Builds one subdivided face spanning `u_axis` and `v_axis` centered at `center`.
 fn void build_plane(
     BufferGeometry* g,
     Vector3 u_axis,
@@ -655,6 +696,7 @@ fn void build_plane(
     }
 }
 
+// Allocates a centered `BoxGeometry` with per-axis dimensions and face subdivision counts.
 fn BoxGeometry* box_geometry(
     float width = 1,
     float height = 1,
@@ -711,7 +753,7 @@ fn BoxGeometry* box_geometry(
     return g;
 }
 
-// A plane in the XY plane facing +Z (rotate it with mesh.rotation.x = -PI/2 for a floor).
+// Allocates a `PlaneGeometry` in the XY plane facing +Z (rotate by `-PI / 2` around X for a floor).
 fn PlaneGeometry* plane_geometry(float width = 1, float height = 1, int width_segments = 1, int height_segments = 1) {
     PlaneGeometry* g = mem::new(PlaneGeometry);
     g.init_lists();
@@ -721,6 +763,8 @@ fn PlaneGeometry* plane_geometry(float width = 1, float height = 1, int width_se
     return g;
 }
 
+// Allocates a UV `SphereGeometry` centered at the origin (`width_segments >= 3`,
+// `height_segments >= 2`).
 fn SphereGeometry* sphere_geometry(float radius = 1, int width_segments = 32, int height_segments = 16) {
     SphereGeometry* g = mem::new(SphereGeometry);
     g.init_lists();
@@ -761,8 +805,8 @@ fn SphereGeometry* sphere_geometry(float radius = 1, int width_segments = 32, in
     return g;
 }
 
-// Like THREE.LatheGeometry: turns a profile around the y axis. `points` are (radius, height)
-// pairs along the profile, from the bottom up for a surface that faces outwards.
+// Allocates a surface of revolution around +Y from `(radius, height)` profile `points` (ordered
+// bottom to top for outward-facing normals, `segments >= 3`).
 fn BufferGeometry* lathe_geometry(Vector2[] points, int segments = 12) {
     BufferGeometry* g = buffer_geometry();
     segments = math::max(3, segments);
@@ -772,7 +816,7 @@ fn BufferGeometry* lathe_geometry(Vector2[] points, int segments = 12) {
         float s = math::sin(u * 2 * PI);
         float c = math::cos(u * 2 * PI);
         for (int j = 0; j < rows; j++) {
-            // the normal: across the profile's direction at this point
+            // Compute outward profile normal perpendicular to the local tangent.
             Vector2 along = points[math::min(j + 1, rows - 1)] - points[math::max(j - 1, 0)];
             Vector3 n     = ((Vector3) { along.y * s, -along.x, along.y * c }).normalize();
             g.add_vertex(
@@ -797,6 +841,7 @@ fn BufferGeometry* lathe_geometry(Vector2[] points, int segments = 12) {
     return g;
 }
 
+// Allocates a `CylinderGeometry` centered along Y (`open_ended` omits top and bottom caps).
 fn CylinderGeometry* cylinder_geometry(
     float radius_top = 1,
     float radius_bottom = 1,
@@ -815,7 +860,7 @@ fn CylinderGeometry* cylinder_geometry(
     float half  = height / 2;
     float slope = (radius_bottom - radius_top) / height;
 
-    // side
+    // Side surface.
     int row = radial_segments + 1;
     for (int iy = 0; iy <= height_segments; iy++) {
         float v = (float)iy / height_segments;
@@ -876,6 +921,7 @@ fn CylinderGeometry* cylinder_geometry(
     return g;
 }
 
+// Allocates a `ConeGeometry` (`cylinder_geometry` with `radius_top = 0`).
 fn ConeGeometry* cone_geometry(
     float radius = 1,
     float height = 1,
@@ -886,6 +932,7 @@ fn ConeGeometry* cone_geometry(
     return cylinder_geometry(0, radius, height, radial_segments, height_segments, open_ended);
 }
 
+// Allocates a `TorusGeometry` in the XY plane with major `radius` and cross-section `tube`.
 fn TorusGeometry* torus_geometry(
     float radius = 1,
     float tube = 0.4,

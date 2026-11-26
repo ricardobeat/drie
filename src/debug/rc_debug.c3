@@ -1,15 +1,24 @@
-// Optional top-down Radiance Cascades debug visualizer module (`import drie::rc_debug;`).
-// Slices the scene below `cut_y` with a top-down orthographic camera, async-reads the live
-// GPU cascade and irradiance buffers, and draws probe nodes, angular ray roses, cascade
-// interval rings, optional solid voxels, and a compact sokol_debugtext HUD.
+// Interactive Radiance Cascades debug visualizer and GPU probe inspector (`drie::rc_debug`).
+// Provides a top-down orthographic slice view and 3D orbit view with async 1-frame-late readback
+// of irradiance and cascade buffers, probe cubes, angular radiance roses, optional voxel overlays,
+// a `sokol_debugtext` HUD, and synchronous sparse probe statistics via `rc_debug::stats()`.
+//
+//   if (rc_debug::handle_event(e, player_pos)) return;
+//   Camera* cam = rc_debug::update(dt, w, h, player_pos);
+//   rc_debug::track(rc);
+//   rc_debug::draw_window(rc, "room", w, h, player_pos, player_dir);
 module drie::rc_debug;
 import drie, drie::ui, drie::readback, sokol;
 import std::math, std::io;
 
+// True while the Radiance Cascades debug view is active.
 bool active;
+// Keeps sparse probe allocation anchored to the player camera instead of the debug camera.
 bool freeze_alloc = true;
 
+// Async readback slot reserved for the irradiance/hash buffer.
 const int IRR_SLOT = 10;
+// Async readback slot reserved for the cascade radiance buffer.
 const int RAD_SLOT = 11;
 
 struct State @local {
@@ -65,10 +74,12 @@ State st @local = {
     .color_by_age = true,
 };
 
+// Switches between the 3D orbit perspective view (`on = true`) and top-down orthographic slice.
 fn void set_3d(bool on) {
     st.view_3d = on;
 }
 
+// Resets debug pan, zoom, orbit angles, slice selection, and cut height around `focus`.
 fn void reset(Vector3 focus, float cut_y) {
     st.pan_x = focus.x;
     st.pan_z = focus.z;
@@ -80,6 +91,8 @@ fn void reset(Vector3 focus, float cut_y) {
     st.slice_y = -1;
 }
 
+// Toggles the debug visualizer on or off, resetting the camera around `focus` and unlocking the
+// pointer when entering debug mode.
 fn void toggle(Vector3 focus = { }, float cut_y = 2.4f) {
     active = !active;
     if (active) {
@@ -171,7 +184,7 @@ fn bool handle_event(Event* e, Vector3 focus = { }, float cut_y = 2.4f, KeyCode 
     }
 }
 
-// Updates pan/zoom/orbit/cut plane and returns the active debug Camera (top-down Ortho or 3D Perspective).
+// Updates pan, zoom, orbit, and cut plane, returning the active debug camera (ortho or 3D).
 fn Camera* update(float dt, int width, int height, Vector3 focus = { }, float cut_y = 2.4f) {
     if (!st.initialized) {
         st.initialized = true;
@@ -896,7 +909,7 @@ fn void draw_3d_scene_overlay(
                 }
             }
         } else {
-            // Dense 3D probe cubes (strided in XZ/Y when all_slices_3d is on to stay within vertex budget)
+            // Dense 3D probe cubes (strided in XZ/Y when all_slices_3d is on to cap vertex count)
             int[<3>] dims = rc.level_dims(active_lvl);
             int y0        = st.all_slices_3d ? 0 : math::clamp(slice0 >> active_lvl, 0, dims.y - 1);
             int y1        = st.all_slices_3d ? dims.y : y0 + 1;
@@ -1445,6 +1458,7 @@ fn SgPipelineDesc blend_desc(
     },
 };
 
+// Draws the debug overlay and HUD into the active window swapchain pass with letterboxed viewport.
 fn void draw_window(
     RadianceCascades* rc,
     String vol_name,
@@ -1472,6 +1486,7 @@ fn void draw_window(
     sg::apply_viewport(0, 0, sapp::width(), sapp::height(), true);
 }
 
+// Draws the debug overlay and HUD on top of an offscreen RGBA8 `RenderTarget` (preserving load).
 fn void draw_target(
     RenderTarget* target,
     RadianceCascades* rc,
@@ -1510,59 +1525,63 @@ fn void draw_target(
     target.end();
 }
 
-// ---------------------------------------------------------------------------------------------
-// stats(): what the sparse probes are doing, read back from the GPU (a stall: for tests and
-// benches, or a key press, not every frame).
+// ---- Sparse probe stats
 
+// Readback slot for the sparse hash table inside `irradiance_buf`.
 const int STATS_HT_SLOT       = 12;
+// Readback slot for probe counters.
 const int STATS_CNT_SLOT      = 13;
+// Readback slot for the sparse free-list and allocation counters buffer.
 const int STATS_FREE_SLOT     = 14;
+// Readback slot for sparse probe metadata entries.
 const int STATS_META_SLOT     = 15;
+// Readback slot for split-mode directional bin history.
 const int STATS_HIST_SLOT     = 16;
-// as in radiance_rays_cs.glsl
+// Sentinel matching the hash-table tombstone in `shaders/radiance_rays_cs.glsl`.
 const uint STATS_TOMBSTONE    = 0x7fffffffu;
+// Age threshold in frames beyond which a hash entry is counted as stale.
 const uint STATS_STALE_FRAMES = 24u;
 
+// Per-cascade allocation, residency, and directional-bin occupancy counters.
 struct RcLevelStats {
-    int cap; // data slots the level has (level_cap)
-    int allocated; // slots handed out so far (rc_cnt: the bump allocator's top)
-    int free_listed; // of those, slots evicted and waiting on the free list for reuse
-    int live; // slots holding a probe (rc_meta w >= 0)
-    int fresh; // live probes not yet traced in every ray (born in the last update_every frames)
-    int in_table; // hash entries of the level
-    int seen; // hash entries touched in the last frame
-    int stale; // hash entries older than RC_STALE_FRAMES: the next evict pass frees them
-    int bins_total; // direction bins of live probes in this level (split mode)
-    int bins_filled; // direction bins with sample count n > 0 (split mode)
+    int cap; // Data slots allocated for this level (`split_cap`).
+    int allocated; // High-water bump allocation count for this level.
+    int free_listed; // Evicted slots currently available on the free list for reuse.
+    int live; // Slots currently holding an active probe.
+    int fresh; // Live probes allocated within the last four frames.
+    int in_table; // Hash-table entries belonging to this primary level.
+    int seen; // Hash-table entries touched on the current frame.
+    int stale; // Hash-table entries older than `STATS_STALE_FRAMES`.
+    int bins_total; // Total directional bins across live probes in this level.
+    int bins_filled; // Directional bins with at least one traced sample (`n > 0`).
 }
 
+// Snapshot of dense or sparse Radiance Cascades probe, ray, and hash-table statistics.
 struct RcStats {
-    bool sparse;
-    int frame; // updates run
-    int levels;
-    // dense: probes per cascade 0 (nx * ny * nz); sparse: live probes of every level
-    int probes;
-    int rays; // ray slots of every level (live probes' rays, for sparse)
-    int traced_rays; // rays actually traced in the last frame (split mode)
-    int bins_total; // total direction bins across live probes (split mode)
-    int bins_filled; // total direction bins with n > 0 across live probes (split mode)
-    int cache_probes; // live probes of the secondary cache (split mode, multibounce)
-    int cache_traced_rays; // cache rays actually traced in the last frame
-    int cache_bins_total; // direction bins of the cache's live probes
-    int cache_bins_filled; // of those, bins with n > 0
-    float min_beta; // min transmittance beta across filled bins (split mode)
-    float max_beta; // max transmittance beta across filled bins (split mode)
-    // the sparse path's hash table (irradiance_buf's front)
-    int hash_cap;
-    int occupied;
-    int tombstones;
-    float load; // occupied / hash_cap
-    float load_tombstones; // (occupied + tombstones) / hash_cap: what lookups that miss walk
-    int longest_run; // longest run of non-empty slots (lookups give up after 32 steps)
-    int runs_over_32; // runs longer than 32: keys past their 32nd step are unreachable
-    int stale; // entries the next evict pass frees
-    int frames_to_evict; // updates until that pass (RC_EVICT_PERIOD)
-    RcLevelStats[drie::RC_MAX_LEVELS] level;
+    bool sparse; // True for sparse split-mode volumes; false for dense volumes.
+    int frame; // Number of updates completed by the volume.
+    int levels; // Active cascade level count.
+    int probes; // Dense: cascade-0 probes (`nx * ny * nz`); sparse: live primary probes.
+    int rays; // Total ray slots across active probes.
+    int traced_rays; // Primary rays traced during the last frame.
+    int bins_total; // Total directional bins across all live primary probes.
+    int bins_filled; // Primary directional bins with at least one sample (`n > 0`).
+    int cache_probes; // Live probes in the secondary multibounce cache.
+    int cache_traced_rays; // Secondary cache rays traced during the last frame.
+    int cache_bins_total; // Total directional bins across live cache probes.
+    int cache_bins_filled; // Secondary cache directional bins with `n > 0`.
+    float min_beta; // Minimum transmittance beta across filled primary bins.
+    float max_beta; // Maximum transmittance beta across filled primary bins.
+    int hash_cap; // Hash-table slot capacity (`irradiance_buf` prefix).
+    int occupied; // Non-empty hash-table slots (primary plus secondary cache).
+    int tombstones; // Tombstone count in the hash table.
+    float load; // Hash-table load factor (`occupied / hash_cap`).
+    float load_tombstones; // Combined load factor (`(occupied + tombstones) / hash_cap`).
+    int longest_run; // Longest contiguous non-empty probe chain (lookup stops at 32).
+    int runs_over_32; // Number of probe chains longer than 32 slots.
+    int stale; // Primary hash entries older than `STATS_STALE_FRAMES`.
+    int frames_to_evict; // Frames until next eviction pass (0 when rebuilt every frame).
+    RcLevelStats[drie::RC_MAX_LEVELS] level; // Per-cascade breakdown for levels `0..levels-1`.
 }
 
 fn uint stats_age(uint now, uint then) @local => now >= then ? now - then : now + 4096u - then;

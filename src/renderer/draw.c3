@@ -1,10 +1,18 @@
-// Frustum culling, scene collection, light/material uniform packing, draw submission,
-// backdrop, and transmission passes.
+// Scene traversal, frustum culling, uniform packing, draw submission, and transmission passes.
+// Collects visible meshes/lights/LODs (collect), packs IrradianceVolumes and per-frame lighting
+// uniforms (use_irradiance, build_light_params), resolves MaterialKey and texture slots
+// (material_slots, material_key_of), submits forward/G-Buffer/ShaderMaterial/shadow draws
+// (draw_item, draw_shadow_item), and drives scene backgrounds, fog backdrop, and transmission
+// mipmap generation (render_transmission, copy_for_transmission, fill_levels). Uses
+// camera-relative view-projection (relative_view_proj) to keep float precision far from origin.
 module drie;
 import std::collections::list, std::collections::map, std::sort, std::math, std::io;
 import sokol, drie::nodes;
 
-// Clip planes of a view-projection matrix for NDC sub-box [x0, x1] x [y0, y1], pointing inwards.
+// ---- Frustum culling and scene collection
+
+// Extracts 5 inward-pointing clip planes (left, right, bottom, top, far) for NDC sub-box
+// `[x0, x1] x [y0, y1]` from view-projection matrix `vp`.
 fn Frustum frustum_from_ndc(Mat4 vp, float x0, float x1, float y0, float y1) @private {
     Vec4[4] rows;
     for (int r = 0; r < 4; r++) rows[r] = { vp[0][r], vp[1][r], vp[2][r], vp[3][r] };
@@ -21,9 +29,10 @@ fn Frustum frustum_from_ndc(Mat4 vp, float x0, float x1, float y0, float y1) @pr
     return f;
 }
 
-// Clip planes of a view-projection matrix (left, right, bottom, top, far), pointing inwards.
+// Extracts 5 inward-pointing clip planes (left, right, bottom, top, far) from `vp`.
 fn Frustum frustum_from(Mat4 vp) @private => frustum_from_ndc(vp, -1, 1, -1, 1);
 
+// True when the sphere `(c, radius)` intersects or lies inside all frustum planes.
 fn bool Frustum.contains_sphere(&self, Vector3 c, float radius) {
     foreach (p : self.planes) {
         if (p.x * c.x + p.y * c.y + p.z * c.z + p.w < -radius) return false;
@@ -38,7 +47,9 @@ fn float max_scale(Mat4 m) @private {
     return math::max(sx, math::max(sy, sc));
 }
 
-// Gathers what to draw. `lod_from` is the position LOD levels are measured from.
+// Traverses `obj` recursively, frustum-culling meshes into `state.opaque`, `state.transparent`,
+// or `state.casters`, collecting lights, and selecting LOD levels (with optional cross-fade)
+// measured from `lod_from`.
 fn void collect(
     Object3D* obj,
     Mat4 view,
@@ -54,13 +65,13 @@ fn void collect(
             Mesh* m = (Mesh*)obj;
             if (!m.geometry || !m.material || !m.material.visible) break;
             if (m.shadow_only && !shadow_pass) break;
-            // a Reflector's own surfaces are not in its picture
+            // Exclude a Reflector's own mirror meshes when rendering its reflection texture.
             if (state.renderer.reflecting && m.material.reflector == state.renderer.reflecting) break;
             if (shadow_pass && (!m.cast_shadow || m.material.transparent || m.is_line() || m.billboard != NO_BILLBOARD)) break;
             if (shadow_pass && state.skip_instanced && m.instance_data.len() > 0) break;
             BufferGeometry* g = m.geometry;
             if (!g.uploaded && g.indices.len() == 0) break;
-            // a line needs two points
+            // Lines require at least two vertices to form a segment.
             if (m.is_line() && g.indices.len() < 2) break;
             g.upload();
             Vector3 center = g.bounds_center;
@@ -73,7 +84,7 @@ fn void collect(
             Vector3 wc = m.matrix_world.transform_point(center);
             float r = radius * max_scale(m.matrix_world) + m.material.sway * 2;
             if (m.frustum_culled && !frustum.contains_sphere(wc, r)) break;
-            // a Reflector's picture holds only what is in its box
+            // Cull meshes outside an active Reflector's bounding box.
             Reflector* refl = state.renderer.reflecting;
             if (refl && refl.box_min != refl.box_max) {
                 Vector3 nearest = {
@@ -98,13 +109,13 @@ fn void collect(
         case LOD:
             Lod* l = (Lod*)obj;
             float d = (l.matrix_world.get_position() - lod_from).length() / math::max(state.renderer.lod_scale, 0.01f);
-            // a shadow shows less of a thing's shape than the thing does
+            // Bias shadow passes toward coarser LOD levels.
             if (shadow_pass) d *= math::max(state.renderer.shadow_lod_bias, 1.0f);
             sz pick = -1;
             for (sz i = 0; i < l.distances.len(); i++) {
                 if (d >= l.distances[i]) pick = i;
             }
-            // near the next level's distance (or past this one's), both are drawn, dissolving
+            // Cross-fade adjacent LOD levels in the transition band during main passes.
             if (l.fade > 0 && !shadow_pass) {
                 float half = l.fade * 0.5f;
                 for (sz i = 1; i < l.distances.len() && i < l.children.len(); i++) {
@@ -123,8 +134,10 @@ fn void collect(
     foreach (c : obj.children) collect(c, view, frustum, lod_from, shadow_pass, fade, fade_dir);
 }
 
-// The scene's irradiance volumes (state.gi_volumes), uploaded, and the texture to read them
-// from (state.gi_view).
+// ---- Irradiance and per-frame light uniforms
+
+// Uploads up to MAX_IRRADIANCE_VOLUMES active volumes on `scene` and binds either the single
+// volume texture or a packed 3D atlas (`state.gi_atlas`) into `state.gi_view`.
 fn void use_irradiance(Scene* scene) @private {
     if (!state.no_irradiance) state.no_irradiance = irradiance_volume({ 0, 0, 0 }, { 1, 1, 1 }, 1);
     state.gi_count = 0;
@@ -181,8 +194,7 @@ fn void use_irradiance(Scene* scene) @private {
     state.gi_view = state.gi_atlas_view;
 }
 
-// The size in pixels of the texture the shader reads the irradiance volumes from: the
-// first one's, or the gi_atlas's.
+// Combined 3D texture dimensions `{ sum(nx * 6), max(ny), max(nz) }` of active irradiance volumes.
 fn Vector3 gi_atlas_size() @local {
     Vector3 size = { 0, 1, 1 };
     for (int i = 0; i < state.gi_count; i++) {
@@ -194,17 +206,19 @@ fn Vector3 gi_atlas_size() @local {
     return size;
 }
 
+// Packs collected lights, shadows, cluster grid, GI volumes, reflection probes, radiance
+// cascades, and fog into `FsParams`, uploading clustered light storage buffers via `lights_gpu`.
 fn FsParams build_light_params(Scene* scene, Camera* camera, SpotLight* caster) @private {
     FsParams p;
     Renderer* r  = state.renderer;
     LightData* g = &lights_gpu;
     g.clear();
-    // VSM: spot_shadows' params.w is the bias (the maps are blurred already)
+    // Under VSM, `params.w` carries VSM depth bias instead of PCF filter radius.
     bool vsm       = r.shadow_type == VSM;
     float exposure = r.tone_mapping == NO_TONE_MAPPING ? 1 : math::max(r.tone_mapping_exposure, 1e-4f);
     p.camera_pos = { ...camera.matrix_world.get_position(), exposure };
     bool linear  = r.render_target && r.render_target.is_linear();
-    // drawn straight into the window: its colors and range
+    // Window output encoding: 0 = sRGB, 1 = Display P3 SDR, 2 = Extended Linear Display P3 HDR.
     float window = linear || r.render_target ? 0
         : (r.hdr_on() ? 2 : (r.output_color_space == DISPLAY_P3_COLOR_SPACE ? 1 : 0));
     p.output_params = { linear ? 1 : 0, r.ssr_linear ? 1 : 0, (float)r.tone_mapping.ordinal, window };
@@ -252,12 +266,11 @@ fn FsParams build_light_params(Scene* scene, Camera* camera, SpotLight* caster) 
                     p.shadow_ext.x = d.shadow.bias;
                 }
                 GpuDirLight gd = { .dir = { ...dir, 0 }, .color = { ...c, 0 }, .shadow = { -1, 1, (float)l.channels, d.shadow.contact_length } };
-                // the other shadowed ones: a box in a tile of the atlas (dir_tile_shadow)
+                // Secondary shadowed directional lights use a single atlas tile (dir_tile_shadow).
                 AtlasMap* am = d != state.sun_caster && atlas_has_shadow(d) ? atlas_map_of(d) : null;
                 if (am) {
                     GpuSpotShadow sh;
                     sh.mat = shadow_bias().mul(am.view_proj);
-                    // (VSM: w is the bias, the map being blurred already)
                     sh.params = { 3, d.shadow.normal_bias, atlas_texel(am), vsm ? d.shadow.bias : d.shadow.radius };
                     sh.rect = atlas_rect(am);
                     float fade = atlas_slot_of(d).fade;
@@ -269,7 +282,7 @@ fn FsParams build_light_params(Scene* scene, Camera* camera, SpotLight* caster) 
             case POINT:
                 if (!g.room(g.points.len(), r.max_lights)) break;
                 PointLight* pl = (PointLight*)l;
-                // a tube: from its centre to one end, along the light's x axis
+                // Tube lights pack half-extent vector along local +X into `params.yzw`.
                 Vector3 half;
                 if (pl.length > 0) {
                     Mat4 m = l.matrix_world;
@@ -287,13 +300,13 @@ fn FsParams build_light_params(Scene* scene, Camera* camera, SpotLight* caster) 
                 g.points.push(gp);
                 if (pl.radius > 0 || pl.length > 0) g.sized = true;
                 if (half != (Vector3) { 0, 0, 0 }) g.tubes = true;
-                // a light that adds nothing needs no place in the clusters
+                // Zero-intensity lights receive empty bounds so they stay out of cluster lists.
                 LightBounds b = point_light_bounds(pl);
                 if (l.intensity <= 0) b = { { }, 0 };
                 g.point_bounds.push(b);
             case RECT_AREA:
-                // three's: the color times the intensity (nits), and half of each side along
-                // the light's x and y, turned as it is (without its scale)
+                // Oriented half-width and half-height axes (ignoring node scale) packed into
+                // GpuPointLight fields for ltc_tables evaluation in shaders/shader_core.glsl.
                 RectAreaLight* ra = (RectAreaLight*)l;
                 if (l.intensity <= 0 || !g.room(g.rects.len(), r.max_rect_area_lights)) break;
                 Mat4 m = l.matrix_world;
@@ -303,7 +316,6 @@ fn FsParams build_light_params(Scene* scene, Camera* camera, SpotLight* caster) 
                 float yl = y.length();
                 Vector3 hw = xl > 0 ? x * (ra.width * 0.5f / xl) : (Vector3) { };
                 Vector3 hh = yl > 0 ? y * (ra.height * 0.5f / yl) : (Vector3) { };
-                // (as a point light's three vectors: see ltc_tables in shader_core.glsl)
                 GpuPointLight gr = {
                     .pos = { ...m.get_position(), hw.x },
                     .color = { ...c, hw.y },
@@ -332,7 +344,7 @@ fn FsParams build_light_params(Scene* scene, Camera* camera, SpotLight* caster) 
                     .shadow = { -1, 1, (float)l.channels, sl.shadow.contact_length },
                 };
                 spot_map(sl, &gs, g);
-                // clip space -> shadow map uv (v points down outside of GL) and 0..1 depth
+                // Clip space -> shadow map UV (V inverted on [0,1] depth backends) and [0,1] depth.
                 AtlasMap* am = sl != caster && atlas_has_shadow(sl) ? atlas_map_of(sl) : null;
                 if (sl == caster || am) {
                     bool zo   = depth_zero_to_one();
@@ -408,8 +420,7 @@ fn FsParams build_light_params(Scene* scene, Camera* camera, SpotLight* caster) 
     if (scene.radiance) {
         RadianceCascades* rc = scene.radiance;
         p.rc_min = { ...rc.min, rc.spacing };
-        // sparse: x = -hash_cap (which marks it), y = the box's x cells | its y cells << 9,
-        // z = its z cells. The materials fade the light out over its outermost half cell.
+        // Sparse RC signals hash mode via negative x (-hash_cap), packing nx | (ny << 9) in y.
         p.rc_size = rc.sparse
             ? (Vec4) { -(float)rc.hash_cap, (float)(rc.nx | (rc.ny << 9)), (float)rc.nz, rc.intensity }
             : (Vec4) { rc.nx, rc.ny, rc.nz, rc.intensity };
@@ -430,7 +441,7 @@ fn FsParams build_light_params(Scene* scene, Camera* camera, SpotLight* caster) 
         Vector3 sun_dir = f.sun_direction;
         Color sun_color = f.sun_color;
         if (sun_dir == (Vector3) { 0, 0, 0 } || !sun_color) {
-            // the scene's sun: the directional light that casts a shadow, else the first one
+            // Fall back to the shadow-casting sun, or the first visible directional light.
             Light* sun = state.sun_caster;
             if (!sun) foreach (l : state.lights) if (l.light_type == DIRECTIONAL && l.visible) {
                 sun = l;
@@ -449,18 +460,19 @@ fn FsParams build_light_params(Scene* scene, Camera* camera, SpotLight* caster) 
     return p;
 }
 
+// ---- Material UVs, displacement, and draw helpers
+
+// Ensures `t` is uploaded and ready to bind, falling back to the 1x1 white texture when empty.
 fn Texture* ready(Texture* t) @private {
-    // (one with nothing in it yet, as a capture before it is drawn: white, as none)
     if (!t || (!t.uploaded && !t.source && t.width <= 0)) t = state.white;
     t.upload();
     return t;
 }
 
-// The texture that places the uv of all of a material's maps (see Texture.repeat).
+// Primary texture providing the base UV transform for a material (`map`, `normal_map`, or `arm_map`).
 fn Texture* uv_base(Material* mat) @local => mat.map ?: (mat.normal_map ?: mat.arm_map);
 
-// A texture's uv transform, three's texture.matrix (Matrix3.setUvTransform), as two rows:
-// u' = dot(row 0, (u, v, 1)), v' = dot(row 1, (u, v, 1)).
+// Computes a 2x3 affine UV transform matrix (repeat, rotation around `center`, offset) as two Vec4 rows.
 fn Vec4[2] uv_rows(Texture* t) @local {
     if (!t) return { { 1, 0, 0, 0 }, { 0, 1, 0, 0 } };
     float c = math::cos(t.rotation);
@@ -474,17 +486,15 @@ fn Vec4[2] uv_rows(Texture* t) @local {
 
 fn Vec4[2] uv_transform(Material* mat) @local => uv_rows(uv_base(mat));
 
-// The vertex shaders' Material.displacement_map: scale, bias, and 1 if the heights are read.
+// Packs vertex displacement scale, bias, and active flag (`z == 1` when CPU heights are ready).
 fn Vec4 displacement_params(Material* mat) @local {
     Texture* t = mat.displacement_map;
     bool read = t && t.keep_pixels && t.preparing.load() == 2;
     return { mat.displacement_scale, mat.displacement_bias, read ? 1 : 0, 0 };
 }
 
-// The mesh's vertex attribute of heights: its material's displacement_map read at each
-// vertex's uv (placed by the map's uv transform), worked out again when the geometry is
-// uploaded again (not when a dynamic geometry's vertices move: the uvs are the same), or the
-// map or its placement changes. Zeros without a map.
+// Samples `mat.displacement_map` at each vertex UV into a cached per-mesh float vertex buffer,
+// rebuilding when geometry upload version, map pointer, or UV transform changes.
 fn SgBuffer displacement_heights(Mesh* m) @local {
     Texture* t = m.material.displacement_map;
     BufferGeometry* g = m.geometry;
@@ -520,16 +530,14 @@ fn SgBuffer displacement_heights(Mesh* m) @local {
     return m.displacement_buf;
 }
 
-// The shader's slot_wrap code for a slot holding `t` and read through `shared`'s sampler: 0 when
-// they wrap alike, else 1 + s + 3 t for t's wrapping across and down.
+// Encodes per-slot wrap emulation (`slot_wrap` in shader): 0 when matching `shared`, else `1 + s + 3 * t`.
 fn float wrap_code(Texture* t, Texture* shared) @local {
     if (t.wrap_s == shared.wrap_s && t.wrap_t == shared.wrap_t) return 0;
     return (float)(1 + t.wrap_s.ordinal + 3 * t.wrap_t.ordinal);
 }
 
-// The uv of texture t from the uv of `base` (the color map's: see uv_base), for the fragment
-// shader's uv_rel: t's transform after the inverse of base's.
-// (on the second uv set, t's own transform of it: a 1 in the first row's w)
+// Computes `t`'s UV transform relative to `base`'s UV transform (or direct UV1 transform when
+// `t.channel == 1`, marked by `row0.w == 1`).
 fn Vec4[2] uv_relative(Texture* base, Texture* t) @local {
     Vec4[2] m = uv_rows(t);
     if (t && t.channel == 1) {
@@ -539,7 +547,7 @@ fn Vec4[2] uv_relative(Texture* base, Texture* t) @local {
     Vec4[2] b = uv_rows(base);
     float det = b[0].x * b[1].y - b[0].y * b[1].x;
     if (math::abs(det) < 1e-12) return m;
-    // base's inverse: [d -b; -c a] / det, and its offset
+    // Invert the 2x3 base UV transform and compose `m * inverse(b)`.
     float ia = b[1].y / det;
     float ib = -b[0].y / det;
     float ic = -b[1].x / det;
@@ -552,8 +560,7 @@ fn Vec4[2] uv_relative(Texture* base, Texture* t) @local {
     };
 }
 
-// A buffer of zeros, four floats for each of `vertices` vertices, grown as needed: the second
-// uv set of a geometry without one.
+// Growable zero-filled vertex attribute buffer (4 floats per vertex) for missing streams.
 fn SgBuffer zeros(uint vertices) @private {
     if (state.zeros.id && state.zeros_vertices >= vertices) return state.zeros;
     if (state.zeros.id) sg::destroy_buffer(state.zeros);
@@ -567,7 +574,7 @@ fn SgBuffer zeros(uint vertices) @private {
     return state.zeros;
 }
 
-// White for `instances` instances: the instance colors of a mesh without any.
+// Growable white RGB per-instance color buffer for instanced meshes without custom colors.
 fn SgBuffer whites(uint instances) @private {
     if (state.whites.id && state.whites_count >= instances) return state.whites;
     if (state.whites.id) sg::destroy_buffer(state.whites);
@@ -582,8 +589,7 @@ fn SgBuffer whites(uint instances) @private {
     return state.whites;
 }
 
-// The mesh's instance colors on the GPU (InstancedMesh.set_color_at), uploaded when they
-// changed; white without any.
+// Uploads `m.instance_colors` if dirty, or returns the shared `whites` fallback buffer.
 fn SgBuffer instance_colors(Mesh* m) @local {
     if (!m.instance_colors.len()) return whites((uint)math::max(m.instance_count, 1));
     if (!m.instance_colors_uploaded) {
@@ -601,11 +607,10 @@ fn SgBuffer instance_colors(Mesh* m) @local {
 
 fn Vec4 sway_params(Material* mat) @local => { state.renderer.time, mat.sway, mat.sway_speed, 0 };
 
-// Whether `item` is drawn as lines: a wireframe material, or a Line.
+// True when `item` renders with line primitives (wireframe material or Line/LineSegments/LineLoop).
 fn bool draws_lines(DrawItem* item) @private => item.mesh.material.wireframe || item.mesh.is_line();
 
-// The index buffer `item` is drawn from (as lines with `lines`, see draws_lines), and how
-// many of its indices.
+// Selects the index buffer and element count for `item` (triangles, wireframe, or line topology).
 fn SgBuffer index_buffer_of(DrawItem* item, bool lines, int* count) @local {
     Mesh* m           = item.mesh;
     BufferGeometry* g = m.geometry;
@@ -615,7 +620,7 @@ fn SgBuffer index_buffer_of(DrawItem* item, bool lines, int* count) @local {
             *count = (int)g.line_count;
             return g.line_ibuf;
         case m.draw_mode == LINE_SEGMENTS:
-            // a last index without a partner is no segment
+            // Drop any trailing unpaired vertex index.
             *count = (int)g.index_count & ~1;
             return g.ibuf;
         case lines:
@@ -628,8 +633,8 @@ fn SgBuffer index_buffer_of(DrawItem* item, bool lines, int* count) @local {
     }
 }
 
-// Draws `m`'s geometry; with item.job, as many instances as its cull asks for. Returns the
-// triangles drawn, or the segments for a Line.
+// Submits `sg::draw()` for `item` (using the GPU-culled draw count when `item.job > 0`) and
+// returns the triangle count (or segment count for lines).
 fn int draw_geometry(DrawItem* item, bool lines) @private {
     Mesh* m       = item.mesh;
     int instances = m.instance_data.len() > 0 ? m.instance_count : 1;
@@ -647,19 +652,17 @@ fn int draw_geometry(DrawItem* item, bool lines) @private {
 
 fn float alpha_test_of(Material* mat) @local => state.renderer.prof_no_alpha_test ? 0 : mat.alpha_test;
 
-// Whether the main pass's shader would cut holes into `item`.
+// True when `item` requires fragment discard in the main pass (alpha test, LOD dither, or cull box).
 fn bool has_holes(DrawItem* item) @private {
     Material* mat = item.mesh.material;
     if (mat.screen_target) return false;
     return alpha_test_of(mat) > 0 || item.fade_dir != 0 || state.renderer.cull_box;
 }
 
-// Whether `item` goes through the depth prepass (see Renderer.depth_prepass): it has holes,
-// and enough pixels per triangle that shading them once saves more than drawing its
-// triangles twice costs (a far tree is mostly triangles, a meadow mostly pixels).
+// True when `item` should render through the depth prepass (has holes, tests/writes depth, and
+// exceeds `Renderer.depth_prepass_pixels` estimated screen pixels per triangle).
 fn bool prepassed(DrawItem* item) @private {
     if (draws_lines(item) || !has_holes(item)) return false;
-    // (the prepass would write the depth of what writes none, or test what isn't tested)
     Material* mat = item.mesh.material;
     if (!mat.depth_test || !mat.depth_write) return false;
     if (state.prepass_focal <= 0) return true;
@@ -667,16 +670,12 @@ fn bool prepassed(DrawItem* item) @private {
     int instances = m.instance_data.len() > 0 ? m.instance_count : 1;
     if (item.job) instances = cull_draw_count(item.job - 1);
     float triangles = (float)m.geometry.index_count / 3 * math::max(instances, 1);
-    // the pixels of its bounding sphere's disk, about
     float pixels    = PI * item.cover * state.prepass_focal * state.prepass_focal;
     return pixels > state.renderer.depth_prepass_pixels * triangles;
 }
 
-// `normals`: false when nothing reads them (the depth prepass), to save the inverse.
-// The camera's projection * view, measured from `origin` (the camera's position): takes
-// world - origin, so the vertex shader never multiplies the large coordinates of a place far
-// from the world's origin into clip space (see shader_core.glsl's vs_params). The view's
-// translation is worked out in doubles; the rest are small numbers.
+// Builds `projection * view` translated to `origin` in double precision so vertices transform
+// `(world - origin)` into clip space without float jitter far from world origin (shaders/shader_core.glsl).
 fn Mat4 relative_view_proj(Camera* camera, Vector3 origin) @private {
     Mat4 view = camera.matrix_world_inverse;
     for (int r = 0; r < 3; r++) {
@@ -688,10 +687,7 @@ fn Mat4 relative_view_proj(Camera* camera, Vector3 origin) @private {
     return camera.projection_matrix.mul(view);
 }
 
-// `view_proj`: world - state.view_origin -> clip space (see relative_view_proj).
-// What `m` is drawn with as its model matrix: its matrix_world, or a billboard's turned toward
-// the camera (see Billboard): its x and y as long as matrix_world's, moved so that its center
-// lands on matrix_world's position, its z (the quad's normal) toward the camera.
+// Returns `m.matrix_world`, or a camera-oriented billboard matrix matching `m.billboard`.
 fn Mat4 model_of(Mesh* m) @local {
     if (m.billboard == NO_BILLBOARD) return m.matrix_world;
     Mat4 w = m.matrix_world;
@@ -703,12 +699,11 @@ fn Mat4 model_of(Mesh* m) @local {
     Vector3 up = ((Vector3){ c[1][0], c[1][1], c[1][2] }).normalize();
     Vector3 toward = ((Vector3){ c[2][0], c[2][1], c[2][2] }).normalize();
     if (m.billboard == FACING && m.billboard_fixed_size) {
-        // (a perspective view: as far as the sprite is in front of the camera)
+        // Scale by view depth so the sprite maintains constant screen-space size.
         float depth = math::max((at - state.view_origin).dot(-toward), 0f);
         sx *= depth;
         sy *= depth;
     }
-    // the quad's x and y axes in the world, and where its local origin goes
     Vector3 ax;
     Vector3 ay;
     Vector3 az = toward;
@@ -740,6 +735,8 @@ fn Mat4 model_of(Mesh* m) @local {
     return b;
 }
 
+// Populates vertex uniforms for `item` with camera-relative `view_proj` (pass `normals: false` to
+// skip the normal-matrix inverse in depth-only passes) and updates per-mesh MRT motion history.
 fn VsParams vs_params_of(DrawItem* item, Mat4 view_proj, bool normals = true) @private {
     Mesh* m       = item.mesh;
     Material* mat = m.material;
@@ -753,8 +750,7 @@ fn VsParams vs_params_of(DrawItem* item, Mat4 view_proj, bool normals = true) @p
             mat
         ), .sway = sway_params(mat), };
     if (state.motion) {
-        // the first time this frame: what was this frame's matrix is the last frame's now (or,
-        // not drawn then, it stood where it is)
+        // Advance mesh transform history once per MRT motion frame.
         if (m.motion_frame != state.motion_frame) {
             m.motion_prev = m.motion_frame == state.motion_frame - 1 ? m.motion_cur : m.matrix_world;
             m.motion_cur = m.matrix_world;
@@ -772,12 +768,12 @@ fn VsParams vs_params_of(DrawItem* item, Mat4 view_proj, bool normals = true) @p
     return vs;
 }
 
-// The material's other maps, in the six slots they share (white where a slot is empty): by
-// role, in the order of the shader's MAP_*; one image in two roles takes one slot.
-// `map_slots`: each role's slot (-1: none), as FsParams.map_slots.
-// Whether the material has a clear coat (Material.clearcoat, or a graph for it).
+// ---- Material keys and texture slots
+
 fn bool coated(Material* mat) @local => mat.clearcoat > 0 || mat.clearcoat_node.id || mat.clearcoat_roughness_node.id;
 
+// Packs optional material maps (matching shader `MAP_*` role order) into the 6 shared `tex_ext0..5`
+// texture slots, deduplicating shared images and reserving top slots for node and Reflector maps.
 fn void material_slots(Material* mat, NodeBuild* nodes, Texture*[6]* slots, Vec4[6]* map_slots) @private {
     bool standard = mat.type == STANDARD;
     bool refracts = standard && mat.transmission > 0;
@@ -809,8 +805,7 @@ fn void material_slots(Material* mat, NodeBuild* nodes, Texture*[6]* slots, Vec4
         mat.type != BASIC && mat.type != MATCAP ? mat.bump_map : null,
     };
     int used;
-    // (a node material's textures take the last slots: see NodeBuild.textures; a Reflector's
-    // picture the one below them, see reflector_slot)
+    // Reserve upper `tex_ext` slots for node-material textures and any active Reflector texture.
     int room = 6 - (nodes ? nodes.texture_count : 0);
     Reflector* mirror = mirror_of(mat);
     if (mirror) room--;
@@ -820,7 +815,6 @@ fn void material_slots(Material* mat, NodeBuild* nodes, Texture*[6]* slots, Vec4
             for (int k = 0; k < used; k++) {
                 if ((*slots)[k] == t) slot = k;
             }
-            // (more than six images: the rest are left out)
             if (slot < 0 && used < room) {
                 (*slots)[used] = t;
                 slot = used++;
@@ -834,25 +828,23 @@ fn void material_slots(Material* mat, NodeBuild* nodes, Texture*[6]* slots, Vec4
     if (mirror) (*slots)[reflector_slot(nodes ? nodes.texture_count : 0)] = mirror.target.as_map();
 }
 
-// The Reflector whose picture a material shows (Material.reflector, once rendered), or null.
+// Returns `mat.reflector` when rendered and ready to bind, or null.
 fn Reflector* mirror_of(Material* mat) @local {
     return mat.reflector && mat.reflector.rendered && mat.reflector.target ? mat.reflector : null;
 }
 
-// The shared slot (tex_ext0..5) of a Reflector's picture: the first below a node material's
-// `node_textures` (which take the last ones). It has a slot of the material's maps, not one of
-// its own: slot 21 (light_cookies) is the spot lights' SpotLight.map, on every material.
+// Shared `tex_ext0..5` slot index reserved for a Reflector's planar mirror texture, immediately
+// below the `node_textures` slots claimed by node materials (slot 21 holds `SpotLight.map`).
 fn int reflector_slot(int node_textures) => 5 - node_textures;
 
-// The key of `item`'s shadow program (MaterialKey.shadow); with `plain`, without its node
-// material's graphs (drawn while those compile).
+// Builds the `MaterialKey` for a shadow-pass shader (`plain: true` omits node graphs during warmup).
 fn void shadow_key_of(DrawItem* item, MaterialKey* key, bool plain = false) @local {
     Mesh* m = item.mesh;
     Material* mat = m.material;
     m.geometry.upload_morph();
     m.upload_morph_weights();
     NodeBuild* build = plain ? null : node_build_of(mat);
-    // (a node material's color step can cut holes without a map)
+    // A node graph's color step can cut alpha holes without a texture map.
     bool node_cuts = build && build.cuts;
     bool cut = (mat.map || mat.alpha_map || node_cuts) && mat.alpha_test > 0 && !state.renderer.prof_no_alpha_test;
     *key = {
@@ -869,6 +861,7 @@ fn void shadow_key_of(DrawItem* item, MaterialKey* key, bool plain = false) @loc
     if (cut && mat.alpha_map) key.set_slot(MAP_ALPHA, 1);
 }
 
+// Builds the full `MaterialKey` describing every shader feature required for `item` in this render.
 fn void material_key_of(DrawItem* item, DrawKind kind, FsParams* fs, Vec4[6]* map_slots, MaterialKey* key,
                         bool gbuffer = false, bool plain = false) @private {
     Mesh* m = item.mesh;
@@ -882,26 +875,21 @@ fn void material_key_of(DrawItem* item, DrawKind kind, FsParams* fs, Vec4[6]* ma
     float alpha_test = alpha_test_of(mat);
     int fog = mat.fog ? (int)fs.fog_params.w : 0;
     bool fog_volume = fog && fs.fog_grid.w > 0;
-    // light shafts: the sun's shadow in the exponential fog
+    // Analytic sun light shafts apply in exponential fog when volumetric fog is inactive.
     bool shafts = !fog_volume && fog == 3 && fs.fog_sun_dir.w > 0 && fs.fog_sun_color.w > 0 && fs.dir_shadow_params.x > 0.5f;
     Texture* env_map = mat.env_map;
     Scene* scene = state.scene;
     if (!env_map && scene && scene.environment && standard) env_map = scene.environment;
-    // (its light from all around, env_light, is worked out when it goes to the GPU)
+    // Trigger upload so `has_env_sh` / `env_light` is populated before keying the shader.
     if (env_map) (void)ready(env_map);
-    // the scene's reflection probes in place of the environment
     bool probes = !mat.env_map && mat.env_probes && state.probes_view.id;
     if (probes) env_map = null;
     bool backdrop = m == state.background;
-    // three's envMap on a basic, lambert or phong material
     bool env_combine = mat.env_map && !backdrop && (type == BASIC || type == LAMBERT || type == PHONG);
-    // what it mirrors of the environment (its map or the probes): glass on any material, or
-    // the reflections over the light but on lambert materials and the background
     bool env_reflect = (env_map || probes) && (mat.glass || (type != LAMBERT && !backdrop && !env_combine));
 
     RenderTarget* rt = r.render_target;
     bool cut = kind == CUT;
-    // (drawn where the depth prepass drew it, or that prepass: the same program's two halves)
     bool prepassed = kind == PRETESTED || kind == DEPTH;
     bool holes = cut || prepassed;
     bool vc = mat.vertex_colors;
@@ -946,22 +934,20 @@ fn void material_key_of(DrawItem* item, DrawKind kind, FsParams* fs, Vec4[6]* ma
         .spot_lights = lit && fs.counts.z > 0,
         .channels = lit && mat.light_channels != 0,
         .map_emissive = lit && mat.map_emissive,
-        // (Material.vertex_light reads the vertex colors whether or not vertex_colors is set)
+        // Material.vertex_light reads vertex colors even when `vertex_colors` is false.
         .baked = lit && mat.vertex_light > 0,
-        // (the normal map on every type but basic: the normal and matcap materials show it)
         .normal_map = type != BASIC && mat.normal_map != null,
-        // (not baking: gen_bake_pipeline's layout has none)
+        // gen_bake_pipeline() omits the tangent vertex attribute.
         .tangents = type != BASIC && !state.bake.on && uses_tangents(item),
         .depth_packing = type == DEPTH ? (char)mat.depth_packing.ordinal : 0,
         .env_light = standard && env_map && env_map.has_env_sh,
         .env_reflect = env_reflect,
         .glass = mat.glass,
-        // (not with an alpha test, as parallax_params has it)
         .defocus = mat.defocus && r.focus_map && r.focus_aperture > 0,
         .hex = mat.hex_tiling > 0 && mat.alpha_test <= 0,
         .probes = probes,
         .gi = lit && state.gi_count > 0,
-        // (baking: the last light map in ssr_color's place)
+        // Lightmap baking reuses `ssr_color` for the previous lightmap accumulation texture.
         .ssr = !state.bake.on && !mat.glass && r.ssr_color.id && r.ssr_depth.id && mat.ssr > 0,
         .reflector = !mat.glass && mat.reflector && mat.reflector.rendered && mat.reflector.target,
         .rc = lit && fs.rc_size.w > 0,
@@ -979,7 +965,6 @@ fn void material_key_of(DrawItem* item, DrawKind kind, FsParams* fs, Vec4[6]* ma
         .point_shadows = shadows && lights_gpu.point_shadows,
         .spot_shadows = shadows && lights_gpu.spot_shadows,
         .debug_cascades = lit && fs.dir_cascade_params.z > 0.5f && fs.dir_shadow_params.x > 0.5f,
-        // roughness and metalness: three's maps a channel each, in the arm map's place (see draw_item)
         .sized = standard && lights_gpu.sized,
         .tubes = lit && lights_gpu.tubes,
         .rect_lights = standard && fs.counts.w > 0,
@@ -993,19 +978,16 @@ fn void material_key_of(DrawItem* item, DrawKind kind, FsParams* fs, Vec4[6]* ma
         .arm_rough = mat.arm_map || mat.roughness_map,
         .arm_metal = mat.arm_map || (mat.metalness_map && (mat.roughness_map ?: mat.metalness_map) == mat.metalness_map),
     };
-    // the shared slots' maps it reads, by role (see material_slots)
     for (int role = 0; role < MAP_ROLES; role++) {
         float slot = (*map_slots)[role / 4][role % 4];
         if (slot >= 0) key.set_slot(role, (int)slot + 1);
     }
-    // (the specular map: for the env map's strength, and a phong material's highlights)
+    // Specular map only affects env_combine strength and Phong highlights.
     if (!key.env_combine && type != PHONG) key.set_slot(MAP_SPECULAR, 0);
     if (gbuffer) *key = gbuffer_key(*key, state.motion);
 }
 
-// The deferred G-buffer's program for what `full` draws (MaterialKey.gbuffer): its surface
-// only, without the lights, fog and output that the lighting pass adds (is_deferred_item
-// leaves out what the G-buffer can't hold).
+// Strips lighting, fog, and output flags from `full` to form the G-Buffer MaterialKey.
 fn MaterialKey gbuffer_key(MaterialKey full, bool motion) @local {
     MaterialKey k = {
         .gbuffer = true,
@@ -1043,6 +1025,9 @@ fn MaterialKey gbuffer_key(MaterialKey full, bool motion) @local {
     return bitcast(w, MaterialKey);
 }
 
+// ---- Draw submission
+
+// Renders a custom ShaderMaterial with its own vertex/fragment shaders, texture slots, and uniforms.
 fn void draw_shader_material(DrawItem* item, Mat4 view_proj, DrawKind kind) @local {
     if (kind == DEPTH || state.bake.on) return;
     Mesh* m = item.mesh;
@@ -1153,6 +1138,7 @@ fn void draw_shader_material(DrawItem* item, Mat4 view_proj, DrawKind kind) @loc
     r.info.triangles += (lines ? elements / 2 : elements / 3) * instances;
 }
 
+// Submits a single mesh draw into the active forward, depth-prepass, G-Buffer, or bake pass.
 fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = CUT, bool deferred_gb = false) @private {
     Mesh* m           = item.mesh;
     Material* mat     = m.material;
@@ -1166,11 +1152,10 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     SgBuffer indices  = index_buffer_of(item, lines, &elements);
     Renderer* r       = state.renderer;
 
+    // 1. Shader program and pipeline lookup (falling back to plain material while compiling).
     Texture* map = ready(mat.map);
     if (mat.screen_target) map = state.white;
     float alpha_test = alpha_test_of(mat);
-    // the material's generated program (materials_nodes.c3), a node material's with its graphs
-    // (none in a light map's bake)
     NodeBuild* build = draw_build(mat);
     MaterialKey key;
     Texture*[6] slots;
@@ -1181,8 +1166,7 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     NodeBuild* gen_build = gen.key.nodes ? build : null;
     SgPipeline pip;
     for (int pick = 0; pick < 2; pick++) {
-        // The node material's program is still compiling: the plain material's, without its
-        // graphs. See material_busy.
+        // Retry with the plain material program when a node graph is still compiling.
         if (pick == 1) {
             material_key_of(item, kind, fs, &map_slots, &key, deferred_gb, plain: true);
             gen = material_program(key);
@@ -1198,11 +1182,12 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
         if (pip.id) break;
         note_waiting(m, 3);
     }
-    // (a pipeline cache being loaded: compiled in the background, drawn when it is made)
     if (!pip.id) return;
     ShaderProgram* own = kind == DEPTH ? gen.depth : gen.program;
     sg::apply_pipeline(pip);
-    // the prepass has cut it out already (the shader takes a negative threshold as "covered")
+
+    // 2. Vertex, texture, shadow, GI, probe, and storage-buffer bindings.
+    // Signal already-pretested cutouts via a negative alpha_test threshold.
     if (kind == PRETESTED && alpha_test > 0) alpha_test = -1;
     SgBindings bind = {
         .vertex_buffers[0] = g.vbuf,
@@ -1212,7 +1197,7 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     Vec4 inst_cull = cull_bind(&bind, item.job - 1);
     bind.views[shaders::VIEW_TEX_MAP] = map.view;
     bind.views[shaders::VIEW_TEX_NORMAL] = ready(mat.normal_map).view;
-    // roughness and metalness: three's maps a channel each, in the arm map's place
+    // Pack separate roughness/metalness maps into the ARM slot with bitmask `arm_bits`.
     Texture* arm = mat.arm_map ?: (mat.roughness_map ?: mat.metalness_map);
     int arm_bits;
     if (mat.arm_map) {
@@ -1228,9 +1213,7 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     for (int k = 0; k < slots.len; k++) bind.views[shaders::VIEW_TEX_EXT0 + k] = ready(slots[k]).view;
     bool backdrop = m == state.background;
     int ext_bits = backdrop ? 32 : 0;
-    // a transmission material whose volume is a wall (RefractionModel.PLANE)
     if (mat.refraction_model == PLANE) ext_bits |= 64;
-    // (the parallax map: white, none, where the material has none)
     bind.views[shaders::VIEW_TEX_PARALLAX] = ready(mat.parallax_map).view;
     bool vsm = vsm_on();
     if (vsm) {
@@ -1245,13 +1228,12 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     bind.views[shaders::VIEW_FOG_VOLUME] = state.fog_view;
     bool ssr = r.ssr_color.id != 0 && r.ssr_depth.id != 0 && mat.ssr > 0;
     bind.views[shaders::VIEW_SSR_COLOR] = ssr ? r.ssr_color : ready(state.white).view;
-    // (a bake's last light map, see render_bake)
+    // Lightmap baking binds the previous accumulation target in `VIEW_SSR_COLOR`.
     if (state.bake.on) bind.views[shaders::VIEW_SSR_COLOR] = state.bake.prev;
     bind.views[shaders::VIEW_SSR_DEPTH] = ssr ? r.ssr_depth : ready(state.white).view;
     bind.views[shaders::VIEW_SSR_BACK] = ssr && r.ssr_back.id ? r.ssr_back : ready(state.white).view;
     Reflector* mirror = mirror_of(mat);
-    // the spot lights' SpotLight.map (shader_core.glsl's light_cookies; a Reflector's picture is
-    // in one of the material's map slots, see reflector_slot)
+    // SpotLight.map projection texture (`light_cookies` in shaders/shader_core.glsl).
     bind.views[shaders::VIEW_LIGHT_COOKIES] = lights_gpu.cookie ? lights_gpu.cookie.view : ready(state.white).view;
     if (!state.clamp_sampler.id) {
         state.clamp_sampler = sg::make_sampler(
@@ -1264,9 +1246,6 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
         );
     }
     bind.samplers[shaders::SMP_SSR_SMP] = state.clamp_sampler;
-    // what a transmission material refracts (its own draw leaves the picture alone: the
-    // picture of the opaque scene is made before the glass is drawn, see copy_for_transmission
-    // and render_transmission)
     Texture* none     = ready(state.white);
     bool transmission = mat.transmission > 0 && mat.type == STANDARD && state.transmission_mips.id != 0;
     bind.views[VIEW_TEX_TRANSMISSION] = transmission ? state.transmission_mips_view : none.view;
@@ -1274,7 +1253,7 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     bind.views[shaders::VIEW_TEX_GI] = state.gi_view;
     bind.views[shaders::VIEW_RC_PROBES] = state.radiance_view;
     bind.samplers[shaders::SMP_GI_SMP] = state.irradiance.sampler;
-    // the scene's environment lights the standard materials without a map of their own
+    // Scene environment applies to standard materials lacking an explicit `mat.env_map`.
     Texture* env_map    = mat.env_map;
     float env_intensity = mat.env_intensity > 0 ? mat.env_intensity : 1;
     bool env_diffuse    = false;
@@ -1284,26 +1263,22 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
         env_intensity *= scene.environment_intensity;
     }
     Texture* env = ready(env_map);
-    // its light from all around a normal, worked out at the upload (a standard material's own
-    // map lights it too, as three's envMap does)
     if (env_map && env_map.has_env_sh && mat.type == STANDARD) {
         env_diffuse = true;
-        // (the sun in the w of the first six: its direction, then its light)
+        // Pack extracted sun direction and radiance into `.w` of the first 6 SH coefficients.
         EnvLight* el = &env_map.env_light;
         float[6] sun = { el.sun_dir.x, el.sun_dir.y, el.sun_dir.z, el.sun.x, el.sun.y, el.sun.z };
         foreach (i, c : el.sh) fs.env_sh[i] = { ...c, i < 6 ? sun[i] : 0 };
     }
     bind.views[shaders::VIEW_TEX_ENV] = env.view;
     bind.samplers[shaders::SMP_ENV_SMP] = env.sampler;
-    // (a node material's textures, which its graphs read with this sampler too)
     Texture*[NODE_TEXTURES] own_textures;
     if (build) {
         for (int k = 0; k < build.texture_count; k++) own_textures[k] = build.texture(k);
     }
     Texture* first = slots[0] ?: own_textures[0];
     Texture* shared = mat.map ?: (mat.normal_map ?: (arm ?: (first ?: state.white)));
-    // (without a color map, a repeating texture's sampler: the others' wrapping is then done
-    // on their uv in the shader, see slot_wrap, which with clamping costs nothing at the edges)
+    // Prefer a repeating sampler when no color map is set so `slot_wrap` can clamp cleanly.
     if (!mat.map) {
         Texture*[8 + NODE_TEXTURES] maps;
         maps[:8] = (Texture*[8]) { mat.normal_map, arm, slots[0], slots[1], slots[2], slots[3], slots[4], slots[5] }[..];
@@ -1329,7 +1304,6 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
         );
         state.no_probes = sg::make_view(&&{ .texture = { .image = state.no_probes_image } });
     }
-    // the scene's reflection probes, for a material that mirrors them
     bool probes = !mat.env_map && mat.env_probes && state.probes_view.id;
     bind.views[shaders::VIEW_TEX_PROBES] = state.probes_view.id ? state.probes_view : state.no_probes;
     if (probes) bind.samplers[shaders::SMP_ENV_SMP] = state.probes_sampler;
@@ -1339,12 +1313,14 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     SgBindings own_bind = program_bindings(own, &bind, user_views(gen_build)[..], m.geometry.morph_view, m.morph_weights_view);
     sg::apply_bindings(&own_bind);
 
+    // 3. Vertex uniforms.
     VsParams vs = vs_params_of(item, view_proj);
     vs.inst_cull = inst_cull;
     @pool() {
         apply_program_uniforms(own, VERTEX, &vs, fs, user: gen_build ? user_block(gen_build, m) : { });
     };
 
+    // 4. Fragment uniforms.
     int flags = (mat.vertex_colors ? 1
         : 0) | (mat.foliage ? 2
             : 0) | (m.receive_shadow ? 4
@@ -1369,27 +1345,24 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
         parallax ? mat.parallax_scale : 0,
         mat.parallax_distance > 0 ? mat.parallax_distance : 30,
         mat.parallax_shadow,
-        // (the depth prepass and the shadows cut out the alpha as one patch: they'd disagree)
+        // Disable hex tiling on alpha-tested materials so prepass and shadows stay consistent.
         mat.alpha_test > 0 ? 0 : mat.hex_tiling
     };
-    // a dashed line: its gaps are cut out by the distances along it (see Line.compute_line_distances)
     if (m.is_line() && mat.dash_size > 0 && mat.gap_size > 0) {
         fs.line_dash = { mat.dash_size, mat.dash_size + mat.gap_size, mat.dash_scale > 0 ? mat.dash_scale : 1, 1 };
     } else {
         fs.line_dash = { };
     }
     fs.env_params = { env_map ? 1 : 0, env_intensity, env_diffuse ? 1 : 0, env_map ? env_map.env_distance_range : 0 };
-    // each point of it: the probe of the box it is in
     if (probes) fs.env_params = { 2, mat.env_intensity > 0 ? mat.env_intensity : 1, 0, 0 };
     bool boxed = mat.env_box_min != mat.env_box_max;
     fs.env_pos = { ...mat.env_position, boxed ? 1 : 0 };
     fs.env_box_min = { ...mat.env_box_min, 0 };
     fs.env_box_max = { ...mat.env_box_max, 0 };
-    // (a draw without the picture behind it, the transmission pass's own, leaves it off)
     fs.transmission_params = { mat.ior > 0 ? mat.ior : 1.5f, mat.thickness, mat.dispersion, mat.attenuation_distance };
     fs.transmission_color = { ...color_to_linear(mat.attenuation_color), transmission ? mat.transmission : 0 };
     fs.specular_params = { ...mat.specular_color, mat.specular_intensity };
-    // (the thickness is in the model's meters: three's modelScale, here one number for all three axes)
+    // Average world axis scale to convert material thickness into world meters.
     float scale = 1;
     if (transmission) {
         Mat4 w = m.matrix_world;
@@ -1401,14 +1374,12 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     fs.light_map_params = { mat.light_map_intensity, 0, 0, 0 };
     fs.surface_params = { mat.bump_scale, mat.gradient_map && mat.gradient_map.nearest ? 1 : 0, mat.depth_packing.ordinal,
                           (float)mat.light_channels };
-    // three's envMap on a basic, lambert or phong material (not the background's own)
     if (classic && mat.env_map && !backdrop) {
         fs.env_combine = { mat.reflectivity, (float)mat.combine.ordinal, mat.env_refraction ? mat.refraction_ratio : 0, 1 };
     } else {
         fs.env_combine = { };
     }
     fs.focus_params = { defocus ? state.renderer.focus_aperture : 0, state.renderer.focus_maxblur, 0, 0 };
-    // each map's uv from the color map's
     Texture* base = uv_base(mat);
     Vec4[2] rel = uv_relative(base, mat.normal_map);
     fs.uv_rel[0:2] = rel[..];
@@ -1418,7 +1389,7 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
         rel = uv_relative(base, slots[k]);
         fs.uv_rel[4 + 2 * k:2] = rel[..];
     }
-    // each slot's wrapping, where it isn't the shared sampler's (see the shader's slot_wrap)
+    // Encode per-slot wrap overrides when a slot's wrapping differs from `shared`.
     fs.uv_rel[1].w = wrap_code(ready(mat.normal_map), shared);
     fs.uv_rel[3].w = wrap_code(ready(arm), shared);
     for (int k = 0; k < slots.len; k++) {
@@ -1456,9 +1427,10 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     };
     fs.fog_params.w = fog_mode;
 
+    // 5. Issue draw call and update RenderInfo counters.
     r.info.calls++;
     int drawn = draw_geometry(item, lines);
-    // (the depth prepass's draws count as calls only)
+    // Depth prepass draws increment call count only, not visible triangle/line counts.
     if (kind == DEPTH) return;
     if (m.is_line()) {
         r.info.lines += drawn;
@@ -1467,20 +1439,18 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     }
 }
 
-// `light_vp`: world - `origin` -> the light's clip space.
+// Submits a single shadow-caster draw with `light_vp` mapping `(world - origin)` into light clip space.
 fn void draw_shadow_item(DrawItem* item, Mat4 light_vp, Vector3 origin = { 0, 0, 0 }) @private {
     Mesh* m       = item.mesh;
     Material* mat = m.material;
     Texture* map  = ready(mat.map);
-    // the material's generated program (MaterialKey.shadow), a node material's with its graphs
-    // (position_node, and its color step's holes)
     NodeBuild* build = node_build_of(mat);
     MaterialKey key;
     shadow_key_of(item, &key);
     key.atlas_depth = atlas_drawing;
     MaterialProgram* gen = material_program(key, build);
     NodeBuild* gen_build = gen.key.nodes ? build : null;
-    // The program is still compiling. Draw with the plain material. See material_busy.
+    // Fall back to the plain shadow shader while a node material compiles; flag static tiles for retry.
     if (gen_build && (material_busy(gen_build, gen) || !gen_shadow_pipeline(gen).id)) {
         note_waiting(m, 2);
         shadow_key_of(item, &key, plain: true);
@@ -1490,7 +1460,6 @@ fn void draw_shadow_item(DrawItem* item, Mat4 light_vp, Vector3 origin = { 0, 0,
         state.shadow_plain = true;
     }
     SgPipeline pip = gen_shadow_pipeline(gen);
-    // (a pipeline cache being loaded: compiled in the background, drawn when it is made)
     if (!pip.id) return;
     sg::apply_pipeline(pip);
     SgBindings bind = {
@@ -1511,7 +1480,7 @@ fn void draw_shadow_item(DrawItem* item, Mat4 light_vp, Vector3 origin = { 0, 0,
         .view_proj = light_vp,
         .view_origin = { ...origin, 0 },
         .model = m.matrix_world,
-        // (the normal a node material's graphs read; the others read none)
+        // Only node shadow graphs read normals; skip matrix inverse for plain casters.
         .normal_mat = gen_build ? m.matrix_world.invert().transpose() : m.matrix_world,
         .uv_transform = uv_transform(mat),
         .sway = sway_params(mat),
@@ -1531,8 +1500,8 @@ fn void draw_shadow_item(DrawItem* item, Mat4 light_vp, Vector3 origin = { 0, 0,
     state.renderer.info.shadow_triangles += draw_geometry(item, false);
 }
 
-// The instance attributes of a draw (one identity instance for a plain mesh), and its
-// geometry's second uv set, and its tangents for a program that reads them (uses_tangents).
+// Populates vertex buffers 1..6 (instances, uv1, tangents, displacement heights, instance colors,
+// and previous-frame positions) on `bind` for `item`.
 fn void bind_instances(SgBindings* bind, DrawItem* item) @private {
     Mesh* m = item.mesh;
     BufferGeometry* g = m.geometry;
@@ -1556,9 +1525,9 @@ fn int cmp_transparent(DrawItem a, DrawItem b) @private {
     return a.depth < b.depth ? -1 : (a.depth > b.depth ? 1 : 0);
 }
 
-// Fog that is lit by lights isn't one color: where the view ends in empty space, a sphere
-// just inside the far plane picks up the same fog as the geometry in front of it. False when
-// there is none to draw; otherwise `item` is it, placed around the camera.
+// ---- Backgrounds and transmission passes
+
+// Prepares the far-plane fog backdrop sphere around `camera` when light-scattering fog is active.
 fn bool backdrop_item(Scene* scene, Camera* camera, DrawItem* item) @private {
     if (!scene.fog || scene.fog.light_scatter <= 0 || camera.camera_type != PERSPECTIVE) return false;
     if (state.renderer.prof_no_fog_scatter) return false;
@@ -1582,12 +1551,8 @@ fn void draw_backdrop(Scene* scene, Camera* camera, Mat4 view_proj, FsParams* fs
     if (backdrop_item(scene, camera, &item)) draw_item(&item, view_proj, fs, has_holes(&item) ? CUT : SOLID);
 }
 
-// The scene's background, as draw_background draws it (as a cut-out), placed around the
-// camera: false when there is none. scene.background_material on a sphere just inside the far
-// plane; a flat background_texture on a quad between the near and far planes that covers the
-// view, drawn without depth; otherwise the background_texture (three's scene.background as an
-// equirectangular texture) on a sphere that shows the map in each direction (see the
-// material's background mode), drawn before the opaque scene, without writing depth.
+// Prepares the DrawItem for `scene.background_material` (sphere), flat `background_texture`
+// (full-view quad without depth), or equirectangular `background_texture` (sky sphere).
 fn bool background_item(Scene* scene, Camera* camera, DrawItem* item) @private {
     Mesh* m;
     if (scene.background_material) {
@@ -1637,7 +1602,7 @@ fn bool background_item(Scene* scene, Camera* camera, DrawItem* item) @private {
         m = state.background;
         m.material.env_map = scene.background_texture;
         m.material.env_intensity = scene.background_intensity;
-        // (the shader reads the blur from the roughness)
+        // Background blurriness maps onto material roughness in the background shader.
         m.material.roughness = math::clamp(scene.background_blurriness, 0, 1);
         float r = ((PerspectiveCamera*)camera).far * 0.9f;
         m.matrix_world = mat4_compose(camera.matrix_world.get_position(), { 0, 0, 0 }, { r, r, r });
@@ -1654,7 +1619,7 @@ fn void draw_background(Scene* scene, Camera* camera, Mat4 view_proj, FsParams* 
     if (background_item(scene, camera, &item)) draw_item(&item, view_proj, fs);
 }
 
-// The transmission picture's mip levels, for a picture of width x height.
+// Allocates or resizes the mipmapped single-sampled RGBA16F transmission texture chain.
 fn void transmission_levels(int width, int height) @private {
     if (state.transmission_mips.id && state.transmission_width == width && state.transmission_height == height) return;
     if (state.transmission_mips.id) {
@@ -1676,8 +1641,7 @@ fn void transmission_levels(int width, int height) @private {
             .width = width,
             .height = height,
             .num_mipmaps = levels,
-            // (an attachment's sample count defaults to the window's, and an MSAA image can't
-            // have mips)
+            // Force sample_count = 1 so mipmaps are valid regardless of window MSAA.
             .sample_count = 1,
             .pixel_format = RGBA16F,
             .label = "drie-transmission-mips",
@@ -1695,10 +1659,10 @@ fn void transmission_levels(int width, int height) @private {
     mip_pipeline();
 }
 
-// The pipeline and sampler that copy a picture into a mip level, filtered (fill_levels).
+// Lazily creates the linear-filtering blit pipeline and sampler used by fill_levels().
 fn void mip_pipeline() @private {
     if (!state.mip_pipeline.id) {
-        // (the output pass's shader, without tone mapping or sRGB: a copy, filtered)
+        // Reuse the output pass shader with tone mapping and sRGB disabled as a bilinear blit.
         state.mip_pipeline = sg::make_pipeline(
             &&{
                 .shader = make_program(postprocessing::output_shader_desc(sg::query_backend())),
@@ -1720,16 +1684,14 @@ fn void mip_pipeline() @private {
     }
 }
 
-// Fills the mip levels from the resolved transmission picture (fill_levels).
 fn void fill_transmission_levels(SgView source, int width, int height) @local {
     transmission_levels(width, height);
     fill_levels(source, state.transmission_level_views[:state.transmission_levels],
                 state.transmission_level_attachments[:state.transmission_levels]);
 }
 
-// Fills an image's mip levels (`attachments`, a view of each) from `source`: level 0 a copy
-// of it, each next one the last one halved (one bilinear tap between four texels: their
-// average, as generateMipmap does). `views`: each level to read from.
+// Generates a mipmap chain into `attachments` from `source`: level 0 copies `source`, and each
+// subsequent level downsamples the previous level (`views[i - 1]`) via bilinear filtering.
 fn void fill_levels(SgView source, SgView[] views, SgView[] attachments) @private {
     mip_pipeline();
     postprocessing::OutputParams p = { .params = { 0, 1, 0, 1 } };
@@ -1755,28 +1717,24 @@ fn void fill_levels(SgView source, SgView[] views, SgView[] attachments) @privat
     }
 }
 
-// The picture the transmission materials refract, like three's renderTransmissionPass: the
-// background and the opaque scene without them, from the same camera, in linear light, with
-// the frame's lights, then its mip levels (for rough surfaces). The main pass then samples it
-// where each refraction ray leaves the surface.
+// Renders background and non-transmissive opaque meshes into a linear RGBA16F target (scaled by
+// `Renderer.transmission_resolution_scale`), builds mipmaps, and renders double-sided glass back
+// faces when present. Used when the main target is non-linear (window or RGBA8).
 fn void render_transmission(Renderer* r, Scene* scene, Camera* camera, Mat4 view_proj, FsParams* fs) @private {
     float scale = r.transmission_resolution_scale > 0 ? r.transmission_resolution_scale : 1;
     int width   = max((int)((r.render_target ? r.render_target.width : sapp::width()) * scale + 0.5f), 1);
     int height  = max((int)((r.render_target ? r.render_target.height : sapp::height()) * scale + 0.5f), 1);
-    // one sample: the glass's edges are smoothed in the main pass, and what shows through it
-    // is bent (and blurred by roughness) anyway
     int samples = 1;
     if (!state.transmission) state.transmission = render_target(width, height, samples, RGBA16F);
     state.transmission.set_size(width, height, samples);
 
     RenderTarget* prev = r.render_target;
     r.render_target = state.transmission;
-    // the same lights, but into linear light: the target is half float, tone mapped later
     FsParams tfs = *fs;
     tfs.output_params = { 1, fs.output_params.y, fs.output_params.z, 0 };
     Color background = scene.background ? scene.background : r.clear_color;
     Vector3 clear    = color_to_linear(background);
-    // (this pass's programs, all at once: start_material_programs started the main pass's)
+    // Warm up transmission-pass shaders in parallel before opening the pass.
     start_background_program(scene, camera, &tfs);
     for (int list = 0; list < 2; list++) {
         foreach (&item : list == 0 ? state.opaque : state.transparent) {
@@ -1792,7 +1750,6 @@ fn void render_transmission(Renderer* r, Scene* scene, Camera* camera, Mat4 view
     profile::begin_pass(
         &&{
             .action = {
-                // (kept for the back faces of double-sided glass after it)
                 .colors[0] = { .load_action = CLEAR, .store_action = STORE, .clear_value = { clear.x, clear.y, clear.z, 1 } },
                 .depth = { .load_action = CLEAR, .store_action = STORE, .clear_value = 1 },
             },
@@ -1802,14 +1759,12 @@ fn void render_transmission(Renderer* r, Scene* scene, Camera* camera, Mat4 view
     );
     draw_background(scene, camera, view_proj, &tfs);
     foreach (&item : state.opaque) {
-        // the glass is not behind itself
         if (refracts(item)) continue;
         draw_item(item, view_proj, &tfs, item.mesh.material.wireframe || has_holes(item) ? CUT : SOLID);
     }
     sg::end_pass();
     fill_transmission_levels(state.transmission.texture, state.transmission.width, state.transmission.height);
-    // the far side of double-sided glass (a bowl, a glass's back wall) is behind its near side:
-    // its back faces, refracting the picture so far, drawn into it (as three does)
+    // Draw back faces of double-sided glass into the transmission buffer so front faces refract them.
     bool backs;
     for (int list = 0; list < 2 && !backs; list++) {
         foreach (&item : list == 0 ? state.opaque : state.transparent) {
@@ -1842,9 +1797,8 @@ fn void render_transmission(Renderer* r, Scene* scene, Camera* camera, Mat4 view
     r.render_target = prev;
 }
 
-// Half way through the main pass into a linear target: the pass ends, the picture so far (the
-// opaque scene, resolved) becomes the transmission picture and its mip levels, and the pass
-// goes on where it left off, for the glass that refracts it.
+// Closes the active linear main pass, builds transmission mipmaps from its resolved color buffer,
+// and reopens the pass with LOAD actions so transmissive meshes can refract the opaque scene.
 fn void copy_for_transmission(Renderer* r, SgPass* pass) @private {
     sg::end_pass();
     RenderTarget* rt = r.render_target;
@@ -1856,8 +1810,7 @@ fn void copy_for_transmission(Renderer* r, SgPass* pass) @private {
     profile::begin_pass(&again);
 }
 
-// A draw that takes its geometry's tangents (as three's vertexTangents): it has them, and its
-// material a map that is read along them (a normal map, the clear coat's, anisotropy).
+// True when `item` has vertex tangents and uses a normal map, clearcoat normal map, or anisotropy.
 fn bool uses_tangents(DrawItem* item) @local {
     Material* mat = item.mesh.material;
     BufferGeometry* g = item.mesh.geometry;
@@ -1865,5 +1818,5 @@ fn bool uses_tangents(DrawItem* item) @local {
     return mat.normal_map || (mat.type == STANDARD && (mat.clearcoat_normal_map || mat.anisotropy != 0));
 }
 
-// A transmission material: it shows the picture of what is behind it (render_transmission).
+// True when `item` uses physical transmission (`Material.transmission > 0` on a standard material).
 fn bool refracts(DrawItem* item) @private => item.mesh.material.transmission > 0 && item.mesh.material.type == STANDARD;

@@ -1,5 +1,5 @@
-// Reads the first connected XInput controller (Xbox and compatible pads).
-// (Built on every platform from the same list of C files: empty where it is not Windows.)
+// Polls the first connected XInput controller (Xbox and compatible gamepads) on Windows for
+// drie::gamectl and drie::input; compiles empty elsewhere so every target shares one C file list.
 #if defined(_WIN32)
 #include <windows.h>
 #include <xinput.h>

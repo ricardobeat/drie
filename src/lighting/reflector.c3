@@ -1,50 +1,40 @@
-// Planar reflections, like three.js's Reflector, for a flat surface that keeps its own
-// material: each frame the scene is rendered again from the camera mirrored in the plane, into a
-// target of its own, with what is behind the plane clipped away by an oblique near plane (Lengyel).
-// The materials that name the Reflector (Material.reflector) take their mirror image from that
-// picture, moved about by their normal maps and blurred by their roughness, in place of their
-// environment map's. Unlike screen-space reflections it shows what the camera can't see (the
-// underside of a thing over the floor); it costs a second render of the scene.
-//
-//   Reflector* mirror = drie::reflector({ 0, 1, 0 }, FLOOR_Y);
-//   floor_material.reflector = mirror;
-//   // each frame, with the renderer's target set as for the main render:
-//   renderer.render_reflector(mirror, scene, camera);
-//   renderer.render(scene, camera);
+// Planar reflections (`Reflector`) rendered from a mirrored perspective camera into a dedicated
+// linear `RGBA16F` `RenderTarget` each frame. Lengyel's oblique near plane (`oblique_projection`)
+// clips geometry behind the mirror plane while surfaces referencing the reflector via
+// `Material.reflector` keep their own shading, normal-map distortion, and roughness blur. Call
+// `Renderer.render_reflector()` before `Renderer.render()` with the main render target active so
+// the reflection target scales to match it.
+
 module drie;
 import std::math, sokol;
 
+// Planar reflection target and plane definition assigned to surfaces via `Material.reflector`.
+//
+//   Reflector* mirror = drie::reflector({ 0, 1, 0 }, FLOOR_Y);
+//   floor_material.reflector = mirror;
+//   // Each frame, with the renderer's target set as for the main render:
+//   renderer.render_reflector(mirror, scene, camera);
+//   renderer.render(scene, camera);
 struct Reflector {
-    // the plane: the points p with dot(normal, p) == constant; the side the normal points to is
-    // the one mirrored
-    Vector3 normal;
-    float constant;
-    // the size of its picture, as a part of the main render's
-    float resolution;
-    // how far along the ray (m) the normal map's turn of it is taken to move the picture: about
-    // how far the things it mirrors are
-    float distortion;
-    // how far the picture is blurred for a roughness of 1 (a part of its height)
-    float blur;
-    // how strong the reflection is (1: as the material's Fresnel says)
-    float strength;
-    // what is this far behind the plane is still drawn (m): a thing standing on it keeps its foot
-    float clip_bias;
-    // only what is (partly) inside this box is mirrored (a room's floor need not mirror the
-    // woods outside its windows: they cost as much to draw as in the main view); none when equal
+    Vector3 normal; // Unit normal of the mirror plane (`dot(normal, p) == constant`).
+    float constant; // Plane offset along `normal` in meters; the positive half-space is mirrored.
+    float resolution; // Render target scale relative to the main render target (`0..1`).
+    float distortion; // Ray travel distance (m) used to scale normal-map UV distortion.
+    float blur; // Maximum blur radius at roughness 1 as a fraction of reflection height.
+    float strength; // Reflection multiplier (`1` uses the material's Fresnel term directly).
+    float clip_bias; // Margin behind the plane kept unclipped (m) to prevent contact gaps.
+    // Optional world-space cull box (m): only objects overlapping `[box_min, box_max]` render
+    // into the reflection. Ignored when `box_min == box_max`.
     Vector3 box_min;
-    Vector3 box_max;
-    // draws with the shadow maps the last render left (as they were the frame before) instead of
-    // drawing them again from its own viewpoint: much cheaper. On by default
-    bool reuse_shadows;
-    RenderTarget* target;
-    PerspectiveCamera* camera;
-    // world -> its picture's clip space, as it was rendered
-    Mat4 view_proj;
-    // rendered this frame (false when the camera was behind the plane)
-    bool rendered;
+    Vector3 box_max; // Maximum corner of the optional world-space reflection cull box (m).
+    bool reuse_shadows; // When true (default), reuses the previous frame's shadow maps instead of re-rendering them.
+    RenderTarget* target; // Linear `RGBA16F` target resized automatically by `render_reflector()`.
+    PerspectiveCamera* camera; // Internal mirrored camera with custom oblique projection.
+    Mat4 view_proj; // World-to-clip matrix of the latest reflection render.
+    bool rendered; // True if the camera was on the front side and the reflection rendered this frame.
 }
 
+// Allocates a planar reflector for the plane `dot(normal, p) == constant` at `resolution` scale.
 fn Reflector* reflector(Vector3 normal = { 0, 1, 0 }, float constant = 0, float resolution = 0.5) {
     Reflector* r = mem::new(Reflector);
     *r = {
@@ -63,7 +53,9 @@ fn Reflector* reflector(Vector3 normal = { 0, 1, 0 }, float constant = 0, float 
     return r;
 }
 
-// The mirror image across the plane: p -> p - 2 (n.p - c) n.
+// ---- Reflection math
+
+// Returns the Householder reflection matrix across the mirror plane: `p -> p - 2 (n.p - c) n`.
 fn Mat4 Reflector.mirror(&self) {
     Vector3 n = self.normal;
     float c   = self.constant;
@@ -83,10 +75,10 @@ fn Mat4 Reflector.mirror(&self) {
     return m;
 }
 
-// Tilts `cam`'s near plane onto the plane dot(normal, p) == constant (Lengyel's oblique
-// projection), clipping everything on the side where dot(normal, p) < constant - clip_bias.
-// Call after cam.update_matrix_world() and cam.update_projection_matrix() (with
-// cam.custom_projection = true so render() keeps the modified matrix).
+// Tilts `cam`'s near plane onto `dot(normal, p) == constant` using Lengyel's oblique projection,
+// clipping everything where `dot(normal, p) < constant - clip_bias`. Call after
+// `cam.update_matrix_world()` and `cam.update_projection_matrix()`, with `cam.custom_projection`
+// enabled so `Renderer.render()` preserves the modified projection matrix.
 fn void oblique_projection(Camera* cam, Vector3 normal, float constant, float clip_bias = 0) {
     Vector3 n = normal.normalize();
     Mat4 mw   = cam.matrix_world;
@@ -104,14 +96,16 @@ fn void oblique_projection(Camera* cam, Vector3 normal, float constant, float cl
     if (math::abs(dq) < 1e-6f) return;
     bool z01     = depth_zero_to_one();
     float[<4>] c = cv * ((z01 ? 1.0f : 2.0f) / dq);
-    // the third row: z' = c . p (0..1), or c . p - w (-1..1)
+    // Replace third row so clip depth is `c . p` (`[0, 1]`) or `c . p - w` (`[-1, 1]`).
     for (int i = 0; i < 4; i++) p[i][2] = z01 ? c[i] : c[i] - p[i][3];
     cam.projection_matrix = p;
 }
 
-// Renders what `reflector`'s plane mirrors, as `camera` sees it. Call it before render() for
-// the frame, with the render target set as it will be for that (its picture is a part of that
-// size). Leaves the target and the reflection source as they were.
+// ---- Rendering
+
+// Renders `scene` into `reflector.target` from the mirrored viewpoint of `camera`. Call before
+// `Renderer.render()` with the main render target already set so target sizing matches; restores
+// the active render target, shadow-update flag, and SSR views on return.
 fn void Renderer.render_reflector(&self, Reflector* reflector, Scene* scene, PerspectiveCamera* camera) {
     Reflector* r = reflector;
     r.rendered = false;
@@ -125,9 +119,8 @@ fn void Renderer.render_reflector(&self, Reflector* reflector, Scene* scene, Per
     if (!r.target) r.target = render_target(w, h, 1, RGBA16F);
     r.target.set_size(w, h, 1);
 
-    // the camera mirrored, and turned left for right: two mirror images make a turn, so its
-    // triangles keep their winding (the picture comes out the other way round, which the
-    // shader's projection undoes)
+    // Combine plane reflection with a horizontal flip so determinant stays +1 and triangle
+    // winding is preserved; the shader's projection via `view_proj` maps the flipped image back.
     Mat4 flip = mat4_identity();
     flip[0][0] = -1;
     PerspectiveCamera* mc = r.camera;
@@ -141,8 +134,7 @@ fn void Renderer.render_reflector(&self, Reflector* reflector, Scene* scene, Per
     mc.zoom = camera.zoom;
     mc.update_projection_matrix();
 
-    // the near plane laid onto the mirror's plane (Lengyel's oblique projection): nothing
-    // behind it is drawn.
+    // Align the near plane to the mirror plane so geometry behind the mirror is clipped.
     oblique_projection(mc, r.normal, r.constant, r.clip_bias);
     r.view_proj = mc.projection_matrix.mul(mc.matrix_world_inverse);
 
@@ -153,9 +145,9 @@ fn void Renderer.render_reflector(&self, Reflector* reflector, Scene* scene, Per
     self.clear_reflection_source();
     self.render_target = r.target;
     bool shadows = self.shadow_map_auto_update;
-    // (the shadow maps as the last frame left them: a frame late in the mirror image)
+    // Reusing shadow maps avoids re-rendering shadows from the mirrored view (one frame latent).
     self.shadow_map_auto_update = !r.reuse_shadows;
-    // the surfaces that show it don't take part (they are on the plane)
+    // Skip meshes referencing `r` during the reflection pass since they lie on the mirror plane.
     self.reflecting = r;
     self.render(scene, mc);
     self.reflecting = null;

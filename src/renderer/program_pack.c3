@@ -1,28 +1,9 @@
-// The program pack: shaders compiled ahead of time, so that a run makes them without compiling
-// their source. The shaders drie makes from source (the materials' generated programs, the
-// engine's own) are looked up in it by a hash of their
-// source text; one found is handed to sokol as bytecode, one not found is compiled from its
-// source as before.
-//
-//   drie::load_program_pack_file("build/cache/programs.metal-macos");  // before the first frame
-//
-// A pack is made at build time from the sources of a run (Metal: xcrun metal, see house's
-// tools/programs.py):
-//
-//   DRIE_DUMP_PROGRAMS=<dir>   every source made into a shader is saved as <dir>/<hash>.metal
-//   drie::dump_programs(dir, compile: false)   the same, and the background compiles
-//                              (sokol_warm.h) compile nothing: a loaded pipeline list then
-//                              goes through every program it names in a moment
-//
-// The file, all numbers little-endian:
-//
-//   "drie-programs 1\n"                    16 bytes
-//   target                                 16 bytes, zero padded: "metal-macos"
-//   count, 0                               2 x u32
-//   count x { hash u64, offset u32, size u32 }   by hash; offset from the file's start
-//   the bytecode                           a metallib each
-//
-// hash: FNV-1a, 64 bits, over the source text (without its terminating zero).
+// Ahead-of-time shader bytecode packs and source dumping for runtime-compiled shaders.
+// Substitutes precompiled bytecode (currently Metal metallibs) into SgShaderDesc stages by
+// matching the 64-bit FNV-1a hash of each stage's source text; unmatched stages compile from
+// source. All shaders created via make_program() pass through with_bytecode() and register for
+// the Metal binary pipeline archive (Renderer.use_pipeline_archive). Set DRIE_DUMP_PROGRAMS=<dir>
+// or call dump_programs() to write stage sources as <dir>/<hash>.<ext> for offline packing.
 module drie;
 import std::io, std::io::file, std::io::path, std::os::env, std::collections::map, sokol::sg;
 
@@ -37,27 +18,24 @@ struct ProgramPack @local {
     char[] data;
     String target;
     HashMap{ulong, PackEntry} entries;
-    // how many shader stages it gave bytecode to, and how many it didn't have
-    int found;
-    int missed;
+    int found;   // Stages satisfied from pack bytecode.
+    int missed;  // Stages absent from the pack and compiled from source.
 }
 
 ProgramPack program_pack @local;
-// DRIE_DUMP_PROGRAMS, once read ("": no dump)
-String dump_dir @local;
+String dump_dir @local;  // Target directory from DRIE_DUMP_PROGRAMS or dump_programs().
 bool dump_read @local;
-// dump_programs without compiling
-bool dump_only @local;
+bool dump_only @local;   // True when dump_programs(compile: false) skips GPU compilation.
 
-// Whether sources are being saved and nothing compiled (dump_programs).
+// True when shader sources are being dumped without compiling them on the GPU.
 fn bool dumping_only() @private => dump_only;
 
 extern fn CInt sg_warm_library_loads(void* ptr, usz size) @cname("sg_warm_library_loads");
 extern fn void sg_warm_dry(CInt on) @cname("sg_warm_dry");
 
-// Saves every source made into a shader from here on as <dir>/<hash>.<ext> (as
-// DRIE_DUMP_PROGRAMS does); without `compile`, the compiles in the background compile nothing
-// (and are done at once).
+// Writes every shader stage source created from this point on to `<dir>/<hash>.<ext>`.
+// With `compile: false`, background compilation jobs (sokol_warm.h) skip GPU compilation so a
+// loaded pipeline cache can dump all referenced shader sources quickly.
 fn void dump_programs(String dir, bool compile = true) {
     dump_read = true;
     dump_dir = dir.copy(mem);
@@ -66,7 +44,7 @@ fn void dump_programs(String dir, bool compile = true) {
     sg_warm_dry(compile ? 0 : 1);
 }
 
-// FNV-1a, 64 bits.
+// 64-bit FNV-1a hash over `s` (excluding any null terminator) that keys program pack entries.
 fn ulong program_hash(String s) {
     ulong h = 0xcbf29ce484222325;
     foreach (c : s) h = (h ^ c) * 0x100000001b3;
@@ -77,7 +55,7 @@ fn uint read_u32(char[] d, usz at) @local => (uint)d[at] | (uint)d[at + 1] << 8 
 
 fn ulong read_u64(char[] d, usz at) @local => (ulong)read_u32(d, at) | (ulong)read_u32(d, at + 4) << 32;
 
-// The target the running backend's bytecode is built for ("": none drie packs).
+// Target tag for the running backend's precompiled bytecode, or "" if unsupported.
 fn String pack_target() @local {
     switch (sg::query_backend()) {
         case METAL_MACOS: return "metal-macos";
@@ -85,10 +63,16 @@ fn String pack_target() @local {
     }
 }
 
-// Takes `data` (in `mem`, kept for the run) as the program pack: how many programs it has for
-// this backend (0, and nothing kept, if it is for another one, or not a pack). Call it after
-// the GPU is set up (Renderer.init_headless or the first frame) or before: the backend is
-// checked when the first program is looked up.
+// Loads a binary program pack from `data` (owned in `mem` for the lifetime of the run) and
+// returns the number of indexed entries (0 on invalid input, freeing `data`). May be called
+// before or after GPU setup; target compatibility is verified on first shader lookup.
+//
+// Binary format (little-endian):
+//   "drie-programs 1\n"                  16 bytes
+//   target                               16 bytes, zero-padded (e.g. "metal-macos")
+//   count, reserved                      2 x u32
+//   count x { hash u64, offset u32, size u32 }  file-relative offsets
+//   bytecode blobs                       one metallib per entry
 fn int load_program_pack(char[] data) {
     usz head = PROGRAM_PACK_HEADER.len + 16 + 8;
     if (data.len < head || (String)data[:PROGRAM_PACK_HEADER.len] != PROGRAM_PACK_HEADER) {
@@ -125,21 +109,21 @@ fn int load_program_pack(char[] data) {
     return (int)p.entries.len();
 }
 
-// load_program_pack, from a file: false if it can't be read.
+// Loads a program pack from `path`. Returns false if the file cannot be read or is empty/invalid.
 fn bool load_program_pack_file(String path) {
     char[]? data = file::load(mem, path);
     if (catch data) return false;
     return load_program_pack(data) > 0;
 }
 
-// { stages given bytecode, stages compiled from source } since the pack was loaded.
+// Returns `{ stages_from_bytecode, stages_from_source }` since the active pack was loaded.
 fn int[2] program_pack_counts() => { program_pack.found, program_pack.missed };
 
-// whether the pack was checked against the backend and the device (see use_pack)
+// Set once use_pack() has validated the pack against the active backend and GPU device.
 bool checked @local;
 
-// Whether the pack's bytecode is for this backend and loads on this device; it is let go of
-// otherwise.
+// Validates the loaded pack against the running backend and device on first use, freeing it if
+// incompatible.
 fn bool use_pack() @local {
     ProgramPack* p = &program_pack;
     if (!p.data.len) return false;
@@ -148,7 +132,7 @@ fn bool use_pack() @local {
     String want = pack_target();
     bool ok = want.len && want == p.target;
     if (ok) {
-        // (one of its libraries, made: a pack built for a newer OS or another GPU family doesn't load)
+        // Probe one library on the active device; bytecode built for a newer OS or GPU fails here.
         bool tried;
         p.entries.@each(; ulong h, PackEntry e) {
             if (!tried && !sg_warm_library_loads(&p.data[e.offset], e.size)) ok = false;
@@ -167,7 +151,7 @@ fn bool use_pack() @local {
     return ok;
 }
 
-// The file extension of the running backend's sources ("": not dumped).
+// File extension for dumped shader sources on the active backend, or "" when unsupported.
 fn String source_ext() @local {
     switch (sg::query_backend()) {
         case METAL_MACOS:
@@ -201,9 +185,9 @@ fn void stage_bytecode(SgShaderFunction* f, bool pack) @local {
     f.source = null;
 }
 
-// `d` with the bytecode the program pack has for its stages, in place of their source (and
-// each source saved under DRIE_DUMP_PROGRAMS). Call it on a description just before it is
-// handed to sokol (sg::make_shader, sg_warm_begin): the bytecode is the pack's.
+// Replaces stage sources in `d` with matching bytecode pointers from the active program pack, and
+// dumps sources when DRIE_DUMP_PROGRAMS or dump_programs() is active. Call right before handing
+// `d` to sg::make_shader or sg_warm_begin; bytecode slices point into the loaded pack buffer.
 fn void with_bytecode(SgShaderDesc* d) {
     if (!dump_read) {
         dump_read = true;
@@ -221,8 +205,8 @@ fn void with_bytecode(SgShaderDesc* d) {
 
 extern fn void sg_warm_archivable(uint shader_id) @cname("sg_warm_archivable");
 
-// sg::make_shader, with the program pack's bytecode (with_bytecode). Its pipelines go into the
-// pipeline archive (sg_warm_archivable, see Renderer.use_pipeline_archive).
+// Creates a sokol shader with program-pack bytecode substitution (with_bytecode) and marks it
+// eligible for the Metal binary pipeline archive (Renderer.use_pipeline_archive).
 fn SgShader make_program(SgShaderDesc desc) {
     with_bytecode(&desc);
     SgShader s = sg::make_shader(&desc);

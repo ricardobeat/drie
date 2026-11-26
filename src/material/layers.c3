@@ -1,5 +1,12 @@
-// The physical material's layers as nodes (shader_core.glsl's sheen, iridescence, anisotropy and
-// clear coat math), for the lit materials of materials_nodes.c3.
+// Physical material layer BRDFs, volume transmission, indirect lighting (irradiance volumes and
+// dense/sparse radiance cascades), planar/SSR reflections, and volumetric fog/shafts as nodes.
+//
+// Helper shader functions (`eval_iridescence`, `transmission_*`, `screen_reflection`, `fog_glow`)
+// are emitted once per program through `int* fn_id` caches initialized to -1. Screen-space UVs
+// flip Y when `ssr_params.w > 0.5` (Metal/HLSL top-left origin vs GLSL bottom-left). Sparse
+// radiance probe lookups match the 32-bit cell key layout in shaders/radiance_common.glsl and
+// linear probing in shaders/radiance_rays_cs.glsl. Used by src/material/material_lit.c3 and
+// src/material/material_graph.c3; exports SSR depth/projection helpers to drie::nodes.
 module drie;
 import drie::nodes, drie::shading, std::math;
 
@@ -141,7 +148,7 @@ fn Node eval_sensitivity(Node opd, Node shift) @local {
     return node_matrix(&cols, MAT3) * xyz;
 }
 
-// ---- transmission (three's getIBLVolumeRefraction)
+// ---- Transmission
 
 // The picture behind the transmission materials (Renderer's transmission_mips), read at uv on
 // level lod with three's bicubic filter (transmission_pars_fragment): four bilinear taps.
@@ -302,13 +309,13 @@ fn Node Refraction.light(
     );
 }
 
-// ---- the scene's baked and dynamic indirect light
+// ---- Indirect lighting
 
 // Light from the scene's irradiance volumes for a surface at `world` facing `n`, already times
 // how much of the point they cover (1 inside a volume, 0 outside them all), and that cover
-// (shader_core.glsl's gi_irradiance). Each volume covers its box and fades out over half a
-// cell outside it, in front of the ones before it. Each probe holds the light arriving from
-// the six axis directions, side by side along x in the volume's part of tex_gi.
+// (matching shaders/shader_core.glsl's gi_irradiance). Each volume covers its box and fades out
+// over half a cell outside it, in front of earlier ones. Each probe holds irradiance from the
+// six axis directions laid out side by side along x in the volume's region of VIEW_TEX_GI.
 fn Node[2] gi_irradiance(Node n, Node world) @private {
     Node cover  = nodes::variable(nodes::num(0));
     Node e      = nodes::variable(nodes::vec3(0));
@@ -352,11 +359,9 @@ fn Node gi_texel(
 ) @local => node_sample(LEVEL, shaders::VIEW_TEX_GI, shaders::SMP_GI_SMP, TEX_3D, uvw, nodes::num(0))
     .xyz();
 
-// Light from the scene's radiance cascades for a surface at `world` facing `n`, and how much
-// it counts: 1 inside their box, 0 outside it, between the two over its outermost half cell
-// (shader_core.glsl's rc_irradiance). Blended between the 8 probes around, leaving out those
-// inside things and those behind the surface's own plane: a wall takes none of the light of
-// the room behind it.
+// Radiance cascades irradiance at `world` facing `n`, plus box blend weight (1 inside, 0 outside,
+// fading over the outermost half cell; matching shaders/shader_core.glsl's rc_irradiance). Blends
+// the 8 surrounding probes while rejecting occluded probes and probes behind the surface plane.
 fn Node[2] rc_irradiance(Node n, Node world) @private {
     Node corner = fs_in("rc_min");
     Node size   = fs_in("rc_size");
@@ -372,10 +377,9 @@ fn Node[2] rc_irradiance(Node n, Node world) @private {
     return { nodes::seq(run, light), fade };
 }
 
-// A sparse volume's light, walked probe by probe: the hash table the kernels fill has no cell
-// per point to read, so each of the 8 around `world` is looked up (rc_sparse_lookup) before its
-// 6 faces are blended (shader_core.glsl's rc_irradiance). Where none of them is, the level 1
-// probe over the same place.
+// Sparse radiance volume lookup: probes the hash table for each of the 8 cells around `world`
+// (`rc_sparse_lookup`), blends their 6 faces (matching shaders/shader_core.glsl's rc_irradiance),
+// and falls back to the cascade level 1 probe when no level 0 probes are populated.
 fn Node[2] rc_irradiance_sparse(Node n, Node world, Node corner, Node size) @private {
     Node spacing = corner.w();
     Node nn      = n * n;
@@ -384,7 +388,7 @@ fn Node[2] rc_irradiance_sparse(Node n, Node world, Node corner, Node size) @pri
             .greater_than_equal(nodes::num(0)), 2.0f, 3.0f), nodes::select(n.z()
                 .greater_than_equal(nodes::num(0)), 4.0f, 5.0f)), IVEC3);
     Node hash_cap = nodes::convert(nodes::negate(size.x()) + 0.5f, INT);
-    // the box's cells, packed into size's y and z (renderer.c3's rc_size)
+    // Box cell counts packed into FsParams.rc_size y and z (src/renderer/draw.c3).
     Node dims = nodes::vec3(
         nodes::convert(nodes::bit_and(nodes::convert(size.y(), INT), nodes::int_(511)), FLOAT),
         nodes::convert(nodes::shift_right(nodes::convert(size.y(), INT), nodes::int_(9)), FLOAT),
@@ -481,16 +485,15 @@ fn Node[2] rc_irradiance_sparse(Node n, Node world, Node corner, Node size) @pri
     return { nodes::seq(run, light), fade };
 }
 
-// The walk along the hash's chain for the probe at cell `c` of cascade `level`
-// (radiance_rays_cs.glsl's rc_lookup: rc_hash, then linear probing, at most 32 steps), into
-// `entry` and `slot` (-1: none): its statements.
+// Hash-table probe lookup for cell `c` at cascade `level` (shaders/radiance_rays_cs.glsl's
+// rc_lookup: rc_hash plus up to 32 linear steps), writing `entry` and `slot` (-1 if absent).
 fn Node[10] rc_sparse_lookup(Node c, uint level, Node hash_cap, Node entry, Node slot) @private {
     Node idx   = nodes::variable(nodes::uint_(0));
     Node stepn = nodes::variable(nodes::uint_(0));
     Node h     = nodes::variable(nodes::uint_(0));
     Node e     = nodes::variable(nodes::vec4(0));
     Node hmask = nodes::convert(hash_cap, UINT) - nodes::uint_(1);
-    // rc_pack_key32 (radiance_common.glsl)
+    // rc_pack_key32 (shaders/radiance_common.glsl)
     Node key = nodes::bit_or(
         nodes::bit_or(
             nodes::bit_and(nodes::convert(c.x(), UINT), nodes::uint_(0x1ffu)),
@@ -577,21 +580,19 @@ fn Node[2] rc_irradiance_dense(Node n, Node world, Node corner, Node size) @priv
     return { nodes::seq(nodes::block(sum, wsum, sum_any, wsum_any, probes), light), fade };
 }
 
-// ---- mirror images: the planar reflector's picture and screen-space reflections
+// ---- Planar and screen-space reflections
 
-// Interleaved gradient noise (Jimenez's), as shader_core.glsl's ssr_noise, at the pixel
-// `frag` turned with the frame (ssr_params.z).
+// Interleaved gradient noise (Jimenez, matching shaders/shader_core.glsl's ssr_noise) at pixel
+// `frag`, rotated each frame by `ssr_params.z`.
 fn Node frame_noise(Node frag, Node shift = { }) @private {
     Node p = frag + nodes::vec2(47.0f, 17.0f) * fs_in("ssr_params", FLOAT, 2);
     if (shift.id) p = p + shift;
     return nodes::fract(nodes::fract(nodes::dot(p, nodes::vec2(0.06711056f, 0.00583715f))) * 52.9829189f);
 }
 
-// A Reflector's picture (reflector.c3) where the ray from `world` along the normal n's
-// reflection would be seen: exact for a flat surface, and for a bumpy one as if what it
-// mirrors were reflector_params.y away. Blurred by roughness (eight taps on a disc turned at
-// every pixel), read from the material map slot `slot` (tex_ext0..5, see reflector_slot);
-// w: how much was found, fading out at the picture's edges.
+// Samples a Reflector image (src/lighting/reflector.c3) along the reflected ray from `world`:
+// exact on flat planes and offset by `reflector_params.y` on perturbed normals, blurred by
+// roughness with 8 rotated disc taps from shared map slot `slot` (`tex_ext0..5`); w fades at edges.
 fn Node planar_reflection(Node n, Node v, Node rough, Node world, Node frag, int slot) @private {
     Node params = fs_in("reflector_params");
     Node r      = nodes::reflect(v.negate(), n);
@@ -648,11 +649,11 @@ fn Node ssr_depth_at(int view, Node uv, bool back = false) @local {
     return back ? c.x() : c.y();
 }
 
-// A node material's view of the same (nodes::ssr_on, screen_position, viewport_depth): whether
-// the depth is there (the material's ssr, with the renderer's screen-space reflections), where
-// a point is, and the depth at a uv. A program reads them only where its graphs do.
+// Returns a bool node testing whether SSR depth is active on this material (`nodes::ssr_on`).
 fn Node node_ssr_on() => fs_in("ssr_params", FLOAT).greater_than(nodes::num(0));
+// Projects world point `p` to last-frame screen UV (xy) and linear depth (z).
 fn Node node_ssr_project(Node p) => ssr_project(nodes::convert(p, VEC3));
+// Fetches linear view depth (m) from VIEW_SSR_DEPTH at screen UV `uv` (`nodes::viewport_depth`).
 fn Node node_viewport_depth(Node uv) => ssr_depth_at(shaders::VIEW_SSR_DEPTH, nodes::convert(uv, VEC2));
 
 // A microfacet normal of a GGX surface as the eye sees them (the distribution of visible
@@ -673,12 +674,10 @@ fn Node ggx_visible_normal(Node ve, Node alpha, Node u) @local {
     return nodes::normalize(nodes::vec3(nh.xy() * alpha, nodes::max(nh.z(), 1e-4f)));
 }
 
-// Screen-space reflection (shader_core.glsl's screen_reflection, the function
-// screen_reflection(n, geo_n, v, rough, world, frag) of the program, made once: `fn_id` -1
-// makes it): follows the mirrored view ray through the last frame's depth and returns what it
-// runs into there (linear, as the camera saw it); w: how much was found, 0 when the ray leaves
-// the picture or hits nothing. A rough surface sends its one ray somewhere in a wider cone,
-// which shows as noise until something downstream (a temporal filter, a tape) evens it out.
+// Screen-space reflection (matching shaders/shader_core.glsl's screen_reflection; emitted once
+// per program when `*fn_id < 0`): marches the reflected ray through last-frame depth and returns
+// linear reflected radiance plus hit weight in w (0 on miss or off-screen). Rough surfaces jitter
+// the ray within a GGX visible-normal cone and rely on temporal filtering to converge.
 fn Node screen_reflection(int* fn_id, Node n, Node geo_n, Node v, Node rough, Node world, Node frag) @private {
     if (*fn_id < 0) {
         NodeType[6] types = { VEC3, VEC3, VEC3, FLOAT, VEC3, VEC2 };
@@ -827,12 +826,11 @@ fn Node ssr_march(Node n, Node geo_n, Node v, Node rough, Node world, Node frag)
     return nodes::seq(nodes::block(away, step_len, t, t_prev, march), nodes::vec4(0));
 }
 
-// ---- the fog's volume, its lights' glow and its light shafts
+// ---- Volumetric fog and light shafts
 
-// Volumetric fog in front of world position `p`: rgb = the light it scatters towards the
-// camera, a = how much of p gets through (shader_core.glsl's fog_volume_at). Read from the
-// froxel grid between the far ends of the two slices around p (the first's near end is the
-// camera: nothing yet).
+// Volumetric fog in front of world position `p`: rgb = in-scattered light toward the camera,
+// a = transmittance (matching shaders/shader_core.glsl's fog_volume_at). Interpolates between
+// the two froxel depth slices straddling `p` (the camera plane starts at transmittance 1).
 fn Node fog_volume_at(Node p) @private {
     Node clip   = fs_in("cluster_view_proj", MAT4) * nodes::vec4(p, 1);
     Node uv     = nodes::clamp(
@@ -974,10 +972,9 @@ fn Node fog_lights_glow(MaterialKey key, Node ray, Node depth) @private {
     return nodes::seq(nodes::block(glow, points, spots), glow);
 }
 
-// How much of the fog between `from` (the camera) and `to` the directional light reaches, 0..1
-// (shader_core.glsl's sun_in_fog): marched through its shadow map, each step weighted by how
-// much of the fog's light it gives (`sigma`: the fog's density along this ray). Beyond the
-// map's reach the fog counts as lit.
+// Sunlit fraction (0..1) of the fog from `from` to `to` (shaders/shader_core.glsl's sun_in_fog):
+// marches 14 jittered steps through the sun shadow map, weighting each step by its fog scattering
+// contribution (`sigma`: fog density along the ray). Past the map counts as lit.
 fn Node sun_in_fog(ShadowFns* shadow, Node from, Node to, Node sigma, Node frag) @private {
     const int STEPS = 14;
     Node ray        = to - from;

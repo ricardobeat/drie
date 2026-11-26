@@ -1,184 +1,156 @@
-// Renderer: owns the window and the GPU, draws a Scene from a Camera.
+// Core Renderer configuration, window/GPU lifecycle, tone mapping, and frame orchestration.
+// Owns Renderer, RendererState, sokol setup (windowed via set_animation_loop or offscreen via
+// init_headless), RenderInfo statistics, back-face thickness rendering, and Renderer.render().
+// Frame order in render(): dynamic geometry upload -> frustum collect/sort -> shadow maps and
+// GPU instance culling -> GI/clusters/volumetric fog -> worker shader warmup -> transmission
+// (non-linear) -> optional deferred G-Buffer + RT shadows + sparse RC + deferred lighting ->
+// forward depth prepass, background, opaque, backdrop, split transmission, transparent, overlays.
+// Connects to draw_item, draw_deferred_lighting, prepare_and_draw_shadows, AtlasPacker,
+// get_pipeline, and render_bake.
 module drie;
 import std::collections::list, std::collections::map, std::sort, std::io, std::math, std::thread, std::os::env, libc;
 import sokol, drie::readback, drie::postprocessing, drie::nodes;
 
+// ---- Renderer configuration and state
+
+// Per-frame callback registered with Renderer.set_animation_loop(); receives elapsed milliseconds.
 alias AnimationLoop = fn void(double time_ms);
+// Raw window/input event callback registered with add_event_listener().
 alias EventListener = fn void(SappEvent* event);
+// Alias for sokol_app input/window event structs.
 alias Event = SappEvent;
+// Alias for sokol_app keyboard scan codes.
 alias KeyCode = SappKeycode;
 
-// Defaults of Renderer.max_lights, max_rect_area_lights and shadow_atlas_size.
+// Default cap per light kind (directional, point, spot) in Renderer.max_lights.
 const int DEFAULT_MAX_LIGHTS            = 1024;
+// Default cap for RectAreaLight count in Renderer.max_rect_area_lights.
 const int DEFAULT_MAX_RECT_AREA_LIGHTS  = 16;
+// Default maximum shadow atlas side length in pixels (Renderer.shadow_atlas_size).
 const int DEFAULT_SHADOW_ATLAS_SIZE = 8192;
-// Irradiance volumes a scene can have (Scene.irradiance and irradiance_volumes), as many as
-// the shader's gi_* uniforms hold.
+// Maximum IrradianceVolumes bound simultaneously (Scene.irradiance + Scene.irradiance_volumes).
 const int MAX_IRRADIANCE_VOLUMES        = 4;
 
-// How shadow maps are filtered (Renderer.shadow_type), as three's renderer.shadowMap.type.
+// Shadow map filtering mode (Renderer.shadow_type).
 enum ShadowType {
-    // percentage-closer: taps of the depth map over a disk of shadow.radius texels (drie's own
-    // soft shadows: shadow.softness, normal_bias)
+    // Percentage-closer filtering over a disk of `shadow.radius` texels (with `shadow.softness`
+    // PCSS and `normal_bias`) across sun cascades, primary spot map, and shadow atlas tiles
+    // (spots, 6-face point cubes, 5-face rect area maps, and secondary directional lights).
     PCF,
-    // three's VSMShadowMap: each map's depths are blurred into their mean and spread
-    // (shadow.radius, shadow.blur_samples) and looked up once (shadow.bias); soft, wide edges
-    // cheaply. Point lights cast no shadows either way.
+    // Variance shadow maps: depth maps are blurred via two-pass separable box filter
+    // (`shadow.radius`, `shadow.blur_samples`) into RG32F/RG16F moments and sampled once with
+    // `shadow.bias`, across sun cascades, primary spot map, and all shadow atlas tiles
+    // (including 6-face point light cubes and 5-face rect area maps).
     VSM,
 }
 
+// Main rendering context owning window settings, quality knobs, render target binding, and stats.
 struct Renderer {
-    int width;
-    int height;
-    int sample_count;
-    String title;
-    // Open the window full screen (set before set_animation_loop). F11 or Alt+Enter toggles it.
+    int width;                      // Window width in logical pixels.
+    int height;                     // Window height in logical pixels.
+    int sample_count;               // Window MSAA sample count (1 or 4).
+    String title;                   // Window title string.
+    // Open the window fullscreen (set before set_animation_loop). F11 or Alt+Enter toggles it.
     bool fullscreen;
-    Color clear_color;
-    float clear_alpha;
-    // Keep perspective cameras' aspect in sync with the window (three apps usually do this in onresize).
+    Color clear_color;              // Default background clear color when Scene.background is 0.
+    float clear_alpha;              // Default clear alpha (0..1).
+    // Automatically sync perspective camera aspect ratios with the active viewport or target.
     bool auto_aspect;
-    AnimationLoop animation_loop;
-    RenderTarget* render_target;
-    // three's autoClear: render() clears the target before it draws (with scissor_test only
-    // the scissor box, as WebGL's clear). Off, it draws over what the frame has there, unless
-    // the scene's background is a color, which clears as in three.
+    AnimationLoop animation_loop;   // Active per-frame callback set by set_animation_loop().
+    RenderTarget* render_target;    // Active offscreen target, or null to render to the window.
+    // Clear the target before drawing (restricted to `scissor` when `scissor_test` is enabled).
+    // When false, preserves prior frame contents unless `Scene.background` is a solid color.
     bool auto_clear;
-    // Where render() draws, in pixels of the target from its bottom left: x, y, width, height
-    // (three's setViewport). All zeros: the whole target.
+    // Draw viewport `{ x, y, width, height }` in target pixels from bottom-left; zeros = full target.
     int[4] viewport;
-    // three's setScissor and setScissorTest: render() and clear() touch only this box (pixels
-    // from the bottom left).
+    // Scissor rectangle `{ x, y, width, height }` in target pixels from bottom-left.
     int[4] scissor;
-    bool scissor_test;
-    ToneMapping tone_mapping;
-    float tone_mapping_exposure;
-    // Fog and the background color as three has them: the fog mixed in after tone mapping, in
-    // the colors that are shown, and the background color cleared to as it is, not tone mapped.
-    // Otherwise both are light like any other, tone mapped with the rest of the picture.
+    bool scissor_test;              // Restricts render() and clear() writes to `scissor`.
+    ToneMapping tone_mapping;       // Tone mapping operator applied on SDR/window output.
+    float tone_mapping_exposure;    // Exposure multiplier applied before tone mapping.
+    // Mix fog after tone mapping in display space and clear background without tone mapping
+    // (three.js style). When false, both fog and background are shaded and tone mapped in linear light.
     bool display_fog;
-    // What the window takes, like three's outputColorSpace: SRGB_COLOR_SPACE, or
-    // DISPLAY_P3_COLOR_SPACE on a wide-gamut screen, whose extra colors tone mapping then keeps
-    // instead of clipping them to sRGB's. Can change at any time (macOS).
+    // Window output color space: SRGB_COLOR_SPACE or DISPLAY_P3_COLOR_SPACE on wide-gamut displays.
+    // Can be changed at runtime on macOS.
     ColorSpace output_color_space;
-    // HDR output (macOS, EDR): the window takes linear light in Display P3 with 1 as SDR white,
-    // and what is brighter shows brighter, up to output_headroom(). Tone mapping (OutputPass
-    // with `hdr`) rolls highlights off there. Needs a window that can show it: set it, or
-    // hdr_window, before set_animation_loop; then it can change at any time.
+    // Enables macOS EDR HDR output (linear Display P3 where 1.0 is SDR white, up to
+    // output_headroom()). Requires `hdr_output` or `hdr_window` set before set_animation_loop().
     bool hdr_output;
-    // Open the window with half-float pixels, so that hdr_output can be turned on later.
+    // Requests a half-float swapchain at window creation so `hdr_output` can be toggled later.
     bool hdr_window;
-    // Deferred G-Buffer + fullscreen lighting pass for single-sampled render targets.
+    // Enables the deferred 4-target G-Buffer and fullscreen lighting pass on single-sampled targets.
     bool deferred;
-    // Rect area lights with shadow.ray_traced get ray-traced shadows where the GPU can
-    // (ray_shadows.c3). Default true; false: their shadow maps everywhere.
+    // Enables GPU ray-traced shadows for RectAreaLights with `shadow.ray_traced`
+    // (src/lighting/ray_shadows.c3).
     bool ray_traced_shadows;
-    // Fragments inside cull_box_min..max are not drawn (to look through a portal past whatever
-    // stands between the camera and it).
+    // Discards fragments inside `cull_box_min..cull_box_max` (used for portal clipping).
     bool cull_box;
     Vector3 cull_box_min;
     Vector3 cull_box_max;
-    // LOD distances are multiplied by this (above 1 keeps detail and draws further).
+    // Multiplier for LOD switch distances (> 1 keeps higher detail further away).
     float lod_scale;
-    // The lens's focus, for Material.defocus: a 1x1 map whose r is the distance in focus (m;
-    // BokehPass.focus_map()), and the blur of something at distance z, in pixels of the
-    // render: min(focus_aperture / f * |1 - f / z|, focus_maxblur) (BokehPass's aperture and
-    // maxblur). Unset, nothing is defocused.
+    // Optional 1x1 focus-distance map (meters in R, e.g. BokehPass.focus_map()) driving Material.defocus.
     Texture* focus_map;
-    float focus_aperture;
-    float focus_maxblur;
-    // In shadow maps, LOD objects are picked as if they were this many times further away
-    // (1 or less: as in the picture). Shadows of grass and leaves need less than the plants.
+    float focus_aperture;           // Lens aperture factor for Material.defocus blur radius.
+    float focus_maxblur;            // Maximum defocus blur radius in pixels.
+    // Distance multiplier for LOD selection during shadow passes (<= 1 matches main view).
     float shadow_lod_bias;
-    // Seconds, drives material sway. Follows the clock unless auto_time is switched off.
+    // Elapsed time in seconds driving sway and node shaders; follows clock when `auto_time` is true.
     float time;
     bool auto_time;
-    // Statistics of the last render() call, like three's renderer.info.render.
+    // Draw call, geometry, shadow atlas, and shader compilation counters from the last render().
     RenderInfo info;
-    // For profiling (build/scene --bench --profile): what a frame costs without alpha testing
-    // (cut-outs drawn solid), without light in the fog, or without the transparent objects.
+    // Profiling toggles: disable alpha testing, fog light scattering, or transparent draws.
     bool prof_no_alpha_test;
     bool prof_no_fog_scatter;
     bool prof_no_transparent;
-    // Extension: how many lights of each kind (directional, point, spot) a render takes at
-    // most; the buffers that hold them grow up to it. 0 = no limit.
+    // Maximum lights per kind (directional, point, spot) accepted per render; 0 = unbounded.
     int max_lights;
-    // Extension: how many RectAreaLights a render takes at most (16). Every one of them lights
-    // every pixel of a standard material in view (three's have no reach to cut them off, so
-    // they are not sorted into the clusters).
+    // Maximum RectAreaLights accepted per render (evaluated unclustered on standard materials).
     int max_rect_area_lights;
-    // Extension: the side of the shadow atlas at most, in pixels (8192; at most the GPU's
-    // largest texture). Every shadowed light besides the primary spot light and the sun has
-    // its maps there, each map as large as the light looks on screen (up to its
-    // shadow.map_size, at least 128). The texture is only as large as the maps in it need. When
-    // they don't fit, the least important lights' maps get smaller, then those lights lose their
-    // shadows (see AtlasSlot).
+    // Maximum shadow atlas dimension in pixels (capped by GPU 2D texture limit; see AtlasPacker).
     int shadow_atlas_size;
-    // Extension: sorts the lights into clusters (see clusters.c3). null: in a compute shader
-    // (cluster_lights_gpu), or on the CPU without them.
+    // Custom light-clustering callback (src/renderer/clusters.c3); null uses cluster_lights_gpu().
     ClusterAssignFn assign_clusters;
-    // Extension: culls the instances of instanced meshes one by one on the GPU, for the
-    // camera and the shadow maps drawn every frame (see culling.c3). On by default.
+    // Enables GPU per-instance frustum culling for camera and live shadow passes (cull_dispatch).
     bool gpu_culling;
-    // Extension: a node material's mesh is left out of the picture, shadows included, while
-    // its programs compile on worker threads (Metal), so that a new one doesn't hold up the
-    // frames. Off by default: a frame waits for the programs its draws take, which start
-    // compiling all at once when the render begins.
+    // When true on Metal, node materials render with a plain fallback while compiling on worker
+    // threads; when false, draws wait for their shaders (started in parallel at render start).
     bool compile_in_background;
-    // Extension: how many programs (sokol shaders) can exist at once: the materials' generated
-    // programs, one per material key and graphs drawn (shared by the materials that print the
-    // same), the passes' and the application's. Read when the renderer starts; 0: DEFAULT_PROGRAMS.
+    // Sokol shader pool capacity read during setup_gfx(); 0 uses DEFAULT_PROGRAMS.
     int max_programs;
-    // Extension: a render target that stands for the window in what the pipeline cache records
-    // (save_pipeline_cache): for a program that renders headless on behalf of one with a window,
-    // as driejs makes its demos' thumbnails. Null: none.
+    // Offscreen RenderTarget recorded as the window target in save_pipeline_cache() during headless runs.
     RenderTarget* screen_stand_in;
-    // Extension: what has holes in it (alpha_test cut-outs, LOD cross-fades) is drawn twice:
-    // first only its depth, with a cheap shader that cuts the holes, then lit where that depth
-    // is, by a shader that cuts nothing. The lit shader then runs once per pixel instead of
-    // for every layer of leaves and blades, and no shader of the main pass discards (one that
-    // can costs the GPU its early depth test). On by default.
+    // Enables depth-only prepass for alpha-tested and LOD-fading meshes to preserve early-Z.
     bool depth_prepass;
-    // Draws the shadow maps in render() (like three's shadowMap.autoUpdate). Off, a render uses
-    // the maps as the last one left them: for a second view of the same moment (a Reflector's),
-    // which would otherwise draw them all again from its own viewpoint. On by default.
+    // Re-renders shadow maps inside render(); turn off for secondary views reusing current shadows.
     bool shadow_map_auto_update;
-    // How the shadow maps are filtered, like three's shadowMap.type (PCFSoftShadowMap or
-    // VSMShadowMap). Default PCF.
+    // Shadow filtering mode (PCF or VSM); defaults to PCF.
     ShadowType shadow_type;
-    // ...for what covers at least this many pixels per triangle (about: its bounding sphere's
-    // disk on the screen, over its triangles). Default 1.5.
+    // Minimum estimated screen pixels per triangle required for a mesh to enter the depth prepass.
     float depth_prepass_pixels;
-    // Extension: also does on the CPU what compute shaders do (light clusters, instance
-    // culling) and reports where the results differ, on stderr.
+    // Runs CPU reference checks against GPU clustering and instance culling, logging mismatches.
     bool check_compute;
-    // Extension: tint what each cascade of the directional light's shadow covers (red, green,
-    // blue, yellow, nearest first), to see where they fall.
+    // Tints directional sun shadow cascades (red, green, blue, yellow, nearest first) for debugging.
     bool debug_cascades;
-    // Extensions, for graphics settings (quality against frame time; 1 and the defaults are as
-    // drie draws without them):
-    // every light's shadow map is drawn at this many times its shadow.map_size (texels across);
+    // Global resolution multiplier applied to every light's `shadow.map_size`.
     float shadow_map_scale;
-    // the soft shadows take this many times their taps (smoother edges, less noise to average
-    // out over frames), up to 40 per lookup;
+    // Global tap-count multiplier for soft shadow PCF sampling (capped at 40 taps per lookup).
     float shadow_sample_scale;
-    // a screen-space reflection's ray takes at most ssr_steps steps (up to 128), none longer
-    // than ssr_max_step pixels on the screen (shorter misses less of what is thin, reaches less
-    // far in as many steps). Default 40 and 6;
+    // Maximum ray-march steps for screen-space reflections (capped at 128; default 40).
     int ssr_steps;
+    // Maximum step length in screen pixels for SSR marching (default 6).
     float ssr_max_step;
-    // the volumetric fog's grid has this many times its cells across, up and in depth
-    // (Fog.resolution, Fog.slices).
+    // Global resolution multiplier for volumetric fog grid dimensions (Fog.resolution, Fog.slices).
     float fog_resolution_scale;
-    // The picture the transmission materials refract is this size times the target's (three's
-    // transmissionResolutionScale; default 1). Not when it is the main pass's own picture,
-    // copied half way through (into a linear target, see copy_for_transmission).
+    // Resolution multiplier for the separate transmission pass (non-linear targets; default 1).
     float transmission_resolution_scale;
-    // What materials with `ssr` reflect (see set_reflection_source).
+    // Previous-frame inputs bound for screen-space reflections via set_reflection_source().
     SgView ssr_color;
     SgView ssr_depth;
     SgView ssr_back;
-    // the Reflector being rendered (render_reflector), whose own surfaces are left out
+    // Active Reflector during render_reflector(); its own meshes are skipped during collection.
     Reflector* reflecting;
     Mat4 ssr_view_proj;
     float ssr_reach;
@@ -186,16 +158,12 @@ struct Renderer {
     int ssr_frame;
 }
 
-// Screen-space reflections read the frame before: `color` is that picture as the render
-// target held it (alpha 0 at light sources): tone mapped, or with `linear` in linear light, as
-// an RGBA16F target holds it (better: what bright things reflect isn't cut off at white).
-// `depth` has each pixel's distance from
-// the camera's plane in its green channel, and `view_proj` is that frame's
-// projection_matrix * matrix_world_inverse. Both the same size, row for row as rendered.
-// `reach` is how far a reflected ray is followed (m). Call it every frame before render();
-// clear_reflection_source() switches reflections off (for a render from another viewpoint).
-// `back` (optional) is render_back_faces' picture of the same frame: how thick things are, so a
-// reflected ray that passes behind something thin goes on to what is behind it.
+// ---- Back-face thickness pass and render info
+
+// Binds previous-frame `color`, `depth` (view-space distance in G), and `view_proj` for
+// screen-space reflections up to `reach` meters. Pass `linear: true` for RGBA16F HDR color
+// buffers, and optional `back` from render_back_faces() for object thickness estimation.
+// Call before render() each frame; call clear_reflection_source() for alternate camera views.
 fn void Renderer.set_reflection_source(
     &self,
     SgView color,
@@ -214,18 +182,16 @@ fn void Renderer.set_reflection_source(
     self.ssr_frame++;
 }
 
+// Disables screen-space reflections by clearing the bound reflection source views.
 fn void Renderer.clear_reflection_source(&self) {
     self.ssr_color = { };
     self.ssr_depth = { };
     self.ssr_back = { };
 }
 
-// After render(): draws the back faces of the opaque, one-sided, solid things it drew into
-// `target` (an R16F target with a depth buffer, one sample, the size of the render): r = the
-// distance of the nearest back face from the camera's plane (m), 0 where there is none. Give it
-// to set_reflection_source next frame, so reflections know how thick things are.
-//   RenderTarget* back = drie::render_target(w, h, 1, R16F);
-//   renderer.render(scene, camera); renderer.render_back_faces(back);
+// Renders back-face view-space distances (meters in R, 0 where empty) of opaque, front-sided,
+// solid meshes from the last render() into `target` (single-sampled R16F with depth). Pass
+// `target.texture` as `back` to set_reflection_source() on the next frame for SSR thickness.
 fn void Renderer.render_back_faces(&self, RenderTarget* target) {
     if (target.samples != 1 || target.pixel_format() != R16F || !target.depth_buffer) abort(
         "drie: back faces go into an R16F target with depth, one sample"
@@ -273,7 +239,7 @@ fn void Renderer.render_back_faces(&self, RenderTarget* target) {
     Mat4 view_proj = state.last_view_proj_rel;
     foreach (&item : state.opaque) {
         Material* mat = item.mesh.material;
-        // (what has holes or two sides has no inside to speak of)
+        // Skip double-sided, cutout, line, and screen-target meshes (no closed interior volume).
         if (mat.side != FRONT_SIDE || draws_lines(item) || has_holes(item) || mat.screen_target) continue;
         BufferGeometry* g = item.mesh.geometry;
         sg::apply_pipeline(state.back_pipeline);
@@ -298,66 +264,57 @@ fn void Renderer.render_back_faces(&self, RenderTarget* target) {
     profile::stop("render: back faces", pt);
 }
 
+// Per-render statistics populated by Renderer.render().
 struct RenderInfo {
-    int calls;
-    int triangles;
-    // line segments (Line, LineSegments, LineLoop)
-    int lines;
-    int shadow_calls;
-    int shadow_triangles;
-    // the shadow atlas: its size in pixels and the GPU memory of it and what goes with it
-    // (VSM's moments, the cache of static casters), in bytes
-    int atlas_width;
-    int atlas_height;
-    usz atlas_bytes;
-    // maps of the atlas drawn this render (a spot light's, a face of a point light's) and the
-    // draws of casters into them
-    int atlas_tiles;
-    int atlas_casters;
-    // shadowed lights with maps in the atlas, and those that wanted one and got none
-    int atlas_lights;
-    int atlas_dropped;
-    // draws left out because their program was still compiling in the background (0: the
-    // picture is whole; a check that saves a picture waits for this)
-    int waiting;
-    // one of them (the last), and why: 1 a node program's pipeline or program compiling,
-    // 2 a generated program compiling, 3 its pipeline not made yet
-    Mesh* waiting_mesh;
-    int waiting_why;
-    // dynamic geometries whose vertices this render copied to the GPU (needs_update), and the
-    // bytes
-    int updates;
-    usz update_bytes;
+    int calls;             // Main/deferred/prepass draw calls submitted.
+    int triangles;         // Triangles submitted in main and deferred passes.
+    int lines;             // Line segments submitted (Line, LineSegments, LineLoop).
+    int shadow_calls;      // Draw calls submitted across all shadow passes.
+    int shadow_triangles;  // Triangles submitted across all shadow passes.
+    int atlas_width;       // Current shadow atlas texture width in pixels.
+    int atlas_height;      // Current shadow atlas texture height in pixels.
+    usz atlas_bytes;       // GPU bytes used by shadow atlas, static cache, and VSM atlas targets.
+    int atlas_tiles;       // Shadow atlas and cache tiles rendered this frame.
+    int atlas_casters;     // Caster draw calls submitted into atlas/cache tiles this frame.
+    int atlas_lights;      // Active shadowed lights currently allocated in the atlas.
+    int atlas_dropped;     // Shadowed lights dropped from the atlas due to budget pressure.
+    int waiting;           // Draws using a fallback or skipped while background compilation runs.
+    Mesh* waiting_mesh;    // Last mesh counted in `waiting`.
+    int waiting_why;       // Reason for `waiting_mesh`: 1 node job, 2 shader compiling, 3 pipeline pending.
+    int updates;           // Dynamic BufferGeometries re-uploaded to the GPU this frame.
+    usz update_bytes;      // Total vertex bytes uploaded by dynamic geometry updates.
 }
 
+// Alias for Renderer matching three.js naming.
 alias WebGLRenderer = Renderer;
 
-// three's tone mappings (the order is TONE_* in tonemapping.glsl). The renderer applies it when
-// it draws into the window or an RGBA8 target, OutputPass after post-processing in linear light.
+// Tone mapping operators matching TONE_* in shaders/tonemapping.glsl. Applied directly on SDR
+// targets and windows, or after post-processing by OutputPass in drie::postprocessing.
 enum ToneMapping {
-    NO_TONE_MAPPING,
-    LINEAR_TONE_MAPPING,
-    REINHARD_TONE_MAPPING,
-    CINEON_TONE_MAPPING,
-    ACES_FILMIC_TONE_MAPPING,
-    AGX_TONE_MAPPING,
-    NEUTRAL_TONE_MAPPING,
+    NO_TONE_MAPPING,          // Pass-through linear values clamped to [0, 1].
+    LINEAR_TONE_MAPPING,      // Exposure scaling only, clamped to [0, 1].
+    REINHARD_TONE_MAPPING,    // Per-channel Reinhard curve `c / (1 + c)`.
+    CINEON_TONE_MAPPING,      // Filmic Cineon curve.
+    ACES_FILMIC_TONE_MAPPING, // RRT/ODT ACES Filmic approximation.
+    AGX_TONE_MAPPING,         // AgX inset/outset filmic transform.
+    NEUTRAL_TONE_MAPPING,     // Khronos PBR Neutral tone mapper.
 }
+
+// ---- Internal renderer state
 
 struct DrawItem @private {
     Mesh* mesh;
     float depth;
-    // in a LOD's cross-fade: how far it has gone (0..1), and 1 for the level fading in, -1 for
-    // the one fading out (0: drawn whole)
+    // LOD cross-fade progress in [0, 1] and direction (+1 fading in, -1 fading out, 0 solid).
     float fade;
     float fade_dir;
-    // its instances culled on the GPU: the job (culling.c3) + 1; 0: drawn whole
+    // GPU instance culling job index + 1 (cull_job); 0 draws all instances unculled.
     int job;
-    // how much of the view its bounding sphere takes, about (radius / distance)^2
+    // Approximate screen coverage `(radius / distance)^2` for depth-prepass heuristics.
     float cover;
 }
 
-// A shadow map's moments for VSM (vsm_blur), and the image between the blur's two passes.
+// VSM moment target and intermediate blur scratch image (vsm_blur).
 struct VsmMaps @private {
     SgImage image;
     SgView view;
@@ -369,11 +326,9 @@ struct VsmMaps @private {
     int height;
 }
 
-// A light map being baked (Renderer.render_bake): the objects are drawn into it at their uv1,
-// with gen_bake_pipeline's pipelines, and read the last map from `prev`.
+// Active lightmap bake parameters set during Renderer.render_bake().
 struct BakeState @local {
     bool on;
-    // the map's format
     SgPixelFormat format;
     SgView prev;
     int width;
@@ -386,23 +341,21 @@ struct Frustum @private {
 
 struct RendererState @private {
     Renderer* renderer;
-    // the render's camera, for node materials (nodes.c3)
+    // Active camera matrices/position exposed to node material uniforms (drie::nodes).
     Mat4 node_view;
     Mat4 node_proj;
     Vector3 node_camera;
     List{FrameHook} frame_hooks;
     List{EventFilter} event_filters;
     List{FrameHook} overlays;
-    // RadianceCascades with no `camera` set that recorded an update_sparse() call this engine
-    // frame, to flush (their last call's G-Buffer still wins) once commit() ends the frame.
+    // Camera-less sparse RadianceCascades queued to flush once commit() ends the engine frame.
     List{RadianceCascades*} pending_sparse_flush;
     bool gfx_ready;
-    // Set when a shadow draw used the plain material because a program was still compiling.
-    // A static light then draws its tile again in the next frame.
+    // Set when a shadow draw used a plain fallback shader, triggering static tile redraw next frame.
     bool shadow_plain;
-    // the engine's depth and shadow programs (engine_program)
+    // Built-in depth (`render_back_faces`) and shadow (`clear_atlas_tile`) shaders.
     SgShader[2] engine_programs;
-    // Deferred G-Buffer targets and fullscreen lighting pipelines.
+    // Deferred G-Buffer targets and fullscreen lighting shaders/pipelines.
     int gb_width;
     int gb_height;
     SgImage[4] gb_color;
@@ -411,73 +364,65 @@ struct RendererState @private {
     SgShader[4] deferred_shaders;
     SgPipeline[8] deferred_pipelines;
     SgSampler gb_sampler;
-    // the blur that makes the moments of Renderer.shadow_type = VSM's maps (vsm.glsl)
+    // Two-pass separable box blur for VSM shadow moments (shaders/vsm.glsl).
     SgShader vsm_blur_shader;
     SgPipeline vsm_blur_pipeline;
     SgSampler vsm_sampler;
     SgSampler vsm_point_sampler;
     SgPixelFormat vsm_format;
-    // the moments of the spot light's map, of the sun's and of the atlas (made when first
-    // used, the size of their depth maps)
+    // VSM moment maps sized to match the primary spot, sun cascade, and shadow atlas textures.
     VsmMaps vsm_spot;
     VsmMaps vsm_sun;
     VsmMaps vsm_atlas;
-    // drawing with motion vectors (a target with MRT): the camera's view_proj a frame ago, and
-    // which frame of them this is
+    // MRT motion-vector tracking across consecutive MRT renders.
     bool motion;
     Mat4 motion_view_proj;
-    // the window has half-float pixels (Renderer.hdr_window), and the color space set for it
-    // last (DisplayColorSpace's ordinal, -1: none yet)
+    // True when swapchain uses half-float pixels; `window_colors` caches DisplayColorSpace ordinal.
     bool float_window;
     int window_colors;
-    // the last render's view_proj (as drawn, jitter and all), for render_back_faces: of
-    // world - view_origin (the camera's position), as the vertex shader takes it (see
-    // relative_view_proj)
+    // Last render's camera-relative view-projection (for render_back_faces) and world origin.
     Mat4 last_view_proj_rel;
     Vector3 view_origin;
-    // the camera's matrix_world, for billboards (Mesh.billboard)
+    // Camera world matrix used to orient billboard meshes (Mesh.billboard).
     Mat4 view_world;
     SgPipeline back_pipeline;
-    // the camera's jitter in clip space (per unit of w), left out of the motion vectors
+    // Sub-pixel clip-space jitter removed from MRT motion vectors.
     Vector2 motion_jitter;
     int motion_frame;
     float motion_time;
     float motion_prev_time;
-    // clear_rect's pipelines, by their target
+    // Cached clear_rect() pipelines keyed by target format/sample/MRT configuration.
     HashMap{ulong, SgPipeline} pipelines;
-    // writes the far depth wherever it draws: clears one tile of the shadow atlas
+    // Depth-only quad pipeline writing far depth to clear a single shadow atlas tile.
     SgPipeline tile_clear_pipeline;
-    // white instance colors (see whites)
+    // Default white per-instance color buffer for instanced meshes without custom colors.
     SgBuffer whites;
     uint whites_count;
-    // Renderer.clear's and scissored render()'s (see clear_rect), and their program
+    // Fullscreen clear shader for scissored Renderer.clear() and render() clears.
     SgShader clear_shader;
-    // frames committed (commit()), and the frame the window was last drawn into (first_pass)
+    // Committed engine frame counter and last frame rendered into the window swapchain.
     uint frame;
     uint window_drawn_frame;
-    // inside on_frame's animation loop: a render() to the window leaves the commit to the end
-    // of the frame (commit_pending), so that several can draw into it
+    // True inside on_frame(): defers commit() until animation_loop returns so multiple renders compose.
     bool in_frame;
     bool commit_pending;
     BufferGeometry* tile_quad;
     List{DrawItem} opaque;
     List{DrawItem} transparent;
     List{DrawItem} casters;
-    // what the shadow maps drawn every frame show: the spot light's, and each cascade's
+    // Gathered shadow casters for the primary spot map and up to 4 sun cascades.
     List{DrawItem} spot_casters;
     List{DrawItem}[4] sun_casters;
     List{Light*} lights;
     List{EventListener} listeners;
     ulong start_ticks;
-    // Bound where a material has no texture.
+    // Default 1x1 white fallback texture bound to unused material slots.
     Texture* white;
-    // The scene being rendered (for its environment).
+    // Scene currently being rendered.
     Scene* scene;
-    // Bound where a scene has no irradiance volume.
+    // Empty fallback volume bound when a scene has no IrradianceVolume.
     IrradianceVolume* no_irradiance;
-    // the scene's first irradiance volume (no_irradiance without), all of them, and the
-    // texture the shader reads them from: the first one's own, or with more than one the
-    // gi_atlas, all of them side by side (gi_atlas_of)
+    // Active scene irradiance volumes and combined 3D texture atlas (`gi_view`).
     IrradianceVolume* irradiance;
     IrradianceVolume*[MAX_IRRADIANCE_VOLUMES] gi_volumes;
     int gi_count;
@@ -485,20 +430,20 @@ struct RendererState @private {
     SgImage gi_atlas;
     SgView gi_atlas_view;
     IrradianceVolume*[MAX_IRRADIANCE_VOLUMES] gi_atlas_of;
-    // (bake_irradiance: the volume it bakes, left out of the scene's lights, or added to them)
+    // Temporary overrides used by bake_irradiance() to exclude/include the volume being baked.
     IrradianceVolume* gi_skip;
     IrradianceVolume* gi_add;
-    // the scene's radiance cascades' probes, or a buffer of one dark probe
+    // Fallback zeroed probe buffer bound when Scene.radiance is null.
     StorageBuffer* no_radiance;
     SgView radiance_view;
-    // the scene's reflection probes' array texture (none: id 0), and a 1x1 one to bind then
+    // Reflection probe array texture view/sampler and 1x1 dummy array fallback.
     SgView probes_view;
     SgSampler probes_sampler;
     SgImage no_probes_image;
     SgView no_probes;
-    // One identity instance, bound for meshes that aren't instanced.
+    // Single identity 3x4 instance matrix bound for non-instanced meshes.
     SgBuffer identity_instance;
-    // zeros for the second uv set of the geometries without one, for this many vertices
+    // Growable zero-filled attribute buffer bound for missing uv1/tangent/displacement streams.
     SgBuffer zeros;
     uint zeros_vertices;
     SgImage shadow_image;
@@ -507,55 +452,50 @@ struct RendererState @private {
     SgSampler shadow_sampler;
     SgSampler clamp_sampler;
     int shadow_size;
-    // The shadow maps of the lights besides the primary spot light and the sun (spot, point,
-    // rect area and directional ones), each in its own part of one texture (see shadow_atlas.c3)
+    // Shared DEPTH16 shadow atlas managed by AtlasPacker (src/renderer/shadow_atlas.c3).
     SgImage atlas_image;
     SgView atlas_attachment;
     SgView atlas_view;
     int atlas_width;
     int atlas_height;
     AtlasPacker atlas_packer;
-    // the program that copies depth from one texture into another (copy_depth)
+    // Depth-blit pipeline and nearest sampler used by copy_depth() (shaders/atlas.glsl).
     SgPipeline atlas_copy_pipeline;
     SgSampler atlas_copy_sampler;
-    // the lights with a place in it, and their maps
+    // Active light allocations in the shadow atlas.
     List{AtlasSlot} atlas_slots;
-    // the maps' caches of the casters that keep still, for maps with casters that move (see
-    // AtlasMap), in blocks of their own
+    // Companion DEPTH16 static-caster cache backing dynamic atlas tile composition.
     SgImage cache_image;
     SgView cache_attachment;
     SgView cache_view;
     int cache_width;
     int cache_height;
     AtlasPacker cache_packer;
-    // the shadow casters of the last scenes rendered (walk_casters)
+    // Per-scene static/moving caster trackers (walk_casters).
     CasterWalk[4] caster_walks;
-    // set while gathering the casters of a light with shadow.skip_instanced
+    // Set while gathering casters for lights with `shadow.skip_instanced`.
     bool skip_instanced;
-    // the directional light with a shadow, if any, and its map: one box, or 2x2 cascades
+    // Primary directional sun light and its 32-bit DEPTH cascade map.
     DirectionalLight* sun_caster;
     SgImage sun_image;
     SgView sun_attachment;
     SgView sun_view;
     int sun_size;
-    // its cascades: count (0: one box), view-projection, tile, where each ends (view depth, m)
-    // and the size of its texels (m)
+    // Sun cascade state: count (0 = single box), projections, UV rects, and split/texel info.
     int sun_cascades;
     Mat4[4] sun_view_proj;
     Vec4[4] sun_rect;
     Vec4[4] sun_info;
     Vector3 sun_forward;
-    // Sphere around the camera that carries the fog where there is no geometry.
+    // Far-plane sphere carrying scattered fog where no scene geometry renders.
     Mesh* backdrop;
-    // the volumetric fog's grid for this render (fog.c3), or a white texture
+    // 3D volumetric fog texture from update_fog_volume() (src/lighting/fog.c3), or white fallback.
     SgView fog_view;
-    // the camera's focal length in pixels (0: not a perspective camera), for prepassed()
+    // Perspective focal length in pixels (0 for orthographic), used by prepassed().
     float prepass_focal;
-    // What the transmission materials refract (Material.transmission): the opaque scene from
-    // the same camera, drawn before the main pass (see render_transmission).
+    // Offscreen target for non-linear transmission passes (render_transmission).
     RenderTarget* transmission;
-    // ...and its mip levels, blurrier and blurrier, for rough surfaces (three's transmission
-    // target has them): level 0 is a copy of the resolved picture, each next one half the size
+    // Mipmapped RGBA16F opaque scene copy sampled by rough transmissive materials.
     SgImage transmission_mips;
     SgView transmission_mips_view;
     SgView[16] transmission_level_views;
@@ -566,31 +506,26 @@ struct RendererState @private {
     SgPipeline mip_pipeline;
     SgSampler mip_sampler;
     // Offscreen window-sized target for multi-pass windowed frames (auto_clear = false,
-    // scissor_test, or clear()): all passes render into window_rt with full MSAA LOAD/STORE,
-    // then present_window_rt() blits it to the swapchain once at the end of on_frame().
+    // scissor_test, sparse RC, or clear()): preserves MSAA LOAD/STORE across passes and blits
+    // once to the swapchain in present_window_rt() at frame end.
     RenderTarget* window_rt;
     SgPipeline blit_pipeline;
     bool window_rt_used;
-    // the scene's background_texture, drawn as a sphere around the camera
+    // Reusable meshes for equirectangular, flat, and custom-material scene backgrounds.
     Mesh* background;
-    // the scene's background_texture when it is flat: a quad that fills the view
     Mesh* background_quad;
-    // the sphere the scene's background_material is drawn on
     Mesh* background_sphere;
-    // Renderer.render_environment's: the grid it draws a material on, its scene and camera, the
-    // small drawing read back for the diffuse light, and the maps it drew into
+    // Cached resources for Renderer.render_environment() (src/renderer/baking.c3).
     Scene* env_scene;
     Mesh* env_grid;
     OrthographicCamera* env_camera;
     RenderTarget* env_small;
     List{EnvTarget} env_targets;
-    // Renderer.render_probe's: the six views, the camera they are drawn with and the graph
-    // that reads them into a map
+    // Cached cubemap faces, camera, and resampling material for Renderer.render_probe().
     RenderTarget*[6] probe_faces;
     PerspectiveCamera* probe_camera;
     MeshBasicMaterial* probe_resample;
-    // baking a light map (render_bake): what it draws with, and the objects that cast the
-    // shadows (not in the bake's scene of lights)
+    // Active lightmap bake state and seam-dilation pipelines (src/renderer/baking.c3).
     BakeState bake;
     Object3D*[] caster_roots;
     SgShader seam_shader;
@@ -599,6 +534,10 @@ struct RendererState @private {
 
 RendererState state @private;
 
+// ---- Lifecycle, window, and hooks
+
+// Allocates a Renderer with default dimensions, MSAA sample count (4 when `antialias` is true),
+// and feature defaults. Call set_animation_loop() or init_headless() to initialize the GPU.
 fn Renderer* renderer(bool antialias = true, int width = 800, int height = 600, String title = "drie") {
     Renderer* r = mem::new(Renderer);
     *r = {
@@ -643,23 +582,25 @@ fn Renderer* renderer(bool antialias = true, int width = 800, int height = 600, 
     return r;
 }
 
+// Sets the initial window size in logical pixels (call before set_animation_loop()).
 fn void Renderer.set_size(&self, int width, int height) {
     self.width = width;
     self.height = height;
 }
 
-// Render into `target` instead of the window (null renders to the window again).
+// Directs subsequent render() and clear() calls into `target` (pass null to target the window).
 fn void Renderer.set_render_target(&self, RenderTarget* target) {
     self.render_target = target;
 }
 
+// Sets the default clear color and alpha used when `Scene.background` is unset.
 fn void Renderer.set_clear_color(&self, Color color, float alpha = 1) {
     self.clear_color = color;
     self.clear_alpha = alpha;
 }
 
-// Opens the window and calls `cb` every frame with the elapsed time in milliseconds.
-// Like three's renderer.setAnimationLoop. This call blocks until the window is closed.
+// Opens the application window, initializes sokol_gfx, and invokes `cb` every frame with elapsed
+// milliseconds. Blocks until the window closes.
 fn void Renderer.set_animation_loop(&self, AnimationLoop cb) {
     self.animation_loop = cb;
     state.renderer = self;
@@ -682,42 +623,42 @@ fn void Renderer.set_animation_loop(&self, AnimationLoop cb) {
     );
 }
 
-// Register a listener for raw input / window events (keyboard, mouse, resize).
+// Registers a listener for raw window and input events (keyboard, mouse, resize).
 fn void add_event_listener(EventListener listener) {
     state.listeners.push(listener);
 }
 
+// Logical window width in points (physical pixels divided by DPI scale).
 fn float window_width() => sapp::isvalid() ? sapp::widthf() / sapp::dpi_scale() : (float)state.renderer.width;
+// Logical window height in points (physical pixels divided by DPI scale).
 fn float window_height() => sapp::isvalid() ? sapp::heightf() / sapp::dpi_scale() : (float)state.renderer.height;
-// Equivalent of `window.innerWidth / window.innerHeight`.
+// Current window aspect ratio (`window_width() / window_height()`).
 fn float window_aspect() => window_width() / window_height();
 
+// True on backends with [0, 1] clip-space depth and top-left render-target row origin (Metal,
+// D3D11, Vulkan, WebGPU); false on OpenGL / GLES3 ([-1, 1] depth, bottom-left origin).
 fn bool depth_zero_to_one() {
     if (!state.gfx_ready) return true;
     SgBackend b = sg::query_backend();
     return b != GLCORE && b != GLES3;
 }
 
+// Factory function returning a backend-specific sokol-shdc SgShaderDesc.
 alias ShaderDescFn = fn SgShaderDesc(SgBackend backend);
 
-// The programs sokol has room for (its shader pool) with Renderer.max_programs unset.
+// Default sokol shader pool capacity when Renderer.max_programs is 0.
 const int DEFAULT_PROGRAMS = 1024;
 
 fn void setup_gfx(SgEnvironment environment) @private {
     sg::setup(
         &&{
             .environment = environment,
-            .logger.func = &slog::func, // a buffer per geometry (two, indexed), and per instanced mesh whose instances change
-            // often: a farm of scattered plants has tens of thousands. sokol's maximum.
-            .buffer_pool_size = 65535, // room for the uniforms of some thousands of draws a frame (sokol's default, 4 MB,
-            // is too little for a scene of many scattered plants seen from afar)
-            .uniform_buffer_size = 16 * 1024 * 1024, // an image, a view and a sampler per texture: a world of many
-            // materials has hundreds (house's test views about 840 images and 790 samplers at once)
+            .logger.func = &slog::func, // Pool sized to sokol's maximum for dense instanced and indexed scenes.
+            .buffer_pool_size = 65535, // 16 MB transient uniform buffer for thousands of draws per frame.
+            .uniform_buffer_size = 16 * 1024 * 1024, // Generous pools for scenes with hundreds of materials and maps.
             .image_pool_size = 4096,
             .view_pool_size = 4096,
-            .sampler_pool_size = 4096, // a pipeline per material program that is drawn and its state (get_pipeline: kind,
-            // side, blending, wireframe, target, alpha to coverage, VSM; up to 2016), and the
-            // passes'. sokol's default (64) runs out once a scene is drawn into a few kinds of target
+            .sampler_pool_size = 4096, // Covers material/pass/target/VSM/G-Buffer pipeline permutations.
             .pipeline_pool_size = 4096,
             .shader_pool_size = state.renderer && state.renderer.max_programs > 0 ? state.renderer.max_programs : DEFAULT_PROGRAMS,
         }
@@ -725,7 +666,7 @@ fn void setup_gfx(SgEnvironment environment) @private {
     stm::setup();
     state.start_ticks = stm::now();
     query_gpu_caps();
-    // (the materials' programs are made when they are first drawn with: material_program)
+    // Material shaders compile lazily on first use via material_program().
     SgBackend backend = sg::query_backend();
     state.vsm_blur_shader = make_program(shaders::vsm_shader_desc(backend));
     state.white = data_texture({ 255, 255, 255, 255 }, 1, 1, NO_COLOR_SPACE);
@@ -742,26 +683,23 @@ fn void on_init() @local {
     setup_gfx(sglue::environment());
 }
 
-// Sets up the GPU without opening a window (Metal on macOS, D3D11 on Windows), for rendering into
-// RenderTargets from scripts, tests or on a machine without a display. Use instead of
-// set_animation_loop: call render() with a render target set, then drie::commit().
+// Initializes sokol_gfx without opening a window (Metal on macOS, D3D11 on Windows) for offscreen
+// RenderTarget scripts and tests. Call render() with a RenderTarget set, then drie::commit().
 fn void Renderer.init_headless(&self) {
     state.renderer = self;
     setup_gfx(readback::headless_environment());
 }
 
-// What runs around the frame besides the application: before it (reading a game controller),
-// on the window's events before the listeners (menus that take the input), and over the
-// picture in the window (menus, fades). drie::input and drie::ui hook in this way, and an
-// application can too.
+// Callback invoked before each frame (add_frame_hook) or during window overlay rendering (add_overlay).
 alias FrameHook = fn void();
+// Window event interceptor registered with add_event_filter(); return true to consume the event.
 alias EventFilter = fn bool(Event* e);
 
-// Runs `hook` before every frame, ahead of the animation loop.
+// Registers `hook` to run at the start of every frame before `animation_loop`.
 fn void add_frame_hook(FrameHook hook) => state.frame_hooks.push(hook);
 
-// Gives every window event to `filter` first: when it returns true, the event is used up.
-// `first`: ahead of the filters added before it (the menus', say), not after them.
+// Registers an event interceptor run ahead of add_event_listener() callbacks; pass `first: true`
+// to insert ahead of existing filters.
 fn void add_event_filter(EventFilter filter, bool first = false) {
     if (first) {
         state.event_filters.insert_at(0, filter);
@@ -770,28 +708,27 @@ fn void add_event_filter(EventFilter filter, bool first = false) {
     }
 }
 
-// Draws `overlay` over the picture whenever a frame goes into the window (render() to the
-// window, postprocessing's end_screen(), or draw_overlays() in a pass of the application's).
+// Registers `overlay` to draw on top of windowed output (main pass, present_window_rt, or draw_overlays).
 fn void add_overlay(FrameHook overlay) => state.overlays.push(overlay);
 
-// Draws the overlays into the current pass, which must be a pass to the window.
+// Invokes all registered overlays inside the currently open swapchain pass.
 fn void draw_overlays() {
     foreach (o : state.overlays) o();
 }
 
-// What Lod distances are divided by (Renderer.lod_scale of the renderer in use).
+// Effective LOD divisor derived from the active Renderer.lod_scale.
 fn float lod_distance_scale() @private => state.renderer ? math::max(state.renderer.lod_scale, 0.01f) : 1;
 
-// HDR output is on, and the window can show it.
+// True when HDR EDR output is enabled and the window was created with a half-float swapchain.
 fn bool Renderer.hdr_on(&self) => self.hdr_output && state.float_window;
 
-// The color space the window's pixels are taken in, as the renderer's settings ask.
+// Syncs the swapchain's DisplayColorSpace with Renderer.hdr_output and output_color_space.
 fn void apply_window_colors() @local {
     Renderer* r            = state.renderer;
     DisplayColorSpace want = r.hdr_on() ? EXTENDED_LINEAR_DISPLAY_P3
         : (r.output_color_space == DISPLAY_P3_COLOR_SPACE ? DISPLAY_P3 : SRGB);
     if (state.window_colors == want.ordinal) return;
-    // (an 8-bit window that never changed stays as the platform made it)
+    // Leave an unmodified 8-bit SDR window in the OS default color space.
     if (state.window_colors >= 0 || want != SRGB || state.float_window) set_display_color_space(want);
     state.window_colors = want.ordinal;
 }
@@ -811,8 +748,7 @@ fn void on_cleanup() @local {
     sg::shutdown();
 }
 
-// Passes an event to the menus and listeners as if it came from the window (the gamepad's
-// key events, say).
+// Dispatches a synthetic SappEvent through event filters and listeners as if sent by the window.
 fn void send_event(SappEvent* e) => on_event(e);
 
 fn void on_event(SappEvent* e) @local {
@@ -821,22 +757,22 @@ fn void on_event(SappEvent* e) @local {
         sapp::toggle_fullscreen();
         return;
     }
-    // an open menu takes the input (drie::ui), for one
+    // Give event filters (e.g. active drie::ui menus) first chance to consume input.
     foreach (f : state.event_filters) if (f(e)) return;
     foreach (l : state.listeners) l(e);
 }
 
-// What the target is cleared to for `color`: linear light in a linear target; otherwise as it
-// is (display_fog, three's) or as it comes out of the lit shader, tone mapped, so that it
-// matches fog of the same color.
+// ---- Clearing, viewport, and tone mapping
+
+// Converts `color` into the target's clear space: linear for RGBA16F, raw sRGB for `display_fog`,
+// or tone-mapped sRGB to match fog color in SDR renders.
 fn Vector3 clear_value(Renderer* r, Color color) @private {
     if (r.render_target && r.render_target.is_linear()) return color_to_linear(color);
     if (r.display_fog) return { ((color >> 16) & 0xff) / 255.0f, ((color >> 8) & 0xff) / 255.0f, (color & 0xff) / 255.0f };
     return tone_mapped(r, color);
 }
 
-// Whether this is the frame's first pass into `rt` (or the window), marking it drawn: the
-// first clears the whole target, the others can keep what is there.
+// Marks `rt` (or the window) drawn on the current frame and returns true if this is its first pass.
 fn bool first_pass(RenderTarget* rt) @private {
     uint* drawn = rt ? &rt.drawn_frame : &state.window_drawn_frame;
     bool first = *drawn != state.frame + 1;
@@ -844,8 +780,7 @@ fn bool first_pass(RenderTarget* rt) @private {
     return first;
 }
 
-// A pass that keeps what the frame drew into the target before it (all of it cleared when it
-// is the frame's first), and stores what it draws for the next.
+// Configures `pass` to preserve prior draws (clearing on the frame's first pass) and store results.
 fn void keep_pass(SgPass* pass, bool first, RenderTarget* rt) @local {
     SgLoadAction load = first ? CLEAR : LOAD;
     pass.action.colors[0].load_action = load;
@@ -856,7 +791,7 @@ fn void keep_pass(SgPass* pass, bool first, RenderTarget* rt) @local {
     }
 }
 
-// Renderer.viewport and the scissor box, for the draws of the pass.
+// Applies `r.viewport` (when non-zero) and `r.scissor` (when `scissor_test` is enabled).
 fn void apply_view_rect(Renderer* r) @local {
     int[4] v = r.viewport;
     if (v[2] > 0 && v[3] > 0) sg::apply_viewport(v[0], v[1], v[2], v[3], false);
@@ -864,8 +799,7 @@ fn void apply_view_rect(Renderer* r) @local {
     if (r.scissor_test) sg::apply_scissor_rect(s[0], s[1], s[2], s[3], false);
 }
 
-// Clears the scissor box of the current pass to `rgba` and the far depth (WebGL's clear with
-// the scissor test on), whatever the viewport.
+// Draws a fullscreen triangle restricted to `r.scissor` that writes `rgba` and far depth (z = 1).
 fn void clear_rect(Renderer* r, float[4] rgba) @local {
     RenderTarget* rt = r.render_target;
     int target = rt ? (rt.samples > 1 ? 2 : 1) + (rt.mrt ? 4 : (rt.is_linear() ? 2 : 0)) : 0;
@@ -903,8 +837,7 @@ fn void clear_rect(Renderer* r, float[4] rgba) @local {
     sg::draw(0, 3, 1);
 }
 
-// A pass into the window has ended: the frame is committed now, or at the end of the
-// animation loop's frame.
+// Marks the window swapchain dirty, deferring commit() until on_frame() finishes when inside it.
 fn void window_drawn() @local {
     if (state.in_frame) {
         state.commit_pending = true;
@@ -913,7 +846,7 @@ fn void window_drawn() @local {
     }
 }
 
-// Ensures the internal window-sized offscreen target exists and matches the window's size.
+// Allocates or resizes the internal offscreen target used for multi-pass windowed frames.
 fn RenderTarget* ensure_window_rt(Renderer* r) @local {
     int w = math::max(sapp::width(), 1);
     int h = math::max(sapp::height(), 1);
@@ -926,9 +859,8 @@ fn RenderTarget* ensure_window_rt(Renderer* r) @local {
     return state.window_rt;
 }
 
-// Blits `state.window_rt` to the swapchain in a single pass at the end of on_frame(), then
-// draws overlays on top. Avoids multiple swapchain passes per frame (which Metal discards
-// MSAA on and presents repeatedly).
+// Blits `state.window_rt` to the swapchain once at frame end and draws overlays on top, avoiding
+// multiple swapchain passes per frame (which lose MSAA contents on Metal).
 fn void present_window_rt() @local {
     if (!state.window_rt) return;
     mip_pipeline();
@@ -965,8 +897,8 @@ fn void present_window_rt() @local {
     state.commit_pending = true;
 }
 
-// Clears the target (the window, or render_target) to clear_color and the far depth now, as
-// three's renderer.clear(): only the scissor box with scissor_test.
+// Clears the active target (or `scissor` rectangle when `scissor_test` is enabled) to
+// `clear_color`/`clear_alpha` and far depth.
 fn void Renderer.clear(&self) {
     if (!state.gfx_ready) return;
     RenderTarget* saved_rt = self.render_target;
@@ -1001,14 +933,13 @@ fn void Renderer.clear(&self) {
     if (!self.render_target) window_drawn();
 }
 
-// Where render() draws, in pixels from the target's bottom left (three's setViewport);
-// zero width or height: the whole target.
+// Sets the render viewport in pixels from the target's bottom-left (0 width/height = full target).
 fn void Renderer.set_viewport(&self, int x, int y, int width, int height) => self.viewport = { x, y, width, height };
 
-// The box render() and clear() touch while scissor_test is on (three's setScissor).
+// Sets the scissor rectangle in pixels from the target's bottom-left (active when `scissor_test` is true).
 fn void Renderer.set_scissor(&self, int x, int y, int width, int height) => self.scissor = { x, y, width, height };
 
-// The background color as it comes out of the lit shader, so that it matches fog of the same color.
+// Tone-maps and sRGB-encodes `color` to match shader fog output in SDR targets.
 fn Vector3 tone_mapped(Renderer* r, Color color) @private {
     Vector3 c = tone_map(color_to_linear(color), r.tone_mapping, r.tone_mapping_exposure);
     Vector3 result;
@@ -1027,8 +958,8 @@ fn Vector3 mat3_mul(float[9] m, Vector3 v) @local {
     };
 }
 
-// Linear light through a tone mapping, as the shaders do it (tonemapping.glsl): 0..1, still
-// linear. For matching a color of your own to the picture.
+// Applies tone mapping `mode` and `exposure` to linear RGB `c`, matching shaders/tonemapping.glsl.
+// Returns clamped linear RGB in [0, 1].
 fn Vector3 tone_map(Vector3 c, ToneMapping mode, float exposure) {
     if (mode == NO_TONE_MAPPING) return c;
     c = (Vector3) { math::max(c.x, 0.0f), math::max(c.y, 0.0f), math::max(c.z, 0.0f) } * math::max(exposure, 1e-4f);
@@ -1057,7 +988,7 @@ fn Vector3 tone_map(Vector3 c, ToneMapping mode, float exposure) {
                 v
             );
         case AGX_TONE_MAPPING:
-            // (rows of the shader's column-major matrices)
+            // Row-major form of the column-major AgX inset/outset matrices in shaders/tonemapping.glsl.
             Vector3 v = mat3_mul(
                 { 0.6274f, 0.3293f, 0.0433f, 0.0691f, 0.9195f, 0.0113f, 0.0164f, 0.0880f, 0.8956f },
                 c
@@ -1121,7 +1052,9 @@ fn Vector3 tone_map(Vector3 c, ToneMapping mode, float exposure) {
     return { clamp(out.x, 0, 1), clamp(out.y, 0, 1), clamp(out.z, 0, 1) };
 }
 
-// A draw left out for its program still compiling (RenderInfo.waiting).
+// ---- Frame rendering and commit
+
+// Records a draw waiting on background shader/pipeline compilation into RenderInfo.waiting.
 fn void note_waiting(Mesh* m, int why) @private {
     if (!state.renderer) return;
     state.renderer.info.waiting++;
@@ -1129,8 +1062,8 @@ fn void note_waiting(Mesh* m, int why) @private {
     state.renderer.info.waiting_why = why;
 }
 
-// Prints what the draw RenderInfo.waiting_mesh names waits for: its material's program's jobs
-// compiling in the background and their states (sg_warm_state: 0 running, 1 done, 2 failed).
+// Logs diagnostic details to stderr for the last mesh waiting on background compilation
+// (`RenderInfo.waiting_mesh`) and its NodeBuild program job states.
 fn void Renderer.say_waiting(&self) {
     Mesh* m = self.info.waiting_mesh;
     if (!self.info.waiting || !m || !m.material) return;
@@ -1145,14 +1078,17 @@ fn void Renderer.say_waiting(&self) {
     };
 }
 
-// Draws the scene from the camera's point of view. Call once per frame from the animation loop.
+// Renders `scene` from `camera` into `self.render_target` (or the window swapchain when null).
+// Call once per view from the animation loop; when targeting a RenderTarget, call drie::commit()
+// after post-processing completes.
 fn void Renderer.render(&self, Scene* scene, Camera* camera) {
     if (!state.gfx_ready) return;
     if (self.auto_time) self.time = (float)stm::sec(stm::since(state.start_ticks));
     self.info = { };
-    // (outside any pass: no render is drawn inside another's pass)
+    // Flush pending dynamic vertex buffer uploads outside any GPU pass.
     self.info.updates = update_dynamic(&self.info.update_bytes);
 
+    // 1. Camera matrices, sub-pixel jitter, and MRT motion-vector history.
     if (self.auto_aspect && camera.camera_type == PERSPECTIVE && !camera.custom_projection) {
         PerspectiveCamera* pc = (PerspectiveCamera*)camera;
         RenderTarget* rt      = self.render_target;
@@ -1164,13 +1100,13 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera) {
 
     if (!scene.no_matrix_world_update) scene.update_matrix_world();
     state.scene = scene;
-    // cameras don't have to be part of the scene
+    // Detached cameras still need their world matrix updated.
     if (!camera.parent) camera.update_matrix_world();
     camera.matrix_world_inverse = camera.matrix_world.invert();
     Mat4 view_proj        = camera.projection_matrix.mul(camera.matrix_world_inverse);
     Mat4 steady_view_proj = view_proj;
     Vector3 camera_pos    = camera.matrix_world.get_position();
-    // (a render inside this one, a Reflector's, leaves this one's camera for its node materials)
+    // Preserve outer camera uniforms across nested renders (such as Reflector passes).
     Mat4 outer_view = state.node_view;
     Mat4 outer_proj = state.node_proj;
     Vector3 outer_camera = state.node_camera;
@@ -1180,7 +1116,6 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera) {
         state.node_camera = outer_camera;
     }
     node_epoch++;
-    // (a loaded pipeline cache: more of it, as what it compiles finishes)
     if (state.renderer) state.renderer.pump_pipeline_cache();
     state.node_view = camera.matrix_world_inverse;
     state.node_proj = camera.projection_matrix;
@@ -1188,7 +1123,7 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera) {
     Mat4 view_proj_rel    = relative_view_proj(camera, camera_pos);
     state.motion_jitter = { };
     if (camera.jitter != { }) {
-        // shifted across the picture after the projection: x' = x + s * w
+        // Apply post-projection clip-space jitter (`x' = x + s * w`) for TAA.
         RenderTarget* rt = self.render_target;
         Vector2 s = {
             2 * camera.jitter.x / (rt ? (float)rt.width : sapp::widthf()),
@@ -1202,7 +1137,6 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera) {
         }
         state.motion_jitter = s;
     }
-    // motion vectors: every render with MRT is the next frame of them
     state.motion = self.render_target && self.render_target.mrt;
     if (state.motion) {
         state.motion_frame++;
@@ -1214,6 +1148,7 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera) {
         state.motion_view_proj = camera.motion_prev;
     }
 
+    // 2. Frustum collection, sorting, and GPU instance-cull job registration.
     profile::stop("render: matrices", pt);
     pt = profile::start();
     state.last_view_proj_rel = view_proj_rel;
@@ -1239,7 +1174,7 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera) {
     collect(scene, camera.matrix_world_inverse, &frustum, camera_pos, false);
     profile::stop("render: collect", pt);
     pt = profile::start();
-    // front-to-back for opaque, back-to-front for transparent (view space looks down -Z)
+    // Sort opaque front-to-back and transparent back-to-front (camera looks down -Z).
     sort::quicksort(&state.opaque, &cmp_opaque);
     sort::quicksort(&state.transparent, &cmp_transparent);
     int view = cull_view(&frustum);
@@ -1247,6 +1182,7 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera) {
     foreach (&item : state.transparent) item.job = cull_job(item.mesh, view) + 1;
     profile::stop("render: sort + jobs", pt);
 
+    // 3. Shadow passes (also dispatches GPU culling), GI/radiance upload, clusters, and fog.
     SpotLight* caster = prepare_and_draw_shadows(scene, camera);
     pt = profile::start();
     use_irradiance(scene);
@@ -1275,31 +1211,27 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera) {
     }
     profile::stop("render: volumetric fog", pt);
     pt = profile::start();
+
+    // 4. Parallel shader warmup and non-linear transmission pre-pass.
     start_material_programs(self, scene, camera, &fs, self.depth_prepass && !self.cull_box);
     profile::stop("render: start programs", pt);
     pt = profile::start();
-    // what the transmission materials refract: the opaque scene behind them, without them
-    // (theirs, opaque or transparent)
     bool refraction;
     foreach (&item : state.opaque) refraction = refraction || refracts(item);
     foreach (&item : state.transparent) refraction = refraction || refracts(item);
-    // Into a linear target (RGBA16F), the main pass's own picture of the opaque scene is what
-    // the glass refracts: it is copied half way through the pass (copy_for_transmission), as
-    // engines that draw the scene once do. Otherwise (a tone mapped picture can't be refracted
-    // as light), the opaque scene is drawn again for it first, as three does.
+    // Linear targets split the main pass via copy_for_transmission(); SDR targets render a
+    // separate linear pass first.
     bool split = refraction && self.render_target && self.render_target.is_linear();
     if (refraction && !split) {
         render_transmission(self, scene, camera, view_proj_rel, &fs);
-        // (the refracting materials' programs read the transmission's map, made by its first
-        // pass: their keys change with it)
+        // Re-warm programs whose MaterialKey depends on `state.transmission_mips` now being allocated.
         start_material_programs(self, scene, camera, &fs, self.depth_prepass && !self.cull_box);
     }
     profile::stop("render: transmission", pt);
     pt = profile::start();
 
-    // Multi-pass windowed frames (auto_clear = false, scissor_test, or after clear()) render
-    // into an internal window-sized offscreen target so MSAA LOAD/STORE is preserved and the
-    // swapchain is presented once in present_window_rt() at frame end.
+    // Multi-pass windowed frames route into `state.window_rt` so MSAA LOAD/STORE is preserved
+    // and presented once in present_window_rt() at frame end.
     RenderTarget* saved_window_rt = self.render_target;
     if (!saved_window_rt && state.in_frame && (state.window_rt_used || !self.auto_clear || self.scissor_test
         || (scene.radiance && scene.radiance.sparse))) {
@@ -1320,35 +1252,32 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera) {
         .label = "drie-main",
     };
     if (self.render_target) {
-        // kept for RenderTarget.depth_texture
+        // Store depth for RenderTarget.depth_texture and post-processing passes.
         pass.action.depth = { .load_action = CLEAR, .store_action = STORE, .clear_value = 1 };
         pass.attachments = self.render_target.attachments();
-        // no normal, no motion, no indirect light where nothing is drawn
         if (self.render_target.mrt) {
             for (int i = 1; i <= MRT_COUNT; i++) pass.action.colors[i] = { .load_action = CLEAR };
         }
     } else {
         pass.swapchain = sglue::swapchain();
     }
-    // auto_clear, or a background color (which clears whatever auto_clear says, as three's
-    // does), clears the target first: all of it, or the scissor box. Otherwise what the frame
-    // has drawn there already is kept.
     bool clears = self.auto_clear || (scene.background && !scene.background_texture);
     bool whole = clears && !self.scissor_test;
     bool first = first_pass(self.render_target);
     if (!whole) keep_pass(&pass, first, self.render_target);
     if (split) {
-        // (multisampled: kept for the second half of the pass)
+        // Preserve color/MRT attachments across copy_for_transmission() split passes.
         for (int i = 0; i <= (self.render_target.mrt ? MRT_COUNT : 0); i++) pass.action.colors[i].store_action = STORE;
     }
-    // (not with a cull box: everything would have holes)
+    // Disable depth prepass when cull_box is active (every mesh would require cutout).
     bool prepass = self.depth_prepass && !self.cull_box;
-    // pixels per unit of tan(angle) up the view, for prepassed()
     state.prepass_focal = 0;
     if (camera.camera_type == PERSPECTIVE) {
         RenderTarget* rt = self.render_target;
         state.prepass_focal = camera.projection_matrix[1][1] * 0.5f * (rt ? rt.height : sapp::heightf());
     }
+
+    // 5. Deferred path: G-Buffer pass, ray-traced shadows, sparse RC update, and fullscreen lighting.
     bool use_deferred = can_defer(self, clears, first);
     if (use_deferred) {
         bool has_deferred = false;
@@ -1437,6 +1366,8 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera) {
             }
         }
     }
+
+    // 6. Main forward pass: depth prepass, background, opaque, fog backdrop, glass, transparent, overlays.
     profile::begin_pass(&pass);
     if (!use_deferred && !whole && clears) clear_rect(self, { clear.x, clear.y, clear.z, scene.background ? 1.0f : self.clear_alpha });
     apply_view_rect(self);
@@ -1451,7 +1382,7 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera) {
     draw_background(scene, camera, view_proj_rel, &fs);
     foreach (&item : state.opaque) {
         if (use_deferred && is_deferred_item(item)) continue;
-        // (the glass after the copy, see below)
+        // Transmissive opaque meshes render after copy_for_transmission() when `split` is true.
         if (split && refracts(item)) continue;
         DrawKind kind = SOLID;
         if (draws_lines(item) || has_holes(item)) kind = prepass && prepassed(item) ? PRETESTED : CUT;
@@ -1464,8 +1395,7 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera) {
     if (split) {
         profile::stop("render: backdrop", pt);
         pt = profile::start();
-        // the far side of double-sided glass is behind its near side: its back faces first,
-        // refracting the opaque scene, and the picture copied again with them in it
+        // Double-sided glass draws back faces first, copies again, then draws front faces.
         for (int list = 0; list < 2 && !backs; list++) {
             foreach (&item : list == 0 ? state.opaque : state.transparent) {
                 if (refracts(item) && item.mesh.material.side == DOUBLE_SIDE) backs = true;
@@ -1499,12 +1429,9 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera) {
         foreach (&item : state.transparent) {
             Material* mat = item.mesh.material;
             Side side = mat.side;
-            // (its back faces are drawn already)
+            // Back faces of double-sided transmissive meshes were already drawn in the split block.
             if (split && backs && side == DOUBLE_SIDE && refracts(item)) mat.side = FRONT_SIDE;
-            // Double-sided glass without the split: its back faces, then its front faces, as
-            // three draws a transparent double-sided material (one draw without culling
-            // would blend them in the order of the triangles, and where a back face comes
-            // after the front one over it, it would cover the near side's own reflection)
+            // Without split, render double-sided glass back-then-front so near reflections stay on top.
             if (!split && side == DOUBLE_SIDE && refracts(item)) {
                 mat.side = BACK_SIDE;
                 draw_item(item, view_proj_rel, &fs);
@@ -1514,12 +1441,11 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera) {
             mat.side = side;
         }
     }
-    // menus and fades on top (drie::ui)
     if (!self.render_target) draw_overlays();
     sg::end_pass();
     profile::stop("render: main transparent", pt);
-    // Fallback for sparse RC when a render uses MSAA or has no deferred opaque items:
-    // uses the resolved depth_texture and normal_texture from MRT.
+
+    // 7. Sparse RC fallback on forward/MSAA MRT targets and swapchain commit handoff.
     if (!use_deferred && scene.radiance && scene.radiance.sparse && !self.reflecting
         && self.render_target && self.render_target.depth_texture.id && self.render_target.normal_texture.id) {
         if (!state.gb_sampler.id) {
@@ -1539,26 +1465,24 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera) {
             self.render_target.height
         );
     }
-    // When rendering to the window, finish the frame (at the end of the animation loop's
-    // frame, when inside it: another render() may draw into it). With a render target, the
-    // caller usually runs more passes (post-processing) and must call drie::commit() at the end.
     if (!self.render_target) window_drawn();
 }
 
-// Queues `rc` (a sparse RadianceCascades with no `camera` set) for flush_pending_sparse() at
-// the end of the engine frame, once; see RadianceCascades.update_sparse().
+// Registers a camera-less sparse RadianceCascades to flush once commit() ends the current frame.
 fn void queue_sparse_flush(RadianceCascades* rc) {
     foreach (q : state.pending_sparse_flush) if (q == rc) return;
     state.pending_sparse_flush.push(rc);
 }
 
-// Takes `rc` off the queue (RadianceCascades.dispose(): commit() mustn't flush it after).
+// Removes `rc` from the end-of-frame sparse flush queue (called by RadianceCascades.dispose()).
 fn void unqueue_sparse_flush(RadianceCascades* rc) {
     for (sz i = state.pending_sparse_flush.len(); i > 0; i--) {
         if (state.pending_sparse_flush[i - 1] == rc) state.pending_sparse_flush.remove_at(i - 1);
     }
 }
 
+// Flushes queued sparse radiance updates, increments the engine frame counter, and submits the
+// sokol command buffer. Required after offscreen RenderTarget rendering or post-processing.
 fn void commit() {
     foreach (rc : state.pending_sparse_flush) rc.flush_pending_sparse();
     state.pending_sparse_flush.clear();

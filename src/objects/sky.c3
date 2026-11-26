@@ -1,43 +1,39 @@
-// Like THREE's Sky (examples/jsm/objects/Sky.js, r187): Preetham's daylight sky with its sun
-// disc and a layer of cloud, on a dome around the camera. The parameters are three's uniforms.
+// Preetham daylight sky dome with a sun disc and procedural cloud layer, modeled on three.js Sky.
+// Evaluates per pixel on the GPU via a `drie::nodes` graph on a back-side MeshBasicMaterial;
+// `update()` only uploads uniforms when parameters change, and `follow()` keeps the dome centered
+// on the camera just inside its far plane.
 //
-//     Sky* sky = objects::sky();
-//     sky.rayleigh = 3;
-//     sky.sun_position = { -0.8, 0.19, 0.56 };
-//     scene.add(sky);
-//     // before each render, and before capturing the scene into an environment map:
-//     sky.follow(camera.world_position(), camera.far);
-//
-// Runs per pixel on the GPU via a drie::nodes graph on the dome's MeshBasicMaterial; update()
-// only updates the uniforms when a parameter changed. three draws its dome on the far plane
-// whatever its size; follow() puts this one just inside it.
+//   Sky* sky = objects::sky();
+//   sky.rayleigh = 3;
+//   sky.sun_position = { -0.8, 0.19, 0.56 };
+//   scene.add(sky);
+//   sky.follow(camera.world_position(), camera.far);
 module drie::objects;
 import std::math, drie, drie::nodes;
 
+// Sky dome mesh driven by Preetham atmospheric scattering and procedural fbm clouds.
 struct Sky {
-    inline Mesh mesh;
-    float turbidity;
-    float rayleigh;
-    float mie_coefficient;
-    float mie_directional_g;
-    // the sun's direction (three's sunPosition, which need not be normalized)
-    Vector3 sun_position;
-    float cloud_scale;
-    float cloud_speed;
-    float cloud_coverage;
-    float cloud_density;
-    float cloud_elevation;
-    bool show_sun_disc;
-    float time;
-    // kept for API compatibility
-    int resolution;
-    SkyParams drawn;
-    bool has_drawn;
-    Node u_sun;
-    Node u_beta_r;
-    Node u_beta_m;
-    Node u_cloud0;
-    Node u_cloud1;
+    inline Mesh mesh; // Base dome mesh (back-side unit sphere scaled by `follow()`).
+    float turbidity; // Atmospheric haziness (default 2).
+    float rayleigh; // Rayleigh scattering scale (default 1).
+    float mie_coefficient; // Mie scattering coefficient (default 0.005).
+    float mie_directional_g; // Henyey-Greenstein phase asymmetry in [-1, 1] (default 0.8).
+    Vector3 sun_position; // Sun direction vector; need not be normalized.
+    float cloud_scale; // Spatial frequency of the cloud noise layer (default 0.0002).
+    float cloud_speed; // Cloud drift speed scaled by `time` (default 0.00002).
+    float cloud_coverage; // Cloud coverage in [0, 1]; 0 disables clouds (default 0.4).
+    float cloud_density; // Optical thickness of cloud volume (default 0.4).
+    float cloud_elevation; // Normalized cloud layer height affecting horizon fade (default 0.5).
+    bool show_sun_disc; // Draws the bright solar disc when true.
+    float time; // Elapsed time driving cloud drift and evolution.
+    int resolution; // Stored nominal resolution; ignored by the per-pixel sky shader.
+    SkyParams drawn; // Last parameter snapshot uploaded to uniforms.
+    bool has_drawn; // True after the first uniform upload.
+    Node u_sun; // Uniform vec4: normalized sun direction and solar intensity.
+    Node u_beta_r; // Uniform vec4: Rayleigh beta RGB and `mie_directional_g`.
+    Node u_beta_m; // Uniform vec4: Mie beta RGB and `show_sun_disc` flag.
+    Node u_cloud0; // Uniform vec4: cloud scale, speed, coverage, density.
+    Node u_cloud1; // Uniform vec4: cloud elevation and `time`.
 }
 
 struct SkyParams @local {
@@ -166,6 +162,7 @@ fn Node sky_graph(Sky* s) @local {
     return nodes::seq(body, tex);
 }
 
+// Creates a Sky dome mesh with default daylight and cloud parameters.
 fn Sky* sky(int resolution = 1024) {
     Sky* s = mem::new(Sky);
     s.init(MESH);
@@ -253,8 +250,7 @@ fn void Sky.update(&self) {
     self.u_cloud1.set(p.cloud_elevation, p.time, 0, 0);
 }
 
-// ----------------------------------------------------------------------------
-// three's SkyShader, its vertex shader's part (the same for every direction).
+// ---- Preetham scattering
 
 struct SkyLight @local {
     Vector3 sun;

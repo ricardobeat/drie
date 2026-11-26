@@ -1,8 +1,6 @@
-// BokehPass (postprocessing.c3): depth of field, what is nearer or further than the focus going
-// soft as through a lens's wide aperture. three's BokehPass gathers a ring of taps round each
-// pixel; this is made as games make it (Jimenez 2014, "Next generation post processing in Call
-// of Duty: Advanced Warfare"; Unreal's diaphragm depth of field: a gather, and a scatter of
-// what is small and bright):
+// BokehPass (drie::postprocessing): depth of field based on Jimenez 2014 (Call of Duty: Advanced
+// Warfare) and Unreal's diaphragm DOF, combining a tile-bounded gather with a scattered pass for
+// small bright highlights. Regenerate generated/bokeh.c3 with `just shaders`.
 //
 //   focus:     the distance in focus: the one set, or the autofocus's (the middle of the
 //              picture, followed with a delay), in a 1x1 texture
@@ -23,8 +21,6 @@
 //   scatter:   each spark drawn as a disc as wide as its blur with its light spread over it,
 //              added to the gather's picture: no gather of a few taps can make an even disc
 //              out of a speck
-//
-// Regenerate generated/bokeh.c3 with: just shaders
 @header module drie::postprocessing;
 @header import drie;
 

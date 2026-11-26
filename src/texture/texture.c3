@@ -1,121 +1,142 @@
-// Textures: images that materials sample (color maps, normal maps, ...).
-//   Texture* t = drie::load_texture("assets/textures/bark_diff.jpg");
-//   t.repeat = { 4, 4 };
-//   material.map = t;
+// 2D image textures, render-target `CanvasTexture`, cube-to-equirectangular conversion, and
+// spherical-harmonic diffuse environment lighting (`EnvLight`). Supports RGBA8 (`SRGB8A8` or
+// `RGBA8`) and linear RGBA float (`RGBA16F`) data with CPU mipmap generation and thread-safe
+// `Texture.prepare()` ahead of GPU upload by `Renderer.render`. Constructors allocate on `mem`;
+// `prepare()` and `upload()` free CPU pixel buffers unless `keep_pixels` is set, and
+// `Texture.dispose()` releases GPU handles.
 module drie;
 import std::io, std::math, std::atomic, std::thread;
 import sokol, drie::imageio;
 
+// Texture coordinate wrapping mode beyond `[0, 1]`.
 enum Wrapping {
+    // Tile the texture seamlessly.
     REPEAT_WRAPPING,
+    // Clamp out-of-range coordinates to the edge texel.
     CLAMP_TO_EDGE_WRAPPING,
+    // Tile the texture, mirroring on every odd repeat.
     MIRRORED_REPEAT_WRAPPING,
 }
 
-// How a texture is read where its texels are smaller than the pixels (three's minFilter): the
-// texels blended or the nearest one, from the two nearest mip levels blended, the nearest
-// level, or the largest only (LINEAR and NEAREST, no mip levels).
+// Minification and mipmap filter mode (`Texture.min_filter`) when texels are smaller than
+// screen pixels. `LINEAR` and `NEAREST` sample only level 0 without mipmaps.
 enum MinFilter {
+    // Trilinear filtering: linear within and between the two nearest mip levels.
     LINEAR_MIPMAP_LINEAR,
+    // Bilinear filtering within the nearest mip level.
     LINEAR_MIPMAP_NEAREST,
+    // Bilinear filtering on level 0 only (no mipmaps).
     LINEAR,
+    // Nearest texel within each of the two nearest mip levels, linearly blended between them.
     NEAREST_MIPMAP_LINEAR,
+    // Nearest texel from the nearest mip level.
     NEAREST_MIPMAP_NEAREST,
+    // Nearest texel on level 0 only (no mipmaps).
     NEAREST,
 }
 
-// Whether the filter reads mip levels.
+// Returns true when this minification filter samples mip levels.
 fn bool MinFilter.mipmapped(self) => self != LINEAR && self != NEAREST;
 
+// Pixel color-space interpretation for textures and `Renderer.output_color_space`.
 enum ColorSpace {
+    // Standard sRGB transfer curve (decoded to linear light on GPU sampling).
     SRGB_COLOR_SPACE,
-    // For data textures (normal maps, roughness, ...): values are used as stored.
+    // Raw linear/data values used as stored (normal maps, roughness, metalness, height).
     NO_COLOR_SPACE,
-    // Display P3's wider gamut (sRGB's transfer curve): Renderer.output_color_space, for a
-    // screen that shows more saturated colors than sRGB has (three's DisplayP3ColorSpace)
+    // Wide-gamut Display P3 primaries with the sRGB transfer curve (`Renderer.output_color_space`).
     DISPLAY_P3_COLOR_SPACE,
 }
 
+// 2D GPU image, sampler configuration, UV transform, and optional equirectangular `EnvLight`.
+//
+//   Texture* t = drie::load_texture("assets/textures/bark_diff.jpg");
+//   t.repeat = { 4, 4 };
+//   material.map = t;
 struct Texture {
+    // Width in texels.
     int width;
+    // Height in texels.
     int height;
-    // RGBA8 pixels, top row first. Freed by prepare() (at the upload, or average_color()).
+    // CPU RGBA8 pixels, top row first; freed by `prepare()` unless `keep_pixels` is set.
     char[] pixels;
-    // The image's average color in linear light, once prepare() has worked it out.
+    // Average color in linear RGB computed by `prepare()`.
     Vector3 average;
+    // True once `average` has been computed.
     bool has_average;
-    // Or RGBA in linear light, for images brighter than 1 (an environment captured with hdr):
-    // RGBA16F on the GPU, like three's DataTexture with HalfFloatType. Freed after the upload.
+    // CPU linear RGBA floats for HDR textures (uploaded as `RGBA16F`); freed on upload.
     float[] float_pixels;
-    // Like three's texture.flipY: the image goes to the GPU bottom row first, so uv (0, 0) is
-    // its bottom left corner, as drie's geometries (three's) expect. On for load_texture and
-    // decode_texture (three's TextureLoader); off for data textures and glTF's images, whose
-    // uv (0, 0) is the top left. Read at the upload.
+    // Flip rows vertically at upload so UV `(0, 0)` is the bottom-left corner (default true for
+    // `load_texture`/`decode_texture`, false for `data_texture` and glTF images).
     bool flip_y;
+    // Color-space interpretation (`SRGB_COLOR_SPACE` vs `NO_COLOR_SPACE`).
     ColorSpace color_space;
+    // Horizontal (U) wrapping mode.
     Wrapping wrap_s;
+    // Vertical (V) wrapping mode.
     Wrapping wrap_t;
-    // UV scale and offset, like three's texture.repeat / texture.offset, and its rotation
-    // (radians) about `center` (three's texture.rotation and center). The color map's (or
-    // without one the normal map's, or the arm map's) places the uv of all the material's
-    // maps; the others are read each with its own.
+    // UV scale factor; the primary map's UV transform (`map`, or fallback `normal_map`/`arm_map`)
+    // drives shared material UVs, while other maps apply their own.
     Vector2 repeat;
+    // UV translation offset applied after `repeat`.
     Vector2 offset;
+    // Counterclockwise UV rotation in radians around `center`.
     float rotation;
+    // Pivot point in UV space for `rotation`.
     Vector2 center;
-    // Which of the geometry's uv sets it is read with: 0 its uv, 1 its uv1 (three's
-    // texture.channel). Only the maps besides the color map can take the second.
+    // Geometry UV set index: 0 reads `uv`, 1 reads `uv1` (non-color maps only).
     char channel;
+    // Generate CPU box-filtered mipmaps during `prepare()`/`upload_float()`.
     bool generate_mipmaps;
-    // Its alpha is data (a height, a roughness), not coverage: generate_mipmaps averages the
-    // color plainly instead of weighting it by the alpha.
+    // Treat alpha as data (height, roughness) rather than coverage so mipmaps average RGB evenly
+    // instead of weighting by alpha.
     bool alpha_is_data;
-    // Its alpha is cut out at this (Material.alpha_test, 0: not): generate_mipmaps scales each
-    // level's alpha so that as much of it stays over the cut as on the largest, and thin
-    // things (needles, blades) don't thin away to nothing in the distance (Castaño's
-    // coverage-preserving mipmaps).
+    // Alpha cutout threshold (`Material.alpha_test`, 0 = disabled): scales each mip level's
+    // alpha to preserve pass-rate coverage across distance (Castaño coverage-preserving mips).
     float alpha_coverage;
-    // The mip levels below the largest (`pixels`), as the application drew them, each half the
-    // size of the one before, RGBA8 like `pixels` (three's texture.mipmaps). Used in place of
-    // the ones generate_mipmaps would make; prepare() takes and frees them.
+    // Caller-provided RGBA8 mip levels below level 0, each half the prior size; overrides
+    // `generate_mipmaps` and is freed by `prepare()`.
     char[][] mipmaps;
+    // Minification and mip-selection filter.
     MinFilter min_filter;
-    // prepare() leaves `pixels` as they go to the GPU (bottom row first when flip_y), for the
-    // CPU to read (Material.displacement_map)
+    // Retain `pixels` after `prepare()` (in GPU row order) for CPU reads like `red_at` and
+    // `Material.displacement_map`.
     bool keep_pixels;
+    // Max anisotropic filtering taps (clamped to 1..16; active only when all filters are linear).
     int anisotropy;
-    // Up close, each texel a sharp square instead of blended with its neighbours (three's
-    // magFilter = NearestFilter).
+    // Use nearest-neighbor magnification (`mag_filter = NEAREST`) instead of bilinear.
     bool nearest;
-    // Drawn into, not loaded (see canvas_texture): black until the first drawing.
+    // Marks a GPU render-target texture (`CanvasTexture`) with no CPU pixel upload.
     bool render_target;
-    // For an environment map captured with distances (Renderer.capture_environment): alpha 1
-    // stands for this many meters from where it was captured. 0: no distances.
+    // Distance encoding range in meters for `Renderer.capture_environment` maps (`alpha == 1`
+    // maps to this distance; 0 = no distance channel).
     float env_distance_range;
-    // As Scene.environment, the light it puts on a surface facing each way (env_light): its
-    // irradiance in spherical harmonics and its sun, worked out at the upload of a 2:1
-    // (longitude/latitude) image.
+    // Diffuse spherical harmonics and extracted sun direction computed on upload for 2:1
+    // equirectangular maps used as `Scene.environment`.
     EnvLight env_light;
+    // True once `env_light` has been computed.
     bool has_env_sh;
-    // What prepare() leaves for the upload: the mip levels, largest first, in one block.
+    // Packed RGBA8 mip chain built by `prepare()` and freed after `upload()`.
     char[] prepared;
+    // Number of mip levels packed in `prepared`.
     int prepared_levels;
-    // prepare()'s progress: 0 not started, 1 under way (perhaps on another thread), 2 done.
+    // Thread-safe `prepare()` state: 0 idle, 1 running, 2 complete.
     Atomic{int} preparing;
-    // GPU state, created lazily on first render.
+    // GPU image handle (created lazily on first render).
     SgImage image;
+    // GPU texture view handle.
     SgView view;
+    // GPU sampler handle.
     SgSampler sampler;
+    // True once GPU resources have been created.
     bool uploaded;
-    // A clone's (see Texture.clone): the texture whose image it shows. Its GPU state is that
-    // one's, borrowed: only its uv settings (repeat, offset, rotation, center, channel) are its own.
+    // Source texture borrowed by `Texture.clone()`: shares GPU image/view/sampler while keeping
+    // independent `repeat`, `offset`, `rotation`, `center`, and `channel`.
     Texture* source;
 }
 
-// Like three's texture.clone(): the same image, uploaded once (it stays this texture's, or
-// its source's), placed with its own repeat, offset, rotation, center and channel, which start
-// as this one's. A material's maps share one sampler, so the clone's wrapping and filtering
-// are the image's.
+// Allocates a lightweight view sharing this texture's GPU image and sampler (uploaded once on
+// the root source) with its own copy of `repeat`, `offset`, `rotation`, `center`, and `channel`.
 fn Texture* Texture.clone(&self) {
     Texture* t = mem::new(Texture);
     *t = {
@@ -139,7 +160,7 @@ fn Texture* Texture.clone(&self) {
     return t;
 }
 
-// A texture from raw RGBA8 pixels (copied), like THREE.DataTexture.
+// Allocates a `Texture` copying raw top-down RGBA8 `rgba` (`flip_y = false`, mipmaps, 8x aniso).
 fn Texture* data_texture(char[] rgba, int width, int height, ColorSpace color_space = SRGB_COLOR_SPACE) {
     Texture* t = mem::new(Texture);
     *t = {
@@ -155,7 +176,7 @@ fn Texture* data_texture(char[] rgba, int width, int height, ColorSpace color_sp
     return t;
 }
 
-// A texture from RGBA floats in linear light (copied); see Texture.float_pixels.
+// Allocates a linear HDR `Texture` copying RGBA floats (uploaded as `RGBA16F`, `NO_COLOR_SPACE`).
 fn Texture* float_texture(float[] rgba, int width, int height) {
     Texture* t = mem::new(Texture);
     *t = {
@@ -171,17 +192,20 @@ fn Texture* float_texture(float[] rgba, int width, int height) {
     return t;
 }
 
-// A texture that is drawn into instead of loaded, like THREE.WebGLRenderTarget's `.texture`:
-// for a screen in the scene, say. Draw with sokol between begin_canvas and end_canvas (not
-// inside another pass), and use `canvas.texture` as any material's map.
+// Offscreen RGBA8 render target usable as any material map (for example an in-world display).
+// Draw with sokol between `begin()` and `end()` outside any other render pass:
+//
 //   CanvasTexture* screen = drie::canvas_texture(256, 144);
 //   material.map = screen.texture;
 //   screen.begin(0x001000); sdtx::draw(); screen.end();
 struct CanvasTexture {
+    // Backing render-target `Texture` to bind on materials.
     Texture* texture;
+    // Color attachment view created lazily on the first `begin()` call.
     SgView attachment;
 }
 
+// Allocates a clamped RGBA8 `CanvasTexture` of `width` by `height` pixels on the heap (`mem`).
 fn CanvasTexture* canvas_texture(int width, int height) {
     CanvasTexture* c = mem::new(CanvasTexture);
     Texture* t       = mem::new(Texture);
@@ -197,7 +221,7 @@ fn CanvasTexture* canvas_texture(int width, int height) {
     return c;
 }
 
-// Starts drawing into the texture, cleared to `clear`.
+// Begins a sokol render pass targeting this canvas, clearing it to sRGB hex `clear`.
 fn void CanvasTexture.begin(&self, Color clear = 0x000000) {
     SgPass pass = {
         .action.colors[0] = {
@@ -217,9 +241,11 @@ fn void CanvasTexture.begin(&self, Color clear = 0x000000) {
     profile::begin_pass(&pass);
 }
 
+// Ends the sokol render pass started by `begin()`.
 fn void CanvasTexture.end(&self) => sg::end_pass();
 
-// Decodes a PNG or JPEG held in memory (see Texture.flip_y).
+// Decodes an in-memory PNG or JPEG into a `Texture` (`flip_y = true` by default); returns
+// `io::FILE_NOT_VALID` on decode failure.
 fn Texture*? decode_texture(char[] encoded, ColorSpace color_space = SRGB_COLOR_SPACE, bool flip_y = true) {
     CInt w;
     CInt h;
@@ -231,8 +257,8 @@ fn Texture*? decode_texture(char[] encoded, ColorSpace color_space = SRGB_COLOR_
     return t;
 }
 
-// Loads a PNG or JPEG file, like `new THREE.TextureLoader().load(path)` (see Texture.flip_y).
-// A missing or broken file logs a message and gives a magenta placeholder.
+// Loads a PNG or JPEG from `path`. Logs to stderr and returns a 1x1 magenta placeholder if
+// reading or decoding fails.
 fn Texture* load_texture(String path, ColorSpace color_space = SRGB_COLOR_SPACE, bool flip_y = true) {
     char[]? data = file::load(mem, path);
     if (catch err = data) {
@@ -248,10 +274,9 @@ fn Texture* load_texture(String path, ColorSpace color_space = SRGB_COLOR_SPACE,
     return t;
 }
 
-// load_texture, its alpha from the red of a second image, `alpha_path` (the same size): a
-// color and a height or a roughness kept as two JPEGs, which have no alpha, instead of one PNG
-// several times their size (mark it alpha_is_data, so its mipmaps average the alpha plainly).
-// A missing or mismatched alpha image leaves the texture opaque.
+// Loads RGB from `path` and copies the red channel of same-sized `alpha_path` into alpha
+// (useful for pairing two JPEGs instead of one RGBA PNG; set `alpha_is_data` for non-coverage
+// data). Missing or size-mismatched `alpha_path` logs and leaves alpha opaque.
 fn Texture* load_texture_alpha(String path, String alpha_path, ColorSpace color_space = SRGB_COLOR_SPACE, bool flip_y = true) {
     Texture* t = load_texture(path, color_space, flip_y);
     char[]? data = file::load(mem, alpha_path);
@@ -327,8 +352,7 @@ fn float alpha_coverage_of(char[] px, int w, int h, float cut, float scale) @loc
     return (float)over / (float)n;
 }
 
-// Scales `level`'s alpha so that its coverage at `cut` is the largest level's (a bisection on
-// the scale).
+// Bisects an alpha scale on `level` so its pass rate at `cut` matches the top mip level.
 fn void keep_coverage(char[] level, int w, int h, char[] top, int tw, int th, float cut) @local {
     float want = alpha_coverage_of(top, tw, th, cut, 1);
     float lo = 0;
@@ -378,8 +402,10 @@ fn float[] downsample_float(float[] src, int w, int h, int nw, int nh) @local {
     return dst;
 }
 
-// IEEE half floats, as RGBA16F stores them (rounded to nearest; too large becomes infinity,
-// too small zero).
+// ---- Half-float conversion and GPU upload
+
+// Encodes a 32-bit float as IEEE 754 binary16 (round-to-nearest; overflows become infinity and
+// underflows flush to signed zero).
 fn ushort float_to_half(float f) {
     uint x    = bitcast(f, uint);
     uint sign = (x >> 16) & 0x8000;
@@ -399,6 +425,7 @@ fn ushort float_to_half(float f) {
     return (ushort)h;
 }
 
+// Decodes an IEEE 754 binary16 value into a 32-bit float.
 fn float half_to_float(ushort h) {
     uint sign = ((uint)h & 0x8000) << 16;
     uint e    = ((uint)h >> 10) & 0x1f;
@@ -411,7 +438,8 @@ fn float half_to_float(ushort h) {
     return bitcast(sign | ((e + 112) << 23) | (m << 13), float);
 }
 
-// Uploads float_pixels (and its mipmaps) as RGBA16F.
+// Generates mipmaps, converts `float_pixels` to `RGBA16F`, computes `env_light` for 2:1
+// equirectangular maps, uploads to the GPU, and frees `float_pixels`.
 fn void Texture.upload_float(&self) {
     float[][16] levels;
     int[16] widths;
@@ -480,15 +508,16 @@ fn void Texture.upload_float(&self) {
     self.uploaded = true;
 }
 
-// The image's average color in linear light (from every 7th pixel), for whoever needs one
-// color for a whole surface (RadianceCascades' voxels). White for a texture without pixels.
-// (once prepared: safe on any thread; white for an image without RGBA8 pixels)
+// Returns the texture's average color in linear RGB (sampled every 7th pixel, used by
+// `RadianceCascades` voxelization), calling `prepare()` if needed. Safe from any thread;
+// returns white for textures without RGBA8 pixels.
 fn Vector3 Texture.average_color(&self) {
     if (self.source) return self.source.average_color();
     self.prepare();
     return self.has_average ? self.average : (Vector3) { 1, 1, 1 };
 }
 
+// Computes `average` in linear RGB from every 7th pixel of `pixels`.
 fn void Texture.find_average(&self) {
     self.average = { 1, 1, 1 };
     sz count = self.pixels.len / 4;
@@ -508,9 +537,10 @@ fn void Texture.find_average(&self) {
     self.has_average = true;
 }
 
-// Uploads the pixels (and mipmaps) to the GPU. Called by the renderer.
+// Creates GPU image, view, and sampler resources from prepared CPU data (or borrows them from
+// `source` on a clone). Called lazily by `Renderer.render`; frees `prepared` on completion.
 fn void Texture.upload(&self) {
-    // (a clone: its source's, which may have been uploaded again since)
+    // Clones borrow their root source's GPU handles.
     if (self.source) {
         Texture* s = self.source;
         s.upload();
@@ -547,7 +577,7 @@ fn void Texture.upload(&self) {
                 .wrap_v = sg_wrap(self.wrap_t)
             }
         );
-        // a render target's first row is at the top, except in GL
+        // Flip V on render-target textures for top-left-origin backends (Metal/D3D).
         if (depth_zero_to_one()) {
             self.repeat.y = -math::abs(self.repeat.y);
             self.offset.y = 1;
@@ -568,7 +598,7 @@ fn void Texture.upload(&self) {
     MinFilter f = self.min_filter;
     bool nearest_min = f == NEAREST || f == NEAREST_MIPMAP_NEAREST || f == NEAREST_MIPMAP_LINEAR;
     bool nearest_level = f == NEAREST_MIPMAP_NEAREST || f == LINEAR_MIPMAP_NEAREST || self.prepared_levels == 1;
-    // (anisotropic filtering blends texels: only with every filter linear)
+    // Enable anisotropic filtering only when min, mag, and mip filters are all linear.
     bool anisotropic = self.prepared_levels > 1 && !nearest_min && !nearest_level && !self.nearest;
     self.sampler = sg::make_sampler(
         &&{
@@ -585,11 +615,10 @@ fn void Texture.upload(&self) {
     self.uploaded = true;
 }
 
-// The CPU's part of an RGBA8 image's upload: the rows flipped, the mip levels made and put in
-// one block, the light of an environment and the average color worked out; the pixels are
-// freed. upload() does it if it isn't done yet; call it on any thread before then (while
-// loading) to leave upload() only the copy to the GPU. Once only, and safe to call from two
-// threads at once (the second waits for the first).
+// Performs CPU-side upload work for an RGBA8 texture: averages color, flips rows when `flip_y`,
+// builds and packs the mip chain, computes `env_light` for 2:1 images, and frees `pixels`
+// (unless `keep_pixels` is set). Safe to call ahead of `upload()` from worker threads; runs
+// once and blocks concurrent callers until done.
 fn void Texture.prepare(&self) {
     int expected = 0;
     if (!self.preparing.compare_exchange(&expected, 1)) {
@@ -627,13 +656,13 @@ fn void Texture.prepare(&self) {
             count++;
         }
     }
-    // (the levels used are freed with the generated ones, below)
+    // Free any trailing unused custom mip levels; used levels are freed below with generated ones.
     if (self.mipmaps.len) {
         foreach (i, level : self.mipmaps) if (i + 1 >= count) mem::free(level.ptr);
         mem::free(self.mipmaps.ptr);
         self.mipmaps = { };
     }
-    // sokol takes all mip levels in one block, largest first
+    // Pack all mip levels contiguously, largest first, for sokol's `SgImageDesc`.
     sz total;
     for (int i = 0; i < count; i++) total += levels[i].len;
     self.prepared = mem::new_array(char, total);
@@ -662,8 +691,9 @@ fn void Texture.prepare(&self) {
     self.pixels = { };
 }
 
-// The red of a texture whose pixels prepare() has kept (keep_pixels) at `uv`, 0..1 (linear
-// light for an sRGB one), bilinear and wrapped as on the GPU. 0 without pixels.
+// Bilinearly samples the red channel in 0..1 (decoded to linear light for sRGB textures) at
+// `uv` using `wrap_s`/`wrap_t`, for a prepared texture with `keep_pixels` set. Returns 0 when
+// CPU pixels are unavailable.
 fn float Texture.red_at(&self, Vector2 uv) {
     if (self.source) return self.source.red_at(uv);
     if (!self.keep_pixels || self.preparing.load() != 2 || !self.pixels.len) return 0;
@@ -701,9 +731,9 @@ fn int wrap_texel(int i, int n, Wrapping w) @local {
     return math::clamp(i, 0, n - 1);
 }
 
-// Frees the GPU resources.
+// Releases GPU image, view, and sampler handles (clones clear only their borrowed references).
 fn void Texture.dispose(&self) {
-    // (a clone's are its source's)
+    // Clones borrow GPU handles from `source` and must not destroy them.
     if (self.source) {
         self.view = { };
         self.image = { };
@@ -720,8 +750,9 @@ fn void Texture.dispose(&self) {
     self.uploaded = false;
 }
 
-// The mip level to work out env_sh from: the largest at most 128 pixels wide, which still holds
-// all of the image's light (each level averages the one above).
+// ---- Environment light and spherical harmonics
+
+// Selects the largest mip level at most 128 px wide for SH integration.
 fn int env_sh_level(int[] widths) @local {
     for (int i = 0; i < widths.len; i++) {
         if (widths[i] <= 128) return i;
@@ -729,14 +760,12 @@ fn int env_sh_level(int[] widths) @local {
     return widths.len - 1;
 }
 
-// The 9 spherical harmonics up to band 2 at direction d, without their constants (those are in
-// the coefficients). The shader's env_irradiance evaluates the same 9.
+// Evaluates the 9 unnormalized real spherical harmonic basis polynomials up to band 2 for `d`.
 fn void sh_basis(Vector3 d, float[9]* b) @local {
     *b = { 1, d.y, d.z, d.x, d.x * d.y, d.y * d.z, 3 * d.z * d.z - 1, d.x * d.z, d.x * d.x - d.y * d.y };
 }
 
-// Constants of the real spherical harmonics in sh_basis' order, and the cosine lobe's factor per
-// band (Ramamoorthi & Hanrahan 2001, "An Efficient Representation for Irradiance Environment Maps").
+// Real spherical harmonic normalization constants in `sh_basis` order (Ramamoorthi & Hanrahan 2001).
 const float[9] SH_K      = {
     0.282095f,
     0.488603f,
@@ -748,18 +777,23 @@ const float[9] SH_K      = {
     1.092548f,
     0.546274f
 };
+// Harmonic band index (0, 1, or 2) for each of the 9 SH coefficients.
 const float[9] SH_BAND   = { 0, 1, 1, 1, 2, 2, 2, 2, 2 };
+// Clamped-cosine irradiance convolution factors for SH bands 0, 1, and 2.
 const float[3] SH_COSINE = { PI, 2 * PI / 3, PI / 4 };
 
-// The diffuse light of an environment map: all of it but its sun in spherical harmonics
-// (env_sh_irradiance), and its sun on its own, a light from one direction.
+// Diffuse irradiance of an equirectangular environment map split into band-2 spherical
+// harmonics (`sh`) plus an optional separated directional sun (`sun_dir`, `sun`).
 struct EnvLight {
-    Vector3[9] sh;    // irradiance(n) = sum sh[i] * basis_i(n) (sh_basis)
-    Vector3 sun_dir;  // unit, towards the sun
-    Vector3 sun;      // the light the sun gives a surface facing it (0: no sun)
+    // Pre-scaled band-2 SH irradiance coefficients: `irradiance(n) = sum sh[i] * basis_i(n)`.
+    Vector3[9] sh;
+    // Unit direction pointing toward the extracted sun.
+    Vector3 sun_dir;
+    // Direct irradiance from the extracted sun on a surface facing `sun_dir` (0 = no sun).
+    Vector3 sun;
 }
 
-// The light the map puts on a surface facing `n` (as the shader's env_irradiance).
+// Evaluates diffuse irradiance on a surface with unit normal `n` (matches shader `env_irradiance`).
 fn Vector3 EnvLight.irradiance(&self, Vector3 n) {
     float[9] b;
     sh_basis(n, &b);
@@ -769,15 +803,13 @@ fn Vector3 EnvLight.irradiance(&self, Vector3 n) {
     return e + self.sun * math::max(n.dot(self.sun_dir), 0.0f);
 }
 
-// The light on surfaces as 9 coefficients alone (sh_basis' order, as EnvLight.sh), the sun in
-// them too: its clamped cosine to band 2 (1/4, 1/2 and 5/16 of the Legendre polynomials), for
-// whatever takes spherical harmonics only (three's LightProbe).
+// Folds the separated `sun` back into 9 band-2 SH irradiance coefficients (in `sh_basis` order)
+// using the clamped-cosine Legendre weights (`1/4`, `1/2`, `5/16`).
 fn Vector3[9] EnvLight.harmonics(&self) {
     Vector3[9] e = self.sh;
     Vector3 l = self.sun_dir;
     Vector3 s = self.sun;
-    // E = s (1/4 + 1/2 cos + 5/16 (3 cos^2 - 1) / 2), with cos^2 in the basis: x^2 and y^2
-    // through x^2 + y^2 + z^2 = 1 and x^2 - y^2, z^2 through 3 z^2 - 1
+    // Project `s * (1/4 + 1/2 cos + 5/16 * (3 cos^2 - 1) / 2)` into the 9 basis polynomials.
     const float C2 = 0.46875f;
     float flat = (l.x * l.x + l.y * l.y) / 2;
     float zz = (l.z * l.z - flat) / 3;
@@ -793,15 +825,15 @@ fn Vector3[9] EnvLight.harmonics(&self) {
     return e;
 }
 
-// The diffuse light of a longitude/latitude image of radiance (see env_sh_irradiance for the
-// layout and the pixels). A sun (a small spot far brighter than the rest: its brightest pixel
-// SUN_CONTRAST times the image's average) is taken out of the harmonics, which would spread it
-// all round (a sun at the horizon lighting the ground's underside), and kept as a light from
-// one direction: what the pixels within SUN_RADIUS of the brightest have above the light
-// around them (from SUN_RADIUS to twice that).
+// Minimum peak-to-mean luminance ratio required to separate a sun disk out of the SH lobes.
 const float SUN_CONTRAST = 30;
+// Angular radius in radians integrated around the peak pixel when extracting a sun disk.
 const float SUN_RADIUS   = 8 * DEG2RAD;
 
+// Projects a `w x h` equirectangular radiance image (`floats` linear RGBA, or `bytes` RGBA8
+// decoded from sRGB when `srgb` is true) into an `EnvLight`. Peaks exceeding `SUN_CONTRAST`
+// times the spherical mean are extracted within `SUN_RADIUS` into `sun`/`sun_dir` above the
+// surrounding annulus (`SUN_RADIUS..2 * SUN_RADIUS`) to avoid SH ringing.
 fn EnvLight env_light(float[] floats, char[] bytes, int w, int h, bool srgb) {
     float[] px = mem::new_array(float, (sz)w * h * 4);
     defer free(px);
@@ -830,11 +862,11 @@ fn EnvLight env_light(float[] floats, char[] bytes, int w, int h, bool srgb) {
             }
         }
     }
-    // (the average over the sphere: sin(phi) weighs the rows by their solid angle)
+    // Solid-angle weighted spherical mean (`sin(phi)` weights each latitude row).
     mean /= (float)w * h * 2 / PI;
     EnvLight env;
     if (mean > 0 && peak > SUN_CONTRAST * mean) {
-        // the light around the sun, then what the sun has above it
+        // Measure surrounding sky luminance in `[SUN_RADIUS, 2 * SUN_RADIUS]`, then extract excess.
         Vector3 around;
         float around_w;
         for (int y = 0; y < h; y++) {
@@ -875,7 +907,7 @@ fn EnvLight env_light(float[] floats, char[] bytes, int w, int h, bool srgb) {
 
 fn float luminance(Vector3 c) @local => 0.2126f * c.x + 0.7152f * c.y + 0.0722f * c.z;
 
-// The direction of pixel (x, y) of a w x h longitude/latitude image, and its solid angle.
+// Direction vector of pixel `(x, y)` in a `w x h` equirectangular map (+Y at row 0).
 fn Vector3 env_dir(int x, int y, int w, int h) @local {
     float phi   = ((float)y + 0.5f) / h * PI;
     float theta = (((float)x + 0.5f) / w - 0.5f) * 2 * PI;
@@ -884,14 +916,10 @@ fn Vector3 env_dir(int x, int y, int w, int h) @local {
 
 fn float env_omega(int y, int w, int h) @local => (2 * PI / w) * (PI / h) * math::sin(((float)y + 0.5f) / h * PI);
 
-// The irradiance of a longitude/latitude image of radiance (rows as uploaded: the first at the
-// top, y up), as 9 coefficients c with irradiance(n) = sum c[i] * basis_i(n): the radiance
-// projected onto spherical harmonics up to band 2, convolved with the cosine lobe, and windowed
-// as little as keeps it from going below -3% of its average anywhere, where a small, bright
-// light would otherwise ring on the far side (Sloan 2017, "Deringing Spherical Harmonics"). The
-// shader clamps what is left below zero; a window strict enough to leave none would take a
-// sixth of the light off a surface facing a clear sky over a dark ground. Pixels are `floats`
-// (RGBA, linear) or `bytes` (RGBA8, sRGB when `srgb`).
+// Projects a `w x h` equirectangular radiance image (row 0 at +Y; `floats` linear RGBA or
+// `bytes` RGBA8 decoded when `srgb` is true) onto band-2 SH irradiance coefficients with basis
+// constants folded in. Applies minimal Sloan (2017) windowing so no sampled direction falls
+// below -3% of the band-0 average; shaders clamp any remaining negative tail to zero.
 fn Vector3[9] env_sh_irradiance(float[] floats, char[] bytes, int w, int h, bool srgb) {
     Vector3[9] l;
     float[9] b;
@@ -914,12 +942,11 @@ fn Vector3[9] env_sh_irradiance(float[] floats, char[] bytes, int w, int h, bool
             for (int k = 0; k < 9; k++) l[k] += c * (b[k] * SH_K[k] * d_omega);
         }
     }
-    // irradiance, with the basis' constants folded in so the shader only sums
+    // Fold basis and cosine-lobe constants into each coefficient so evaluation is a plain dot sum.
     Vector3[9] e;
     for (int k = 0; k < 9; k++) e[k] = l[k] * (SH_COSINE[(int)SH_BAND[k]] * SH_K[k]);
     if (sh_min(e) >= 0) return e;
-    // the least windowing, 1 / (1 + lambda * l^2 (l + 1)^2) for band l, that leaves no direction
-    // below the floor
+    // Bisect the smallest windowing factor `1 / (1 + lambda * l^2 * (l + 1)^2)` meeting the floor.
     float lo = 0;
     float hi = 1;
     while (sh_min(sh_window(e, hi)) < 0 && hi < 1e6f) hi *= 4;
@@ -943,8 +970,7 @@ fn Vector3[9] sh_window(Vector3[9] e, float lambda) @local {
     return out;
 }
 
-// The smallest value of any channel over 512 directions spread evenly over the sphere, less
-// the floor of that channel: -3% of its average (the constant band's).
+// Minimum channel value over 512 Fibonacci-sphere directions relative to the -3% band-0 floor.
 fn float sh_min(Vector3[9] e) @local {
     float lowest = 1e30f;
     float[9] b;
@@ -962,12 +988,14 @@ fn float sh_min(Vector3[9] e) @local {
     }
     return lowest;
 }
-// A cube map's six faces as an equirectangular map, the layout of drie's environment maps
-// and backgrounds (Scene.environment, Material.env_map): 4 * size by 2 * size texels, at most
-// 4096 wide, RGBA in linear light. It is looked up as three looks up a CubeTexture, x
-// mirrored (three's flipEnvMap). The faces are in GL's order (+x, -x, +y, -y, +z, -z), each
-// size * size RGBA, top row first: `floats` in linear light, or `bytes`, 8 bits a channel and
-// in sRGB when `srgb` (three's CubeTextureLoader). Give one of the two.
+
+// ---- Cube maps
+
+// Converts six `size x size` cube-map faces in GL order (`+X, -X, +Y, -Y, +Z, -Z`, top row
+// first, X-mirrored to match cube environment sampling) into a linear HDR equirectangular
+// `Texture` (`4 * size x 2 * size`, capped at 4096 wide) for `Scene.environment` or
+// `Material.env_map`. Supply either linear RGBA `floats` or RGBA8 `bytes` (decoded from sRGB
+// when `srgb` is true).
 fn Texture* cube_texture(float[][6] floats, char[][6] bytes, int size, bool srgb = true) {
     float[256] lut;
     for (int i = 0; i < 256; i++) lut[i] = srgb ? srgb_to_linear(i / 255.0f) : i / 255.0f;
@@ -977,20 +1005,20 @@ fn Texture* cube_texture(float[][6] floats, char[][6] bytes, int size, bool srgb
     float[] px = mem::new_array(float, (sz)w * h * 4);
     defer mem::free(px.ptr);
     for (int y = 0; y < h; y++) {
-        // drie's equirectangular maps: v = 0 straight up, u = 0.5 toward +x (see env_uv)
+        // Equirectangular convention: v = 0 straight up (+Y), u = 0.5 toward +X (see `shading::env_uv`).
         float theta = ((float)y + 0.5f) / h * (float)math::PI;
         float st = math::sin(theta);
         float ct = math::cos(theta);
         for (int x = 0; x < w; x++) {
             float phi = (((float)x + 0.5f) / w - 0.5f) * 2 * (float)math::PI;
-            // (three reads a CubeTexture with x mirrored: flipEnvMap)
+            // Mirror X to match cube environment map orientation.
             Vector3 d = { -math::cos(phi) * st, ct, math::sin(phi) * st };
             int face;
             float sc;
             float tc;
             float ma;
             Vector3 a = { math::abs(d.x), math::abs(d.y), math::abs(d.z) };
-            // GL's cube map faces: which one, and where in it
+            // Select GL cube face and major-axis projection coordinates.
             if (a.x >= a.y && a.x >= a.z) {
                 face = d.x > 0 ? 0 : 1;
                 sc = d.x > 0 ? -d.z : d.z;
@@ -1031,7 +1059,8 @@ fn Texture* cube_texture(float[][6] floats, char[][6] bytes, int size, bool srgb
     return float_texture(px, w, h);
 }
 
-// The same from six PNG or JPEG images held in memory (three's CubeTextureLoader).
+// Decodes six square same-sized PNG or JPEG cube faces (`+X, -X, +Y, -Y, +Z, -Z`) from memory
+// into a linear equirectangular `Texture`; returns `io::FILE_NOT_VALID` on decode or size mismatch.
 fn Texture*? decode_cube_texture(char[][6] encoded, bool srgb = true) {
     char[][6] faces;
     char*[6] decoded;

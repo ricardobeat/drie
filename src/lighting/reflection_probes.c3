@@ -1,56 +1,60 @@
-// Reflection probes for a whole scene, like three's scene-level probes (box-projected, blended
-// where their boxes meet, kept as the layers of one array texture): each environment map
-// belongs to a box, usually a room, and a material with `env_probes` set mirrors the map of
-// the box each of its points is in, whichever room the camera stands in. Where two boxes meet
-// (a doorway) the two maps cross-fade over `blend` meters; a probe without a box (box_min ==
-// box_max) is the one for everywhere else, the sky's.
+// Scene-level box-projected reflection probes (`ReflectionProbes`) packed into a single 2D array
+// texture with CPU-generated mipmaps for roughness filtering. Each probe owns an axis-aligned box
+// and cross-fades over `blend` meters into neighboring probes or an unbounded fallback probe
+// (`box_min == box_max`). Materials with `env_probes` set sample this array; equirectangular maps
+// carrying hit distances in alpha (`Renderer.capture_environment`) apply parallax correction. Add
+// maps before drawing with them so their CPU pixel buffers are still intact; `upload()` runs
+// lazily from the renderer.
+
+module drie;
+import std::math;
+import sokol;
+
+// Maximum number of probes in one `ReflectionProbes` array texture.
+const int MAX_REFLECTION_PROBES = 4;
+
+// Single box-projected environment probe entry inside `ReflectionProbes`.
+struct ReflectionProbe {
+    Vector3 position; // World-space capture center (m).
+    Vector3 box_min; // World-space influence box minimum corner (m); equal to `box_max` for fallback.
+    Vector3 box_max; // World-space influence box maximum corner (m); equal to `box_min` for fallback.
+    float blend; // Fade distance outside the box into neighbors or fallback (m).
+    float intensity; // Scalar multiplier on reflected radiance.
+    float distance_range; // Distance represented by alpha 1.0 in meters (`0` when no distances stored).
+    char[] pixels; // Owned copy of the equirectangular RGBA8 pixels.
+}
+
+// Collection of up to `MAX_REFLECTION_PROBES` equirectangular probes uploaded as one 2D array
+// texture and assigned via `Scene.reflection_probes`.
 //
 //   ReflectionProbes* probes = drie::reflection_probes();
 //   probes.add(renderer.capture_environment(scene, room_center), room_center, room_min, room_max);
 //   probes.add(renderer.capture_environment(scene, outside), outside);
 //   scene.reflection_probes = probes;
 //   glass.env_probes = true;
-//
-// The maps are equirectangular textures of one size (capture_environment's), added before
-// they are first drawn with (their pixels are copied; a texture gives its pixels up when it
-// goes to the GPU). A map with distances (capture_environment's `distance`) is followed
-// through the room as a material's own boxed env_map is.
-module drie;
-import std::math;
-import sokol;
-
-const int MAX_REFLECTION_PROBES = 4;
-
-struct ReflectionProbe {
-    Vector3 position;
-    Vector3 box_min;
-    Vector3 box_max;
-    // how far outside the box it fades out, into its neighbours or the probe for everywhere else (m)
-    float blend;
-    float intensity;
-    // what its map's alpha 1 stands for in meters (0: the map holds no distances)
-    float distance_range;
-    char[] pixels;
-}
-
 struct ReflectionProbes {
-    ReflectionProbe[MAX_REFLECTION_PROBES] probes;
-    int count;
-    int width;
-    int height;
-    ColorSpace color_space;
-    SgImage image;
-    SgView view;
-    SgSampler sampler;
-    bool uploaded;
+    ReflectionProbe[MAX_REFLECTION_PROBES] probes; // Registered probes (`0..count-1`).
+    int count; // Number of added probes.
+    int width; // Shared equirectangular map width in pixels.
+    int height; // Shared equirectangular map height in pixels.
+    ColorSpace color_space; // Color space of the uploaded array (`SRGB_COLOR_SPACE` uses `SRGB8A8`).
+    SgImage image; // Uploaded 2D array image with mip chain.
+    SgView view; // Texture view bound by lit shaders.
+    SgSampler sampler; // Trilinear sampler wrapping horizontally and clamping vertically.
+    bool uploaded; // True when GPU array matches `probes[0..count-1]`.
 }
 
+// ---- Probe setup
+
+// Allocates an empty `ReflectionProbes` container.
 fn ReflectionProbes* reflection_probes() {
     return mem::new(ReflectionProbes);
 }
 
-// Adds a probe: `map` as seen from `position`, for the points inside box_min..box_max (none:
-// for everywhere outside the other probes' boxes). Returns it, for its blend and intensity.
+// Copies `map`'s CPU pixels as a probe centered at `position` covering `box_min..box_max` (leave
+// equal for a fallback sky probe) and returns the new entry for tuning `blend` and `intensity`.
+// Aborts if `MAX_REFLECTION_PROBES` is exceeded, if `map.pixels` has already been released by a
+// GPU upload, or if `map`'s dimensions differ from earlier probes.
 fn ReflectionProbe* ReflectionProbes.add(
     &self,
     Texture* map,
@@ -84,7 +88,9 @@ fn ReflectionProbe* ReflectionProbes.add(
     return p;
 }
 
-// Halves an RGBA8 image with a box filter.
+// ---- Mipmap generation & upload
+
+// Downsamples an RGBA8 image from `w` x `h` to `nw` x `nh` with a 2x2 box filter.
 fn char[] probe_downsample(char[] src, int w, int h, int nw, int nh) @local {
     char[] dst = mem::new_array(char, (sz)nw * nh * 4);
     for (int y = 0; y < nh; y++) {
@@ -103,8 +109,8 @@ fn char[] probe_downsample(char[] src, int w, int h, int nw, int nh) @local {
     return dst;
 }
 
-// Makes the array texture (a layer per probe, with its mip levels: roughness blurs through
-// them). Called by the renderer.
+// Builds the mipmapped 2D array texture (one slice per probe, up to 12 mip levels) on the GPU
+// when dirty. Called lazily by the renderer.
 fn void ReflectionProbes.upload(&self) {
     if (self.uploaded || !self.count) return;
     if (self.image.id) {
@@ -114,7 +120,7 @@ fn void ReflectionProbes.upload(&self) {
     int levels = 1;
     int lw     = self.width;
     int lh     = self.height;
-    // sokol takes the levels one after the other, each with all its layers
+    // Sokol expects mip levels packed sequentially, each containing all array slices.
     sz total   = (sz)lw * lh * 4 * self.count;
     while ((lw > 1 || lh > 1) && levels < 12) {
         lw = math::max(lw / 2, 1);

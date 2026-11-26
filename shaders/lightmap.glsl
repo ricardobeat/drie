@@ -1,8 +1,6 @@
-// ProgressiveLightMap (lightmap.c3): the "blur plane" drawn under the objects of each update,
-// as three's. It covers the whole light map with the average of the last one's 8 neighbours
-// half a texel away (filtered: each tap blends four texels), so the texels just outside of
-// each object's uv islands take its light and its seams don't show. Regenerate
-// generated/lightmap.c3 with: just shaders
+// ProgressiveLightMap (drie): seam-dilation pass drawn under objects on each bake update, like
+// three.js's blur plane. Averages 8 neighbor taps from the previous map so texels outside UV
+// islands inherit light and hide seams. Regenerate generated/lightmap.c3 with `just shaders`.
 @header module drie::shaders;
 @header import drie;
 

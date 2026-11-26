@@ -1,13 +1,10 @@
-// GTAOPass (postprocessing.c3): ground-truth ambient occlusion (Jimenez et al. 2016, after
-// Intel's XeGTAO), from the depth and normals of a scene rendered with MRT, taken off the
-// indirect light only. Regenerate generated/gtao.c3 with: just shaders
+// GTAOPass (drie::postprocessing): ground-truth ambient occlusion (Jimenez et al. 2016, after
+// Intel's XeGTAO) from MRT depth and normals. Regenerate generated/gtao.c3 with `just shaders`.
 //
-//   gtao_fs / gtao_ms_fs  per pixel, the visibility over a few slices of the hemisphere above
-//                         it: r = visibility, g = distance from the camera's plane (m), b = n·v
-//   gtao_apply_fs         a 4x4 blur over pixels of about the same distance, then the factor
-//                         that darkens the pixel's indirect diffuse light by the visibility and
-//                         its indirect specular light by the specular occlusion (Lagarde's);
-//                         multiplied into the picture by the pipeline's blending
+//   gtao_fs / gtao_ms_fs  per-pixel hemisphere slice visibility: r = visibility, g = view depth
+//                         (m), b = n·v
+//   gtao_apply_fs         4x4 depth-aware blur and indirect diffuse + Lagarde specular occlusion
+//                         factor, multiplied into the color buffer via pipeline blending
 @header module drie::postprocessing;
 @header import drie;
 

@@ -1,40 +1,56 @@
-// Vector / matrix / color math for three.
+// Core math and color utilities: 2D/3D/4D vectors, column-major 4x4 matrices, XYZ Euler
+// angles, scalar helpers, and sRGB/linear color conversion. Right-handed Y-up coordinates,
+// angles in radians unless a parameter is suffixed `_deg`, and `Mat4` indexed `m[col][row]`.
+// Colors are 24-bit sRGB hex (`0xRRGGBB`) on the API surface and linear RGB in shaders and
+// lighting; no heap allocations occur here.
 module drie;
 import std::math;
 
+// Ratio of a circle's circumference to its diameter.
 const float PI      = 3.14159265358979323846;
+// Factor converting degrees to radians (`PI / 180`).
 const float DEG2RAD = PI / 180.0f;
+// Factor converting radians to degrees (`180 / PI`).
 const float RAD2DEG = 180.0f / PI;
 
+// Two-component 32-bit float vector (UVs, screen coordinates, 2D offsets).
 alias Vector2 = float[<2>];
+// Three-component 32-bit float vector (positions, directions, linear RGB colors).
 alias Vector3 = float[<3>];
+// Four-component 32-bit float vector (homogeneous coordinates, RGBA, packed uniforms).
 alias Vec4 = float[<4>];
-// Euler angles in radians, applied in XYZ order (three's default).
+// Euler rotation angles in radians, applied in intrinsic XYZ order.
 alias Euler = float[<3>];
-// Column-major 4x4 matrix, indexed m[column][row].
+// Column-major 4x4 matrix indexed `m[column][row]`.
 typedef Mat4 = float[4][4];
 
-// Colors are sRGB hex values, like 0x44aa88.
+// 24-bit sRGB color packed as `0xRRGGBB` (for example `0x44aa88`).
 alias Color = uint;
 
+// Assigns `(x, y, z)` to the vector in place.
 fn void Vector3.set(&self, float x, float y, float z) => *self = { x, y, z };
+// Copies `v` into the vector in place.
 fn void Vector3.copy(&self, Vector3 v) => *self = v;
+// Sets all three components to `s` in place.
 fn void Vector3.set_scalar(&self, float s) => *self = { s, s, s };
+// Returns the Euclidean distance from this vector to `v`.
 fn float Vector3.distance_to(&self, Vector3 v) => (*self - v).length();
+// Linearly interpolates this vector toward `v` by `alpha` in place.
 fn void Vector3.lerp(&self, Vector3 v, float alpha) => *self += (v - *self) * alpha;
 
+// Converts degrees to radians.
 fn float deg_to_rad(float deg) => deg * DEG2RAD;
+// Converts radians to degrees.
 fn float rad_to_deg(float rad) => rad * RAD2DEG;
 
+// Clamps `x` to the closed interval `[lo, hi]`.
 fn float clamp(float x, float lo, float hi) {
     return x < lo ? lo : (x > hi ? hi : x);
 }
 
-// ----------------------------------------------------------------------------
-// Colors
-// ----------------------------------------------------------------------------
+// ---- Colors
 
-// Build a hex color from 0..1 sRGB components.
+// Packs 0..1 sRGB channel values into a 24-bit hex `Color`.
 fn Color rgb(float r, float g, float b) {
     uint ri = (uint)(clamp(r, 0, 1) * 255 + 0.5f);
     uint gi = (uint)(clamp(g, 0, 1) * 255 + 0.5f);
@@ -51,7 +67,7 @@ fn float hue_to_rgb(float p, float q, float t) @local {
     return p;
 }
 
-// Build a hex color from hue, saturation, lightness (all 0..1), like Color.setHSL.
+// Builds an sRGB hex `Color` from hue, saturation, and lightness in 0..1 (`h` wraps modulo 1).
 fn Color hsl(float h, float s, float l) {
     h = h - math::floor(h);
     s = clamp(s, 0, 1);
@@ -62,11 +78,12 @@ fn Color hsl(float h, float s, float l) {
     return rgb(hue_to_rgb(p, q, h + 1.0f / 3), hue_to_rgb(p, q, h), hue_to_rgb(p, q, h - 1.0f / 3));
 }
 
+// Converts a single sRGB channel in 0..1 to linear light using the IEC 61966-2-1 curve.
 fn float srgb_to_linear(float c) {
     return c <= 0.04045f ? c / 12.92f : math::pow((c + 0.055f) / 1.055f, 2.4f);
 }
 
-// sRGB hex -> linear rgb (what the shader works in).
+// Converts an sRGB hex `Color` to linear RGB floats in 0..1 for lighting and shaders.
 fn Vector3 color_to_linear(Color c) {
     return {
         srgb_to_linear(((c >> 16) & 0xff) / 255.0f),
@@ -75,7 +92,7 @@ fn Vector3 color_to_linear(Color c) {
     };
 }
 
-// Linear rgb (0..1) -> sRGB hex, what color_to_linear undoes (three.js: convertLinearToSRGB).
+// Converts linear RGB floats in 0..1 to an sRGB hex `Color`, clamping out-of-range channels.
 fn Color linear_to_color(Vector3 c) {
     uint hex;
     for (int k = 0; k < 3; k++) {
@@ -86,18 +103,19 @@ fn Color linear_to_color(Vector3 c) {
     return (Color)hex;
 }
 
+// Unpacks an sRGB hex `Color` into 0..1 sRGB floats without gamma decoding.
 fn Vector3 color_to_rgb(Color c) {
     return { ((c >> 16) & 0xff) / 255.0f, ((c >> 8) & 0xff) / 255.0f, (c & 0xff) / 255.0f };
 }
 
-// ----------------------------------------------------------------------------
-// Matrices
-// ----------------------------------------------------------------------------
+// ---- Matrices
 
+// Returns the 4x4 identity matrix.
 fn Mat4 mat4_identity() {
     return { { 1, 0, 0, 0 }, { 0, 1, 0, 0 }, { 0, 0, 1, 0 }, { 0, 0, 0, 1 } };
 }
 
+// Multiplies two column-major 4x4 matrices (`self * b`).
 fn Mat4 Mat4.mul(self, Mat4 b) {
     Mat4 m;
     for (int col = 0; col < 4; col++) {
@@ -109,6 +127,7 @@ fn Mat4 Mat4.mul(self, Mat4 b) {
     return m;
 }
 
+// Transforms a 3D point by an affine matrix (`w = 1`, ignoring the bottom row).
 fn Vector3 Mat4.transform_point(self, Vector3 v) {
     return {
         self[0][0] * v.x + self[1][0] * v.y + self[2][0] * v.z + self[3][0],
@@ -117,6 +136,7 @@ fn Vector3 Mat4.transform_point(self, Vector3 v) {
     };
 }
 
+// Multiplies a 4D column vector by this matrix (`self * v`).
 fn Vec4 Mat4.mul_vec4(self, Vec4 v) {
     return {
         self[0][0] * v.x + self[1][0] * v.y + self[2][0] * v.z + self[3][0] * v.w,
@@ -126,8 +146,10 @@ fn Vec4 Mat4.mul_vec4(self, Vec4 v) {
     };
 }
 
+// Extracts the translation vector from column 3 of the matrix.
 fn Vector3 Mat4.get_position(self) => { self[3][0], self[3][1], self[3][2] };
 
+// Returns the transpose of this matrix.
 fn Mat4 Mat4.transpose(self) {
     Mat4 m;
     for (int c = 0; c < 4; c++) {
@@ -136,7 +158,7 @@ fn Mat4 Mat4.transpose(self) {
     return m;
 }
 
-// Same as three's Matrix4.compose with an XYZ Euler rotation.
+// Composes a transform matrix from translation, XYZ Euler rotation (radians), and scale.
 fn Mat4 mat4_compose(Vector3 pos, Euler rot, Vector3 scale) {
     float a  = math::cos(rot.x);
     float b  = math::sin(rot.x);
@@ -161,7 +183,7 @@ fn Mat4 mat4_compose(Vector3 pos, Euler rot, Vector3 scale) {
     return m;
 }
 
-// Extract XYZ Euler angles from the (unscaled) rotation part of a matrix.
+// Extracts XYZ Euler angles (radians) from the upper-left 3x3 rotation of an unscaled matrix.
 fn Euler euler_from_rotation(Mat4 m) {
     float m11 = m[0][0];
     float m12 = m[1][0];
@@ -182,14 +204,15 @@ fn Euler euler_from_rotation(Mat4 m) {
     return e;
 }
 
-// Rotation matrix whose -Z axis (camera) or +Z axis (objects) points from eye to target.
+// Builds a rotation matrix orienting `-Z` (when `is_camera`) or `+Z` (otherwise) from `eye`
+// toward `target`, using `up` to fix roll. Nudges `z` when parallel to `up`.
 fn Mat4 mat4_look_at(Vector3 eye, Vector3 target, Vector3 up, bool is_camera) {
     Vector3 z = is_camera ? eye - target : target - eye;
     if (z.length() < 1e-8f) z = { 0, 0, 1 };
     z = z.normalize();
     Vector3 x = up.cross(z);
     if (x.length() < 1e-8f) {
-        // up and z are parallel: nudge z
+        // Nudge `z` away from `up` so the cross product stays non-degenerate.
         if (math::abs(up.z) == 1) {
             z.x += 0.0001f;
         } else {
@@ -207,7 +230,8 @@ fn Mat4 mat4_look_at(Vector3 eye, Vector3 target, Vector3 up, bool is_camera) {
     return m;
 }
 
-// Perspective projection. zero_to_one selects Metal/D3D clip depth (0..1) vs GL (-1..1).
+// Builds a perspective projection matrix from vertical `fov_deg`, `aspect` (`width / height`),
+// `near`/`far`, and `zoom`. `zero_to_one` selects `[0, 1]` (Metal/D3D) vs `[-1, 1]` (GL).
 fn Mat4 mat4_perspective(float fov_deg, float aspect, float near, float far, float zoom, bool zero_to_one) {
     float f = 1.0f / math::tan(fov_deg * DEG2RAD * 0.5f) * zoom;
     Mat4 m;
@@ -224,6 +248,8 @@ fn Mat4 mat4_perspective(float fov_deg, float aspect, float near, float far, flo
     return m;
 }
 
+// Builds an orthographic projection matrix for `[left, right] x [bottom, top] x [near, far]`
+// (`top` precedes `bottom`). `zero_to_one` selects `[0, 1]` vs `[-1, 1]` clip depth.
 fn Mat4 mat4_orthographic(float left, float right, float top, float bottom, float near, float far, bool zero_to_one) {
     Mat4 m = mat4_identity();
     m[0][0] = 2 / (right - left);
@@ -240,6 +266,7 @@ fn Mat4 mat4_orthographic(float left, float right, float top, float bottom, floa
     return m;
 }
 
+// Returns the inverse of this matrix, or `mat4_identity()` if the determinant is zero.
 fn Mat4 Mat4.invert(self) {
     float[16] a, inv;
     for (int i = 0; i < 16; i++) a[i] = self[i / 4][i % 4];
