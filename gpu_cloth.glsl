@@ -37,6 +37,7 @@ layout(binding=0) uniform gc_params {
     vec4 gc_gust;      // x = gust, y = time, z = width, w = height of the cloth at rest
     vec4 gc_self;      // x = 1 / hash cell size, y = self-collision stiffness, z = tether slack,
                        //   w = self-collision friction
+    vec4 gc_mode;      // w = gc_bodies_cs's mode (xy: the update and its steps), x = gc_damp_cs's share
 };
 
 struct gc_point {
@@ -69,10 +70,13 @@ struct gc_push {
     ivec4 d;
 };
 
-// SPHERE 0, CAPSULE 1, BOX 2, PLANE 3 (info.x); from_* where it was at the step's start, the
-// others where it is going; x and y: a box's first two axes (a plane's normal is x)
+// SPHERE 0, CAPSULE 1, BOX 2, PLANE 3 (info.x); from_* where it was at the update's start,
+// the others where it is going; x and y: a box's first two axes (a plane's normal is x)
 struct gc_collider {
-    vec4 info;    // x = kind, y = radius, z = 1: active
+    vec4 info;      // x = kind, y = radius, z = 1: active, w = its body (-1: none, kinematic)
+    vec4 mass;      // x = 1 / its mass, y = 1: its body starts over (put somewhere new)
+    vec4 corr_off;  // what the CPU takes off its body's offset and velocity at the update's end
+    vec4 corr_dv;
     vec4 from_a;
     vec4 a;
     vec4 from_b;
@@ -83,6 +87,20 @@ struct gc_collider {
     vec4 y;
     vec4 half_size;
 };
+
+// A collider with a mass: how far the cloth has pushed it from where it was moved to (off)
+// and how much it has changed its velocity (dv), of which the CPU has not been told yet; where
+// it was at the last step's start and end (begin, end: its mesh is drawn between them, as the
+// cloth's is)
+struct gc_body {
+    vec4 off;
+    vec4 dv;
+    vec4 begin;
+    vec4 end;
+    vec4 mark;  // the update (x) and the steps by its end (y) it is the state at the end of
+};
+
+const int GC_BODIES = 8;
 
 // a vertex of the mesh (FLOATS_PER_VERTEX): position, normal, uv, color
 struct gc_vertex {
@@ -437,16 +455,8 @@ void main() {
 }
 @end
 
-@cs gc_collide_cs
-@include_block gc_common
-layout(binding=0) buffer gc_coll_pos { gc_point pos[]; };
-layout(binding=1) readonly buffer gc_coll_prev { gc_point prev[]; };
-layout(binding=2) buffer gc_coll_vel { gc_point vel[]; };
-layout(binding=3) readonly buffer gc_coll_pins { gc_pin pins[]; };
-layout(binding=4) readonly buffer gc_coll_push { gc_push push[]; };
-layout(binding=5) readonly buffer gc_coll_colliders { gc_collider colliders[]; };
-layout(local_size_x=128) in;
-
+// What the collide kernels share: `colliders` is declared before it.
+@block gc_collide_fns
 // friction: of the move from q (where the point was a substep ago) to out along the surface
 // (normal n), keep 1 - friction
 vec3 gc_rub(vec3 out_p, vec3 q, vec3 n) {
@@ -506,11 +516,62 @@ vec3 gc_box(gc_collider k, vec3 p, vec3 q, float th) {
     return gc_rub(out_p, q, ax[face] * side);
 }
 
+// out of a sphere or capsule (the segment a..b, r with the thickness; was_a..was_b a substep
+// ago): a point the collider has overtaken within the substep (past the axis, on the far side
+// from where it was) goes back out the side it was on
+vec3 gc_round(vec3 p, vec3 q, vec3 a, vec3 b, vec3 was_a, vec3 was_b, float r) {
+    vec3 ab = b - a;
+    float ab2 = dot(ab, ab);
+    vec3 c = a;
+    if (ab2 > 1e-12) c = a + ab * clamp(dot(p - a, ab) / ab2, 0.0, 1.0);
+    vec3 d = p - c;
+    float d2 = dot(d, d);
+    if (d2 >= r * r) return p;
+    float len = sqrt(d2);
+    vec3 n = len > 1e-6 ? d / len : vec3(0.0, 0.0, 1.0);
+    vec3 wab = was_b - was_a;
+    float wab2 = dot(wab, wab);
+    vec3 qa = was_a;
+    if (wab2 > 1e-12) qa = was_a + wab * clamp(dot(q - was_a, wab) / wab2, 0.0, 1.0);
+    vec3 e = q - qa;
+    if (dot(e, e) >= r * r * 0.25 && dot(e, n) < 0.0) n = normalize(e);
+    return gc_rub(c + n * r, q, n);
+}
+
+vec3 gc_plane(gc_collider k, vec3 p, vec3 q, float th) {
+    vec3 n = k.x.xyz;
+    vec3 o = mix(k.from_a.xyz, k.a.xyz, gc_sweep.x);
+    float d = dot(p - o, n) - th;
+    return d < 0.0 ? gc_rub(p - n * d, q, n) : p;
+}
+
+vec3 gc_floor(vec3 p, vec3 q) {
+    if (gc_range.w == 0) return p;
+    float y = gc_sweep.z + gc_gravity.w;
+    if (p.y < y) {
+        p.y = y;
+        vec3 moved = p - q;
+        p.x -= moved.x * gc_step.w;
+        p.z -= moved.z * gc_step.w;
+    }
+    return p;
+}
+@end
+
+@cs gc_collide_cs
+@include_block gc_common
+layout(binding=0) buffer gc_coll_pos { gc_point pos[]; };
+layout(binding=1) readonly buffer gc_coll_prev { gc_point prev[]; };
+layout(binding=2) buffer gc_coll_vel { gc_point vel[]; };
+layout(binding=3) readonly buffer gc_coll_pins { gc_pin pins[]; };
+layout(binding=4) readonly buffer gc_coll_push { gc_push push[]; };
+layout(binding=5) readonly buffer gc_coll_colliders { gc_collider colliders[]; };
+@include_block gc_collide_fns
+layout(local_size_x=128) in;
 void main() {
     int i = int(gl_GlobalInvocationID.x);
     if (i >= gc_counts.x) return;
-    vec4 pin = pins[i].p;
-    if (pin.w == 0.0) return;
+    if (pins[i].p.w == 0.0) return;
     vec3 p = pos[i].p.xyz;
     vec3 q = prev[i].p.xyz;
     if (gc_sweep.w > 0.0) p += vec3(push[i].d.xyz) * (1.0 / GC_FIXED);
@@ -522,38 +583,176 @@ void main() {
         if (kind == 2) {
             p = gc_box(k, p, q, th);
         } else if (kind == 3) {
-            vec3 n = k.x.xyz;
-            vec3 o = mix(k.from_a.xyz, k.a.xyz, gc_sweep.x);
-            float d = dot(p - o, n) - th;
-            if (d < 0.0) p = gc_rub(p - n * d, q, n);
+            p = gc_plane(k, p, q, th);
         } else {
-            vec3 a = mix(k.from_a.xyz, k.a.xyz, gc_sweep.x);
-            vec3 b = mix(k.from_b.xyz, k.b.xyz, gc_sweep.x);
-            float r = k.info.y + th;
-            vec3 ab = b - a;
-            float ab2 = dot(ab, ab);
-            vec3 c = a;
-            if (ab2 > 1e-12) c = a + ab * clamp(dot(p - a, ab) / ab2, 0.0, 1.0);
-            vec3 d = p - c;
-            float d2 = dot(d, d);
-            if (d2 < r * r) {
-                float len = sqrt(d2);
-                vec3 n = len > 1e-6 ? d / len : vec3(0.0, 0.0, 1.0);
-                p = gc_rub(c + n * r, q, n);
-            }
+            p = gc_round(p, q, mix(k.from_a.xyz, k.a.xyz, gc_sweep.x), mix(k.from_b.xyz, k.b.xyz, gc_sweep.x),
+                         mix(k.from_a.xyz, k.a.xyz, gc_sweep.y), mix(k.from_b.xyz, k.b.xyz, gc_sweep.y), k.info.y + th);
         }
     }
-    if (gc_range.w != 0) {
-        float y = gc_sweep.z + th;
-        if (p.y < y) {
-            p.y = y;
-            vec3 moved = p - q;
-            p.x -= moved.x * gc_step.w;
-            p.z -= moved.z * gc_step.w;
-        }
-    }
+    p = gc_floor(p, q);
     pos[i].p = vec4(p, 0.0);
     vel[i].p = vec4((p - q) * gc_step.y, 0.0);
+}
+@end
+
+// As gc_collide_cs, with bodies: a sphere or capsule with a mass is where it was moved plus its
+// body's offset, and shares each push with the point by their inverse masses. What a group's
+// points push its bodies back by is summed in a fixed order (a tree in shared memory) into
+// partials[group * GC_BODIES + body], for gc_bodies_cs.
+@cs gc_collide_bodies_cs
+@include_block gc_common
+layout(binding=0) buffer gc_collb_pos { gc_point pos[]; };
+layout(binding=1) readonly buffer gc_collb_prev { gc_point prev[]; };
+layout(binding=2) buffer gc_collb_vel { gc_point vel[]; };
+layout(binding=3) readonly buffer gc_collb_pins { gc_pin pins[]; };
+layout(binding=4) readonly buffer gc_collb_push { gc_push push[]; };
+layout(binding=5) readonly buffer gc_collb_colliders { gc_collider colliders[]; };
+layout(binding=6) readonly buffer gc_collb_bodies { gc_body bodies[]; };
+layout(binding=7) buffer gc_collb_partials { gc_point partials[]; };
+@include_block gc_collide_fns
+layout(local_size_x=128) in;
+shared vec4 gc_backs[GC_BODIES * 128];
+void main() {
+    int t = int(gl_LocalInvocationIndex);
+    int i = int(gl_GlobalInvocationID.x);
+    for (int b = 0; b < GC_BODIES; b++) gc_backs[b * 128 + t] = vec4(0.0);
+    if (i < gc_counts.x && pins[i].p.w != 0.0) {
+        float w = pins[i].p.w;
+        vec3 p = pos[i].p.xyz;
+        vec3 q = prev[i].p.xyz;
+        if (gc_sweep.w > 0.0) p += vec3(push[i].d.xyz) * (1.0 / GC_FIXED);
+        float th = gc_gravity.w;
+        for (int c = 0; c < gc_range.z; c++) {
+            gc_collider k = colliders[c];
+            if (k.info.z == 0.0) continue;
+            int kind = int(k.info.x);
+            if (kind == 2) {
+                p = gc_box(k, p, q, th);
+            } else if (kind == 3) {
+                p = gc_plane(k, p, q, th);
+            } else {
+                int body = int(k.info.w);
+                vec3 off = vec3(0.0);
+                vec3 was_off = vec3(0.0);
+                if (body >= 0) {
+                    off = bodies[body].off.xyz;
+                    was_off = off - bodies[body].dv.xyz * gc_step.x;
+                }
+                vec3 to = gc_round(p, q, mix(k.from_a.xyz, k.a.xyz, gc_sweep.x) + off, mix(k.from_b.xyz, k.b.xyz, gc_sweep.x) + off,
+                                   mix(k.from_a.xyz, k.a.xyz, gc_sweep.y) + was_off, mix(k.from_b.xyz, k.b.xyz, gc_sweep.y) + was_off,
+                                   k.info.y + th);
+                float share = body >= 0 ? k.mass.x / w : 0.0;
+                vec3 moved = (to - p) * (1.0 / (1.0 + share));
+                if (body >= 0) gc_backs[body * 128 + t] += vec4(moved * share, 0.0);
+                p += moved;
+            }
+        }
+        p = gc_floor(p, q);
+        pos[i].p = vec4(p, 0.0);
+        vel[i].p = vec4((p - q) * gc_step.y, 0.0);
+    }
+    barrier();
+    for (int s = 64; s > 0; s >>= 1) {
+        if (t < s) {
+            for (int b = 0; b < GC_BODIES; b++) gc_backs[b * 128 + t] += gc_backs[b * 128 + t + s];
+        }
+        barrier();
+    }
+    if (t < GC_BODIES) partials[int(gl_WorkGroupID.x) * GC_BODIES + t].p = gc_backs[t * 128];
+}
+@end
+
+// One thread per collider; those with a body (info.w), by gc_mode.w:
+//   0, after each substep's collide: pushed back by the sum of the groups' partials (in
+//      order), its velocity changed to match, where it is now noted (end), and carried on by
+//      that change
+//   1, at a step's start: where it was at the last one's end (begin)
+//   2, at an update's end: less the correction the CPU applies to the body (corr_off, corr_dv),
+//      marked with the update (gc_mode.xy)
+//   3, at an update's start: a body put somewhere new (mass.y) starts over, still
+@cs gc_bodies_cs
+@include_block gc_common
+layout(binding=0) readonly buffer gc_bod_colliders { gc_collider colliders[]; };
+layout(binding=1) buffer gc_bod_bodies { gc_body bodies[]; };
+layout(binding=2) readonly buffer gc_bod_partials { gc_point partials[]; };
+layout(local_size_x=32) in;
+void main() {
+    int c = int(gl_GlobalInvocationID.x);
+    if (c >= gc_range.z) return;
+    gc_collider k = colliders[c];
+    int body = int(k.info.w);
+    if (body < 0) return;
+    int mode = int(gc_mode.w);
+    gc_body s = bodies[body];
+    if (mode == 0) {
+        vec3 back = vec3(0.0);
+        int groups = (gc_counts.x + 127) / 128;
+        for (int g = 0; g < groups; g++) back += partials[g * GC_BODIES + body].p.xyz;
+        float h = gc_step.x;
+        s.off.xyz -= back;
+        s.dv.xyz -= back / h;
+        s.end = vec4(mix(k.from_a.xyz, k.a.xyz, gc_sweep.x) + s.off.xyz, 0.0);
+        s.off.xyz += s.dv.xyz * h;
+    } else if (mode == 1) {
+        s.begin = s.end;
+    } else if (mode == 2) {
+        s.off.xyz -= k.corr_off.xyz;
+        s.dv.xyz -= k.corr_dv.xyz;
+        s.mark = gc_mode;
+    } else if (k.mass.y != 0.0) {
+        s.off = vec4(0.0);
+        s.dv = vec4(0.0);
+        s.begin = vec4(k.a.xyz, 0.0);
+        s.end = s.begin;
+    }
+    bodies[body] = s;
+}
+@end
+
+// A mesh drawn where a collider is (GpuCloth.make_collider_mesh): its shape's vertices (around
+// the collider's center) moved there; a body's between where it was at the last step's start
+// and end, as the cloth's mesh is drawn.
+@cs gc_shape_cs
+@include_block gc_common
+layout(binding=0) readonly buffer gc_shape_colliders { gc_collider colliders[]; };
+layout(binding=1) readonly buffer gc_shape_bodies { gc_body bodies[]; };
+layout(binding=2) readonly buffer gc_shape_template { gc_vertex shape[]; };
+layout(binding=3) buffer gc_shape_verts { gc_vertex verts[]; };
+layout(local_size_x=128) in;
+void main() {
+    int i = int(gl_GlobalInvocationID.x);
+    if (i >= gc_range.y) return;
+    gc_collider k = colliders[gc_range.x];
+    int body = int(k.info.w);
+    vec3 center = k.a.xyz;
+    if (body >= 0) center = mix(bodies[body].begin.xyz, bodies[body].end.xyz, gc_origin.w);
+    gc_vertex v = shape[i];
+    v.a.xyz += gc_origin.xyz + center;
+    verts[i] = v;
+}
+@end
+
+// Internal damping, per stretch link of one color: of the difference in velocity between its
+// points, `share` (gc_mode.x) is taken off, split by their inverse masses.
+@cs gc_damp_cs
+@include_block gc_common
+layout(binding=0) buffer gc_damp_vel { gc_point vel[]; };
+layout(binding=1) readonly buffer gc_damp_links { gc_link links[]; };
+layout(binding=2) readonly buffer gc_damp_pins { gc_pin pins[]; };
+layout(local_size_x=128) in;
+void main() {
+    int k = int(gl_GlobalInvocationID.x);
+    if (k >= gc_range.y) return;
+    gc_link l = links[gc_range.x + k];
+    float wa = pins[l.a].p.w;
+    float wb = pins[l.b].p.w;
+    float sum = wa + wb;
+    if (sum <= 0.0) return;
+    vec3 va = vel[l.a].p.xyz;
+    vec3 vb = vel[l.b].p.xyz;
+    vec3 dv = (vb - va) * gc_mode.x;
+    vel[l.a].p = vec4(va + dv * (wa / sum), 0.0);
+    vel[l.b].p = vec4(vb - dv * (wb / sum), 0.0);
 }
 @end
 
@@ -604,4 +803,8 @@ void main() {
 @program gc_fill gc_fill_cs
 @program gc_self gc_self_cs
 @program gc_collide gc_collide_cs
+@program gc_collide_bodies gc_collide_bodies_cs
+@program gc_bodies gc_bodies_cs
+@program gc_shape gc_shape_cs
+@program gc_damp gc_damp_cs
 @program gc_write gc_write_cs

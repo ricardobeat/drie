@@ -1,7 +1,9 @@
 // drie::gpu_cloth, headless: a sheet pinned by its top row hangs as long as it is (the tethers)
 // and no further; a sheet dropped on its edge onto the floor folds onto itself and, with
 // self-collision, no two of its points end up nearer than half the distance it keeps (without
-// it, many do); two runs of the same drop give the same points, bit for bit.
+// it, many do); two runs of the same drop give the same points, bit for bit. A ball with a mass
+// thrown into a hanging sheet is slowed and held by it (two-way coupling: the cloth's pushes come
+// back to the CPU a few frames late), the same way in two runs.
 // `just test gpu_cloth`
 module gpu_cloth_test;
 import drie, drie::gpu_cloth, sokol;
@@ -51,6 +53,37 @@ fn int near_pairs(Vector3[] p, float d) {
     return count;
 }
 
+struct Throw {
+    Vector3 pos;
+    Vector3 vel;
+    float fastest_after;
+}
+
+// A 0.25 kg ball (no gravity) thrown at 8 m/s into the middle of a sheet hanging from its top
+// row, for 1.5 s.
+fn Throw throw_ball() {
+    const float DT = 1.0f / 60;
+    const float BALL_MASS = 0.25f;
+    GpuCloth* c = gpu_cloth::grid(N, N, { -0.5f, 2.0f, 0 }, { SIDE, 0, 0 }, { 0, -SIDE, 0 }, 0.3f);
+    c.pin_row(0);
+    c.substeps = 12;
+    c.self_distance = SIDE / (N - 1);
+    Throw t = { .pos = { 0, 1.5f, 1.5f }, .vel = { 0, 0, -8 } };
+    int ball = c.add_sphere(t.pos, 0.1f);
+    c.set_collider_mass(ball, BALL_MASS);
+    for (int f = 0; f < 90; f++) {
+        t.pos += t.vel * DT;
+        c.move_collider(ball, t.pos);
+        c.update(DT);
+        drie::commit();
+        t.pos += c.collider_shift(ball);
+        t.vel -= c.collider_impulse(ball) / BALL_MASS;
+        if (f >= 60) t.fastest_after = math::max(t.fastest_after, t.vel.length());
+    }
+    c.free();
+    return t;
+}
+
 fn int main(String[] args) {
     Renderer* renderer = drie::renderer(antialias: false, width: 64, height: 64);
     renderer.init_headless();
@@ -81,6 +114,12 @@ fn int main(String[] args) {
     bool same = true;
     foreach (i, q : with) same = same && q.x == again[i].x && q.y == again[i].y && q.z == again[i].z;
     expect(same, "two runs of the same drop give the same points");
+
+    Throw a = throw_ball();
+    Throw b = throw_ball();
+    io::printfn("     ball: at z %.3f after 1.5 s (thrown from 1.5 at -8 m/s), at most %.2f m/s in the last 0.5 s", a.pos.z, a.fastest_after);
+    expect(a.pos.z > -SIDE && a.fastest_after < 2, "a ball thrown into a hanging sheet is caught, not through it");
+    expect(a.pos == b.pos && a.vel == b.vel, "two throws end the same, bit for bit");
 
     io::printfn(failures ? "%d failed" : "all passed", failures);
     return failures ? 1 : 0;
