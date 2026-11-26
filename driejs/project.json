@@ -12,12 +12,11 @@
 	],
 	"sources": [
 		"src",
-		"../*",
-		"../generated/*",
-		"../platform/*"
+		"../src/**",
+		"../generated/*"
 	],
 	"c-sources": [
-		"../display.c",
+		"../platform/display.c",
 		"../platform/cgltf.c",
 		"../platform/readback.c",
 		"../platform/gpucaps.c",

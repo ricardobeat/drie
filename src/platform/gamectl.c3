@@ -2,8 +2,7 @@
 // for the friendlier side).
 module drie::gamectl @link(env::DARWIN, "GameController.framework", "Foundation.framework");
 
-struct GcState
-{
+struct GcState {
     bool connected;
     float left_x;
     float left_y;

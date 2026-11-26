@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Build docs.html from `c3c docgen --json`, keeping only our own modules.
 
-    c3c docgen *.c3 generated/*.c3 platform/*.c3 --emit-stdlib=no --libdir lib \
-        --lib sokol --json \
-      | python3 docgen.py -o docs.html
+    c3c docgen $(find src -name '*.c3' | sort) generated/*.c3 --emit-stdlib=no \
+        --libdir lib --lib sokol --json \
+      | python3 tools/docgen.py -o docs.html
 
 c3c's JSON has no doc comments, so they are read from the sources: the `//`
 lines right above a declaration, and for struct fields and enum values also a
@@ -43,6 +43,8 @@ def comment_above(lines, idx):
     out = []
     i = idx - 1
     while i >= 0 and lines[i].strip().startswith("//"):
+        if re.match(r"^//\s*-{3,}", lines[i].strip()):
+            break
         out.append(lines[i].strip()[2:])
         i -= 1
     out.reverse()
