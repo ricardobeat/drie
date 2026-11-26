@@ -97,7 +97,7 @@ void main() {
             total += w[i];
         }
     }
-    float target = lz[24];
+    float aim = lz[24];
     float best = 1e9;
     for (int i = 0; i < 49; i++) {
         // the share of the weight nearer than this sample, and as near: the median is where
@@ -111,11 +111,11 @@ void main() {
         float off = abs(below + 0.5 * same - 0.5 * total);
         if (off < best) {
             best = off;
-            target = lz[i];
+            aim = lz[i];
         }
     }
     float prev = log(clamp(texelFetch(sampler2D(bokeh_focus_prev, bokeh_focus_smp), ivec2(0), 0).r, range.x, range.y));
-    float v = focus.w > 0.5 ? target : mix(prev, target, focus.y);
+    float v = focus.w > 0.5 ? aim : mix(prev, aim, focus.y);
     frag_color = vec4(exp(v), 0.0, 0.0, 1.0);
 }
 @end

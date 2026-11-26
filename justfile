@@ -46,6 +46,22 @@ example name *args:
     {{c_libs}}
     c3c run {{target}} -O2 {{macos}} --libdir {{libdir}} --sources examples/{{name}}.c3 -- {{args}}
 
+# build an example for the web (WebGPU), one self-contained page: `just web gpu_handkerchiefs`
+# writes build/web/index.html
+web name:
+    mkdir -p build/web
+    # (the standard library with 16-byte allocations under emscripten, as drie's vectors and
+    # keys need: wasm loads a misaligned value only slower)
+    rm -rf build/web/std && cp -R `dirname $(realpath $(which c3c))`/../lib/c3/std build/web/std
+    sed -i '' 's/env::EMSCRIPTEN ? 8 :/env::EMSCRIPTEN ? 16 :/' build/web/std/core/mem.c3
+    # the textures the example names, made smaller by imageoptim
+    rm -rf build/web/files && mkdir -p build/web/files/examples/textures
+    for t in `grep -o 'examples/textures/[a-z0-9_]*' examples/{{name}}.c3 | sort -u`; do cp $t* build/web/files/examples/textures/ 2>/dev/null; done
+    grep -o 'surface("[a-z0-9_]*' examples/{{name}}.c3 | cut -d'"' -f2 | while read t; do cp examples/textures/${t}_* build/web/files/examples/textures/; done
+    imageoptim build/web/files/examples/textures/ > /dev/null
+    c3c build drie-web --target emscripten --stdlib build/web/std -O2 --libdir {{libdir}} --sources examples/{{name}}.c3 -z "--use-port=emdawnwebgpu" -z "-sDEFAULT_TO_CXX" -z "-sSINGLE_FILE" -z "-sALLOW_MEMORY_GROWTH" -z "-sSTACK_SIZE=8MB" -z "--profiling-funcs" -z "--embed-file=build/web/files@/"
+    python3 tools/web_page.py build/drie-web.js "drie: {{name}}" build/web/index.html
+
 # regenerate generated/cgltf.c3, the binding of cgltf (third_party/cgltf/cgltf.h), with
 # bindgen.c3l: `just bindgen=path bindings` for another checkout of it
 bindings:
@@ -63,8 +79,12 @@ bindings:
 
 # regenerate generated/*.c3 from the .glsl files with sokol-shdc (sokol-tools)
 shaders:
-    for s in shader shader_deferred kernels output gtao taa bloom flare grade bokeh radiance_cs radiance_rays_cs vsm atlas lightmap gpu_cloth; do \
+    for s in radiance_cs radiance_rays_cs; do \
         sokol-shdc -i $s.glsl -o generated/$s.c3 -f sokol_c3 -l glsl430:hlsl5:metal_macos:metal_ios:metal_sim || exit 1; \
+    done
+    # these also in WGSL, for WebGPU (the others don't translate yet)
+    for s in shader shader_deferred kernels output gtao taa bloom flare grade bokeh vsm atlas lightmap gpu_cloth; do \
+        sokol-shdc -i $s.glsl -o generated/$s.c3 -f sokol_c3 -l glsl430:hlsl5:metal_macos:metal_ios:metal_sim:wgsl || exit 1; \
     done
     # sokol-shdc's C3 output writes storage image view slots as `const int VIEW_X (0)`;
     # rewrite them to `const int VIEW_X = 0;` (BSD sed -i '' syntax, macOS)

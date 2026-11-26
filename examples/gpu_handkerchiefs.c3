@@ -103,8 +103,8 @@ fn void make_cloth() {
     cloth.self_distance = SIZE / (GRID - 1);
     cloth.self_every = 3;
     cloth.watch_points();
-    seen = mem::new_array(Vector3, cloth.count());
-    last_check = mem::new_array(Vector3, cloth.count());
+    seen = mem::new_array(Vector3, (sz)cloth.count());
+    last_check = mem::new_array(Vector3, (sz)cloth.count());
     Texture* jersey = tiled("examples/textures/cotton_jersey_grey_diff.jpg", KNIT_REPEAT);
     Texture* jersey_normals = tiled("examples/textures/cotton_jersey_nor_gl.jpg", KNIT_REPEAT, NO_COLOR_SPACE);
     Texture* jersey_rough = tiled("examples/textures/cotton_jersey_rough.jpg", KNIT_REPEAT, NO_COLOR_SPACE);
@@ -464,12 +464,14 @@ fn void build_scene() {
     cloth.add_plane({ 0, 0, -ROOM }, { 0, 0, 1 });
 
     scene.update_matrix_world();
-    RadianceCascades* gi = drie::radiance_cascades({ -ROOM - THICK, -0.3f, -ROOM - THICK }, { ROOM + THICK, CEILING + 0.4f, ROOM + THICK }, spacing: 0.25f, levels: 4);
-    gi.update_every = 1;
-    gi.blend = 0.12f;
-    gi.voxelize(scene);
-    gi.update_every = 4;
-    scene.radiance = gi;
+    if (!env::EMSCRIPTEN) {
+        RadianceCascades* gi = drie::radiance_cascades({ -ROOM - THICK, -0.3f, -ROOM - THICK }, { ROOM + THICK, CEILING + 0.4f, ROOM + THICK }, spacing: 0.25f, levels: 4);
+        gi.update_every = 1;
+        gi.blend = 0.12f;
+        gi.voxelize(scene);
+        gi.update_every = 4;
+        scene.radiance = gi;
+    }
 
     camera = drie::perspective_camera(55, (float)W / H, 0.05f, 2000);
     camera.position = START_EYE;
@@ -510,7 +512,7 @@ fn void render_frame(RenderTarget* target) {
         camera.update_projection_matrix();
     }
     sky.follow(camera.get_world_position(), camera.far);
-    if (!off.contains("rc")) scene.radiance.update(scene);
+    if (!off.contains("rc") && !env::EMSCRIPTEN) scene.radiance.update(scene);
     taa.jitter(camera);
     renderer.set_render_target(scene_rt);
     renderer.render(scene, camera);

@@ -197,7 +197,7 @@ fn void BufferGeometry.set_normal(&self, uint i, Vector3 n) {
 // Recomputes smooth vertex normals from the triangles, like three's computeVertexNormals.
 fn void BufferGeometry.compute_vertex_normals(&self) {
     uint n        = self.vertex_count();
-    Vector3[] acc = mem::new_array(Vector3, n);
+    Vector3[] acc = mem::new_array(Vector3, (sz)n);
     defer free(acc);
     for (sz i = 0; i + 2 < self.indices.len(); i += 3) {
         uint a      = self.indices[i];

@@ -549,7 +549,7 @@ fn void OutputPass.update(&self) {
         .params2 = {
             self.hdr || self.color_space == DISPLAY_P3_COLOR_SPACE ? 1 : 0,
             self.hdr ? r.output_headroom() : 0,
-            self.grade && !self.hdr ? 1 : 0,
+            self.graded() ? 1 : 0,
             GRADE_LUT
         },
     };
@@ -560,6 +560,10 @@ fn void OutputPass.update(&self) {
     self.bindings.views[VIEW_OUTPUT_LUT] = self.grade && self.grade.lut.id ? self.grade.lut_texture : empty_lut();
 }
 
+// Whether the grade's LUT takes the tone mapping's place. (Not on an HDR screen, and not on
+// WebGPU, whose render passes can't draw into one slice of a 3D image as the bake does.)
+fn bool OutputPass.graded(&self) => self.grade && !self.hdr && sg::query_backend() != WGPU;
+
 fn void OutputPass.render(
     &self,
     RenderTarget* target,
@@ -568,7 +572,7 @@ fn void OutputPass.render(
     float clear_alpha = 1
 ) {
     if (!target) self.match_window();
-    if (self.grade && !self.hdr) self.grade.prepare(self.renderer.tone_mapping, self.color_space == DISPLAY_P3_COLOR_SPACE);
+    if (self.graded()) self.grade.prepare(self.renderer.tone_mapping, self.color_space == DISPLAY_P3_COLOR_SPACE);
     self.update();
     self.shader_pass.render(target, load, clear, clear_alpha);
 }

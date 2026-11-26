@@ -277,6 +277,9 @@ fn MaterialProgram* material_program(MaterialKey key, NodeBuild* build = null) @
     }
     mp.program = build_program(backend_lang(), &graph, build, vbind, fbind);
     if (key.prepassed) mp.depth.take_vertex(mp.program);
+    // (DRIE_DUMP_WGSL=dir: each program also printed in WGSL there, for checking it on a machine
+    // without WebGPU)
+    if (try dir = env::tget_var("DRIE_DUMP_WGSL")) dump_wgsl(dir, &graph, &prepass, key.prepassed, build, vbind, fbind);
     node_release(mark);
     mp.pipelines.init(mem);
     if (build) {
@@ -295,6 +298,31 @@ fn MaterialProgram* material_program(MaterialKey key, NodeBuild* build = null) @
 // A node material's program `mp` (MaterialKey.nodes), or the one made already that prints the
 // same (`mp` then let go of): shared by the builds whose graphs print it, and by a loaded
 // pipeline cache's list (see read_material_program).
+int wgsl_dumped @local;
+
+fn void dump_wgsl(String dir, ProgramGraph* graph, ProgramGraph* prepass, bool prepassed, NodeBuild* build, Node[NodeBuiltin::len]* vbind,
+                  Node[NodeBuiltin::len]* fbind) @local {
+    ProgramGraph g = *graph;
+    g.varyings_from = null;
+    ShaderProgram*[2] ps;
+    ps[0] = build_program(WGSL, &g, build, vbind, fbind);
+    if (prepassed) {
+        ProgramGraph d = *prepass;
+        d.fragment_only = false;
+        d.varyings_from = null;
+        d.position = graph.position;
+        ps[1] = build_program(WGSL, &d, build, vbind, fbind);
+    }
+    foreach (sp : ps) {
+        if (!sp) continue;
+        int k = wgsl_dumped++;
+        (void)file::save(string::tformat("%s/p%03d.vert.wgsl", dir, k), sp.vs);
+        (void)file::save(string::tformat("%s/p%03d.frag.wgsl", dir, k), sp.fs);
+        sp.free();
+        mem::free(sp);
+    }
+}
+
 fn MaterialProgram* share_material_program(MaterialProgram* mp) @private {
     @pool() {
         // (not by its key: keys that differ in what the program doesn't print share it)

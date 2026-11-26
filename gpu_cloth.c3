@@ -554,7 +554,7 @@ fn void GpuCloth.reset(&self) {
 // As reset, with the points (in the world, count() of them) where `points` puts them, still;
 // their rest shape stays as it was.
 fn void GpuCloth.reset_to(&self, Vector3[] points) {
-    sz n = self.count();
+    sz n = (sz)self.count();
     if (self.start_from.len != n) {
         free(self.start_from);
         self.start_from = mem::new_array(Vector3, n);
@@ -578,7 +578,7 @@ fn float hash01(uint x) @local {
 // dropped flat then folds differently each time. Pinned points stay where they are held (pass
 // shift, turn and tilt 0 for a panel that hangs from them).
 fn void GpuCloth.reset_scattered(&self, uint seed, float ripple = 0.03f, float shift = 0.15f, float turn = 0.2f, float tilt = 0.1f) {
-    sz n = self.count();
+    sz n = (sz)self.count();
     Vector3[] points = mem::new_array(Vector3, n);
     defer free(points);
     int pc = self.panel_cols > 0 ? self.panel_cols : self.cols;
@@ -767,9 +767,9 @@ fn Mesh* GpuCloth.make_collider_mesh(&self, int id, BufferGeometry* shape, Mater
 fn void GpuCloth.build_tethers(&self) {
     self.tethers_dirty = false;
     uint n = self.count();
-    if (!self.tether_data.len) self.tether_data = mem::new_array(shaders::GcTether, n);
-    float[] dist = mem::new_array(float, n);
-    uint[] from = mem::new_array(uint, n);
+    if (!self.tether_data.len) self.tether_data = mem::new_array(shaders::GcTether, (sz)n);
+    float[] dist = mem::new_array(float, (sz)n);
+    uint[] from = mem::new_array(uint, (sz)n);
     defer {
         free(dist);
         free(from);
@@ -998,7 +998,7 @@ fn void GpuCloth.sync(&self) {
     }
     if (self.state_dirty) {
         self.state_dirty = false;
-        drie::Vec4[] data = mem::new_array(drie::Vec4, n);
+        drie::Vec4[] data = mem::new_array(drie::Vec4, (sz)n);
         defer free(data);
         foreach (i, p : self.rest) data[i] = { p.x, p.y, p.z, 0 };
         self.rest_buf.write(data.ptr, vec4s);
@@ -1021,7 +1021,7 @@ fn void GpuCloth.sync(&self) {
     }
     if (self.pins_dirty) {
         self.pins_dirty = false;
-        drie::Vec4[] data = mem::new_array(drie::Vec4, n);
+        drie::Vec4[] data = mem::new_array(drie::Vec4, (sz)n);
         defer free(data);
         foreach (i, &d : data) *d = { self.pin_to[i].x, self.pin_to[i].y, self.pin_to[i].z, self.inv_mass[i] };
         self.pins.write(data.ptr, vec4s);
@@ -1280,6 +1280,8 @@ fn int GpuCloth.update(&self, float dt) {
     }
     self.hear_bodies(until);
     if (n > 0 || self.body_count) self.write_colliders();
+    self.pins.renew();
+    self.collider_buf.renew();
     self.bind();
     drie::begin_compute("drie-gpu-cloth");
     shaders::GcParams u = self.params(1, 1);
@@ -1364,7 +1366,7 @@ fn void GpuCloth.watch_points(&self) => self.watching = true;
 // false while none has.
 fn bool GpuCloth.seen_points(&self, Vector3[] out) {
     if (out.len < self.count()) return false;
-    sz n = self.count();
+    sz n = (sz)self.count();
     if (self.watched.len != n) {
         free(self.watched);
         self.watched = mem::new_array(drie::Vec4, n);
@@ -1395,7 +1397,7 @@ fn bool GpuCloth.read_points(&self, Vector3[] out) {
     if (self.read_slot < 0) self.read_slot = drie::readback_slot();
     int slot = self.read_slot;
     if (slot < 0) return false;
-    sz n = self.count();
+    sz n = (sz)self.count();
     drie::Vec4[] data = mem::new_array(drie::Vec4, n);
     defer free(data);
     drie::begin_compute("drie-gpu-cloth-read");
