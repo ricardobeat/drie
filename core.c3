@@ -26,6 +26,9 @@ struct Object3D {
     // Meshes: render into shadow maps / get darkened by them.
     bool cast_shadow;
     bool receive_shadow;
+    // Meshes: drawn only into shadow maps (with cast_shadow), as a cheaper stand-in for a
+    // detailed mesh whose own cast_shadow is off; not seen, picked or lit by radiance.
+    bool shadow_only;
     // Like three.js renderOrder: among see-through meshes, higher ones are drawn later
     // whatever their distance (a film of dirt over the glass it lies on).
     int render_order;
