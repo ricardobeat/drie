@@ -96,7 +96,7 @@ struct GtaoApplyParams @align(16) @packed
     }
 
 */
-const char[147] GTAO_VS_SOURCE_GLSL430 @private = {
+const char[147] GTAO_VS_SOURCE_GLSL430 @private @if(!env::DARWIN && !env::WIN32 && !env::EMSCRIPTEN) = {
     0x23,0x76,0x65,0x72,0x73,0x69,0x6f,0x6e,0x20,0x34,0x33,0x30,0x0a,0x0a,0x76,0x6f,
     0x69,0x64,0x20,0x6d,0x61,0x69,0x6e,0x28,0x29,0x0a,0x7b,0x0a,0x20,0x20,0x20,0x20,
     0x67,0x6c,0x5f,0x50,0x6f,0x73,0x69,0x74,0x69,0x6f,0x6e,0x20,0x3d,0x20,0x76,0x65,
@@ -275,7 +275,7 @@ const char[147] GTAO_VS_SOURCE_GLSL430 @private = {
     }
 
 */
-const char[5612] GTAO_FS_SOURCE_GLSL430 @private = {
+const char[5612] GTAO_FS_SOURCE_GLSL430 @private @if(!env::DARWIN && !env::WIN32 && !env::EMSCRIPTEN) = {
     0x23,0x76,0x65,0x72,0x73,0x69,0x6f,0x6e,0x20,0x34,0x33,0x30,0x0a,0x0a,0x75,0x6e,
     0x69,0x66,0x6f,0x72,0x6d,0x20,0x76,0x65,0x63,0x34,0x20,0x67,0x74,0x61,0x6f,0x5f,
     0x70,0x61,0x72,0x61,0x6d,0x73,0x5b,0x36,0x5d,0x3b,0x0a,0x6c,0x61,0x79,0x6f,0x75,
@@ -795,7 +795,7 @@ const char[5612] GTAO_FS_SOURCE_GLSL430 @private = {
     }
 
 */
-const char[5620] GTAO_MS_FS_SOURCE_GLSL430 @private = {
+const char[5620] GTAO_MS_FS_SOURCE_GLSL430 @private @if(!env::DARWIN && !env::WIN32 && !env::EMSCRIPTEN) = {
     0x23,0x76,0x65,0x72,0x73,0x69,0x6f,0x6e,0x20,0x34,0x33,0x30,0x0a,0x0a,0x75,0x6e,
     0x69,0x66,0x6f,0x72,0x6d,0x20,0x76,0x65,0x63,0x34,0x20,0x67,0x74,0x61,0x6f,0x5f,
     0x70,0x61,0x72,0x61,0x6d,0x73,0x5b,0x36,0x5d,0x3b,0x0a,0x6c,0x61,0x79,0x6f,0x75,
@@ -1195,7 +1195,7 @@ const char[5620] GTAO_MS_FS_SOURCE_GLSL430 @private = {
     }
 
 */
-const char[1464] GTAO_APPLY_FS_SOURCE_GLSL430 @private = {
+const char[1464] GTAO_APPLY_FS_SOURCE_GLSL430 @private @if(!env::DARWIN && !env::WIN32 && !env::EMSCRIPTEN) = {
     0x23,0x76,0x65,0x72,0x73,0x69,0x6f,0x6e,0x20,0x34,0x33,0x30,0x0a,0x0a,0x75,0x6e,
     0x69,0x66,0x6f,0x72,0x6d,0x20,0x76,0x65,0x63,0x34,0x20,0x67,0x74,0x61,0x6f,0x5f,
     0x61,0x70,0x70,0x6c,0x79,0x5f,0x70,0x61,0x72,0x61,0x6d,0x73,0x5b,0x31,0x5d,0x3b,
@@ -1316,7 +1316,7 @@ const char[1464] GTAO_APPLY_FS_SOURCE_GLSL430 @private = {
         return stage_output;
     }
 */
-const char[579] GTAO_VS_SOURCE_HLSL5 @private = {
+const char[579] GTAO_VS_SOURCE_HLSL5 @private @if(env::WIN32) = {
     0x73,0x74,0x61,0x74,0x69,0x63,0x20,0x66,0x6c,0x6f,0x61,0x74,0x34,0x20,0x67,0x6c,
     0x5f,0x50,0x6f,0x73,0x69,0x74,0x69,0x6f,0x6e,0x3b,0x0a,0x73,0x74,0x61,0x74,0x69,
     0x63,0x20,0x69,0x6e,0x74,0x20,0x67,0x6c,0x5f,0x56,0x65,0x72,0x74,0x65,0x78,0x49,
@@ -1550,7 +1550,7 @@ const char[579] GTAO_VS_SOURCE_HLSL5 @private = {
         return stage_output;
     }
 */
-const char[6196] GTAO_FS_SOURCE_HLSL5 @private = {
+const char[6196] GTAO_FS_SOURCE_HLSL5 @private @if(env::WIN32) = {
     0x63,0x62,0x75,0x66,0x66,0x65,0x72,0x20,0x67,0x74,0x61,0x6f,0x5f,0x70,0x61,0x72,
     0x61,0x6d,0x73,0x20,0x3a,0x20,0x72,0x65,0x67,0x69,0x73,0x74,0x65,0x72,0x28,0x62,
     0x30,0x29,0x0a,0x7b,0x0a,0x20,0x20,0x20,0x20,0x66,0x6c,0x6f,0x61,0x74,0x34,0x20,
@@ -2135,7 +2135,7 @@ const char[6196] GTAO_FS_SOURCE_HLSL5 @private = {
         return stage_output;
     }
 */
-const char[6198] GTAO_MS_FS_SOURCE_HLSL5 @private = {
+const char[6198] GTAO_MS_FS_SOURCE_HLSL5 @private @if(env::WIN32) = {
     0x63,0x62,0x75,0x66,0x66,0x65,0x72,0x20,0x67,0x74,0x61,0x6f,0x5f,0x70,0x61,0x72,
     0x61,0x6d,0x73,0x20,0x3a,0x20,0x72,0x65,0x67,0x69,0x73,0x74,0x65,0x72,0x28,0x62,
     0x30,0x29,0x0a,0x7b,0x0a,0x20,0x20,0x20,0x20,0x66,0x6c,0x6f,0x61,0x74,0x34,0x20,
@@ -2594,7 +2594,7 @@ const char[6198] GTAO_MS_FS_SOURCE_HLSL5 @private = {
         return stage_output;
     }
 */
-const char[1870] GTAO_APPLY_FS_SOURCE_HLSL5 @private = {
+const char[1870] GTAO_APPLY_FS_SOURCE_HLSL5 @private @if(env::WIN32) = {
     0x63,0x62,0x75,0x66,0x66,0x65,0x72,0x20,0x67,0x74,0x61,0x6f,0x5f,0x61,0x70,0x70,
     0x6c,0x79,0x5f,0x70,0x61,0x72,0x61,0x6d,0x73,0x20,0x3a,0x20,0x72,0x65,0x67,0x69,
     0x73,0x74,0x65,0x72,0x28,0x62,0x30,0x29,0x0a,0x7b,0x0a,0x20,0x20,0x20,0x20,0x66,
@@ -2732,7 +2732,7 @@ const char[1870] GTAO_APPLY_FS_SOURCE_HLSL5 @private = {
     }
 
 */
-const char[377] GTAO_VS_SOURCE_METAL_MACOS @private = {
+const char[377] GTAO_VS_SOURCE_METAL_MACOS @private @if(env::OS_TYPE == MACOS) = {
     0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,0x20,0x3c,0x6d,0x65,0x74,0x61,0x6c,0x5f,
     0x73,0x74,0x64,0x6c,0x69,0x62,0x3e,0x0a,0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,
     0x20,0x3c,0x73,0x69,0x6d,0x64,0x2f,0x73,0x69,0x6d,0x64,0x2e,0x68,0x3e,0x0a,0x0a,
@@ -2944,7 +2944,7 @@ const char[377] GTAO_VS_SOURCE_METAL_MACOS @private = {
     }
 
 */
-const char[6387] GTAO_FS_SOURCE_METAL_MACOS @private = {
+const char[6387] GTAO_FS_SOURCE_METAL_MACOS @private @if(env::OS_TYPE == MACOS) = {
     0x23,0x70,0x72,0x61,0x67,0x6d,0x61,0x20,0x63,0x6c,0x61,0x6e,0x67,0x20,0x64,0x69,
     0x61,0x67,0x6e,0x6f,0x73,0x74,0x69,0x63,0x20,0x69,0x67,0x6e,0x6f,0x72,0x65,0x64,
     0x20,0x22,0x2d,0x57,0x6d,0x69,0x73,0x73,0x69,0x6e,0x67,0x2d,0x70,0x72,0x6f,0x74,
@@ -3532,7 +3532,7 @@ const char[6387] GTAO_FS_SOURCE_METAL_MACOS @private = {
     }
 
 */
-const char[6420] GTAO_MS_FS_SOURCE_METAL_MACOS @private = {
+const char[6420] GTAO_MS_FS_SOURCE_METAL_MACOS @private @if(env::OS_TYPE == MACOS) = {
     0x23,0x70,0x72,0x61,0x67,0x6d,0x61,0x20,0x63,0x6c,0x61,0x6e,0x67,0x20,0x64,0x69,
     0x61,0x67,0x6e,0x6f,0x73,0x74,0x69,0x63,0x20,0x69,0x67,0x6e,0x6f,0x72,0x65,0x64,
     0x20,0x22,0x2d,0x57,0x6d,0x69,0x73,0x73,0x69,0x6e,0x67,0x2d,0x70,0x72,0x6f,0x74,
@@ -3991,7 +3991,7 @@ const char[6420] GTAO_MS_FS_SOURCE_METAL_MACOS @private = {
     }
 
 */
-const char[1624] GTAO_APPLY_FS_SOURCE_METAL_MACOS @private = {
+const char[1624] GTAO_APPLY_FS_SOURCE_METAL_MACOS @private @if(env::OS_TYPE == MACOS) = {
     0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,0x20,0x3c,0x6d,0x65,0x74,0x61,0x6c,0x5f,
     0x73,0x74,0x64,0x6c,0x69,0x62,0x3e,0x0a,0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,
     0x20,0x3c,0x73,0x69,0x6d,0x64,0x2f,0x73,0x69,0x6d,0x64,0x2e,0x68,0x3e,0x0a,0x0a,
@@ -4114,7 +4114,7 @@ const char[1624] GTAO_APPLY_FS_SOURCE_METAL_MACOS @private = {
     }
 
 */
-const char[377] GTAO_VS_SOURCE_METAL_IOS @private = {
+const char[377] GTAO_VS_SOURCE_METAL_IOS @private @if(env::OS_TYPE == IOS) = {
     0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,0x20,0x3c,0x6d,0x65,0x74,0x61,0x6c,0x5f,
     0x73,0x74,0x64,0x6c,0x69,0x62,0x3e,0x0a,0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,
     0x20,0x3c,0x73,0x69,0x6d,0x64,0x2f,0x73,0x69,0x6d,0x64,0x2e,0x68,0x3e,0x0a,0x0a,
@@ -4326,7 +4326,7 @@ const char[377] GTAO_VS_SOURCE_METAL_IOS @private = {
     }
 
 */
-const char[6387] GTAO_FS_SOURCE_METAL_IOS @private = {
+const char[6387] GTAO_FS_SOURCE_METAL_IOS @private @if(env::OS_TYPE == IOS) = {
     0x23,0x70,0x72,0x61,0x67,0x6d,0x61,0x20,0x63,0x6c,0x61,0x6e,0x67,0x20,0x64,0x69,
     0x61,0x67,0x6e,0x6f,0x73,0x74,0x69,0x63,0x20,0x69,0x67,0x6e,0x6f,0x72,0x65,0x64,
     0x20,0x22,0x2d,0x57,0x6d,0x69,0x73,0x73,0x69,0x6e,0x67,0x2d,0x70,0x72,0x6f,0x74,
@@ -4914,7 +4914,7 @@ const char[6387] GTAO_FS_SOURCE_METAL_IOS @private = {
     }
 
 */
-const char[6420] GTAO_MS_FS_SOURCE_METAL_IOS @private = {
+const char[6420] GTAO_MS_FS_SOURCE_METAL_IOS @private @if(env::OS_TYPE == IOS) = {
     0x23,0x70,0x72,0x61,0x67,0x6d,0x61,0x20,0x63,0x6c,0x61,0x6e,0x67,0x20,0x64,0x69,
     0x61,0x67,0x6e,0x6f,0x73,0x74,0x69,0x63,0x20,0x69,0x67,0x6e,0x6f,0x72,0x65,0x64,
     0x20,0x22,0x2d,0x57,0x6d,0x69,0x73,0x73,0x69,0x6e,0x67,0x2d,0x70,0x72,0x6f,0x74,
@@ -5373,7 +5373,7 @@ const char[6420] GTAO_MS_FS_SOURCE_METAL_IOS @private = {
     }
 
 */
-const char[1624] GTAO_APPLY_FS_SOURCE_METAL_IOS @private = {
+const char[1624] GTAO_APPLY_FS_SOURCE_METAL_IOS @private @if(env::OS_TYPE == IOS) = {
     0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,0x20,0x3c,0x6d,0x65,0x74,0x61,0x6c,0x5f,
     0x73,0x74,0x64,0x6c,0x69,0x62,0x3e,0x0a,0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,
     0x20,0x3c,0x73,0x69,0x6d,0x64,0x2f,0x73,0x69,0x6d,0x64,0x2e,0x68,0x3e,0x0a,0x0a,
@@ -5496,7 +5496,7 @@ const char[1624] GTAO_APPLY_FS_SOURCE_METAL_IOS @private = {
     }
 
 */
-const char[377] GTAO_VS_SOURCE_METAL_SIM @private = {
+const char[377] GTAO_VS_SOURCE_METAL_SIM @private @if(env::OS_TYPE == IOS) = {
     0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,0x20,0x3c,0x6d,0x65,0x74,0x61,0x6c,0x5f,
     0x73,0x74,0x64,0x6c,0x69,0x62,0x3e,0x0a,0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,
     0x20,0x3c,0x73,0x69,0x6d,0x64,0x2f,0x73,0x69,0x6d,0x64,0x2e,0x68,0x3e,0x0a,0x0a,
@@ -5708,7 +5708,7 @@ const char[377] GTAO_VS_SOURCE_METAL_SIM @private = {
     }
 
 */
-const char[6387] GTAO_FS_SOURCE_METAL_SIM @private = {
+const char[6387] GTAO_FS_SOURCE_METAL_SIM @private @if(env::OS_TYPE == IOS) = {
     0x23,0x70,0x72,0x61,0x67,0x6d,0x61,0x20,0x63,0x6c,0x61,0x6e,0x67,0x20,0x64,0x69,
     0x61,0x67,0x6e,0x6f,0x73,0x74,0x69,0x63,0x20,0x69,0x67,0x6e,0x6f,0x72,0x65,0x64,
     0x20,0x22,0x2d,0x57,0x6d,0x69,0x73,0x73,0x69,0x6e,0x67,0x2d,0x70,0x72,0x6f,0x74,
@@ -6296,7 +6296,7 @@ const char[6387] GTAO_FS_SOURCE_METAL_SIM @private = {
     }
 
 */
-const char[6420] GTAO_MS_FS_SOURCE_METAL_SIM @private = {
+const char[6420] GTAO_MS_FS_SOURCE_METAL_SIM @private @if(env::OS_TYPE == IOS) = {
     0x23,0x70,0x72,0x61,0x67,0x6d,0x61,0x20,0x63,0x6c,0x61,0x6e,0x67,0x20,0x64,0x69,
     0x61,0x67,0x6e,0x6f,0x73,0x74,0x69,0x63,0x20,0x69,0x67,0x6e,0x6f,0x72,0x65,0x64,
     0x20,0x22,0x2d,0x57,0x6d,0x69,0x73,0x73,0x69,0x6e,0x67,0x2d,0x70,0x72,0x6f,0x74,
@@ -6755,7 +6755,7 @@ const char[6420] GTAO_MS_FS_SOURCE_METAL_SIM @private = {
     }
 
 */
-const char[1624] GTAO_APPLY_FS_SOURCE_METAL_SIM @private = {
+const char[1624] GTAO_APPLY_FS_SOURCE_METAL_SIM @private @if(env::OS_TYPE == IOS) = {
     0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,0x20,0x3c,0x6d,0x65,0x74,0x61,0x6c,0x5f,
     0x73,0x74,0x64,0x6c,0x69,0x62,0x3e,0x0a,0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,
     0x20,0x3c,0x73,0x69,0x6d,0x64,0x2f,0x73,0x69,0x6d,0x64,0x2e,0x68,0x3e,0x0a,0x0a,
@@ -6884,7 +6884,7 @@ const char[1624] GTAO_APPLY_FS_SOURCE_METAL_SIM @private = {
       return main_out(gl_Position);
     }
 */
-const char[561] GTAO_VS_SOURCE_WGSL @private = {
+const char[561] GTAO_VS_SOURCE_WGSL @private @if(env::EMSCRIPTEN) = {
     0x64,0x69,0x61,0x67,0x6e,0x6f,0x73,0x74,0x69,0x63,0x28,0x6f,0x66,0x66,0x2c,0x20,
     0x64,0x65,0x72,0x69,0x76,0x61,0x74,0x69,0x76,0x65,0x5f,0x75,0x6e,0x69,0x66,0x6f,
     0x72,0x6d,0x69,0x74,0x79,0x29,0x3b,0x0a,0x0a,0x76,0x61,0x72,0x3c,0x70,0x72,0x69,
@@ -7145,7 +7145,7 @@ const char[561] GTAO_VS_SOURCE_WGSL @private = {
       return main_out(frag_color);
     }
 */
-const char[6722] GTAO_FS_SOURCE_WGSL @private = {
+const char[6722] GTAO_FS_SOURCE_WGSL @private @if(env::EMSCRIPTEN) = {
     0x64,0x69,0x61,0x67,0x6e,0x6f,0x73,0x74,0x69,0x63,0x28,0x6f,0x66,0x66,0x2c,0x20,
     0x64,0x65,0x72,0x69,0x76,0x61,0x74,0x69,0x76,0x65,0x5f,0x75,0x6e,0x69,0x66,0x6f,
     0x72,0x6d,0x69,0x74,0x79,0x29,0x3b,0x0a,0x0a,0x73,0x74,0x72,0x75,0x63,0x74,0x20,
@@ -7791,7 +7791,7 @@ const char[6722] GTAO_FS_SOURCE_WGSL @private = {
       return main_out(frag_color);
     }
 */
-const char[6741] GTAO_MS_FS_SOURCE_WGSL @private = {
+const char[6741] GTAO_MS_FS_SOURCE_WGSL @private @if(env::EMSCRIPTEN) = {
     0x64,0x69,0x61,0x67,0x6e,0x6f,0x73,0x74,0x69,0x63,0x28,0x6f,0x66,0x66,0x2c,0x20,
     0x64,0x65,0x72,0x69,0x76,0x61,0x74,0x69,0x76,0x65,0x5f,0x75,0x6e,0x69,0x66,0x6f,
     0x72,0x6d,0x69,0x74,0x79,0x29,0x3b,0x0a,0x0a,0x73,0x74,0x72,0x75,0x63,0x74,0x20,
@@ -8300,7 +8300,7 @@ const char[6741] GTAO_MS_FS_SOURCE_WGSL @private = {
       return main_out(frag_color);
     }
 */
-const char[1997] GTAO_APPLY_FS_SOURCE_WGSL @private = {
+const char[1997] GTAO_APPLY_FS_SOURCE_WGSL @private @if(env::EMSCRIPTEN) = {
     0x64,0x69,0x61,0x67,0x6e,0x6f,0x73,0x74,0x69,0x63,0x28,0x6f,0x66,0x66,0x2c,0x20,
     0x64,0x65,0x72,0x69,0x76,0x61,0x74,0x69,0x76,0x65,0x5f,0x75,0x6e,0x69,0x66,0x6f,
     0x72,0x6d,0x69,0x74,0x79,0x29,0x3b,0x0a,0x0a,0x73,0x74,0x72,0x75,0x63,0x74,0x20,
@@ -8434,6 +8434,7 @@ fn SgShaderDesc gtao_shader_desc(SgBackend backend)
     switch (backend)
     {
         case SgBackend.GLCORE:
+            $if !env::DARWIN && !env::WIN32 && !env::EMSCRIPTEN:
             desc.vertex_func.source = (ZString)&GTAO_VS_SOURCE_GLSL430;
             desc.vertex_func.entry = "main";
             desc.fragment_func.source = (ZString)&GTAO_FS_SOURCE_GLSL430;
@@ -8462,7 +8463,11 @@ fn SgShaderDesc gtao_shader_desc(SgBackend backend)
             desc.texture_sampler_pairs[1].view_slot = 1;
             desc.texture_sampler_pairs[1].sampler_slot = 0;
             desc.texture_sampler_pairs[1].glsl_name = "gtao_normal_gtao_smp";
+            $else
+                break;
+            $endif
         case SgBackend.D3D11:
+            $if env::WIN32:
             desc.vertex_func.source = (ZString)&GTAO_VS_SOURCE_HLSL5;
             desc.vertex_func.d3d11_target = "vs_5_0";
             desc.vertex_func.entry = "main";
@@ -8492,7 +8497,11 @@ fn SgShaderDesc gtao_shader_desc(SgBackend backend)
             desc.texture_sampler_pairs[1].stage = SgShaderStage.FRAGMENT;
             desc.texture_sampler_pairs[1].view_slot = 1;
             desc.texture_sampler_pairs[1].sampler_slot = 0;
+            $else
+                break;
+            $endif
         case SgBackend.METAL_MACOS:
+            $if env::OS_TYPE == MACOS:
             desc.vertex_func.source = (ZString)&GTAO_VS_SOURCE_METAL_MACOS;
             desc.vertex_func.entry = "main0";
             desc.fragment_func.source = (ZString)&GTAO_FS_SOURCE_METAL_MACOS;
@@ -8520,7 +8529,11 @@ fn SgShaderDesc gtao_shader_desc(SgBackend backend)
             desc.texture_sampler_pairs[1].stage = SgShaderStage.FRAGMENT;
             desc.texture_sampler_pairs[1].view_slot = 1;
             desc.texture_sampler_pairs[1].sampler_slot = 0;
+            $else
+                break;
+            $endif
         case SgBackend.METAL_IOS:
+            $if env::OS_TYPE == IOS:
             desc.vertex_func.source = (ZString)&GTAO_VS_SOURCE_METAL_IOS;
             desc.vertex_func.entry = "main0";
             desc.fragment_func.source = (ZString)&GTAO_FS_SOURCE_METAL_IOS;
@@ -8548,7 +8561,11 @@ fn SgShaderDesc gtao_shader_desc(SgBackend backend)
             desc.texture_sampler_pairs[1].stage = SgShaderStage.FRAGMENT;
             desc.texture_sampler_pairs[1].view_slot = 1;
             desc.texture_sampler_pairs[1].sampler_slot = 0;
+            $else
+                break;
+            $endif
         case SgBackend.METAL_SIMULATOR:
+            $if env::OS_TYPE == IOS:
             desc.vertex_func.source = (ZString)&GTAO_VS_SOURCE_METAL_SIM;
             desc.vertex_func.entry = "main0";
             desc.fragment_func.source = (ZString)&GTAO_FS_SOURCE_METAL_SIM;
@@ -8576,7 +8593,11 @@ fn SgShaderDesc gtao_shader_desc(SgBackend backend)
             desc.texture_sampler_pairs[1].stage = SgShaderStage.FRAGMENT;
             desc.texture_sampler_pairs[1].view_slot = 1;
             desc.texture_sampler_pairs[1].sampler_slot = 0;
+            $else
+                break;
+            $endif
         case SgBackend.WGPU:
+            $if env::EMSCRIPTEN:
             desc.vertex_func.source = (ZString)&GTAO_VS_SOURCE_WGSL;
             desc.vertex_func.entry = "main";
             desc.fragment_func.source = (ZString)&GTAO_FS_SOURCE_WGSL;
@@ -8604,6 +8625,9 @@ fn SgShaderDesc gtao_shader_desc(SgBackend backend)
             desc.texture_sampler_pairs[1].stage = SgShaderStage.FRAGMENT;
             desc.texture_sampler_pairs[1].view_slot = 1;
             desc.texture_sampler_pairs[1].sampler_slot = 0;
+            $else
+                break;
+            $endif
     }
     return desc;
 }
@@ -8614,6 +8638,7 @@ fn SgShaderDesc gtao_apply_shader_desc(SgBackend backend)
     switch (backend)
     {
         case SgBackend.GLCORE:
+            $if !env::DARWIN && !env::WIN32 && !env::EMSCRIPTEN:
             desc.vertex_func.source = (ZString)&GTAO_VS_SOURCE_GLSL430;
             desc.vertex_func.entry = "main";
             desc.fragment_func.source = (ZString)&GTAO_APPLY_FS_SOURCE_GLSL430;
@@ -8642,7 +8667,11 @@ fn SgShaderDesc gtao_apply_shader_desc(SgBackend backend)
             desc.texture_sampler_pairs[1].view_slot = 1;
             desc.texture_sampler_pairs[1].sampler_slot = 0;
             desc.texture_sampler_pairs[1].glsl_name = "gtao_indirect_gtao_apply_smp";
+            $else
+                break;
+            $endif
         case SgBackend.D3D11:
+            $if env::WIN32:
             desc.vertex_func.source = (ZString)&GTAO_VS_SOURCE_HLSL5;
             desc.vertex_func.d3d11_target = "vs_5_0";
             desc.vertex_func.entry = "main";
@@ -8672,7 +8701,11 @@ fn SgShaderDesc gtao_apply_shader_desc(SgBackend backend)
             desc.texture_sampler_pairs[1].stage = SgShaderStage.FRAGMENT;
             desc.texture_sampler_pairs[1].view_slot = 1;
             desc.texture_sampler_pairs[1].sampler_slot = 0;
+            $else
+                break;
+            $endif
         case SgBackend.METAL_MACOS:
+            $if env::OS_TYPE == MACOS:
             desc.vertex_func.source = (ZString)&GTAO_VS_SOURCE_METAL_MACOS;
             desc.vertex_func.entry = "main0";
             desc.fragment_func.source = (ZString)&GTAO_APPLY_FS_SOURCE_METAL_MACOS;
@@ -8700,7 +8733,11 @@ fn SgShaderDesc gtao_apply_shader_desc(SgBackend backend)
             desc.texture_sampler_pairs[1].stage = SgShaderStage.FRAGMENT;
             desc.texture_sampler_pairs[1].view_slot = 1;
             desc.texture_sampler_pairs[1].sampler_slot = 0;
+            $else
+                break;
+            $endif
         case SgBackend.METAL_IOS:
+            $if env::OS_TYPE == IOS:
             desc.vertex_func.source = (ZString)&GTAO_VS_SOURCE_METAL_IOS;
             desc.vertex_func.entry = "main0";
             desc.fragment_func.source = (ZString)&GTAO_APPLY_FS_SOURCE_METAL_IOS;
@@ -8728,7 +8765,11 @@ fn SgShaderDesc gtao_apply_shader_desc(SgBackend backend)
             desc.texture_sampler_pairs[1].stage = SgShaderStage.FRAGMENT;
             desc.texture_sampler_pairs[1].view_slot = 1;
             desc.texture_sampler_pairs[1].sampler_slot = 0;
+            $else
+                break;
+            $endif
         case SgBackend.METAL_SIMULATOR:
+            $if env::OS_TYPE == IOS:
             desc.vertex_func.source = (ZString)&GTAO_VS_SOURCE_METAL_SIM;
             desc.vertex_func.entry = "main0";
             desc.fragment_func.source = (ZString)&GTAO_APPLY_FS_SOURCE_METAL_SIM;
@@ -8756,7 +8797,11 @@ fn SgShaderDesc gtao_apply_shader_desc(SgBackend backend)
             desc.texture_sampler_pairs[1].stage = SgShaderStage.FRAGMENT;
             desc.texture_sampler_pairs[1].view_slot = 1;
             desc.texture_sampler_pairs[1].sampler_slot = 0;
+            $else
+                break;
+            $endif
         case SgBackend.WGPU:
+            $if env::EMSCRIPTEN:
             desc.vertex_func.source = (ZString)&GTAO_VS_SOURCE_WGSL;
             desc.vertex_func.entry = "main";
             desc.fragment_func.source = (ZString)&GTAO_APPLY_FS_SOURCE_WGSL;
@@ -8784,6 +8829,9 @@ fn SgShaderDesc gtao_apply_shader_desc(SgBackend backend)
             desc.texture_sampler_pairs[1].stage = SgShaderStage.FRAGMENT;
             desc.texture_sampler_pairs[1].view_slot = 1;
             desc.texture_sampler_pairs[1].sampler_slot = 0;
+            $else
+                break;
+            $endif
     }
     return desc;
 }
@@ -8794,6 +8842,7 @@ fn SgShaderDesc gtao_ms_shader_desc(SgBackend backend)
     switch (backend)
     {
         case SgBackend.GLCORE:
+            $if !env::DARWIN && !env::WIN32 && !env::EMSCRIPTEN:
             desc.vertex_func.source = (ZString)&GTAO_VS_SOURCE_GLSL430;
             desc.vertex_func.entry = "main";
             desc.fragment_func.source = (ZString)&GTAO_MS_FS_SOURCE_GLSL430;
@@ -8822,7 +8871,11 @@ fn SgShaderDesc gtao_ms_shader_desc(SgBackend backend)
             desc.texture_sampler_pairs[1].view_slot = 1;
             desc.texture_sampler_pairs[1].sampler_slot = 0;
             desc.texture_sampler_pairs[1].glsl_name = "gtao_normal_gtao_smp";
+            $else
+                break;
+            $endif
         case SgBackend.D3D11:
+            $if env::WIN32:
             desc.vertex_func.source = (ZString)&GTAO_VS_SOURCE_HLSL5;
             desc.vertex_func.d3d11_target = "vs_5_0";
             desc.vertex_func.entry = "main";
@@ -8852,7 +8905,11 @@ fn SgShaderDesc gtao_ms_shader_desc(SgBackend backend)
             desc.texture_sampler_pairs[1].stage = SgShaderStage.FRAGMENT;
             desc.texture_sampler_pairs[1].view_slot = 1;
             desc.texture_sampler_pairs[1].sampler_slot = 0;
+            $else
+                break;
+            $endif
         case SgBackend.METAL_MACOS:
+            $if env::OS_TYPE == MACOS:
             desc.vertex_func.source = (ZString)&GTAO_VS_SOURCE_METAL_MACOS;
             desc.vertex_func.entry = "main0";
             desc.fragment_func.source = (ZString)&GTAO_MS_FS_SOURCE_METAL_MACOS;
@@ -8880,7 +8937,11 @@ fn SgShaderDesc gtao_ms_shader_desc(SgBackend backend)
             desc.texture_sampler_pairs[1].stage = SgShaderStage.FRAGMENT;
             desc.texture_sampler_pairs[1].view_slot = 1;
             desc.texture_sampler_pairs[1].sampler_slot = 0;
+            $else
+                break;
+            $endif
         case SgBackend.METAL_IOS:
+            $if env::OS_TYPE == IOS:
             desc.vertex_func.source = (ZString)&GTAO_VS_SOURCE_METAL_IOS;
             desc.vertex_func.entry = "main0";
             desc.fragment_func.source = (ZString)&GTAO_MS_FS_SOURCE_METAL_IOS;
@@ -8908,7 +8969,11 @@ fn SgShaderDesc gtao_ms_shader_desc(SgBackend backend)
             desc.texture_sampler_pairs[1].stage = SgShaderStage.FRAGMENT;
             desc.texture_sampler_pairs[1].view_slot = 1;
             desc.texture_sampler_pairs[1].sampler_slot = 0;
+            $else
+                break;
+            $endif
         case SgBackend.METAL_SIMULATOR:
+            $if env::OS_TYPE == IOS:
             desc.vertex_func.source = (ZString)&GTAO_VS_SOURCE_METAL_SIM;
             desc.vertex_func.entry = "main0";
             desc.fragment_func.source = (ZString)&GTAO_MS_FS_SOURCE_METAL_SIM;
@@ -8936,7 +9001,11 @@ fn SgShaderDesc gtao_ms_shader_desc(SgBackend backend)
             desc.texture_sampler_pairs[1].stage = SgShaderStage.FRAGMENT;
             desc.texture_sampler_pairs[1].view_slot = 1;
             desc.texture_sampler_pairs[1].sampler_slot = 0;
+            $else
+                break;
+            $endif
         case SgBackend.WGPU:
+            $if env::EMSCRIPTEN:
             desc.vertex_func.source = (ZString)&GTAO_VS_SOURCE_WGSL;
             desc.vertex_func.entry = "main";
             desc.fragment_func.source = (ZString)&GTAO_MS_FS_SOURCE_WGSL;
@@ -8964,6 +9033,9 @@ fn SgShaderDesc gtao_ms_shader_desc(SgBackend backend)
             desc.texture_sampler_pairs[1].stage = SgShaderStage.FRAGMENT;
             desc.texture_sampler_pairs[1].view_slot = 1;
             desc.texture_sampler_pairs[1].sampler_slot = 0;
+            $else
+                break;
+            $endif
     }
     return desc;
 }

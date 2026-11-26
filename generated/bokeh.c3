@@ -304,7 +304,7 @@ struct BokehScatterParams @align(16) @packed
     }
 
 */
-const char[147] BOKEH_VS_SOURCE_GLSL430 @private = {
+const char[147] BOKEH_VS_SOURCE_GLSL430 @private @if(!env::DARWIN && !env::WIN32 && !env::EMSCRIPTEN) = {
     0x23,0x76,0x65,0x72,0x73,0x69,0x6f,0x6e,0x20,0x34,0x33,0x30,0x0a,0x0a,0x76,0x6f,
     0x69,0x64,0x20,0x6d,0x61,0x69,0x6e,0x28,0x29,0x0a,0x7b,0x0a,0x20,0x20,0x20,0x20,
     0x67,0x6c,0x5f,0x50,0x6f,0x73,0x69,0x74,0x69,0x6f,0x6e,0x20,0x3d,0x20,0x76,0x65,
@@ -395,7 +395,7 @@ const char[147] BOKEH_VS_SOURCE_GLSL430 @private = {
     }
 
 */
-const char[2055] BOKEH_FOCUS_FS_SOURCE_GLSL430 @private = {
+const char[2055] BOKEH_FOCUS_FS_SOURCE_GLSL430 @private @if(!env::DARWIN && !env::WIN32 && !env::EMSCRIPTEN) = {
     0x23,0x76,0x65,0x72,0x73,0x69,0x6f,0x6e,0x20,0x34,0x33,0x30,0x0a,0x0a,0x75,0x6e,
     0x69,0x66,0x6f,0x72,0x6d,0x20,0x76,0x65,0x63,0x34,0x20,0x62,0x6f,0x6b,0x65,0x68,
     0x5f,0x70,0x61,0x72,0x61,0x6d,0x73,0x5b,0x34,0x5d,0x3b,0x0a,0x6c,0x61,0x79,0x6f,
@@ -560,7 +560,7 @@ const char[2055] BOKEH_FOCUS_FS_SOURCE_GLSL430 @private = {
     }
 
 */
-const char[927] BOKEH_TILES_FS_SOURCE_GLSL430 @private = {
+const char[927] BOKEH_TILES_FS_SOURCE_GLSL430 @private @if(!env::DARWIN && !env::WIN32 && !env::EMSCRIPTEN) = {
     0x23,0x76,0x65,0x72,0x73,0x69,0x6f,0x6e,0x20,0x34,0x33,0x30,0x0a,0x0a,0x75,0x6e,
     0x69,0x66,0x6f,0x72,0x6d,0x20,0x76,0x65,0x63,0x34,0x20,0x62,0x6f,0x6b,0x65,0x68,
     0x5f,0x70,0x61,0x72,0x61,0x6d,0x73,0x5b,0x34,0x5d,0x3b,0x0a,0x6c,0x61,0x79,0x6f,
@@ -655,7 +655,7 @@ const char[927] BOKEH_TILES_FS_SOURCE_GLSL430 @private = {
     }
 
 */
-const char[897] BOKEH_REACH_FS_SOURCE_GLSL430 @private = {
+const char[897] BOKEH_REACH_FS_SOURCE_GLSL430 @private @if(!env::DARWIN && !env::WIN32 && !env::EMSCRIPTEN) = {
     0x23,0x76,0x65,0x72,0x73,0x69,0x6f,0x6e,0x20,0x34,0x33,0x30,0x0a,0x0a,0x75,0x6e,
     0x69,0x66,0x6f,0x72,0x6d,0x20,0x76,0x65,0x63,0x34,0x20,0x62,0x6f,0x6b,0x65,0x68,
     0x5f,0x70,0x61,0x72,0x61,0x6d,0x73,0x5b,0x34,0x5d,0x3b,0x0a,0x6c,0x61,0x79,0x6f,
@@ -750,7 +750,7 @@ const char[897] BOKEH_REACH_FS_SOURCE_GLSL430 @private = {
     }
 
 */
-const char[1309] BOKEH_PREFILTER_FS_SOURCE_GLSL430 @private = {
+const char[1309] BOKEH_PREFILTER_FS_SOURCE_GLSL430 @private @if(!env::DARWIN && !env::WIN32 && !env::EMSCRIPTEN) = {
     0x23,0x76,0x65,0x72,0x73,0x69,0x6f,0x6e,0x20,0x34,0x33,0x30,0x0a,0x0a,0x75,0x6e,
     0x69,0x66,0x6f,0x72,0x6d,0x20,0x76,0x65,0x63,0x34,0x20,0x62,0x6f,0x6b,0x65,0x68,
     0x5f,0x70,0x61,0x72,0x61,0x6d,0x73,0x5b,0x34,0x5d,0x3b,0x0a,0x6c,0x61,0x79,0x6f,
@@ -938,7 +938,7 @@ const char[1309] BOKEH_PREFILTER_FS_SOURCE_GLSL430 @private = {
     }
 
 */
-const char[3359] BOKEH_SPARKS_FS_SOURCE_GLSL430 @private = {
+const char[3359] BOKEH_SPARKS_FS_SOURCE_GLSL430 @private @if(!env::DARWIN && !env::WIN32 && !env::EMSCRIPTEN) = {
     0x23,0x76,0x65,0x72,0x73,0x69,0x6f,0x6e,0x20,0x34,0x33,0x30,0x0a,0x0a,0x75,0x6e,
     0x69,0x66,0x6f,0x72,0x6d,0x20,0x76,0x65,0x63,0x34,0x20,0x62,0x6f,0x6b,0x65,0x68,
     0x5f,0x70,0x61,0x72,0x61,0x6d,0x73,0x5b,0x34,0x5d,0x3b,0x0a,0x6c,0x61,0x79,0x6f,
@@ -1166,7 +1166,7 @@ const char[3359] BOKEH_SPARKS_FS_SOURCE_GLSL430 @private = {
     }
 
 */
-const char[439] BOKEH_REST_FS_SOURCE_GLSL430 @private = {
+const char[439] BOKEH_REST_FS_SOURCE_GLSL430 @private @if(!env::DARWIN && !env::WIN32 && !env::EMSCRIPTEN) = {
     0x23,0x76,0x65,0x72,0x73,0x69,0x6f,0x6e,0x20,0x34,0x33,0x30,0x0a,0x0a,0x6c,0x61,
     0x79,0x6f,0x75,0x74,0x28,0x62,0x69,0x6e,0x64,0x69,0x6e,0x67,0x20,0x3d,0x20,0x30,
     0x29,0x20,0x75,0x6e,0x69,0x66,0x6f,0x72,0x6d,0x20,0x73,0x61,0x6d,0x70,0x6c,0x65,
@@ -1269,7 +1269,7 @@ const char[439] BOKEH_REST_FS_SOURCE_GLSL430 @private = {
     }
 
 */
-const char[2691] BOKEH_CLEAN_FS_SOURCE_GLSL430 @private = {
+const char[2691] BOKEH_CLEAN_FS_SOURCE_GLSL430 @private @if(!env::DARWIN && !env::WIN32 && !env::EMSCRIPTEN) = {
     0x23,0x76,0x65,0x72,0x73,0x69,0x6f,0x6e,0x20,0x34,0x33,0x30,0x0a,0x0a,0x75,0x6e,
     0x69,0x66,0x6f,0x72,0x6d,0x20,0x76,0x65,0x63,0x34,0x20,0x62,0x6f,0x6b,0x65,0x68,
     0x5f,0x70,0x61,0x72,0x61,0x6d,0x73,0x5b,0x34,0x5d,0x3b,0x0a,0x6c,0x61,0x79,0x6f,
@@ -1459,7 +1459,7 @@ const char[2691] BOKEH_CLEAN_FS_SOURCE_GLSL430 @private = {
     }
 
 */
-const char[687] BOKEH_SHRINK_FS_SOURCE_GLSL430 @private = {
+const char[687] BOKEH_SHRINK_FS_SOURCE_GLSL430 @private @if(!env::DARWIN && !env::WIN32 && !env::EMSCRIPTEN) = {
     0x23,0x76,0x65,0x72,0x73,0x69,0x6f,0x6e,0x20,0x34,0x33,0x30,0x0a,0x0a,0x6c,0x61,
     0x79,0x6f,0x75,0x74,0x28,0x62,0x69,0x6e,0x64,0x69,0x6e,0x67,0x20,0x3d,0x20,0x30,
     0x29,0x20,0x75,0x6e,0x69,0x66,0x6f,0x72,0x6d,0x20,0x73,0x61,0x6d,0x70,0x6c,0x65,
@@ -1624,7 +1624,7 @@ const char[687] BOKEH_SHRINK_FS_SOURCE_GLSL430 @private = {
     }
 
 */
-const char[3995] BOKEH_GATHER_FS_SOURCE_GLSL430 @private = {
+const char[3995] BOKEH_GATHER_FS_SOURCE_GLSL430 @private @if(!env::DARWIN && !env::WIN32 && !env::EMSCRIPTEN) = {
     0x23,0x76,0x65,0x72,0x73,0x69,0x6f,0x6e,0x20,0x34,0x33,0x30,0x0a,0x0a,0x75,0x6e,
     0x69,0x66,0x6f,0x72,0x6d,0x20,0x76,0x65,0x63,0x34,0x20,0x62,0x6f,0x6b,0x65,0x68,
     0x5f,0x70,0x61,0x72,0x61,0x6d,0x73,0x5b,0x34,0x5d,0x3b,0x0a,0x6c,0x61,0x79,0x6f,
@@ -1923,7 +1923,7 @@ const char[3995] BOKEH_GATHER_FS_SOURCE_GLSL430 @private = {
     }
 
 */
-const char[1728] BOKEH_SCATTER_VS_SOURCE_GLSL430 @private = {
+const char[1728] BOKEH_SCATTER_VS_SOURCE_GLSL430 @private @if(!env::DARWIN && !env::WIN32 && !env::EMSCRIPTEN) = {
     0x23,0x76,0x65,0x72,0x73,0x69,0x6f,0x6e,0x20,0x34,0x33,0x30,0x0a,0x0a,0x75,0x6e,
     0x69,0x66,0x6f,0x72,0x6d,0x20,0x76,0x65,0x63,0x34,0x20,0x62,0x6f,0x6b,0x65,0x68,
     0x5f,0x73,0x63,0x61,0x74,0x74,0x65,0x72,0x5f,0x70,0x61,0x72,0x61,0x6d,0x73,0x5b,
@@ -2063,7 +2063,7 @@ const char[1728] BOKEH_SCATTER_VS_SOURCE_GLSL430 @private = {
     }
 
 */
-const char[779] BOKEH_SCATTER_FS_SOURCE_GLSL430 @private = {
+const char[779] BOKEH_SCATTER_FS_SOURCE_GLSL430 @private @if(!env::DARWIN && !env::WIN32 && !env::EMSCRIPTEN) = {
     0x23,0x76,0x65,0x72,0x73,0x69,0x6f,0x6e,0x20,0x34,0x33,0x30,0x0a,0x0a,0x6c,0x61,
     0x79,0x6f,0x75,0x74,0x28,0x62,0x69,0x6e,0x64,0x69,0x6e,0x67,0x20,0x3d,0x20,0x30,
     0x29,0x20,0x75,0x6e,0x69,0x66,0x6f,0x72,0x6d,0x20,0x73,0x61,0x6d,0x70,0x6c,0x65,
@@ -2141,7 +2141,7 @@ const char[779] BOKEH_SCATTER_FS_SOURCE_GLSL430 @private = {
         return stage_output;
     }
 */
-const char[579] BOKEH_VS_SOURCE_HLSL5 @private = {
+const char[579] BOKEH_VS_SOURCE_HLSL5 @private @if(env::WIN32) = {
     0x73,0x74,0x61,0x74,0x69,0x63,0x20,0x66,0x6c,0x6f,0x61,0x74,0x34,0x20,0x67,0x6c,
     0x5f,0x50,0x6f,0x73,0x69,0x74,0x69,0x6f,0x6e,0x3b,0x0a,0x73,0x74,0x61,0x74,0x69,
     0x63,0x20,0x69,0x6e,0x74,0x20,0x67,0x6c,0x5f,0x56,0x65,0x72,0x74,0x65,0x78,0x49,
@@ -2277,7 +2277,7 @@ const char[579] BOKEH_VS_SOURCE_HLSL5 @private = {
         return stage_output;
     }
 */
-const char[2351] BOKEH_FOCUS_FS_SOURCE_HLSL5 @private = {
+const char[2351] BOKEH_FOCUS_FS_SOURCE_HLSL5 @private @if(env::WIN32) = {
     0x63,0x62,0x75,0x66,0x66,0x65,0x72,0x20,0x62,0x6f,0x6b,0x65,0x68,0x5f,0x70,0x61,
     0x72,0x61,0x6d,0x73,0x20,0x3a,0x20,0x72,0x65,0x67,0x69,0x73,0x74,0x65,0x72,0x28,
     0x62,0x30,0x29,0x0a,0x7b,0x0a,0x20,0x20,0x20,0x20,0x66,0x6c,0x6f,0x61,0x74,0x34,
@@ -2486,7 +2486,7 @@ const char[2351] BOKEH_FOCUS_FS_SOURCE_HLSL5 @private = {
         return stage_output;
     }
 */
-const char[1461] BOKEH_TILES_FS_SOURCE_HLSL5 @private = {
+const char[1461] BOKEH_TILES_FS_SOURCE_HLSL5 @private @if(env::WIN32) = {
     0x63,0x62,0x75,0x66,0x66,0x65,0x72,0x20,0x62,0x6f,0x6b,0x65,0x68,0x5f,0x70,0x61,
     0x72,0x61,0x6d,0x73,0x20,0x3a,0x20,0x72,0x65,0x67,0x69,0x73,0x74,0x65,0x72,0x28,
     0x62,0x30,0x29,0x0a,0x7b,0x0a,0x20,0x20,0x20,0x20,0x66,0x6c,0x6f,0x61,0x74,0x34,
@@ -2649,7 +2649,7 @@ const char[1461] BOKEH_TILES_FS_SOURCE_HLSL5 @private = {
         return stage_output;
     }
 */
-const char[1690] BOKEH_REACH_FS_SOURCE_HLSL5 @private = {
+const char[1690] BOKEH_REACH_FS_SOURCE_HLSL5 @private @if(env::WIN32) = {
     0x63,0x62,0x75,0x66,0x66,0x65,0x72,0x20,0x62,0x6f,0x6b,0x65,0x68,0x5f,0x70,0x61,
     0x72,0x61,0x6d,0x73,0x20,0x3a,0x20,0x72,0x65,0x67,0x69,0x73,0x74,0x65,0x72,0x28,
     0x62,0x30,0x29,0x0a,0x7b,0x0a,0x20,0x20,0x20,0x20,0x66,0x6c,0x6f,0x61,0x74,0x34,
@@ -2827,7 +2827,7 @@ const char[1690] BOKEH_REACH_FS_SOURCE_HLSL5 @private = {
         return stage_output;
     }
 */
-const char[2005] BOKEH_PREFILTER_FS_SOURCE_HLSL5 @private = {
+const char[2005] BOKEH_PREFILTER_FS_SOURCE_HLSL5 @private @if(env::WIN32) = {
     0x63,0x62,0x75,0x66,0x66,0x65,0x72,0x20,0x62,0x6f,0x6b,0x65,0x68,0x5f,0x70,0x61,
     0x72,0x61,0x6d,0x73,0x20,0x3a,0x20,0x72,0x65,0x67,0x69,0x73,0x74,0x65,0x72,0x28,
     0x62,0x30,0x29,0x0a,0x7b,0x0a,0x20,0x20,0x20,0x20,0x66,0x6c,0x6f,0x61,0x74,0x34,
@@ -3095,7 +3095,7 @@ const char[2005] BOKEH_PREFILTER_FS_SOURCE_HLSL5 @private = {
         return stage_output;
     }
 */
-const char[4091] BOKEH_SPARKS_FS_SOURCE_HLSL5 @private = {
+const char[4091] BOKEH_SPARKS_FS_SOURCE_HLSL5 @private @if(env::WIN32) = {
     0x63,0x62,0x75,0x66,0x66,0x65,0x72,0x20,0x62,0x6f,0x6b,0x65,0x68,0x5f,0x70,0x61,
     0x72,0x61,0x6d,0x73,0x20,0x3a,0x20,0x72,0x65,0x67,0x69,0x73,0x74,0x65,0x72,0x28,
     0x62,0x30,0x29,0x0a,0x7b,0x0a,0x20,0x20,0x20,0x20,0x66,0x6c,0x6f,0x61,0x74,0x34,
@@ -3388,7 +3388,7 @@ const char[4091] BOKEH_SPARKS_FS_SOURCE_HLSL5 @private = {
         return stage_output;
     }
 */
-const char[821] BOKEH_REST_FS_SOURCE_HLSL5 @private = {
+const char[821] BOKEH_REST_FS_SOURCE_HLSL5 @private @if(env::WIN32) = {
     0x54,0x65,0x78,0x74,0x75,0x72,0x65,0x32,0x44,0x3c,0x66,0x6c,0x6f,0x61,0x74,0x34,
     0x3e,0x20,0x62,0x6f,0x6b,0x65,0x68,0x5f,0x72,0x65,0x73,0x74,0x5f,0x73,0x6f,0x66,
     0x74,0x20,0x3a,0x20,0x72,0x65,0x67,0x69,0x73,0x74,0x65,0x72,0x28,0x74,0x30,0x29,
@@ -3549,7 +3549,7 @@ const char[821] BOKEH_REST_FS_SOURCE_HLSL5 @private = {
         return stage_output;
     }
 */
-const char[3351] BOKEH_CLEAN_FS_SOURCE_HLSL5 @private = {
+const char[3351] BOKEH_CLEAN_FS_SOURCE_HLSL5 @private @if(env::WIN32) = {
     0x63,0x62,0x75,0x66,0x66,0x65,0x72,0x20,0x62,0x6f,0x6b,0x65,0x68,0x5f,0x70,0x61,
     0x72,0x61,0x6d,0x73,0x20,0x3a,0x20,0x72,0x65,0x67,0x69,0x73,0x74,0x65,0x72,0x28,
     0x62,0x30,0x29,0x0a,0x7b,0x0a,0x20,0x20,0x20,0x20,0x66,0x6c,0x6f,0x61,0x74,0x34,
@@ -3807,7 +3807,7 @@ const char[3351] BOKEH_CLEAN_FS_SOURCE_HLSL5 @private = {
         return stage_output;
     }
 */
-const char[1348] BOKEH_SHRINK_FS_SOURCE_HLSL5 @private = {
+const char[1348] BOKEH_SHRINK_FS_SOURCE_HLSL5 @private @if(env::WIN32) = {
     0x54,0x65,0x78,0x74,0x75,0x72,0x65,0x32,0x44,0x3c,0x66,0x6c,0x6f,0x61,0x74,0x34,
     0x3e,0x20,0x62,0x6f,0x6b,0x65,0x68,0x5f,0x73,0x68,0x72,0x69,0x6e,0x6b,0x5f,0x73,
     0x72,0x63,0x20,0x3a,0x20,0x72,0x65,0x67,0x69,0x73,0x74,0x65,0x72,0x28,0x74,0x30,
@@ -4041,7 +4041,7 @@ const char[1348] BOKEH_SHRINK_FS_SOURCE_HLSL5 @private = {
         return stage_output;
     }
 */
-const char[4428] BOKEH_GATHER_FS_SOURCE_HLSL5 @private = {
+const char[4428] BOKEH_GATHER_FS_SOURCE_HLSL5 @private @if(env::WIN32) = {
     0x63,0x62,0x75,0x66,0x66,0x65,0x72,0x20,0x62,0x6f,0x6b,0x65,0x68,0x5f,0x70,0x61,
     0x72,0x61,0x6d,0x73,0x20,0x3a,0x20,0x72,0x65,0x67,0x69,0x73,0x74,0x65,0x72,0x28,
     0x62,0x30,0x29,0x0a,0x7b,0x0a,0x20,0x20,0x20,0x20,0x66,0x6c,0x6f,0x61,0x74,0x34,
@@ -4410,7 +4410,7 @@ const char[4428] BOKEH_GATHER_FS_SOURCE_HLSL5 @private = {
         return stage_output;
     }
 */
-const char[2692] BOKEH_SCATTER_VS_SOURCE_HLSL5 @private = {
+const char[2692] BOKEH_SCATTER_VS_SOURCE_HLSL5 @private @if(env::WIN32) = {
     0x63,0x62,0x75,0x66,0x66,0x65,0x72,0x20,0x62,0x6f,0x6b,0x65,0x68,0x5f,0x73,0x63,
     0x61,0x74,0x74,0x65,0x72,0x5f,0x70,0x61,0x72,0x61,0x6d,0x73,0x20,0x3a,0x20,0x72,
     0x65,0x67,0x69,0x73,0x74,0x65,0x72,0x28,0x62,0x30,0x29,0x0a,0x7b,0x0a,0x20,0x20,
@@ -4637,7 +4637,7 @@ const char[2692] BOKEH_SCATTER_VS_SOURCE_HLSL5 @private = {
         return stage_output;
     }
 */
-const char[1406] BOKEH_SCATTER_FS_SOURCE_HLSL5 @private = {
+const char[1406] BOKEH_SCATTER_FS_SOURCE_HLSL5 @private @if(env::WIN32) = {
     0x54,0x65,0x78,0x74,0x75,0x72,0x65,0x32,0x44,0x3c,0x66,0x6c,0x6f,0x61,0x74,0x34,
     0x3e,0x20,0x62,0x6f,0x6b,0x65,0x68,0x5f,0x73,0x63,0x61,0x74,0x74,0x65,0x72,0x5f,
     0x64,0x65,0x70,0x74,0x68,0x20,0x3a,0x20,0x72,0x65,0x67,0x69,0x73,0x74,0x65,0x72,
@@ -4746,7 +4746,7 @@ const char[1406] BOKEH_SCATTER_FS_SOURCE_HLSL5 @private = {
     }
 
 */
-const char[377] BOKEH_VS_SOURCE_METAL_MACOS @private = {
+const char[377] BOKEH_VS_SOURCE_METAL_MACOS @private @if(env::OS_TYPE == MACOS) = {
     0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,0x20,0x3c,0x6d,0x65,0x74,0x61,0x6c,0x5f,
     0x73,0x74,0x64,0x6c,0x69,0x62,0x3e,0x0a,0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,
     0x20,0x3c,0x73,0x69,0x6d,0x64,0x2f,0x73,0x69,0x6d,0x64,0x2e,0x68,0x3e,0x0a,0x0a,
@@ -4904,7 +4904,7 @@ const char[377] BOKEH_VS_SOURCE_METAL_MACOS @private = {
     }
 
 */
-const char[3215] BOKEH_FOCUS_FS_SOURCE_METAL_MACOS @private = {
+const char[3215] BOKEH_FOCUS_FS_SOURCE_METAL_MACOS @private @if(env::OS_TYPE == MACOS) = {
     0x23,0x70,0x72,0x61,0x67,0x6d,0x61,0x20,0x63,0x6c,0x61,0x6e,0x67,0x20,0x64,0x69,
     0x61,0x67,0x6e,0x6f,0x73,0x74,0x69,0x63,0x20,0x69,0x67,0x6e,0x6f,0x72,0x65,0x64,
     0x20,0x22,0x2d,0x57,0x6d,0x69,0x73,0x73,0x69,0x6e,0x67,0x2d,0x70,0x72,0x6f,0x74,
@@ -5156,7 +5156,7 @@ const char[3215] BOKEH_FOCUS_FS_SOURCE_METAL_MACOS @private = {
     }
 
 */
-const char[1313] BOKEH_TILES_FS_SOURCE_METAL_MACOS @private = {
+const char[1313] BOKEH_TILES_FS_SOURCE_METAL_MACOS @private @if(env::OS_TYPE == MACOS) = {
     0x23,0x70,0x72,0x61,0x67,0x6d,0x61,0x20,0x63,0x6c,0x61,0x6e,0x67,0x20,0x64,0x69,
     0x61,0x67,0x6e,0x6f,0x73,0x74,0x69,0x63,0x20,0x69,0x67,0x6e,0x6f,0x72,0x65,0x64,
     0x20,0x22,0x2d,0x57,0x6d,0x69,0x73,0x73,0x69,0x6e,0x67,0x2d,0x70,0x72,0x6f,0x74,
@@ -5289,7 +5289,7 @@ const char[1313] BOKEH_TILES_FS_SOURCE_METAL_MACOS @private = {
     }
 
 */
-const char[1186] BOKEH_REACH_FS_SOURCE_METAL_MACOS @private = {
+const char[1186] BOKEH_REACH_FS_SOURCE_METAL_MACOS @private @if(env::OS_TYPE == MACOS) = {
     0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,0x20,0x3c,0x6d,0x65,0x74,0x61,0x6c,0x5f,
     0x73,0x74,0x64,0x6c,0x69,0x62,0x3e,0x0a,0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,
     0x20,0x3c,0x73,0x69,0x6d,0x64,0x2f,0x73,0x69,0x6d,0x64,0x2e,0x68,0x3e,0x0a,0x0a,
@@ -5416,7 +5416,7 @@ const char[1186] BOKEH_REACH_FS_SOURCE_METAL_MACOS @private = {
     }
 
 */
-const char[1660] BOKEH_PREFILTER_FS_SOURCE_METAL_MACOS @private = {
+const char[1660] BOKEH_PREFILTER_FS_SOURCE_METAL_MACOS @private @if(env::OS_TYPE == MACOS) = {
     0x23,0x70,0x72,0x61,0x67,0x6d,0x61,0x20,0x63,0x6c,0x61,0x6e,0x67,0x20,0x64,0x69,
     0x61,0x67,0x6e,0x6f,0x73,0x74,0x69,0x63,0x20,0x69,0x67,0x6e,0x6f,0x72,0x65,0x64,
     0x20,0x22,0x2d,0x57,0x6d,0x69,0x73,0x73,0x69,0x6e,0x67,0x2d,0x70,0x72,0x6f,0x74,
@@ -5641,7 +5641,7 @@ const char[1660] BOKEH_PREFILTER_FS_SOURCE_METAL_MACOS @private = {
     }
 
 */
-const char[4213] BOKEH_SPARKS_FS_SOURCE_METAL_MACOS @private = {
+const char[4213] BOKEH_SPARKS_FS_SOURCE_METAL_MACOS @private @if(env::OS_TYPE == MACOS) = {
     0x23,0x70,0x72,0x61,0x67,0x6d,0x61,0x20,0x63,0x6c,0x61,0x6e,0x67,0x20,0x64,0x69,
     0x61,0x67,0x6e,0x6f,0x73,0x74,0x69,0x63,0x20,0x69,0x67,0x6e,0x6f,0x72,0x65,0x64,
     0x20,0x22,0x2d,0x57,0x6d,0x69,0x73,0x73,0x69,0x6e,0x67,0x2d,0x70,0x72,0x6f,0x74,
@@ -5928,7 +5928,7 @@ const char[4213] BOKEH_SPARKS_FS_SOURCE_METAL_MACOS @private = {
     }
 
 */
-const char[580] BOKEH_REST_FS_SOURCE_METAL_MACOS @private = {
+const char[580] BOKEH_REST_FS_SOURCE_METAL_MACOS @private @if(env::OS_TYPE == MACOS) = {
     0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,0x20,0x3c,0x6d,0x65,0x74,0x61,0x6c,0x5f,
     0x73,0x74,0x64,0x6c,0x69,0x62,0x3e,0x0a,0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,
     0x20,0x3c,0x73,0x69,0x6d,0x64,0x2f,0x73,0x69,0x6d,0x64,0x2e,0x68,0x3e,0x0a,0x0a,
@@ -6055,7 +6055,7 @@ const char[580] BOKEH_REST_FS_SOURCE_METAL_MACOS @private = {
     }
 
 */
-const char[3487] BOKEH_CLEAN_FS_SOURCE_METAL_MACOS @private = {
+const char[3487] BOKEH_CLEAN_FS_SOURCE_METAL_MACOS @private @if(env::OS_TYPE == MACOS) = {
     0x23,0x70,0x72,0x61,0x67,0x6d,0x61,0x20,0x63,0x6c,0x61,0x6e,0x67,0x20,0x64,0x69,
     0x61,0x67,0x6e,0x6f,0x73,0x74,0x69,0x63,0x20,0x69,0x67,0x6e,0x6f,0x72,0x65,0x64,
     0x20,0x22,0x2d,0x57,0x6d,0x69,0x73,0x73,0x69,0x6e,0x67,0x2d,0x70,0x72,0x6f,0x74,
@@ -6300,7 +6300,7 @@ const char[3487] BOKEH_CLEAN_FS_SOURCE_METAL_MACOS @private = {
     }
 
 */
-const char[919] BOKEH_SHRINK_FS_SOURCE_METAL_MACOS @private = {
+const char[919] BOKEH_SHRINK_FS_SOURCE_METAL_MACOS @private @if(env::OS_TYPE == MACOS) = {
     0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,0x20,0x3c,0x6d,0x65,0x74,0x61,0x6c,0x5f,
     0x73,0x74,0x64,0x6c,0x69,0x62,0x3e,0x0a,0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,
     0x20,0x3c,0x73,0x69,0x6d,0x64,0x2f,0x73,0x69,0x6d,0x64,0x2e,0x68,0x3e,0x0a,0x0a,
@@ -6494,7 +6494,7 @@ const char[919] BOKEH_SHRINK_FS_SOURCE_METAL_MACOS @private = {
     }
 
 */
-const char[4973] BOKEH_GATHER_FS_SOURCE_METAL_MACOS @private = {
+const char[4973] BOKEH_GATHER_FS_SOURCE_METAL_MACOS @private @if(env::OS_TYPE == MACOS) = {
     0x23,0x70,0x72,0x61,0x67,0x6d,0x61,0x20,0x63,0x6c,0x61,0x6e,0x67,0x20,0x64,0x69,
     0x61,0x67,0x6e,0x6f,0x73,0x74,0x69,0x63,0x20,0x69,0x67,0x6e,0x6f,0x72,0x65,0x64,
     0x20,0x22,0x2d,0x57,0x6d,0x69,0x73,0x73,0x69,0x6e,0x67,0x2d,0x70,0x72,0x6f,0x74,
@@ -6865,7 +6865,7 @@ const char[4973] BOKEH_GATHER_FS_SOURCE_METAL_MACOS @private = {
     }
 
 */
-const char[2048] BOKEH_SCATTER_VS_SOURCE_METAL_MACOS @private = {
+const char[2048] BOKEH_SCATTER_VS_SOURCE_METAL_MACOS @private @if(env::OS_TYPE == MACOS) = {
     0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,0x20,0x3c,0x6d,0x65,0x74,0x61,0x6c,0x5f,
     0x73,0x74,0x64,0x6c,0x69,0x62,0x3e,0x0a,0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,
     0x20,0x3c,0x73,0x69,0x6d,0x64,0x2f,0x73,0x69,0x6d,0x64,0x2e,0x68,0x3e,0x0a,0x0a,
@@ -7035,7 +7035,7 @@ const char[2048] BOKEH_SCATTER_VS_SOURCE_METAL_MACOS @private = {
     }
 
 */
-const char[1030] BOKEH_SCATTER_FS_SOURCE_METAL_MACOS @private = {
+const char[1030] BOKEH_SCATTER_FS_SOURCE_METAL_MACOS @private @if(env::OS_TYPE == MACOS) = {
     0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,0x20,0x3c,0x6d,0x65,0x74,0x61,0x6c,0x5f,
     0x73,0x74,0x64,0x6c,0x69,0x62,0x3e,0x0a,0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,
     0x20,0x3c,0x73,0x69,0x6d,0x64,0x2f,0x73,0x69,0x6d,0x64,0x2e,0x68,0x3e,0x0a,0x0a,
@@ -7121,7 +7121,7 @@ const char[1030] BOKEH_SCATTER_FS_SOURCE_METAL_MACOS @private = {
     }
 
 */
-const char[377] BOKEH_VS_SOURCE_METAL_IOS @private = {
+const char[377] BOKEH_VS_SOURCE_METAL_IOS @private @if(env::OS_TYPE == IOS) = {
     0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,0x20,0x3c,0x6d,0x65,0x74,0x61,0x6c,0x5f,
     0x73,0x74,0x64,0x6c,0x69,0x62,0x3e,0x0a,0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,
     0x20,0x3c,0x73,0x69,0x6d,0x64,0x2f,0x73,0x69,0x6d,0x64,0x2e,0x68,0x3e,0x0a,0x0a,
@@ -7279,7 +7279,7 @@ const char[377] BOKEH_VS_SOURCE_METAL_IOS @private = {
     }
 
 */
-const char[3215] BOKEH_FOCUS_FS_SOURCE_METAL_IOS @private = {
+const char[3215] BOKEH_FOCUS_FS_SOURCE_METAL_IOS @private @if(env::OS_TYPE == IOS) = {
     0x23,0x70,0x72,0x61,0x67,0x6d,0x61,0x20,0x63,0x6c,0x61,0x6e,0x67,0x20,0x64,0x69,
     0x61,0x67,0x6e,0x6f,0x73,0x74,0x69,0x63,0x20,0x69,0x67,0x6e,0x6f,0x72,0x65,0x64,
     0x20,0x22,0x2d,0x57,0x6d,0x69,0x73,0x73,0x69,0x6e,0x67,0x2d,0x70,0x72,0x6f,0x74,
@@ -7531,7 +7531,7 @@ const char[3215] BOKEH_FOCUS_FS_SOURCE_METAL_IOS @private = {
     }
 
 */
-const char[1313] BOKEH_TILES_FS_SOURCE_METAL_IOS @private = {
+const char[1313] BOKEH_TILES_FS_SOURCE_METAL_IOS @private @if(env::OS_TYPE == IOS) = {
     0x23,0x70,0x72,0x61,0x67,0x6d,0x61,0x20,0x63,0x6c,0x61,0x6e,0x67,0x20,0x64,0x69,
     0x61,0x67,0x6e,0x6f,0x73,0x74,0x69,0x63,0x20,0x69,0x67,0x6e,0x6f,0x72,0x65,0x64,
     0x20,0x22,0x2d,0x57,0x6d,0x69,0x73,0x73,0x69,0x6e,0x67,0x2d,0x70,0x72,0x6f,0x74,
@@ -7664,7 +7664,7 @@ const char[1313] BOKEH_TILES_FS_SOURCE_METAL_IOS @private = {
     }
 
 */
-const char[1186] BOKEH_REACH_FS_SOURCE_METAL_IOS @private = {
+const char[1186] BOKEH_REACH_FS_SOURCE_METAL_IOS @private @if(env::OS_TYPE == IOS) = {
     0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,0x20,0x3c,0x6d,0x65,0x74,0x61,0x6c,0x5f,
     0x73,0x74,0x64,0x6c,0x69,0x62,0x3e,0x0a,0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,
     0x20,0x3c,0x73,0x69,0x6d,0x64,0x2f,0x73,0x69,0x6d,0x64,0x2e,0x68,0x3e,0x0a,0x0a,
@@ -7791,7 +7791,7 @@ const char[1186] BOKEH_REACH_FS_SOURCE_METAL_IOS @private = {
     }
 
 */
-const char[1660] BOKEH_PREFILTER_FS_SOURCE_METAL_IOS @private = {
+const char[1660] BOKEH_PREFILTER_FS_SOURCE_METAL_IOS @private @if(env::OS_TYPE == IOS) = {
     0x23,0x70,0x72,0x61,0x67,0x6d,0x61,0x20,0x63,0x6c,0x61,0x6e,0x67,0x20,0x64,0x69,
     0x61,0x67,0x6e,0x6f,0x73,0x74,0x69,0x63,0x20,0x69,0x67,0x6e,0x6f,0x72,0x65,0x64,
     0x20,0x22,0x2d,0x57,0x6d,0x69,0x73,0x73,0x69,0x6e,0x67,0x2d,0x70,0x72,0x6f,0x74,
@@ -8016,7 +8016,7 @@ const char[1660] BOKEH_PREFILTER_FS_SOURCE_METAL_IOS @private = {
     }
 
 */
-const char[4213] BOKEH_SPARKS_FS_SOURCE_METAL_IOS @private = {
+const char[4213] BOKEH_SPARKS_FS_SOURCE_METAL_IOS @private @if(env::OS_TYPE == IOS) = {
     0x23,0x70,0x72,0x61,0x67,0x6d,0x61,0x20,0x63,0x6c,0x61,0x6e,0x67,0x20,0x64,0x69,
     0x61,0x67,0x6e,0x6f,0x73,0x74,0x69,0x63,0x20,0x69,0x67,0x6e,0x6f,0x72,0x65,0x64,
     0x20,0x22,0x2d,0x57,0x6d,0x69,0x73,0x73,0x69,0x6e,0x67,0x2d,0x70,0x72,0x6f,0x74,
@@ -8303,7 +8303,7 @@ const char[4213] BOKEH_SPARKS_FS_SOURCE_METAL_IOS @private = {
     }
 
 */
-const char[580] BOKEH_REST_FS_SOURCE_METAL_IOS @private = {
+const char[580] BOKEH_REST_FS_SOURCE_METAL_IOS @private @if(env::OS_TYPE == IOS) = {
     0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,0x20,0x3c,0x6d,0x65,0x74,0x61,0x6c,0x5f,
     0x73,0x74,0x64,0x6c,0x69,0x62,0x3e,0x0a,0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,
     0x20,0x3c,0x73,0x69,0x6d,0x64,0x2f,0x73,0x69,0x6d,0x64,0x2e,0x68,0x3e,0x0a,0x0a,
@@ -8430,7 +8430,7 @@ const char[580] BOKEH_REST_FS_SOURCE_METAL_IOS @private = {
     }
 
 */
-const char[3487] BOKEH_CLEAN_FS_SOURCE_METAL_IOS @private = {
+const char[3487] BOKEH_CLEAN_FS_SOURCE_METAL_IOS @private @if(env::OS_TYPE == IOS) = {
     0x23,0x70,0x72,0x61,0x67,0x6d,0x61,0x20,0x63,0x6c,0x61,0x6e,0x67,0x20,0x64,0x69,
     0x61,0x67,0x6e,0x6f,0x73,0x74,0x69,0x63,0x20,0x69,0x67,0x6e,0x6f,0x72,0x65,0x64,
     0x20,0x22,0x2d,0x57,0x6d,0x69,0x73,0x73,0x69,0x6e,0x67,0x2d,0x70,0x72,0x6f,0x74,
@@ -8675,7 +8675,7 @@ const char[3487] BOKEH_CLEAN_FS_SOURCE_METAL_IOS @private = {
     }
 
 */
-const char[919] BOKEH_SHRINK_FS_SOURCE_METAL_IOS @private = {
+const char[919] BOKEH_SHRINK_FS_SOURCE_METAL_IOS @private @if(env::OS_TYPE == IOS) = {
     0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,0x20,0x3c,0x6d,0x65,0x74,0x61,0x6c,0x5f,
     0x73,0x74,0x64,0x6c,0x69,0x62,0x3e,0x0a,0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,
     0x20,0x3c,0x73,0x69,0x6d,0x64,0x2f,0x73,0x69,0x6d,0x64,0x2e,0x68,0x3e,0x0a,0x0a,
@@ -8869,7 +8869,7 @@ const char[919] BOKEH_SHRINK_FS_SOURCE_METAL_IOS @private = {
     }
 
 */
-const char[4973] BOKEH_GATHER_FS_SOURCE_METAL_IOS @private = {
+const char[4973] BOKEH_GATHER_FS_SOURCE_METAL_IOS @private @if(env::OS_TYPE == IOS) = {
     0x23,0x70,0x72,0x61,0x67,0x6d,0x61,0x20,0x63,0x6c,0x61,0x6e,0x67,0x20,0x64,0x69,
     0x61,0x67,0x6e,0x6f,0x73,0x74,0x69,0x63,0x20,0x69,0x67,0x6e,0x6f,0x72,0x65,0x64,
     0x20,0x22,0x2d,0x57,0x6d,0x69,0x73,0x73,0x69,0x6e,0x67,0x2d,0x70,0x72,0x6f,0x74,
@@ -9240,7 +9240,7 @@ const char[4973] BOKEH_GATHER_FS_SOURCE_METAL_IOS @private = {
     }
 
 */
-const char[2048] BOKEH_SCATTER_VS_SOURCE_METAL_IOS @private = {
+const char[2048] BOKEH_SCATTER_VS_SOURCE_METAL_IOS @private @if(env::OS_TYPE == IOS) = {
     0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,0x20,0x3c,0x6d,0x65,0x74,0x61,0x6c,0x5f,
     0x73,0x74,0x64,0x6c,0x69,0x62,0x3e,0x0a,0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,
     0x20,0x3c,0x73,0x69,0x6d,0x64,0x2f,0x73,0x69,0x6d,0x64,0x2e,0x68,0x3e,0x0a,0x0a,
@@ -9410,7 +9410,7 @@ const char[2048] BOKEH_SCATTER_VS_SOURCE_METAL_IOS @private = {
     }
 
 */
-const char[1030] BOKEH_SCATTER_FS_SOURCE_METAL_IOS @private = {
+const char[1030] BOKEH_SCATTER_FS_SOURCE_METAL_IOS @private @if(env::OS_TYPE == IOS) = {
     0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,0x20,0x3c,0x6d,0x65,0x74,0x61,0x6c,0x5f,
     0x73,0x74,0x64,0x6c,0x69,0x62,0x3e,0x0a,0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,
     0x20,0x3c,0x73,0x69,0x6d,0x64,0x2f,0x73,0x69,0x6d,0x64,0x2e,0x68,0x3e,0x0a,0x0a,
@@ -9496,7 +9496,7 @@ const char[1030] BOKEH_SCATTER_FS_SOURCE_METAL_IOS @private = {
     }
 
 */
-const char[377] BOKEH_VS_SOURCE_METAL_SIM @private = {
+const char[377] BOKEH_VS_SOURCE_METAL_SIM @private @if(env::OS_TYPE == IOS) = {
     0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,0x20,0x3c,0x6d,0x65,0x74,0x61,0x6c,0x5f,
     0x73,0x74,0x64,0x6c,0x69,0x62,0x3e,0x0a,0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,
     0x20,0x3c,0x73,0x69,0x6d,0x64,0x2f,0x73,0x69,0x6d,0x64,0x2e,0x68,0x3e,0x0a,0x0a,
@@ -9654,7 +9654,7 @@ const char[377] BOKEH_VS_SOURCE_METAL_SIM @private = {
     }
 
 */
-const char[3215] BOKEH_FOCUS_FS_SOURCE_METAL_SIM @private = {
+const char[3215] BOKEH_FOCUS_FS_SOURCE_METAL_SIM @private @if(env::OS_TYPE == IOS) = {
     0x23,0x70,0x72,0x61,0x67,0x6d,0x61,0x20,0x63,0x6c,0x61,0x6e,0x67,0x20,0x64,0x69,
     0x61,0x67,0x6e,0x6f,0x73,0x74,0x69,0x63,0x20,0x69,0x67,0x6e,0x6f,0x72,0x65,0x64,
     0x20,0x22,0x2d,0x57,0x6d,0x69,0x73,0x73,0x69,0x6e,0x67,0x2d,0x70,0x72,0x6f,0x74,
@@ -9906,7 +9906,7 @@ const char[3215] BOKEH_FOCUS_FS_SOURCE_METAL_SIM @private = {
     }
 
 */
-const char[1313] BOKEH_TILES_FS_SOURCE_METAL_SIM @private = {
+const char[1313] BOKEH_TILES_FS_SOURCE_METAL_SIM @private @if(env::OS_TYPE == IOS) = {
     0x23,0x70,0x72,0x61,0x67,0x6d,0x61,0x20,0x63,0x6c,0x61,0x6e,0x67,0x20,0x64,0x69,
     0x61,0x67,0x6e,0x6f,0x73,0x74,0x69,0x63,0x20,0x69,0x67,0x6e,0x6f,0x72,0x65,0x64,
     0x20,0x22,0x2d,0x57,0x6d,0x69,0x73,0x73,0x69,0x6e,0x67,0x2d,0x70,0x72,0x6f,0x74,
@@ -10039,7 +10039,7 @@ const char[1313] BOKEH_TILES_FS_SOURCE_METAL_SIM @private = {
     }
 
 */
-const char[1186] BOKEH_REACH_FS_SOURCE_METAL_SIM @private = {
+const char[1186] BOKEH_REACH_FS_SOURCE_METAL_SIM @private @if(env::OS_TYPE == IOS) = {
     0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,0x20,0x3c,0x6d,0x65,0x74,0x61,0x6c,0x5f,
     0x73,0x74,0x64,0x6c,0x69,0x62,0x3e,0x0a,0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,
     0x20,0x3c,0x73,0x69,0x6d,0x64,0x2f,0x73,0x69,0x6d,0x64,0x2e,0x68,0x3e,0x0a,0x0a,
@@ -10166,7 +10166,7 @@ const char[1186] BOKEH_REACH_FS_SOURCE_METAL_SIM @private = {
     }
 
 */
-const char[1660] BOKEH_PREFILTER_FS_SOURCE_METAL_SIM @private = {
+const char[1660] BOKEH_PREFILTER_FS_SOURCE_METAL_SIM @private @if(env::OS_TYPE == IOS) = {
     0x23,0x70,0x72,0x61,0x67,0x6d,0x61,0x20,0x63,0x6c,0x61,0x6e,0x67,0x20,0x64,0x69,
     0x61,0x67,0x6e,0x6f,0x73,0x74,0x69,0x63,0x20,0x69,0x67,0x6e,0x6f,0x72,0x65,0x64,
     0x20,0x22,0x2d,0x57,0x6d,0x69,0x73,0x73,0x69,0x6e,0x67,0x2d,0x70,0x72,0x6f,0x74,
@@ -10391,7 +10391,7 @@ const char[1660] BOKEH_PREFILTER_FS_SOURCE_METAL_SIM @private = {
     }
 
 */
-const char[4213] BOKEH_SPARKS_FS_SOURCE_METAL_SIM @private = {
+const char[4213] BOKEH_SPARKS_FS_SOURCE_METAL_SIM @private @if(env::OS_TYPE == IOS) = {
     0x23,0x70,0x72,0x61,0x67,0x6d,0x61,0x20,0x63,0x6c,0x61,0x6e,0x67,0x20,0x64,0x69,
     0x61,0x67,0x6e,0x6f,0x73,0x74,0x69,0x63,0x20,0x69,0x67,0x6e,0x6f,0x72,0x65,0x64,
     0x20,0x22,0x2d,0x57,0x6d,0x69,0x73,0x73,0x69,0x6e,0x67,0x2d,0x70,0x72,0x6f,0x74,
@@ -10678,7 +10678,7 @@ const char[4213] BOKEH_SPARKS_FS_SOURCE_METAL_SIM @private = {
     }
 
 */
-const char[580] BOKEH_REST_FS_SOURCE_METAL_SIM @private = {
+const char[580] BOKEH_REST_FS_SOURCE_METAL_SIM @private @if(env::OS_TYPE == IOS) = {
     0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,0x20,0x3c,0x6d,0x65,0x74,0x61,0x6c,0x5f,
     0x73,0x74,0x64,0x6c,0x69,0x62,0x3e,0x0a,0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,
     0x20,0x3c,0x73,0x69,0x6d,0x64,0x2f,0x73,0x69,0x6d,0x64,0x2e,0x68,0x3e,0x0a,0x0a,
@@ -10805,7 +10805,7 @@ const char[580] BOKEH_REST_FS_SOURCE_METAL_SIM @private = {
     }
 
 */
-const char[3487] BOKEH_CLEAN_FS_SOURCE_METAL_SIM @private = {
+const char[3487] BOKEH_CLEAN_FS_SOURCE_METAL_SIM @private @if(env::OS_TYPE == IOS) = {
     0x23,0x70,0x72,0x61,0x67,0x6d,0x61,0x20,0x63,0x6c,0x61,0x6e,0x67,0x20,0x64,0x69,
     0x61,0x67,0x6e,0x6f,0x73,0x74,0x69,0x63,0x20,0x69,0x67,0x6e,0x6f,0x72,0x65,0x64,
     0x20,0x22,0x2d,0x57,0x6d,0x69,0x73,0x73,0x69,0x6e,0x67,0x2d,0x70,0x72,0x6f,0x74,
@@ -11050,7 +11050,7 @@ const char[3487] BOKEH_CLEAN_FS_SOURCE_METAL_SIM @private = {
     }
 
 */
-const char[919] BOKEH_SHRINK_FS_SOURCE_METAL_SIM @private = {
+const char[919] BOKEH_SHRINK_FS_SOURCE_METAL_SIM @private @if(env::OS_TYPE == IOS) = {
     0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,0x20,0x3c,0x6d,0x65,0x74,0x61,0x6c,0x5f,
     0x73,0x74,0x64,0x6c,0x69,0x62,0x3e,0x0a,0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,
     0x20,0x3c,0x73,0x69,0x6d,0x64,0x2f,0x73,0x69,0x6d,0x64,0x2e,0x68,0x3e,0x0a,0x0a,
@@ -11244,7 +11244,7 @@ const char[919] BOKEH_SHRINK_FS_SOURCE_METAL_SIM @private = {
     }
 
 */
-const char[4973] BOKEH_GATHER_FS_SOURCE_METAL_SIM @private = {
+const char[4973] BOKEH_GATHER_FS_SOURCE_METAL_SIM @private @if(env::OS_TYPE == IOS) = {
     0x23,0x70,0x72,0x61,0x67,0x6d,0x61,0x20,0x63,0x6c,0x61,0x6e,0x67,0x20,0x64,0x69,
     0x61,0x67,0x6e,0x6f,0x73,0x74,0x69,0x63,0x20,0x69,0x67,0x6e,0x6f,0x72,0x65,0x64,
     0x20,0x22,0x2d,0x57,0x6d,0x69,0x73,0x73,0x69,0x6e,0x67,0x2d,0x70,0x72,0x6f,0x74,
@@ -11615,7 +11615,7 @@ const char[4973] BOKEH_GATHER_FS_SOURCE_METAL_SIM @private = {
     }
 
 */
-const char[2048] BOKEH_SCATTER_VS_SOURCE_METAL_SIM @private = {
+const char[2048] BOKEH_SCATTER_VS_SOURCE_METAL_SIM @private @if(env::OS_TYPE == IOS) = {
     0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,0x20,0x3c,0x6d,0x65,0x74,0x61,0x6c,0x5f,
     0x73,0x74,0x64,0x6c,0x69,0x62,0x3e,0x0a,0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,
     0x20,0x3c,0x73,0x69,0x6d,0x64,0x2f,0x73,0x69,0x6d,0x64,0x2e,0x68,0x3e,0x0a,0x0a,
@@ -11785,7 +11785,7 @@ const char[2048] BOKEH_SCATTER_VS_SOURCE_METAL_SIM @private = {
     }
 
 */
-const char[1030] BOKEH_SCATTER_FS_SOURCE_METAL_SIM @private = {
+const char[1030] BOKEH_SCATTER_FS_SOURCE_METAL_SIM @private @if(env::OS_TYPE == IOS) = {
     0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,0x20,0x3c,0x6d,0x65,0x74,0x61,0x6c,0x5f,
     0x73,0x74,0x64,0x6c,0x69,0x62,0x3e,0x0a,0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,
     0x20,0x3c,0x73,0x69,0x6d,0x64,0x2f,0x73,0x69,0x6d,0x64,0x2e,0x68,0x3e,0x0a,0x0a,
@@ -11877,7 +11877,7 @@ const char[1030] BOKEH_SCATTER_FS_SOURCE_METAL_SIM @private = {
       return main_out(gl_Position);
     }
 */
-const char[561] BOKEH_VS_SOURCE_WGSL @private = {
+const char[561] BOKEH_VS_SOURCE_WGSL @private @if(env::EMSCRIPTEN) = {
     0x64,0x69,0x61,0x67,0x6e,0x6f,0x73,0x74,0x69,0x63,0x28,0x6f,0x66,0x66,0x2c,0x20,
     0x64,0x65,0x72,0x69,0x76,0x61,0x74,0x69,0x76,0x65,0x5f,0x75,0x6e,0x69,0x66,0x6f,
     0x72,0x6d,0x69,0x74,0x79,0x29,0x3b,0x0a,0x0a,0x76,0x61,0x72,0x3c,0x70,0x72,0x69,
@@ -12053,7 +12053,7 @@ const char[561] BOKEH_VS_SOURCE_WGSL @private = {
       return main_out(frag_color);
     }
 */
-const char[2749] BOKEH_FOCUS_FS_SOURCE_WGSL @private = {
+const char[2749] BOKEH_FOCUS_FS_SOURCE_WGSL @private @if(env::EMSCRIPTEN) = {
     0x64,0x69,0x61,0x67,0x6e,0x6f,0x73,0x74,0x69,0x63,0x28,0x6f,0x66,0x66,0x2c,0x20,
     0x64,0x65,0x72,0x69,0x76,0x61,0x74,0x69,0x76,0x65,0x5f,0x75,0x6e,0x69,0x66,0x6f,
     0x72,0x6d,0x69,0x74,0x79,0x29,0x3b,0x0a,0x0a,0x73,0x74,0x72,0x75,0x63,0x74,0x20,
@@ -12315,7 +12315,7 @@ const char[2749] BOKEH_FOCUS_FS_SOURCE_WGSL @private = {
       return main_out(frag_color);
     }
 */
-const char[1797] BOKEH_TILES_FS_SOURCE_WGSL @private = {
+const char[1797] BOKEH_TILES_FS_SOURCE_WGSL @private @if(env::EMSCRIPTEN) = {
     0x64,0x69,0x61,0x67,0x6e,0x6f,0x73,0x74,0x69,0x63,0x28,0x6f,0x66,0x66,0x2c,0x20,
     0x64,0x65,0x72,0x69,0x76,0x61,0x74,0x69,0x76,0x65,0x5f,0x75,0x6e,0x69,0x66,0x6f,
     0x72,0x6d,0x69,0x74,0x79,0x29,0x3b,0x0a,0x0a,0x73,0x74,0x72,0x75,0x63,0x74,0x20,
@@ -12508,7 +12508,7 @@ const char[1797] BOKEH_TILES_FS_SOURCE_WGSL @private = {
       return main_out(frag_color);
     }
 */
-const char[1510] BOKEH_REACH_FS_SOURCE_WGSL @private = {
+const char[1510] BOKEH_REACH_FS_SOURCE_WGSL @private @if(env::EMSCRIPTEN) = {
     0x64,0x69,0x61,0x67,0x6e,0x6f,0x73,0x74,0x69,0x63,0x28,0x6f,0x66,0x66,0x2c,0x20,
     0x64,0x65,0x72,0x69,0x76,0x61,0x74,0x69,0x76,0x65,0x5f,0x75,0x6e,0x69,0x66,0x6f,
     0x72,0x6d,0x69,0x74,0x79,0x29,0x3b,0x0a,0x0a,0x73,0x74,0x72,0x75,0x63,0x74,0x20,
@@ -12700,7 +12700,7 @@ const char[1510] BOKEH_REACH_FS_SOURCE_WGSL @private = {
       return main_out(frag_color);
     }
 */
-const char[2252] BOKEH_PREFILTER_FS_SOURCE_WGSL @private = {
+const char[2252] BOKEH_PREFILTER_FS_SOURCE_WGSL @private @if(env::EMSCRIPTEN) = {
     0x64,0x69,0x61,0x67,0x6e,0x6f,0x73,0x74,0x69,0x63,0x28,0x6f,0x66,0x66,0x2c,0x20,
     0x64,0x65,0x72,0x69,0x76,0x61,0x74,0x69,0x76,0x65,0x5f,0x75,0x6e,0x69,0x66,0x6f,
     0x72,0x6d,0x69,0x74,0x79,0x29,0x3b,0x0a,0x0a,0x73,0x74,0x72,0x75,0x63,0x74,0x20,
@@ -13042,7 +13042,7 @@ const char[2252] BOKEH_PREFILTER_FS_SOURCE_WGSL @private = {
       return main_out(frag_color);
     }
 */
-const char[4824] BOKEH_SPARKS_FS_SOURCE_WGSL @private = {
+const char[4824] BOKEH_SPARKS_FS_SOURCE_WGSL @private @if(env::EMSCRIPTEN) = {
     0x64,0x69,0x61,0x67,0x6e,0x6f,0x73,0x74,0x69,0x63,0x28,0x6f,0x66,0x66,0x2c,0x20,
     0x64,0x65,0x72,0x69,0x76,0x61,0x74,0x69,0x76,0x65,0x5f,0x75,0x6e,0x69,0x66,0x6f,
     0x72,0x6d,0x69,0x74,0x79,0x29,0x3b,0x0a,0x0a,0x73,0x74,0x72,0x75,0x63,0x74,0x20,
@@ -13379,7 +13379,7 @@ const char[4824] BOKEH_SPARKS_FS_SOURCE_WGSL @private = {
       return main_out(frag_color);
     }
 */
-const char[770] BOKEH_REST_FS_SOURCE_WGSL @private = {
+const char[770] BOKEH_REST_FS_SOURCE_WGSL @private @if(env::EMSCRIPTEN) = {
     0x64,0x69,0x61,0x67,0x6e,0x6f,0x73,0x74,0x69,0x63,0x28,0x6f,0x66,0x66,0x2c,0x20,
     0x64,0x65,0x72,0x69,0x76,0x61,0x74,0x69,0x76,0x65,0x5f,0x75,0x6e,0x69,0x66,0x6f,
     0x72,0x6d,0x69,0x74,0x79,0x29,0x3b,0x0a,0x0a,0x76,0x61,0x72,0x3c,0x70,0x72,0x69,
@@ -13593,7 +13593,7 @@ const char[770] BOKEH_REST_FS_SOURCE_WGSL @private = {
       return main_out(frag_color);
     }
 */
-const char[4422] BOKEH_CLEAN_FS_SOURCE_WGSL @private = {
+const char[4422] BOKEH_CLEAN_FS_SOURCE_WGSL @private @if(env::EMSCRIPTEN) = {
     0x64,0x69,0x61,0x67,0x6e,0x6f,0x73,0x74,0x69,0x63,0x28,0x6f,0x66,0x66,0x2c,0x20,
     0x64,0x65,0x72,0x69,0x76,0x61,0x74,0x69,0x76,0x65,0x5f,0x75,0x6e,0x69,0x66,0x6f,
     0x72,0x6d,0x69,0x74,0x79,0x29,0x3b,0x0a,0x0a,0x73,0x74,0x72,0x75,0x63,0x74,0x20,
@@ -13906,7 +13906,7 @@ const char[4422] BOKEH_CLEAN_FS_SOURCE_WGSL @private = {
       return main_out(frag_color);
     }
 */
-const char[1078] BOKEH_SHRINK_FS_SOURCE_WGSL @private = {
+const char[1078] BOKEH_SHRINK_FS_SOURCE_WGSL @private @if(env::EMSCRIPTEN) = {
     0x64,0x69,0x61,0x67,0x6e,0x6f,0x73,0x74,0x69,0x63,0x28,0x6f,0x66,0x66,0x2c,0x20,
     0x64,0x65,0x72,0x69,0x76,0x61,0x74,0x69,0x76,0x65,0x5f,0x75,0x6e,0x69,0x66,0x6f,
     0x72,0x6d,0x69,0x74,0x79,0x29,0x3b,0x0a,0x0a,0x40,0x62,0x69,0x6e,0x64,0x69,0x6e,
@@ -14156,7 +14156,7 @@ const char[1078] BOKEH_SHRINK_FS_SOURCE_WGSL @private = {
       return main_out(frag_color);
     }
 */
-const char[5233] BOKEH_GATHER_FS_SOURCE_WGSL @private = {
+const char[5233] BOKEH_GATHER_FS_SOURCE_WGSL @private @if(env::EMSCRIPTEN) = {
     0x64,0x69,0x61,0x67,0x6e,0x6f,0x73,0x74,0x69,0x63,0x28,0x6f,0x66,0x66,0x2c,0x20,
     0x64,0x65,0x72,0x69,0x76,0x61,0x74,0x69,0x76,0x65,0x5f,0x75,0x6e,0x69,0x66,0x6f,
     0x72,0x6d,0x69,0x74,0x79,0x29,0x3b,0x0a,0x0a,0x73,0x74,0x72,0x75,0x63,0x74,0x20,
@@ -14573,7 +14573,7 @@ const char[5233] BOKEH_GATHER_FS_SOURCE_WGSL @private = {
       return main_out(gl_Position, v_off, v_light, v_disc, v_maxblur);
     }
 */
-const char[2478] BOKEH_SCATTER_VS_SOURCE_WGSL @private = {
+const char[2478] BOKEH_SCATTER_VS_SOURCE_WGSL @private @if(env::EMSCRIPTEN) = {
     0x64,0x69,0x61,0x67,0x6e,0x6f,0x73,0x74,0x69,0x63,0x28,0x6f,0x66,0x66,0x2c,0x20,
     0x64,0x65,0x72,0x69,0x76,0x61,0x74,0x69,0x76,0x65,0x5f,0x75,0x6e,0x69,0x66,0x6f,
     0x72,0x6d,0x69,0x74,0x79,0x29,0x3b,0x0a,0x0a,0x73,0x74,0x72,0x75,0x63,0x74,0x20,
@@ -14782,7 +14782,7 @@ const char[2478] BOKEH_SCATTER_VS_SOURCE_WGSL @private = {
       return main_out(frag_color);
     }
 */
-const char[1350] BOKEH_SCATTER_FS_SOURCE_WGSL @private = {
+const char[1350] BOKEH_SCATTER_FS_SOURCE_WGSL @private @if(env::EMSCRIPTEN) = {
     0x64,0x69,0x61,0x67,0x6e,0x6f,0x73,0x74,0x69,0x63,0x28,0x6f,0x66,0x66,0x2c,0x20,
     0x64,0x65,0x72,0x69,0x76,0x61,0x74,0x69,0x76,0x65,0x5f,0x75,0x6e,0x69,0x66,0x6f,
     0x72,0x6d,0x69,0x74,0x79,0x29,0x3b,0x0a,0x0a,0x76,0x61,0x72,0x3c,0x70,0x72,0x69,
@@ -14876,6 +14876,7 @@ fn SgShaderDesc bokeh_clean_shader_desc(SgBackend backend)
     switch (backend)
     {
         case SgBackend.GLCORE:
+            $if !env::DARWIN && !env::WIN32 && !env::EMSCRIPTEN:
             desc.vertex_func.source = (ZString)&BOKEH_VS_SOURCE_GLSL430;
             desc.vertex_func.entry = "main";
             desc.fragment_func.source = (ZString)&BOKEH_CLEAN_FS_SOURCE_GLSL430;
@@ -14920,7 +14921,11 @@ fn SgShaderDesc bokeh_clean_shader_desc(SgBackend backend)
             desc.texture_sampler_pairs[3].view_slot = 2;
             desc.texture_sampler_pairs[3].sampler_slot = 0;
             desc.texture_sampler_pairs[3].glsl_name = "bokeh_clean_depth_bokeh_clean_smp";
+            $else
+                break;
+            $endif
         case SgBackend.D3D11:
+            $if env::WIN32:
             desc.vertex_func.source = (ZString)&BOKEH_VS_SOURCE_HLSL5;
             desc.vertex_func.d3d11_target = "vs_5_0";
             desc.vertex_func.entry = "main";
@@ -14966,7 +14971,11 @@ fn SgShaderDesc bokeh_clean_shader_desc(SgBackend backend)
             desc.texture_sampler_pairs[3].stage = SgShaderStage.FRAGMENT;
             desc.texture_sampler_pairs[3].view_slot = 2;
             desc.texture_sampler_pairs[3].sampler_slot = 0;
+            $else
+                break;
+            $endif
         case SgBackend.METAL_MACOS:
+            $if env::OS_TYPE == MACOS:
             desc.vertex_func.source = (ZString)&BOKEH_VS_SOURCE_METAL_MACOS;
             desc.vertex_func.entry = "main0";
             desc.fragment_func.source = (ZString)&BOKEH_CLEAN_FS_SOURCE_METAL_MACOS;
@@ -15010,7 +15019,11 @@ fn SgShaderDesc bokeh_clean_shader_desc(SgBackend backend)
             desc.texture_sampler_pairs[3].stage = SgShaderStage.FRAGMENT;
             desc.texture_sampler_pairs[3].view_slot = 2;
             desc.texture_sampler_pairs[3].sampler_slot = 0;
+            $else
+                break;
+            $endif
         case SgBackend.METAL_IOS:
+            $if env::OS_TYPE == IOS:
             desc.vertex_func.source = (ZString)&BOKEH_VS_SOURCE_METAL_IOS;
             desc.vertex_func.entry = "main0";
             desc.fragment_func.source = (ZString)&BOKEH_CLEAN_FS_SOURCE_METAL_IOS;
@@ -15054,7 +15067,11 @@ fn SgShaderDesc bokeh_clean_shader_desc(SgBackend backend)
             desc.texture_sampler_pairs[3].stage = SgShaderStage.FRAGMENT;
             desc.texture_sampler_pairs[3].view_slot = 2;
             desc.texture_sampler_pairs[3].sampler_slot = 0;
+            $else
+                break;
+            $endif
         case SgBackend.METAL_SIMULATOR:
+            $if env::OS_TYPE == IOS:
             desc.vertex_func.source = (ZString)&BOKEH_VS_SOURCE_METAL_SIM;
             desc.vertex_func.entry = "main0";
             desc.fragment_func.source = (ZString)&BOKEH_CLEAN_FS_SOURCE_METAL_SIM;
@@ -15098,7 +15115,11 @@ fn SgShaderDesc bokeh_clean_shader_desc(SgBackend backend)
             desc.texture_sampler_pairs[3].stage = SgShaderStage.FRAGMENT;
             desc.texture_sampler_pairs[3].view_slot = 2;
             desc.texture_sampler_pairs[3].sampler_slot = 0;
+            $else
+                break;
+            $endif
         case SgBackend.WGPU:
+            $if env::EMSCRIPTEN:
             desc.vertex_func.source = (ZString)&BOKEH_VS_SOURCE_WGSL;
             desc.vertex_func.entry = "main";
             desc.fragment_func.source = (ZString)&BOKEH_CLEAN_FS_SOURCE_WGSL;
@@ -15142,6 +15163,9 @@ fn SgShaderDesc bokeh_clean_shader_desc(SgBackend backend)
             desc.texture_sampler_pairs[3].stage = SgShaderStage.FRAGMENT;
             desc.texture_sampler_pairs[3].view_slot = 2;
             desc.texture_sampler_pairs[3].sampler_slot = 0;
+            $else
+                break;
+            $endif
     }
     return desc;
 }
@@ -15152,6 +15176,7 @@ fn SgShaderDesc bokeh_focus_shader_desc(SgBackend backend)
     switch (backend)
     {
         case SgBackend.GLCORE:
+            $if !env::DARWIN && !env::WIN32 && !env::EMSCRIPTEN:
             desc.vertex_func.source = (ZString)&BOKEH_VS_SOURCE_GLSL430;
             desc.vertex_func.entry = "main";
             desc.fragment_func.source = (ZString)&BOKEH_FOCUS_FS_SOURCE_GLSL430;
@@ -15180,7 +15205,11 @@ fn SgShaderDesc bokeh_focus_shader_desc(SgBackend backend)
             desc.texture_sampler_pairs[1].view_slot = 1;
             desc.texture_sampler_pairs[1].sampler_slot = 0;
             desc.texture_sampler_pairs[1].glsl_name = "bokeh_focus_prev_bokeh_focus_smp";
+            $else
+                break;
+            $endif
         case SgBackend.D3D11:
+            $if env::WIN32:
             desc.vertex_func.source = (ZString)&BOKEH_VS_SOURCE_HLSL5;
             desc.vertex_func.d3d11_target = "vs_5_0";
             desc.vertex_func.entry = "main";
@@ -15210,7 +15239,11 @@ fn SgShaderDesc bokeh_focus_shader_desc(SgBackend backend)
             desc.texture_sampler_pairs[1].stage = SgShaderStage.FRAGMENT;
             desc.texture_sampler_pairs[1].view_slot = 1;
             desc.texture_sampler_pairs[1].sampler_slot = 0;
+            $else
+                break;
+            $endif
         case SgBackend.METAL_MACOS:
+            $if env::OS_TYPE == MACOS:
             desc.vertex_func.source = (ZString)&BOKEH_VS_SOURCE_METAL_MACOS;
             desc.vertex_func.entry = "main0";
             desc.fragment_func.source = (ZString)&BOKEH_FOCUS_FS_SOURCE_METAL_MACOS;
@@ -15238,7 +15271,11 @@ fn SgShaderDesc bokeh_focus_shader_desc(SgBackend backend)
             desc.texture_sampler_pairs[1].stage = SgShaderStage.FRAGMENT;
             desc.texture_sampler_pairs[1].view_slot = 1;
             desc.texture_sampler_pairs[1].sampler_slot = 0;
+            $else
+                break;
+            $endif
         case SgBackend.METAL_IOS:
+            $if env::OS_TYPE == IOS:
             desc.vertex_func.source = (ZString)&BOKEH_VS_SOURCE_METAL_IOS;
             desc.vertex_func.entry = "main0";
             desc.fragment_func.source = (ZString)&BOKEH_FOCUS_FS_SOURCE_METAL_IOS;
@@ -15266,7 +15303,11 @@ fn SgShaderDesc bokeh_focus_shader_desc(SgBackend backend)
             desc.texture_sampler_pairs[1].stage = SgShaderStage.FRAGMENT;
             desc.texture_sampler_pairs[1].view_slot = 1;
             desc.texture_sampler_pairs[1].sampler_slot = 0;
+            $else
+                break;
+            $endif
         case SgBackend.METAL_SIMULATOR:
+            $if env::OS_TYPE == IOS:
             desc.vertex_func.source = (ZString)&BOKEH_VS_SOURCE_METAL_SIM;
             desc.vertex_func.entry = "main0";
             desc.fragment_func.source = (ZString)&BOKEH_FOCUS_FS_SOURCE_METAL_SIM;
@@ -15294,7 +15335,11 @@ fn SgShaderDesc bokeh_focus_shader_desc(SgBackend backend)
             desc.texture_sampler_pairs[1].stage = SgShaderStage.FRAGMENT;
             desc.texture_sampler_pairs[1].view_slot = 1;
             desc.texture_sampler_pairs[1].sampler_slot = 0;
+            $else
+                break;
+            $endif
         case SgBackend.WGPU:
+            $if env::EMSCRIPTEN:
             desc.vertex_func.source = (ZString)&BOKEH_VS_SOURCE_WGSL;
             desc.vertex_func.entry = "main";
             desc.fragment_func.source = (ZString)&BOKEH_FOCUS_FS_SOURCE_WGSL;
@@ -15322,6 +15367,9 @@ fn SgShaderDesc bokeh_focus_shader_desc(SgBackend backend)
             desc.texture_sampler_pairs[1].stage = SgShaderStage.FRAGMENT;
             desc.texture_sampler_pairs[1].view_slot = 1;
             desc.texture_sampler_pairs[1].sampler_slot = 0;
+            $else
+                break;
+            $endif
     }
     return desc;
 }
@@ -15332,6 +15380,7 @@ fn SgShaderDesc bokeh_gather_shader_desc(SgBackend backend)
     switch (backend)
     {
         case SgBackend.GLCORE:
+            $if !env::DARWIN && !env::WIN32 && !env::EMSCRIPTEN:
             desc.vertex_func.source = (ZString)&BOKEH_VS_SOURCE_GLSL430;
             desc.vertex_func.entry = "main";
             desc.fragment_func.source = (ZString)&BOKEH_GATHER_FS_SOURCE_GLSL430;
@@ -15392,7 +15441,11 @@ fn SgShaderDesc bokeh_gather_shader_desc(SgBackend backend)
             desc.texture_sampler_pairs[5].view_slot = 4;
             desc.texture_sampler_pairs[5].sampler_slot = 0;
             desc.texture_sampler_pairs[5].glsl_name = "bokeh_gather_quarter_bokeh_gather_smp";
+            $else
+                break;
+            $endif
         case SgBackend.D3D11:
+            $if env::WIN32:
             desc.vertex_func.source = (ZString)&BOKEH_VS_SOURCE_HLSL5;
             desc.vertex_func.d3d11_target = "vs_5_0";
             desc.vertex_func.entry = "main";
@@ -15454,7 +15507,11 @@ fn SgShaderDesc bokeh_gather_shader_desc(SgBackend backend)
             desc.texture_sampler_pairs[5].stage = SgShaderStage.FRAGMENT;
             desc.texture_sampler_pairs[5].view_slot = 4;
             desc.texture_sampler_pairs[5].sampler_slot = 0;
+            $else
+                break;
+            $endif
         case SgBackend.METAL_MACOS:
+            $if env::OS_TYPE == MACOS:
             desc.vertex_func.source = (ZString)&BOKEH_VS_SOURCE_METAL_MACOS;
             desc.vertex_func.entry = "main0";
             desc.fragment_func.source = (ZString)&BOKEH_GATHER_FS_SOURCE_METAL_MACOS;
@@ -15514,7 +15571,11 @@ fn SgShaderDesc bokeh_gather_shader_desc(SgBackend backend)
             desc.texture_sampler_pairs[5].stage = SgShaderStage.FRAGMENT;
             desc.texture_sampler_pairs[5].view_slot = 4;
             desc.texture_sampler_pairs[5].sampler_slot = 0;
+            $else
+                break;
+            $endif
         case SgBackend.METAL_IOS:
+            $if env::OS_TYPE == IOS:
             desc.vertex_func.source = (ZString)&BOKEH_VS_SOURCE_METAL_IOS;
             desc.vertex_func.entry = "main0";
             desc.fragment_func.source = (ZString)&BOKEH_GATHER_FS_SOURCE_METAL_IOS;
@@ -15574,7 +15635,11 @@ fn SgShaderDesc bokeh_gather_shader_desc(SgBackend backend)
             desc.texture_sampler_pairs[5].stage = SgShaderStage.FRAGMENT;
             desc.texture_sampler_pairs[5].view_slot = 4;
             desc.texture_sampler_pairs[5].sampler_slot = 0;
+            $else
+                break;
+            $endif
         case SgBackend.METAL_SIMULATOR:
+            $if env::OS_TYPE == IOS:
             desc.vertex_func.source = (ZString)&BOKEH_VS_SOURCE_METAL_SIM;
             desc.vertex_func.entry = "main0";
             desc.fragment_func.source = (ZString)&BOKEH_GATHER_FS_SOURCE_METAL_SIM;
@@ -15634,7 +15699,11 @@ fn SgShaderDesc bokeh_gather_shader_desc(SgBackend backend)
             desc.texture_sampler_pairs[5].stage = SgShaderStage.FRAGMENT;
             desc.texture_sampler_pairs[5].view_slot = 4;
             desc.texture_sampler_pairs[5].sampler_slot = 0;
+            $else
+                break;
+            $endif
         case SgBackend.WGPU:
+            $if env::EMSCRIPTEN:
             desc.vertex_func.source = (ZString)&BOKEH_VS_SOURCE_WGSL;
             desc.vertex_func.entry = "main";
             desc.fragment_func.source = (ZString)&BOKEH_GATHER_FS_SOURCE_WGSL;
@@ -15694,6 +15763,9 @@ fn SgShaderDesc bokeh_gather_shader_desc(SgBackend backend)
             desc.texture_sampler_pairs[5].stage = SgShaderStage.FRAGMENT;
             desc.texture_sampler_pairs[5].view_slot = 4;
             desc.texture_sampler_pairs[5].sampler_slot = 0;
+            $else
+                break;
+            $endif
     }
     return desc;
 }
@@ -15704,6 +15776,7 @@ fn SgShaderDesc bokeh_prefilter_shader_desc(SgBackend backend)
     switch (backend)
     {
         case SgBackend.GLCORE:
+            $if !env::DARWIN && !env::WIN32 && !env::EMSCRIPTEN:
             desc.vertex_func.source = (ZString)&BOKEH_VS_SOURCE_GLSL430;
             desc.vertex_func.entry = "main";
             desc.fragment_func.source = (ZString)&BOKEH_PREFILTER_FS_SOURCE_GLSL430;
@@ -15740,7 +15813,11 @@ fn SgShaderDesc bokeh_prefilter_shader_desc(SgBackend backend)
             desc.texture_sampler_pairs[2].view_slot = 1;
             desc.texture_sampler_pairs[2].sampler_slot = 0;
             desc.texture_sampler_pairs[2].glsl_name = "bokeh_prefilter_depth_bokeh_prefilter_smp";
+            $else
+                break;
+            $endif
         case SgBackend.D3D11:
+            $if env::WIN32:
             desc.vertex_func.source = (ZString)&BOKEH_VS_SOURCE_HLSL5;
             desc.vertex_func.d3d11_target = "vs_5_0";
             desc.vertex_func.entry = "main";
@@ -15778,7 +15855,11 @@ fn SgShaderDesc bokeh_prefilter_shader_desc(SgBackend backend)
             desc.texture_sampler_pairs[2].stage = SgShaderStage.FRAGMENT;
             desc.texture_sampler_pairs[2].view_slot = 1;
             desc.texture_sampler_pairs[2].sampler_slot = 0;
+            $else
+                break;
+            $endif
         case SgBackend.METAL_MACOS:
+            $if env::OS_TYPE == MACOS:
             desc.vertex_func.source = (ZString)&BOKEH_VS_SOURCE_METAL_MACOS;
             desc.vertex_func.entry = "main0";
             desc.fragment_func.source = (ZString)&BOKEH_PREFILTER_FS_SOURCE_METAL_MACOS;
@@ -15814,7 +15895,11 @@ fn SgShaderDesc bokeh_prefilter_shader_desc(SgBackend backend)
             desc.texture_sampler_pairs[2].stage = SgShaderStage.FRAGMENT;
             desc.texture_sampler_pairs[2].view_slot = 1;
             desc.texture_sampler_pairs[2].sampler_slot = 0;
+            $else
+                break;
+            $endif
         case SgBackend.METAL_IOS:
+            $if env::OS_TYPE == IOS:
             desc.vertex_func.source = (ZString)&BOKEH_VS_SOURCE_METAL_IOS;
             desc.vertex_func.entry = "main0";
             desc.fragment_func.source = (ZString)&BOKEH_PREFILTER_FS_SOURCE_METAL_IOS;
@@ -15850,7 +15935,11 @@ fn SgShaderDesc bokeh_prefilter_shader_desc(SgBackend backend)
             desc.texture_sampler_pairs[2].stage = SgShaderStage.FRAGMENT;
             desc.texture_sampler_pairs[2].view_slot = 1;
             desc.texture_sampler_pairs[2].sampler_slot = 0;
+            $else
+                break;
+            $endif
         case SgBackend.METAL_SIMULATOR:
+            $if env::OS_TYPE == IOS:
             desc.vertex_func.source = (ZString)&BOKEH_VS_SOURCE_METAL_SIM;
             desc.vertex_func.entry = "main0";
             desc.fragment_func.source = (ZString)&BOKEH_PREFILTER_FS_SOURCE_METAL_SIM;
@@ -15886,7 +15975,11 @@ fn SgShaderDesc bokeh_prefilter_shader_desc(SgBackend backend)
             desc.texture_sampler_pairs[2].stage = SgShaderStage.FRAGMENT;
             desc.texture_sampler_pairs[2].view_slot = 1;
             desc.texture_sampler_pairs[2].sampler_slot = 0;
+            $else
+                break;
+            $endif
         case SgBackend.WGPU:
+            $if env::EMSCRIPTEN:
             desc.vertex_func.source = (ZString)&BOKEH_VS_SOURCE_WGSL;
             desc.vertex_func.entry = "main";
             desc.fragment_func.source = (ZString)&BOKEH_PREFILTER_FS_SOURCE_WGSL;
@@ -15922,6 +16015,9 @@ fn SgShaderDesc bokeh_prefilter_shader_desc(SgBackend backend)
             desc.texture_sampler_pairs[2].stage = SgShaderStage.FRAGMENT;
             desc.texture_sampler_pairs[2].view_slot = 1;
             desc.texture_sampler_pairs[2].sampler_slot = 0;
+            $else
+                break;
+            $endif
     }
     return desc;
 }
@@ -15932,6 +16028,7 @@ fn SgShaderDesc bokeh_reach_shader_desc(SgBackend backend)
     switch (backend)
     {
         case SgBackend.GLCORE:
+            $if !env::DARWIN && !env::WIN32 && !env::EMSCRIPTEN:
             desc.vertex_func.source = (ZString)&BOKEH_VS_SOURCE_GLSL430;
             desc.vertex_func.entry = "main";
             desc.fragment_func.source = (ZString)&BOKEH_REACH_FS_SOURCE_GLSL430;
@@ -15952,7 +16049,11 @@ fn SgShaderDesc bokeh_reach_shader_desc(SgBackend backend)
             desc.texture_sampler_pairs[0].view_slot = 0;
             desc.texture_sampler_pairs[0].sampler_slot = 0;
             desc.texture_sampler_pairs[0].glsl_name = "bokeh_reach_tiles_bokeh_reach_smp";
+            $else
+                break;
+            $endif
         case SgBackend.D3D11:
+            $if env::WIN32:
             desc.vertex_func.source = (ZString)&BOKEH_VS_SOURCE_HLSL5;
             desc.vertex_func.d3d11_target = "vs_5_0";
             desc.vertex_func.entry = "main";
@@ -15974,7 +16075,11 @@ fn SgShaderDesc bokeh_reach_shader_desc(SgBackend backend)
             desc.texture_sampler_pairs[0].stage = SgShaderStage.FRAGMENT;
             desc.texture_sampler_pairs[0].view_slot = 0;
             desc.texture_sampler_pairs[0].sampler_slot = 0;
+            $else
+                break;
+            $endif
         case SgBackend.METAL_MACOS:
+            $if env::OS_TYPE == MACOS:
             desc.vertex_func.source = (ZString)&BOKEH_VS_SOURCE_METAL_MACOS;
             desc.vertex_func.entry = "main0";
             desc.fragment_func.source = (ZString)&BOKEH_REACH_FS_SOURCE_METAL_MACOS;
@@ -15994,7 +16099,11 @@ fn SgShaderDesc bokeh_reach_shader_desc(SgBackend backend)
             desc.texture_sampler_pairs[0].stage = SgShaderStage.FRAGMENT;
             desc.texture_sampler_pairs[0].view_slot = 0;
             desc.texture_sampler_pairs[0].sampler_slot = 0;
+            $else
+                break;
+            $endif
         case SgBackend.METAL_IOS:
+            $if env::OS_TYPE == IOS:
             desc.vertex_func.source = (ZString)&BOKEH_VS_SOURCE_METAL_IOS;
             desc.vertex_func.entry = "main0";
             desc.fragment_func.source = (ZString)&BOKEH_REACH_FS_SOURCE_METAL_IOS;
@@ -16014,7 +16123,11 @@ fn SgShaderDesc bokeh_reach_shader_desc(SgBackend backend)
             desc.texture_sampler_pairs[0].stage = SgShaderStage.FRAGMENT;
             desc.texture_sampler_pairs[0].view_slot = 0;
             desc.texture_sampler_pairs[0].sampler_slot = 0;
+            $else
+                break;
+            $endif
         case SgBackend.METAL_SIMULATOR:
+            $if env::OS_TYPE == IOS:
             desc.vertex_func.source = (ZString)&BOKEH_VS_SOURCE_METAL_SIM;
             desc.vertex_func.entry = "main0";
             desc.fragment_func.source = (ZString)&BOKEH_REACH_FS_SOURCE_METAL_SIM;
@@ -16034,7 +16147,11 @@ fn SgShaderDesc bokeh_reach_shader_desc(SgBackend backend)
             desc.texture_sampler_pairs[0].stage = SgShaderStage.FRAGMENT;
             desc.texture_sampler_pairs[0].view_slot = 0;
             desc.texture_sampler_pairs[0].sampler_slot = 0;
+            $else
+                break;
+            $endif
         case SgBackend.WGPU:
+            $if env::EMSCRIPTEN:
             desc.vertex_func.source = (ZString)&BOKEH_VS_SOURCE_WGSL;
             desc.vertex_func.entry = "main";
             desc.fragment_func.source = (ZString)&BOKEH_REACH_FS_SOURCE_WGSL;
@@ -16054,6 +16171,9 @@ fn SgShaderDesc bokeh_reach_shader_desc(SgBackend backend)
             desc.texture_sampler_pairs[0].stage = SgShaderStage.FRAGMENT;
             desc.texture_sampler_pairs[0].view_slot = 0;
             desc.texture_sampler_pairs[0].sampler_slot = 0;
+            $else
+                break;
+            $endif
     }
     return desc;
 }
@@ -16064,6 +16184,7 @@ fn SgShaderDesc bokeh_rest_shader_desc(SgBackend backend)
     switch (backend)
     {
         case SgBackend.GLCORE:
+            $if !env::DARWIN && !env::WIN32 && !env::EMSCRIPTEN:
             desc.vertex_func.source = (ZString)&BOKEH_VS_SOURCE_GLSL430;
             desc.vertex_func.entry = "main";
             desc.fragment_func.source = (ZString)&BOKEH_REST_FS_SOURCE_GLSL430;
@@ -16086,7 +16207,11 @@ fn SgShaderDesc bokeh_rest_shader_desc(SgBackend backend)
             desc.texture_sampler_pairs[1].view_slot = 1;
             desc.texture_sampler_pairs[1].sampler_slot = 0;
             desc.texture_sampler_pairs[1].glsl_name = "bokeh_rest_sparks_bokeh_rest_smp";
+            $else
+                break;
+            $endif
         case SgBackend.D3D11:
+            $if env::WIN32:
             desc.vertex_func.source = (ZString)&BOKEH_VS_SOURCE_HLSL5;
             desc.vertex_func.d3d11_target = "vs_5_0";
             desc.vertex_func.entry = "main";
@@ -16112,7 +16237,11 @@ fn SgShaderDesc bokeh_rest_shader_desc(SgBackend backend)
             desc.texture_sampler_pairs[1].stage = SgShaderStage.FRAGMENT;
             desc.texture_sampler_pairs[1].view_slot = 1;
             desc.texture_sampler_pairs[1].sampler_slot = 0;
+            $else
+                break;
+            $endif
         case SgBackend.METAL_MACOS:
+            $if env::OS_TYPE == MACOS:
             desc.vertex_func.source = (ZString)&BOKEH_VS_SOURCE_METAL_MACOS;
             desc.vertex_func.entry = "main0";
             desc.fragment_func.source = (ZString)&BOKEH_REST_FS_SOURCE_METAL_MACOS;
@@ -16136,7 +16265,11 @@ fn SgShaderDesc bokeh_rest_shader_desc(SgBackend backend)
             desc.texture_sampler_pairs[1].stage = SgShaderStage.FRAGMENT;
             desc.texture_sampler_pairs[1].view_slot = 1;
             desc.texture_sampler_pairs[1].sampler_slot = 0;
+            $else
+                break;
+            $endif
         case SgBackend.METAL_IOS:
+            $if env::OS_TYPE == IOS:
             desc.vertex_func.source = (ZString)&BOKEH_VS_SOURCE_METAL_IOS;
             desc.vertex_func.entry = "main0";
             desc.fragment_func.source = (ZString)&BOKEH_REST_FS_SOURCE_METAL_IOS;
@@ -16160,7 +16293,11 @@ fn SgShaderDesc bokeh_rest_shader_desc(SgBackend backend)
             desc.texture_sampler_pairs[1].stage = SgShaderStage.FRAGMENT;
             desc.texture_sampler_pairs[1].view_slot = 1;
             desc.texture_sampler_pairs[1].sampler_slot = 0;
+            $else
+                break;
+            $endif
         case SgBackend.METAL_SIMULATOR:
+            $if env::OS_TYPE == IOS:
             desc.vertex_func.source = (ZString)&BOKEH_VS_SOURCE_METAL_SIM;
             desc.vertex_func.entry = "main0";
             desc.fragment_func.source = (ZString)&BOKEH_REST_FS_SOURCE_METAL_SIM;
@@ -16184,7 +16321,11 @@ fn SgShaderDesc bokeh_rest_shader_desc(SgBackend backend)
             desc.texture_sampler_pairs[1].stage = SgShaderStage.FRAGMENT;
             desc.texture_sampler_pairs[1].view_slot = 1;
             desc.texture_sampler_pairs[1].sampler_slot = 0;
+            $else
+                break;
+            $endif
         case SgBackend.WGPU:
+            $if env::EMSCRIPTEN:
             desc.vertex_func.source = (ZString)&BOKEH_VS_SOURCE_WGSL;
             desc.vertex_func.entry = "main";
             desc.fragment_func.source = (ZString)&BOKEH_REST_FS_SOURCE_WGSL;
@@ -16208,6 +16349,9 @@ fn SgShaderDesc bokeh_rest_shader_desc(SgBackend backend)
             desc.texture_sampler_pairs[1].stage = SgShaderStage.FRAGMENT;
             desc.texture_sampler_pairs[1].view_slot = 1;
             desc.texture_sampler_pairs[1].sampler_slot = 0;
+            $else
+                break;
+            $endif
     }
     return desc;
 }
@@ -16218,6 +16362,7 @@ fn SgShaderDesc bokeh_scatter_shader_desc(SgBackend backend)
     switch (backend)
     {
         case SgBackend.GLCORE:
+            $if !env::DARWIN && !env::WIN32 && !env::EMSCRIPTEN:
             desc.vertex_func.source = (ZString)&BOKEH_SCATTER_VS_SOURCE_GLSL430;
             desc.vertex_func.entry = "main";
             desc.fragment_func.source = (ZString)&BOKEH_SCATTER_FS_SOURCE_GLSL430;
@@ -16256,7 +16401,11 @@ fn SgShaderDesc bokeh_scatter_shader_desc(SgBackend backend)
             desc.texture_sampler_pairs[2].view_slot = 2;
             desc.texture_sampler_pairs[2].sampler_slot = 1;
             desc.texture_sampler_pairs[2].glsl_name = "bokeh_scatter_depth_bokeh_scatter_fsmp";
+            $else
+                break;
+            $endif
         case SgBackend.D3D11:
+            $if env::WIN32:
             desc.vertex_func.source = (ZString)&BOKEH_SCATTER_VS_SOURCE_HLSL5;
             desc.vertex_func.d3d11_target = "vs_5_0";
             desc.vertex_func.entry = "main";
@@ -16297,7 +16446,11 @@ fn SgShaderDesc bokeh_scatter_shader_desc(SgBackend backend)
             desc.texture_sampler_pairs[2].stage = SgShaderStage.FRAGMENT;
             desc.texture_sampler_pairs[2].view_slot = 2;
             desc.texture_sampler_pairs[2].sampler_slot = 1;
+            $else
+                break;
+            $endif
         case SgBackend.METAL_MACOS:
+            $if env::OS_TYPE == MACOS:
             desc.vertex_func.source = (ZString)&BOKEH_SCATTER_VS_SOURCE_METAL_MACOS;
             desc.vertex_func.entry = "main0";
             desc.fragment_func.source = (ZString)&BOKEH_SCATTER_FS_SOURCE_METAL_MACOS;
@@ -16336,7 +16489,11 @@ fn SgShaderDesc bokeh_scatter_shader_desc(SgBackend backend)
             desc.texture_sampler_pairs[2].stage = SgShaderStage.FRAGMENT;
             desc.texture_sampler_pairs[2].view_slot = 2;
             desc.texture_sampler_pairs[2].sampler_slot = 1;
+            $else
+                break;
+            $endif
         case SgBackend.METAL_IOS:
+            $if env::OS_TYPE == IOS:
             desc.vertex_func.source = (ZString)&BOKEH_SCATTER_VS_SOURCE_METAL_IOS;
             desc.vertex_func.entry = "main0";
             desc.fragment_func.source = (ZString)&BOKEH_SCATTER_FS_SOURCE_METAL_IOS;
@@ -16375,7 +16532,11 @@ fn SgShaderDesc bokeh_scatter_shader_desc(SgBackend backend)
             desc.texture_sampler_pairs[2].stage = SgShaderStage.FRAGMENT;
             desc.texture_sampler_pairs[2].view_slot = 2;
             desc.texture_sampler_pairs[2].sampler_slot = 1;
+            $else
+                break;
+            $endif
         case SgBackend.METAL_SIMULATOR:
+            $if env::OS_TYPE == IOS:
             desc.vertex_func.source = (ZString)&BOKEH_SCATTER_VS_SOURCE_METAL_SIM;
             desc.vertex_func.entry = "main0";
             desc.fragment_func.source = (ZString)&BOKEH_SCATTER_FS_SOURCE_METAL_SIM;
@@ -16414,7 +16575,11 @@ fn SgShaderDesc bokeh_scatter_shader_desc(SgBackend backend)
             desc.texture_sampler_pairs[2].stage = SgShaderStage.FRAGMENT;
             desc.texture_sampler_pairs[2].view_slot = 2;
             desc.texture_sampler_pairs[2].sampler_slot = 1;
+            $else
+                break;
+            $endif
         case SgBackend.WGPU:
+            $if env::EMSCRIPTEN:
             desc.vertex_func.source = (ZString)&BOKEH_SCATTER_VS_SOURCE_WGSL;
             desc.vertex_func.entry = "main";
             desc.fragment_func.source = (ZString)&BOKEH_SCATTER_FS_SOURCE_WGSL;
@@ -16453,6 +16618,9 @@ fn SgShaderDesc bokeh_scatter_shader_desc(SgBackend backend)
             desc.texture_sampler_pairs[2].stage = SgShaderStage.FRAGMENT;
             desc.texture_sampler_pairs[2].view_slot = 2;
             desc.texture_sampler_pairs[2].sampler_slot = 1;
+            $else
+                break;
+            $endif
     }
     return desc;
 }
@@ -16463,6 +16631,7 @@ fn SgShaderDesc bokeh_shrink_shader_desc(SgBackend backend)
     switch (backend)
     {
         case SgBackend.GLCORE:
+            $if !env::DARWIN && !env::WIN32 && !env::EMSCRIPTEN:
             desc.vertex_func.source = (ZString)&BOKEH_VS_SOURCE_GLSL430;
             desc.vertex_func.entry = "main";
             desc.fragment_func.source = (ZString)&BOKEH_SHRINK_FS_SOURCE_GLSL430;
@@ -16477,7 +16646,11 @@ fn SgShaderDesc bokeh_shrink_shader_desc(SgBackend backend)
             desc.texture_sampler_pairs[0].view_slot = 0;
             desc.texture_sampler_pairs[0].sampler_slot = 0;
             desc.texture_sampler_pairs[0].glsl_name = "bokeh_shrink_src_bokeh_shrink_smp";
+            $else
+                break;
+            $endif
         case SgBackend.D3D11:
+            $if env::WIN32:
             desc.vertex_func.source = (ZString)&BOKEH_VS_SOURCE_HLSL5;
             desc.vertex_func.d3d11_target = "vs_5_0";
             desc.vertex_func.entry = "main";
@@ -16495,7 +16668,11 @@ fn SgShaderDesc bokeh_shrink_shader_desc(SgBackend backend)
             desc.texture_sampler_pairs[0].stage = SgShaderStage.FRAGMENT;
             desc.texture_sampler_pairs[0].view_slot = 0;
             desc.texture_sampler_pairs[0].sampler_slot = 0;
+            $else
+                break;
+            $endif
         case SgBackend.METAL_MACOS:
+            $if env::OS_TYPE == MACOS:
             desc.vertex_func.source = (ZString)&BOKEH_VS_SOURCE_METAL_MACOS;
             desc.vertex_func.entry = "main0";
             desc.fragment_func.source = (ZString)&BOKEH_SHRINK_FS_SOURCE_METAL_MACOS;
@@ -16511,7 +16688,11 @@ fn SgShaderDesc bokeh_shrink_shader_desc(SgBackend backend)
             desc.texture_sampler_pairs[0].stage = SgShaderStage.FRAGMENT;
             desc.texture_sampler_pairs[0].view_slot = 0;
             desc.texture_sampler_pairs[0].sampler_slot = 0;
+            $else
+                break;
+            $endif
         case SgBackend.METAL_IOS:
+            $if env::OS_TYPE == IOS:
             desc.vertex_func.source = (ZString)&BOKEH_VS_SOURCE_METAL_IOS;
             desc.vertex_func.entry = "main0";
             desc.fragment_func.source = (ZString)&BOKEH_SHRINK_FS_SOURCE_METAL_IOS;
@@ -16527,7 +16708,11 @@ fn SgShaderDesc bokeh_shrink_shader_desc(SgBackend backend)
             desc.texture_sampler_pairs[0].stage = SgShaderStage.FRAGMENT;
             desc.texture_sampler_pairs[0].view_slot = 0;
             desc.texture_sampler_pairs[0].sampler_slot = 0;
+            $else
+                break;
+            $endif
         case SgBackend.METAL_SIMULATOR:
+            $if env::OS_TYPE == IOS:
             desc.vertex_func.source = (ZString)&BOKEH_VS_SOURCE_METAL_SIM;
             desc.vertex_func.entry = "main0";
             desc.fragment_func.source = (ZString)&BOKEH_SHRINK_FS_SOURCE_METAL_SIM;
@@ -16543,7 +16728,11 @@ fn SgShaderDesc bokeh_shrink_shader_desc(SgBackend backend)
             desc.texture_sampler_pairs[0].stage = SgShaderStage.FRAGMENT;
             desc.texture_sampler_pairs[0].view_slot = 0;
             desc.texture_sampler_pairs[0].sampler_slot = 0;
+            $else
+                break;
+            $endif
         case SgBackend.WGPU:
+            $if env::EMSCRIPTEN:
             desc.vertex_func.source = (ZString)&BOKEH_VS_SOURCE_WGSL;
             desc.vertex_func.entry = "main";
             desc.fragment_func.source = (ZString)&BOKEH_SHRINK_FS_SOURCE_WGSL;
@@ -16559,6 +16748,9 @@ fn SgShaderDesc bokeh_shrink_shader_desc(SgBackend backend)
             desc.texture_sampler_pairs[0].stage = SgShaderStage.FRAGMENT;
             desc.texture_sampler_pairs[0].view_slot = 0;
             desc.texture_sampler_pairs[0].sampler_slot = 0;
+            $else
+                break;
+            $endif
     }
     return desc;
 }
@@ -16569,6 +16761,7 @@ fn SgShaderDesc bokeh_sparks_shader_desc(SgBackend backend)
     switch (backend)
     {
         case SgBackend.GLCORE:
+            $if !env::DARWIN && !env::WIN32 && !env::EMSCRIPTEN:
             desc.vertex_func.source = (ZString)&BOKEH_VS_SOURCE_GLSL430;
             desc.vertex_func.entry = "main";
             desc.fragment_func.source = (ZString)&BOKEH_SPARKS_FS_SOURCE_GLSL430;
@@ -16613,7 +16806,11 @@ fn SgShaderDesc bokeh_sparks_shader_desc(SgBackend backend)
             desc.texture_sampler_pairs[3].view_slot = 2;
             desc.texture_sampler_pairs[3].sampler_slot = 0;
             desc.texture_sampler_pairs[3].glsl_name = "bokeh_sparks_depth_bokeh_sparks_smp";
+            $else
+                break;
+            $endif
         case SgBackend.D3D11:
+            $if env::WIN32:
             desc.vertex_func.source = (ZString)&BOKEH_VS_SOURCE_HLSL5;
             desc.vertex_func.d3d11_target = "vs_5_0";
             desc.vertex_func.entry = "main";
@@ -16659,7 +16856,11 @@ fn SgShaderDesc bokeh_sparks_shader_desc(SgBackend backend)
             desc.texture_sampler_pairs[3].stage = SgShaderStage.FRAGMENT;
             desc.texture_sampler_pairs[3].view_slot = 2;
             desc.texture_sampler_pairs[3].sampler_slot = 0;
+            $else
+                break;
+            $endif
         case SgBackend.METAL_MACOS:
+            $if env::OS_TYPE == MACOS:
             desc.vertex_func.source = (ZString)&BOKEH_VS_SOURCE_METAL_MACOS;
             desc.vertex_func.entry = "main0";
             desc.fragment_func.source = (ZString)&BOKEH_SPARKS_FS_SOURCE_METAL_MACOS;
@@ -16703,7 +16904,11 @@ fn SgShaderDesc bokeh_sparks_shader_desc(SgBackend backend)
             desc.texture_sampler_pairs[3].stage = SgShaderStage.FRAGMENT;
             desc.texture_sampler_pairs[3].view_slot = 2;
             desc.texture_sampler_pairs[3].sampler_slot = 0;
+            $else
+                break;
+            $endif
         case SgBackend.METAL_IOS:
+            $if env::OS_TYPE == IOS:
             desc.vertex_func.source = (ZString)&BOKEH_VS_SOURCE_METAL_IOS;
             desc.vertex_func.entry = "main0";
             desc.fragment_func.source = (ZString)&BOKEH_SPARKS_FS_SOURCE_METAL_IOS;
@@ -16747,7 +16952,11 @@ fn SgShaderDesc bokeh_sparks_shader_desc(SgBackend backend)
             desc.texture_sampler_pairs[3].stage = SgShaderStage.FRAGMENT;
             desc.texture_sampler_pairs[3].view_slot = 2;
             desc.texture_sampler_pairs[3].sampler_slot = 0;
+            $else
+                break;
+            $endif
         case SgBackend.METAL_SIMULATOR:
+            $if env::OS_TYPE == IOS:
             desc.vertex_func.source = (ZString)&BOKEH_VS_SOURCE_METAL_SIM;
             desc.vertex_func.entry = "main0";
             desc.fragment_func.source = (ZString)&BOKEH_SPARKS_FS_SOURCE_METAL_SIM;
@@ -16791,7 +17000,11 @@ fn SgShaderDesc bokeh_sparks_shader_desc(SgBackend backend)
             desc.texture_sampler_pairs[3].stage = SgShaderStage.FRAGMENT;
             desc.texture_sampler_pairs[3].view_slot = 2;
             desc.texture_sampler_pairs[3].sampler_slot = 0;
+            $else
+                break;
+            $endif
         case SgBackend.WGPU:
+            $if env::EMSCRIPTEN:
             desc.vertex_func.source = (ZString)&BOKEH_VS_SOURCE_WGSL;
             desc.vertex_func.entry = "main";
             desc.fragment_func.source = (ZString)&BOKEH_SPARKS_FS_SOURCE_WGSL;
@@ -16835,6 +17048,9 @@ fn SgShaderDesc bokeh_sparks_shader_desc(SgBackend backend)
             desc.texture_sampler_pairs[3].stage = SgShaderStage.FRAGMENT;
             desc.texture_sampler_pairs[3].view_slot = 2;
             desc.texture_sampler_pairs[3].sampler_slot = 0;
+            $else
+                break;
+            $endif
     }
     return desc;
 }
@@ -16845,6 +17061,7 @@ fn SgShaderDesc bokeh_tiles_shader_desc(SgBackend backend)
     switch (backend)
     {
         case SgBackend.GLCORE:
+            $if !env::DARWIN && !env::WIN32 && !env::EMSCRIPTEN:
             desc.vertex_func.source = (ZString)&BOKEH_VS_SOURCE_GLSL430;
             desc.vertex_func.entry = "main";
             desc.fragment_func.source = (ZString)&BOKEH_TILES_FS_SOURCE_GLSL430;
@@ -16873,7 +17090,11 @@ fn SgShaderDesc bokeh_tiles_shader_desc(SgBackend backend)
             desc.texture_sampler_pairs[1].view_slot = 0;
             desc.texture_sampler_pairs[1].sampler_slot = 0;
             desc.texture_sampler_pairs[1].glsl_name = "bokeh_tiles_depth_bokeh_tiles_smp";
+            $else
+                break;
+            $endif
         case SgBackend.D3D11:
+            $if env::WIN32:
             desc.vertex_func.source = (ZString)&BOKEH_VS_SOURCE_HLSL5;
             desc.vertex_func.d3d11_target = "vs_5_0";
             desc.vertex_func.entry = "main";
@@ -16903,7 +17124,11 @@ fn SgShaderDesc bokeh_tiles_shader_desc(SgBackend backend)
             desc.texture_sampler_pairs[1].stage = SgShaderStage.FRAGMENT;
             desc.texture_sampler_pairs[1].view_slot = 0;
             desc.texture_sampler_pairs[1].sampler_slot = 0;
+            $else
+                break;
+            $endif
         case SgBackend.METAL_MACOS:
+            $if env::OS_TYPE == MACOS:
             desc.vertex_func.source = (ZString)&BOKEH_VS_SOURCE_METAL_MACOS;
             desc.vertex_func.entry = "main0";
             desc.fragment_func.source = (ZString)&BOKEH_TILES_FS_SOURCE_METAL_MACOS;
@@ -16931,7 +17156,11 @@ fn SgShaderDesc bokeh_tiles_shader_desc(SgBackend backend)
             desc.texture_sampler_pairs[1].stage = SgShaderStage.FRAGMENT;
             desc.texture_sampler_pairs[1].view_slot = 0;
             desc.texture_sampler_pairs[1].sampler_slot = 0;
+            $else
+                break;
+            $endif
         case SgBackend.METAL_IOS:
+            $if env::OS_TYPE == IOS:
             desc.vertex_func.source = (ZString)&BOKEH_VS_SOURCE_METAL_IOS;
             desc.vertex_func.entry = "main0";
             desc.fragment_func.source = (ZString)&BOKEH_TILES_FS_SOURCE_METAL_IOS;
@@ -16959,7 +17188,11 @@ fn SgShaderDesc bokeh_tiles_shader_desc(SgBackend backend)
             desc.texture_sampler_pairs[1].stage = SgShaderStage.FRAGMENT;
             desc.texture_sampler_pairs[1].view_slot = 0;
             desc.texture_sampler_pairs[1].sampler_slot = 0;
+            $else
+                break;
+            $endif
         case SgBackend.METAL_SIMULATOR:
+            $if env::OS_TYPE == IOS:
             desc.vertex_func.source = (ZString)&BOKEH_VS_SOURCE_METAL_SIM;
             desc.vertex_func.entry = "main0";
             desc.fragment_func.source = (ZString)&BOKEH_TILES_FS_SOURCE_METAL_SIM;
@@ -16987,7 +17220,11 @@ fn SgShaderDesc bokeh_tiles_shader_desc(SgBackend backend)
             desc.texture_sampler_pairs[1].stage = SgShaderStage.FRAGMENT;
             desc.texture_sampler_pairs[1].view_slot = 0;
             desc.texture_sampler_pairs[1].sampler_slot = 0;
+            $else
+                break;
+            $endif
         case SgBackend.WGPU:
+            $if env::EMSCRIPTEN:
             desc.vertex_func.source = (ZString)&BOKEH_VS_SOURCE_WGSL;
             desc.vertex_func.entry = "main";
             desc.fragment_func.source = (ZString)&BOKEH_TILES_FS_SOURCE_WGSL;
@@ -17015,6 +17252,9 @@ fn SgShaderDesc bokeh_tiles_shader_desc(SgBackend backend)
             desc.texture_sampler_pairs[1].stage = SgShaderStage.FRAGMENT;
             desc.texture_sampler_pairs[1].view_slot = 0;
             desc.texture_sampler_pairs[1].sampler_slot = 0;
+            $else
+                break;
+            $endif
     }
     return desc;
 }

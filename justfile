@@ -91,6 +91,8 @@ shaders:
     # sokol-shdc's C3 output writes storage image view slots as `const int VIEW_X (0)`;
     # rewrite them to `const int VIEW_X = 0;` (BSD sed -i '' syntax, macOS)
     sed -i '' -E 's/^const int (VIEW_[A-Z0-9_]+) \(([0-9]+)\)$/const int \1 = \2;/' generated/*.c3
+    # each backend's shaders only in the builds for it
+    python3 tools/shdc_gate.py generated/*.c3
 
 # regenerate generated/ltc.c3, RectAreaLight's LTC tables, from three.js's
 # RectAreaLightTexturesLib.js (driejs fetches three.js into driejs/vendor: `just driejs::build`)
