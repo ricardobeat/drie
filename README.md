@@ -148,7 +148,7 @@ Features not in three.js:
 | **GPU Culling** | Depth pre-pass and GPU instanced culling |
 | **Light Radius & Tubes** | Point and spot lights with a size: softer close-range falloff, highlights the shape and size of the bulb; tube lights (`point_light.length`) |
 | **Material Extensions** | Foliage wind sway, glass viewer silhouette, refraction with dispersion, clearcoat, sheen, iridescence |
-| **UI, Input & Tooling** | Menus, macOS GameController support, deterministic timeline rewind, profiling |
+| **UI, Input & Tooling** | Text overlay, screen fades, touch controls, macOS GameController support, deterministic timeline rewind, profiling |
 
 ### Materials & Geometry
 
@@ -308,7 +308,9 @@ A material's maps besides `map`, `normal_map` and `arm_map` share six texture sl
 
 ### UI, Input & Utilities
 
-- **Menus & UI** (`drie::ui`): Escape-toggled menu, screen fade, setup, and touch controls.
+- **Overlay** (`drie::ui`): sokol_debugtext / sokol_gl setup and fonts, text and rectangle helpers, and the overlay drawn over the window.
+- **Transitions** (`drie::transitions`): screen fade to and from black.
+- **Touch controls** (`drie::input`): virtual stick, look drag and on-screen buttons that press gamepad buttons.
 - **Game controllers** (`drie::input`, macOS GameController): Polled every frame; d-pad, cross/A, circle/B, and options also emit arrow, enter, backspace, and escape key events by default.
 - **Rewind timeline** (`drie::timeline`): `Timeline{Input, State}` records per-frame inputs and periodic state snapshots for deterministic `seek()` replay.
 - **Profiling** (`drie::profile`): Frame section timing and reporting.
@@ -319,7 +321,7 @@ A material's maps besides `map`, `normal_map` and `arm_map` share six texture sl
 
 | Area | Key API / Fields | Notes |
 | --- | --- | --- |
-| UI | `ui::menu(title, handler)`, `ui::screen_fade`, `ui::setup()`, `ui::touch_controls()` | Captures keyboard/mouse when open; sends `OPEN`, `CLOSE`, `SELECT`, `CONFIRM`, `BACK`; `overlay = true` for built-in rendering or draw manually |
+| UI | `ui::setup()`, `ui::text()`, `transitions::screen_fade`, `input::touch_controls()` | The overlay draws the touch controls and the fade over the window; `screen_fade.custom = true` to apply the fade yourself |
 | Gamepad | `input::gamepad()`, `PAD_*` (`pressed()` / `released()`), sticks, triggers | — |
 | Timeline | `Timeline{Input, State}`, `seek()` | Requires a deterministic step function |
 | Profiling | `profile::enabled = true`, `profile::start()`, `profile::stop(name, t)`, `profile::report(frames)` | — |
