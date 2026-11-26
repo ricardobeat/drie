@@ -56,8 +56,10 @@ web name:
     sed -i '' 's/env::EMSCRIPTEN ? 8 :/env::EMSCRIPTEN ? 16 :/' build/web/std/core/mem.c3
     # the textures the example names, made smaller by imageoptim
     rm -rf build/web/files && mkdir -p build/web/files/examples/textures
-    for t in `grep -o 'examples/textures/[a-z0-9_]*' examples/{{name}}.c3 | sort -u`; do cp $t* build/web/files/examples/textures/ 2>/dev/null; done
+    for t in `grep -o 'examples/textures/[a-z0-9_]\+' examples/{{name}}.c3 | sort -u`; do cp $t* build/web/files/examples/textures/ 2>/dev/null; done
     grep -o 'surface("[a-z0-9_]*' examples/{{name}}.c3 | cut -d'"' -f2 | while read t; do cp examples/textures/${t}_* build/web/files/examples/textures/; done
+    # (the cloth's knit and every AO map at 512 px: small on screen, soft by nature)
+    for f in build/web/files/examples/textures/cotton_* build/web/files/examples/textures/*_ao.*; do [ -f "$f" ] && sips -Z 512 "$f" > /dev/null; done
     imageoptim build/web/files/examples/textures/ > /dev/null
     c3c build drie-web --target emscripten --stdlib build/web/std -O2 --libdir {{libdir}} --sources examples/{{name}}.c3 -z "--use-port=emdawnwebgpu" -z "-sDEFAULT_TO_CXX" -z "-sSINGLE_FILE" -z "-sALLOW_MEMORY_GROWTH" -z "-sSTACK_SIZE=8MB" -z "--profiling-funcs" -z "--embed-file=build/web/files@/"
     python3 tools/web_page.py build/drie-web.js "drie: {{name}}" build/web/index.html

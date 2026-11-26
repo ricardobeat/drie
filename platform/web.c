@@ -1,9 +1,11 @@
-// The platform functions for the web (emscripten): images decoded by stb_image; no GPU timer,
-// readback, game controllers or text rendering yet (each answers that it has nothing).
+// The platform functions for the web (emscripten): images decoded by stb_image, storage buffer
+// readback through WebGPU; no GPU timer, texture readback, game controllers or text rendering
+// yet (each answers that it has nothing).
 #if defined(__EMSCRIPTEN__)
 #include <stdbool.h>
 #include <stddef.h>
 #include <string.h>
+#include <stdint.h>
 
 #define STB_IMAGE_IMPLEMENTATION
 #define STBI_ONLY_JPEG
@@ -43,8 +45,71 @@ bool rb_read_texture(void* tex, void* queue, int width, int height, int bytes_pe
 }
 void* rb_create_device(void) { return NULL; }
 void* rb_device_context(void) { return NULL; }
-bool rb_track(void* buf, int slot, void* queue) { (void)buf; (void)slot; (void)queue; return false; }
-bool rb_fetch(int slot, void* out, int bytes, bool wait) { (void)slot; (void)out; (void)bytes; (void)wait; return false; }
+
+// Buffer readback without stalling, as readback.c's: rb_track() copies the buffer into the
+// slot's staging buffer (a submission of its own, so it sees the work submitted before it: the
+// last frame's, the frame being encoded is submitted at commit) and maps it; rb_fetch() copies
+// it out once mapped. A slot still waiting for its map isn't tracked again.
+#include <webgpu/webgpu.h>
+const void* sg_wgpu_device(void);
+const void* sg_wgpu_queue(void);
+
+#define RB_SLOTS 64
+enum { RB_FREE, RB_MAPPING, RB_MAPPED };
+static struct {
+    WGPUBuffer staging;
+    uint64_t size;
+    int state;
+} rb_slots[RB_SLOTS];
+
+static void rb_mapped(WGPUMapAsyncStatus status, WGPUStringView message, void* ud1, void* ud2) {
+    (void)message; (void)ud2;
+    int slot = (int)(intptr_t)ud1;
+    rb_slots[slot].state = status == WGPUMapAsyncStatus_Success ? RB_MAPPED : RB_FREE;
+}
+
+bool rb_track(void* buf_ptr, int slot, void* queue_ptr) {
+    (void)queue_ptr;
+    if (slot < 0 || slot >= RB_SLOTS || !buf_ptr) return false;
+    if (rb_slots[slot].state == RB_MAPPING) return false;
+    if (rb_slots[slot].state == RB_MAPPED) {
+        wgpuBufferUnmap(rb_slots[slot].staging);
+        rb_slots[slot].state = RB_FREE;
+    }
+    WGPUBuffer buf = (WGPUBuffer)buf_ptr;
+    WGPUDevice device = (WGPUDevice)sg_wgpu_device();
+    WGPUQueue queue = (WGPUQueue)sg_wgpu_queue();
+    uint64_t size = wgpuBufferGetSize(buf);
+    if (!rb_slots[slot].staging || rb_slots[slot].size != size) {
+        if (rb_slots[slot].staging) wgpuBufferRelease(rb_slots[slot].staging);
+        WGPUBufferDescriptor d = { .usage = WGPUBufferUsage_MapRead | WGPUBufferUsage_CopyDst, .size = size };
+        rb_slots[slot].staging = wgpuDeviceCreateBuffer(device, &d);
+        rb_slots[slot].size = size;
+    }
+    WGPUCommandEncoder enc = wgpuDeviceCreateCommandEncoder(device, NULL);
+    wgpuCommandEncoderCopyBufferToBuffer(enc, buf, 0, rb_slots[slot].staging, 0, size);
+    WGPUCommandBuffer cb = wgpuCommandEncoderFinish(enc, NULL);
+    wgpuQueueSubmit(queue, 1, &cb);
+    wgpuCommandBufferRelease(cb);
+    wgpuCommandEncoderRelease(enc);
+    rb_slots[slot].state = RB_MAPPING;
+    WGPUBufferMapCallbackInfo info = { .mode = WGPUCallbackMode_AllowSpontaneous, .callback = rb_mapped, .userdata1 = (void*)(intptr_t)slot };
+    wgpuBufferMapAsync(rb_slots[slot].staging, WGPUMapMode_Read, 0, (size_t)size, info);
+    return true;
+}
+
+// (`wait` can't be honoured: the browser maps buffers between frames)
+bool rb_fetch(int slot, void* out, int bytes, bool wait) {
+    (void)wait;
+    if (slot < 0 || slot >= RB_SLOTS || rb_slots[slot].state != RB_MAPPED || !out) return false;
+    if ((uint64_t)bytes > rb_slots[slot].size) bytes = (int)rb_slots[slot].size;
+    const void* p = wgpuBufferGetConstMappedRange(rb_slots[slot].staging, 0, (size_t)rb_slots[slot].size);
+    if (!p) return false;
+    memcpy(out, p, (size_t)bytes);
+    wgpuBufferUnmap(rb_slots[slot].staging);
+    rb_slots[slot].state = RB_FREE;
+    return true;
+}
 
 bool gpucaps_query_metal(void* device, void* out) { (void)device; (void)out; return false; }
 

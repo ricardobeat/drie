@@ -88,6 +88,7 @@ fn void StorageBuffer.create(&self, usz size, void* data, usz bytes = 0) {
             .vertex_buffer = self.vertex,
             .indirect_buffer = self.indirect,
             .write_transient = self.cpu_write,
+            .copy_src = true, // (read back by readback::track on WebGPU, which copies it)
         },
         .size = size,
         .label = self.label,
