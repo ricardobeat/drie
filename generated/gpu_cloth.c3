@@ -559,7 +559,7 @@ struct GcTether @align(4) @packed
     }
 
 */
-const char[1029] GC_BEGIN_CS_SOURCE_GLSL430 @private = {
+const char[1029] GC_BEGIN_CS_SOURCE_GLSL430 @private @if(!env::DARWIN && !env::WIN32 && !env::EMSCRIPTEN) = {
     0x23,0x76,0x65,0x72,0x73,0x69,0x6f,0x6e,0x20,0x34,0x33,0x30,0x0a,0x6c,0x61,0x79,
     0x6f,0x75,0x74,0x28,0x6c,0x6f,0x63,0x61,0x6c,0x5f,0x73,0x69,0x7a,0x65,0x5f,0x78,
     0x20,0x3d,0x20,0x31,0x32,0x38,0x2c,0x20,0x6c,0x6f,0x63,0x61,0x6c,0x5f,0x73,0x69,
@@ -798,7 +798,7 @@ const char[1029] GC_BEGIN_CS_SOURCE_GLSL430 @private = {
     }
 
 */
-const char[4798] GC_FORCES_CS_SOURCE_GLSL430 @private = {
+const char[4798] GC_FORCES_CS_SOURCE_GLSL430 @private @if(!env::DARWIN && !env::WIN32 && !env::EMSCRIPTEN) = {
     0x23,0x76,0x65,0x72,0x73,0x69,0x6f,0x6e,0x20,0x34,0x33,0x30,0x0a,0x6c,0x61,0x79,
     0x6f,0x75,0x74,0x28,0x6c,0x6f,0x63,0x61,0x6c,0x5f,0x73,0x69,0x7a,0x65,0x5f,0x78,
     0x20,0x3d,0x20,0x31,0x32,0x38,0x2c,0x20,0x6c,0x6f,0x63,0x61,0x6c,0x5f,0x73,0x69,
@@ -1177,7 +1177,7 @@ const char[4798] GC_FORCES_CS_SOURCE_GLSL430 @private = {
     }
 
 */
-const char[1262] GC_INTEGRATE_CS_SOURCE_GLSL430 @private = {
+const char[1262] GC_INTEGRATE_CS_SOURCE_GLSL430 @private @if(!env::DARWIN && !env::WIN32 && !env::EMSCRIPTEN) = {
     0x23,0x76,0x65,0x72,0x73,0x69,0x6f,0x6e,0x20,0x34,0x33,0x30,0x0a,0x6c,0x61,0x79,
     0x6f,0x75,0x74,0x28,0x6c,0x6f,0x63,0x61,0x6c,0x5f,0x73,0x69,0x7a,0x65,0x5f,0x78,
     0x20,0x3d,0x20,0x31,0x32,0x38,0x2c,0x20,0x6c,0x6f,0x63,0x61,0x6c,0x5f,0x73,0x69,
@@ -1343,7 +1343,7 @@ const char[1262] GC_INTEGRATE_CS_SOURCE_GLSL430 @private = {
     }
 
 */
-const char[1535] GC_LINKS_CS_SOURCE_GLSL430 @private = {
+const char[1535] GC_LINKS_CS_SOURCE_GLSL430 @private @if(!env::DARWIN && !env::WIN32 && !env::EMSCRIPTEN) = {
     0x23,0x76,0x65,0x72,0x73,0x69,0x6f,0x6e,0x20,0x34,0x33,0x30,0x0a,0x6c,0x61,0x79,
     0x6f,0x75,0x74,0x28,0x6c,0x6f,0x63,0x61,0x6c,0x5f,0x73,0x69,0x7a,0x65,0x5f,0x78,
     0x20,0x3d,0x20,0x31,0x32,0x38,0x2c,0x20,0x6c,0x6f,0x63,0x61,0x6c,0x5f,0x73,0x69,
@@ -1581,7 +1581,7 @@ const char[1535] GC_LINKS_CS_SOURCE_GLSL430 @private = {
     }
 
 */
-const char[3079] GC_BENDS_CS_SOURCE_GLSL430 @private = {
+const char[3079] GC_BENDS_CS_SOURCE_GLSL430 @private @if(!env::DARWIN && !env::WIN32 && !env::EMSCRIPTEN) = {
     0x23,0x76,0x65,0x72,0x73,0x69,0x6f,0x6e,0x20,0x34,0x33,0x30,0x0a,0x6c,0x61,0x79,
     0x6f,0x75,0x74,0x28,0x6c,0x6f,0x63,0x61,0x6c,0x5f,0x73,0x69,0x7a,0x65,0x5f,0x78,
     0x20,0x3d,0x20,0x31,0x32,0x38,0x2c,0x20,0x6c,0x6f,0x63,0x61,0x6c,0x5f,0x73,0x69,
@@ -1861,7 +1861,7 @@ const char[3079] GC_BENDS_CS_SOURCE_GLSL430 @private = {
     }
 
 */
-const char[1392] GC_TETHERS_CS_SOURCE_GLSL430 @private = {
+const char[1392] GC_TETHERS_CS_SOURCE_GLSL430 @private @if(!env::DARWIN && !env::WIN32 && !env::EMSCRIPTEN) = {
     0x23,0x76,0x65,0x72,0x73,0x69,0x6f,0x6e,0x20,0x34,0x33,0x30,0x0a,0x6c,0x61,0x79,
     0x6f,0x75,0x74,0x28,0x6c,0x6f,0x63,0x61,0x6c,0x5f,0x73,0x69,0x7a,0x65,0x5f,0x78,
     0x20,0x3d,0x20,0x31,0x32,0x38,0x2c,0x20,0x6c,0x6f,0x63,0x61,0x6c,0x5f,0x73,0x69,
@@ -1992,7 +1992,7 @@ const char[1392] GC_TETHERS_CS_SOURCE_GLSL430 @private = {
     }
 
 */
-const char[589] GC_CLEAR_CS_SOURCE_GLSL430 @private = {
+const char[589] GC_CLEAR_CS_SOURCE_GLSL430 @private @if(!env::DARWIN && !env::WIN32 && !env::EMSCRIPTEN) = {
     0x23,0x76,0x65,0x72,0x73,0x69,0x6f,0x6e,0x20,0x34,0x33,0x30,0x0a,0x6c,0x61,0x79,
     0x6f,0x75,0x74,0x28,0x6c,0x6f,0x63,0x61,0x6c,0x5f,0x73,0x69,0x7a,0x65,0x5f,0x78,
     0x20,0x3d,0x20,0x31,0x32,0x38,0x2c,0x20,0x6c,0x6f,0x63,0x61,0x6c,0x5f,0x73,0x69,
@@ -2095,7 +2095,7 @@ const char[589] GC_CLEAR_CS_SOURCE_GLSL430 @private = {
     }
 
 */
-const char[1056] GC_COUNT_CS_SOURCE_GLSL430 @private = {
+const char[1056] GC_COUNT_CS_SOURCE_GLSL430 @private @if(!env::DARWIN && !env::WIN32 && !env::EMSCRIPTEN) = {
     0x23,0x76,0x65,0x72,0x73,0x69,0x6f,0x6e,0x20,0x34,0x33,0x30,0x0a,0x6c,0x61,0x79,
     0x6f,0x75,0x74,0x28,0x6c,0x6f,0x63,0x61,0x6c,0x5f,0x73,0x69,0x7a,0x65,0x5f,0x78,
     0x20,0x3d,0x20,0x31,0x32,0x38,0x2c,0x20,0x6c,0x6f,0x63,0x61,0x6c,0x5f,0x73,0x69,
@@ -2302,7 +2302,7 @@ const char[1056] GC_COUNT_CS_SOURCE_GLSL430 @private = {
     }
 
 */
-const char[2417] GC_SCAN_BLOCK_CS_SOURCE_GLSL430 @private = {
+const char[2417] GC_SCAN_BLOCK_CS_SOURCE_GLSL430 @private @if(!env::DARWIN && !env::WIN32 && !env::EMSCRIPTEN) = {
     0x23,0x76,0x65,0x72,0x73,0x69,0x6f,0x6e,0x20,0x34,0x33,0x30,0x0a,0x6c,0x61,0x79,
     0x6f,0x75,0x74,0x28,0x6c,0x6f,0x63,0x61,0x6c,0x5f,0x73,0x69,0x7a,0x65,0x5f,0x78,
     0x20,0x3d,0x20,0x32,0x35,0x36,0x2c,0x20,0x6c,0x6f,0x63,0x61,0x6c,0x5f,0x73,0x69,
@@ -2581,7 +2581,7 @@ const char[2417] GC_SCAN_BLOCK_CS_SOURCE_GLSL430 @private = {
     }
 
 */
-const char[2111] GC_SCAN_SUMS_CS_SOURCE_GLSL430 @private = {
+const char[2111] GC_SCAN_SUMS_CS_SOURCE_GLSL430 @private @if(!env::DARWIN && !env::WIN32 && !env::EMSCRIPTEN) = {
     0x23,0x76,0x65,0x72,0x73,0x69,0x6f,0x6e,0x20,0x34,0x33,0x30,0x0a,0x6c,0x61,0x79,
     0x6f,0x75,0x74,0x28,0x6c,0x6f,0x63,0x61,0x6c,0x5f,0x73,0x69,0x7a,0x65,0x5f,0x78,
     0x20,0x3d,0x20,0x32,0x35,0x36,0x2c,0x20,0x6c,0x6f,0x63,0x61,0x6c,0x5f,0x73,0x69,
@@ -2770,7 +2770,7 @@ const char[2111] GC_SCAN_SUMS_CS_SOURCE_GLSL430 @private = {
     }
 
 */
-const char[927] GC_SCAN_ADD_CS_SOURCE_GLSL430 @private = {
+const char[927] GC_SCAN_ADD_CS_SOURCE_GLSL430 @private @if(!env::DARWIN && !env::WIN32 && !env::EMSCRIPTEN) = {
     0x23,0x76,0x65,0x72,0x73,0x69,0x6f,0x6e,0x20,0x34,0x33,0x30,0x0a,0x6c,0x61,0x79,
     0x6f,0x75,0x74,0x28,0x6c,0x6f,0x63,0x61,0x6c,0x5f,0x73,0x69,0x7a,0x65,0x5f,0x78,
     0x20,0x3d,0x20,0x32,0x35,0x36,0x2c,0x20,0x6c,0x6f,0x63,0x61,0x6c,0x5f,0x73,0x69,
@@ -2900,7 +2900,7 @@ const char[927] GC_SCAN_ADD_CS_SOURCE_GLSL430 @private = {
     }
 
 */
-const char[1181] GC_FILL_CS_SOURCE_GLSL430 @private = {
+const char[1181] GC_FILL_CS_SOURCE_GLSL430 @private @if(!env::DARWIN && !env::WIN32 && !env::EMSCRIPTEN) = {
     0x23,0x76,0x65,0x72,0x73,0x69,0x6f,0x6e,0x20,0x34,0x33,0x30,0x0a,0x6c,0x61,0x79,
     0x6f,0x75,0x74,0x28,0x6c,0x6f,0x63,0x61,0x6c,0x5f,0x73,0x69,0x7a,0x65,0x5f,0x78,
     0x20,0x3d,0x20,0x31,0x32,0x38,0x2c,0x20,0x6c,0x6f,0x63,0x61,0x6c,0x5f,0x73,0x69,
@@ -3132,7 +3132,7 @@ const char[1181] GC_FILL_CS_SOURCE_GLSL430 @private = {
     }
 
 */
-const char[3718] GC_SELF_CS_SOURCE_GLSL430 @private = {
+const char[3718] GC_SELF_CS_SOURCE_GLSL430 @private @if(!env::DARWIN && !env::WIN32 && !env::EMSCRIPTEN) = {
     0x23,0x76,0x65,0x72,0x73,0x69,0x6f,0x6e,0x20,0x34,0x33,0x30,0x0a,0x6c,0x61,0x79,
     0x6f,0x75,0x74,0x28,0x6c,0x6f,0x63,0x61,0x6c,0x5f,0x73,0x69,0x7a,0x65,0x5f,0x78,
     0x20,0x3d,0x20,0x31,0x32,0x38,0x2c,0x20,0x6c,0x6f,0x63,0x61,0x6c,0x5f,0x73,0x69,
@@ -3720,7 +3720,7 @@ const char[3718] GC_SELF_CS_SOURCE_GLSL430 @private = {
     }
 
 */
-const char[8776] GC_COLLIDE_CS_SOURCE_GLSL430 @private = {
+const char[8776] GC_COLLIDE_CS_SOURCE_GLSL430 @private @if(!env::DARWIN && !env::WIN32 && !env::EMSCRIPTEN) = {
     0x23,0x76,0x65,0x72,0x73,0x69,0x6f,0x6e,0x20,0x34,0x33,0x30,0x0a,0x6c,0x61,0x79,
     0x6f,0x75,0x74,0x28,0x6c,0x6f,0x63,0x61,0x6c,0x5f,0x73,0x69,0x7a,0x65,0x5f,0x78,
     0x20,0x3d,0x20,0x31,0x32,0x38,0x2c,0x20,0x6c,0x6f,0x63,0x61,0x6c,0x5f,0x73,0x69,
@@ -4695,7 +4695,7 @@ const char[8776] GC_COLLIDE_CS_SOURCE_GLSL430 @private = {
     }
 
 */
-const char[10961] GC_COLLIDE_BODIES_CS_SOURCE_GLSL430 @private = {
+const char[10961] GC_COLLIDE_BODIES_CS_SOURCE_GLSL430 @private @if(!env::DARWIN && !env::WIN32 && !env::EMSCRIPTEN) = {
     0x23,0x76,0x65,0x72,0x73,0x69,0x6f,0x6e,0x20,0x34,0x33,0x30,0x0a,0x6c,0x61,0x79,
     0x6f,0x75,0x74,0x28,0x6c,0x6f,0x63,0x61,0x6c,0x5f,0x73,0x69,0x7a,0x65,0x5f,0x78,
     0x20,0x3d,0x20,0x31,0x32,0x38,0x2c,0x20,0x6c,0x6f,0x63,0x61,0x6c,0x5f,0x73,0x69,
@@ -5545,7 +5545,7 @@ const char[10961] GC_COLLIDE_BODIES_CS_SOURCE_GLSL430 @private = {
     }
 
 */
-const char[3509] GC_BODIES_CS_SOURCE_GLSL430 @private = {
+const char[3509] GC_BODIES_CS_SOURCE_GLSL430 @private @if(!env::DARWIN && !env::WIN32 && !env::EMSCRIPTEN) = {
     0x23,0x76,0x65,0x72,0x73,0x69,0x6f,0x6e,0x20,0x34,0x33,0x30,0x0a,0x6c,0x61,0x79,
     0x6f,0x75,0x74,0x28,0x6c,0x6f,0x63,0x61,0x6c,0x5f,0x73,0x69,0x7a,0x65,0x5f,0x78,
     0x20,0x3d,0x20,0x33,0x32,0x2c,0x20,0x6c,0x6f,0x63,0x61,0x6c,0x5f,0x73,0x69,0x7a,
@@ -5867,7 +5867,7 @@ const char[3509] GC_BODIES_CS_SOURCE_GLSL430 @private = {
     }
 
 */
-const char[1753] GC_SHAPE_CS_SOURCE_GLSL430 @private = {
+const char[1753] GC_SHAPE_CS_SOURCE_GLSL430 @private @if(!env::DARWIN && !env::WIN32 && !env::EMSCRIPTEN) = {
     0x23,0x76,0x65,0x72,0x73,0x69,0x6f,0x6e,0x20,0x34,0x33,0x30,0x0a,0x6c,0x61,0x79,
     0x6f,0x75,0x74,0x28,0x6c,0x6f,0x63,0x61,0x6c,0x5f,0x73,0x69,0x7a,0x65,0x5f,0x78,
     0x20,0x3d,0x20,0x31,0x32,0x38,0x2c,0x20,0x6c,0x6f,0x63,0x61,0x6c,0x5f,0x73,0x69,
@@ -6057,7 +6057,7 @@ const char[1753] GC_SHAPE_CS_SOURCE_GLSL430 @private = {
     }
 
 */
-const char[1329] GC_DAMP_CS_SOURCE_GLSL430 @private = {
+const char[1329] GC_DAMP_CS_SOURCE_GLSL430 @private @if(!env::DARWIN && !env::WIN32 && !env::EMSCRIPTEN) = {
     0x23,0x76,0x65,0x72,0x73,0x69,0x6f,0x6e,0x20,0x34,0x33,0x30,0x0a,0x6c,0x61,0x79,
     0x6f,0x75,0x74,0x28,0x6c,0x6f,0x63,0x61,0x6c,0x5f,0x73,0x69,0x7a,0x65,0x5f,0x78,
     0x20,0x3d,0x20,0x31,0x32,0x38,0x2c,0x20,0x6c,0x6f,0x63,0x61,0x6c,0x5f,0x73,0x69,
@@ -6267,7 +6267,7 @@ const char[1329] GC_DAMP_CS_SOURCE_GLSL430 @private = {
     }
 
 */
-const char[2968] GC_WRITE_CS_SOURCE_GLSL430 @private = {
+const char[2968] GC_WRITE_CS_SOURCE_GLSL430 @private @if(!env::DARWIN && !env::WIN32 && !env::EMSCRIPTEN) = {
     0x23,0x76,0x65,0x72,0x73,0x69,0x6f,0x6e,0x20,0x34,0x33,0x30,0x0a,0x6c,0x61,0x79,
     0x6f,0x75,0x74,0x28,0x6c,0x6f,0x63,0x61,0x6c,0x5f,0x73,0x69,0x7a,0x65,0x5f,0x78,
     0x20,0x3d,0x20,0x31,0x32,0x38,0x2c,0x20,0x6c,0x6f,0x63,0x61,0x6c,0x5f,0x73,0x69,
@@ -6516,7 +6516,7 @@ const char[2968] GC_WRITE_CS_SOURCE_GLSL430 @private = {
         comp_main();
     }
 */
-const char[1464] GC_BEGIN_CS_SOURCE_HLSL5 @private = {
+const char[1464] GC_BEGIN_CS_SOURCE_HLSL5 @private @if(env::WIN32) = {
     0x73,0x74,0x72,0x75,0x63,0x74,0x20,0x67,0x63,0x5f,0x70,0x6f,0x69,0x6e,0x74,0x0a,
     0x7b,0x0a,0x20,0x20,0x20,0x20,0x66,0x6c,0x6f,0x61,0x74,0x34,0x20,0x70,0x3b,0x0a,
     0x7d,0x3b,0x0a,0x0a,0x73,0x74,0x72,0x75,0x63,0x74,0x20,0x67,0x63,0x5f,0x70,0x69,
@@ -6776,7 +6776,7 @@ const char[1464] GC_BEGIN_CS_SOURCE_HLSL5 @private = {
         comp_main();
     }
 */
-const char[5311] GC_FORCES_CS_SOURCE_HLSL5 @private = {
+const char[5311] GC_FORCES_CS_SOURCE_HLSL5 @private @if(env::WIN32) = {
     0x73,0x74,0x72,0x75,0x63,0x74,0x20,0x67,0x63,0x5f,0x70,0x6f,0x69,0x6e,0x74,0x0a,
     0x7b,0x0a,0x20,0x20,0x20,0x20,0x66,0x6c,0x6f,0x61,0x74,0x34,0x20,0x70,0x3b,0x0a,
     0x7d,0x3b,0x0a,0x0a,0x73,0x74,0x72,0x75,0x63,0x74,0x20,0x67,0x63,0x5f,0x70,0x69,
@@ -7177,7 +7177,7 @@ const char[5311] GC_FORCES_CS_SOURCE_HLSL5 @private = {
         comp_main();
     }
 */
-const char[1689] GC_INTEGRATE_CS_SOURCE_HLSL5 @private = {
+const char[1689] GC_INTEGRATE_CS_SOURCE_HLSL5 @private @if(env::WIN32) = {
     0x73,0x74,0x72,0x75,0x63,0x74,0x20,0x67,0x63,0x5f,0x70,0x6f,0x69,0x6e,0x74,0x0a,
     0x7b,0x0a,0x20,0x20,0x20,0x20,0x66,0x6c,0x6f,0x61,0x74,0x34,0x20,0x70,0x3b,0x0a,
     0x7d,0x3b,0x0a,0x0a,0x73,0x74,0x72,0x75,0x63,0x74,0x20,0x67,0x63,0x5f,0x70,0x69,
@@ -7371,7 +7371,7 @@ const char[1689] GC_INTEGRATE_CS_SOURCE_HLSL5 @private = {
         comp_main();
     }
 */
-const char[2195] GC_LINKS_CS_SOURCE_HLSL5 @private = {
+const char[2195] GC_LINKS_CS_SOURCE_HLSL5 @private @if(env::WIN32) = {
     0x73,0x74,0x72,0x75,0x63,0x74,0x20,0x67,0x63,0x5f,0x6c,0x69,0x6e,0x6b,0x0a,0x7b,
     0x0a,0x20,0x20,0x20,0x20,0x75,0x69,0x6e,0x74,0x20,0x61,0x3b,0x0a,0x20,0x20,0x20,
     0x20,0x75,0x69,0x6e,0x74,0x20,0x62,0x3b,0x0a,0x20,0x20,0x20,0x20,0x66,0x6c,0x6f,
@@ -7656,7 +7656,7 @@ const char[2195] GC_LINKS_CS_SOURCE_HLSL5 @private = {
         comp_main();
     }
 */
-const char[4186] GC_BENDS_CS_SOURCE_HLSL5 @private = {
+const char[4186] GC_BENDS_CS_SOURCE_HLSL5 @private @if(env::WIN32) = {
     0x73,0x74,0x72,0x75,0x63,0x74,0x20,0x67,0x63,0x5f,0x62,0x65,0x6e,0x64,0x0a,0x7b,
     0x0a,0x20,0x20,0x20,0x20,0x75,0x69,0x6e,0x74,0x20,0x61,0x3b,0x0a,0x20,0x20,0x20,
     0x20,0x75,0x69,0x6e,0x74,0x20,0x6d,0x3b,0x0a,0x20,0x20,0x20,0x20,0x75,0x69,0x6e,
@@ -8006,7 +8006,7 @@ const char[4186] GC_BENDS_CS_SOURCE_HLSL5 @private = {
         comp_main();
     }
 */
-const char[1904] GC_TETHERS_CS_SOURCE_HLSL5 @private = {
+const char[1904] GC_TETHERS_CS_SOURCE_HLSL5 @private @if(env::WIN32) = {
     0x73,0x74,0x72,0x75,0x63,0x74,0x20,0x67,0x63,0x5f,0x74,0x65,0x74,0x68,0x65,0x72,
     0x0a,0x7b,0x0a,0x20,0x20,0x20,0x20,0x75,0x69,0x6e,0x74,0x20,0x70,0x69,0x6e,0x3b,
     0x0a,0x20,0x20,0x20,0x20,0x66,0x6c,0x6f,0x61,0x74,0x20,0x72,0x65,0x73,0x74,0x3b,
@@ -8175,7 +8175,7 @@ const char[1904] GC_TETHERS_CS_SOURCE_HLSL5 @private = {
         comp_main();
     }
 */
-const char[1046] GC_CLEAR_CS_SOURCE_HLSL5 @private = {
+const char[1046] GC_CLEAR_CS_SOURCE_HLSL5 @private @if(env::WIN32) = {
     0x73,0x74,0x72,0x75,0x63,0x74,0x20,0x67,0x63,0x5f,0x63,0x65,0x6c,0x6c,0x0a,0x7b,
     0x0a,0x20,0x20,0x20,0x20,0x75,0x69,0x6e,0x74,0x20,0x6e,0x3b,0x0a,0x7d,0x3b,0x0a,
     0x0a,0x73,0x74,0x61,0x74,0x69,0x63,0x20,0x63,0x6f,0x6e,0x73,0x74,0x20,0x75,0x69,
@@ -8310,7 +8310,7 @@ const char[1046] GC_CLEAR_CS_SOURCE_HLSL5 @private = {
         comp_main();
     }
 */
-const char[1492] GC_COUNT_CS_SOURCE_HLSL5 @private = {
+const char[1492] GC_COUNT_CS_SOURCE_HLSL5 @private @if(env::WIN32) = {
     0x73,0x74,0x72,0x75,0x63,0x74,0x20,0x67,0x63,0x5f,0x63,0x65,0x6c,0x6c,0x0a,0x7b,
     0x0a,0x20,0x20,0x20,0x20,0x75,0x69,0x6e,0x74,0x20,0x6e,0x3b,0x0a,0x7d,0x3b,0x0a,
     0x0a,0x73,0x74,0x72,0x75,0x63,0x74,0x20,0x67,0x63,0x5f,0x70,0x6f,0x69,0x6e,0x74,
@@ -8549,7 +8549,7 @@ const char[1492] GC_COUNT_CS_SOURCE_HLSL5 @private = {
         comp_main();
     }
 */
-const char[3070] GC_SCAN_BLOCK_CS_SOURCE_HLSL5 @private = {
+const char[3070] GC_SCAN_BLOCK_CS_SOURCE_HLSL5 @private @if(env::WIN32) = {
     0x73,0x74,0x72,0x75,0x63,0x74,0x20,0x67,0x63,0x5f,0x63,0x65,0x6c,0x6c,0x0a,0x7b,
     0x0a,0x20,0x20,0x20,0x20,0x75,0x69,0x6e,0x74,0x20,0x6e,0x3b,0x0a,0x7d,0x3b,0x0a,
     0x0a,0x73,0x74,0x61,0x74,0x69,0x63,0x20,0x63,0x6f,0x6e,0x73,0x74,0x20,0x75,0x69,
@@ -8874,7 +8874,7 @@ const char[3070] GC_SCAN_BLOCK_CS_SOURCE_HLSL5 @private = {
         comp_main();
     }
 */
-const char[2690] GC_SCAN_SUMS_CS_SOURCE_HLSL5 @private = {
+const char[2690] GC_SCAN_SUMS_CS_SOURCE_HLSL5 @private @if(env::WIN32) = {
     0x73,0x74,0x72,0x75,0x63,0x74,0x20,0x67,0x63,0x5f,0x63,0x65,0x6c,0x6c,0x0a,0x7b,
     0x0a,0x20,0x20,0x20,0x20,0x75,0x69,0x6e,0x74,0x20,0x6e,0x3b,0x0a,0x7d,0x3b,0x0a,
     0x0a,0x73,0x74,0x61,0x74,0x69,0x63,0x20,0x63,0x6f,0x6e,0x73,0x74,0x20,0x75,0x69,
@@ -9105,7 +9105,7 @@ const char[2690] GC_SCAN_SUMS_CS_SOURCE_HLSL5 @private = {
         comp_main();
     }
 */
-const char[1480] GC_SCAN_ADD_CS_SOURCE_HLSL5 @private = {
+const char[1480] GC_SCAN_ADD_CS_SOURCE_HLSL5 @private @if(env::WIN32) = {
     0x73,0x74,0x72,0x75,0x63,0x74,0x20,0x67,0x63,0x5f,0x63,0x65,0x6c,0x6c,0x0a,0x7b,
     0x0a,0x20,0x20,0x20,0x20,0x75,0x69,0x6e,0x74,0x20,0x6e,0x3b,0x0a,0x7d,0x3b,0x0a,
     0x0a,0x73,0x74,0x61,0x74,0x69,0x63,0x20,0x63,0x6f,0x6e,0x73,0x74,0x20,0x75,0x69,
@@ -9269,7 +9269,7 @@ const char[1480] GC_SCAN_ADD_CS_SOURCE_HLSL5 @private = {
         comp_main();
     }
 */
-const char[1592] GC_FILL_CS_SOURCE_HLSL5 @private = {
+const char[1592] GC_FILL_CS_SOURCE_HLSL5 @private @if(env::WIN32) = {
     0x73,0x74,0x72,0x75,0x63,0x74,0x20,0x67,0x63,0x5f,0x70,0x6f,0x69,0x6e,0x74,0x0a,
     0x7b,0x0a,0x20,0x20,0x20,0x20,0x66,0x6c,0x6f,0x61,0x74,0x34,0x20,0x70,0x3b,0x0a,
     0x7d,0x3b,0x0a,0x0a,0x73,0x74,0x72,0x75,0x63,0x74,0x20,0x67,0x63,0x5f,0x63,0x65,
@@ -9510,7 +9510,7 @@ const char[1592] GC_FILL_CS_SOURCE_HLSL5 @private = {
         comp_main();
     }
 */
-const char[4219] GC_SELF_CS_SOURCE_HLSL5 @private = {
+const char[4219] GC_SELF_CS_SOURCE_HLSL5 @private @if(env::WIN32) = {
     0x73,0x74,0x72,0x75,0x63,0x74,0x20,0x67,0x63,0x5f,0x70,0x69,0x6e,0x0a,0x7b,0x0a,
     0x20,0x20,0x20,0x20,0x66,0x6c,0x6f,0x61,0x74,0x34,0x20,0x70,0x3b,0x0a,0x7d,0x3b,
     0x0a,0x0a,0x73,0x74,0x72,0x75,0x63,0x74,0x20,0x67,0x63,0x5f,0x70,0x75,0x73,0x68,
@@ -10131,7 +10131,7 @@ const char[4219] GC_SELF_CS_SOURCE_HLSL5 @private = {
         comp_main();
     }
 */
-const char[9623] GC_COLLIDE_CS_SOURCE_HLSL5 @private = {
+const char[9623] GC_COLLIDE_CS_SOURCE_HLSL5 @private @if(env::WIN32) = {
     0x73,0x74,0x72,0x75,0x63,0x74,0x20,0x67,0x63,0x5f,0x63,0x6f,0x6c,0x6c,0x69,0x64,
     0x65,0x72,0x0a,0x7b,0x0a,0x20,0x20,0x20,0x20,0x66,0x6c,0x6f,0x61,0x74,0x34,0x20,
     0x69,0x6e,0x66,0x6f,0x3b,0x0a,0x20,0x20,0x20,0x20,0x66,0x6c,0x6f,0x61,0x74,0x34,
@@ -11159,7 +11159,7 @@ const char[9623] GC_COLLIDE_CS_SOURCE_HLSL5 @private = {
         comp_main();
     }
 */
-const char[12158] GC_COLLIDE_BODIES_CS_SOURCE_HLSL5 @private = {
+const char[12158] GC_COLLIDE_BODIES_CS_SOURCE_HLSL5 @private @if(env::WIN32) = {
     0x73,0x74,0x72,0x75,0x63,0x74,0x20,0x67,0x63,0x5f,0x63,0x6f,0x6c,0x6c,0x69,0x64,
     0x65,0x72,0x0a,0x7b,0x0a,0x20,0x20,0x20,0x20,0x66,0x6c,0x6f,0x61,0x74,0x34,0x20,
     0x69,0x6e,0x66,0x6f,0x3b,0x0a,0x20,0x20,0x20,0x20,0x66,0x6c,0x6f,0x61,0x74,0x34,
@@ -12100,7 +12100,7 @@ const char[12158] GC_COLLIDE_BODIES_CS_SOURCE_HLSL5 @private = {
         comp_main();
     }
 */
-const char[4870] GC_BODIES_CS_SOURCE_HLSL5 @private = {
+const char[4870] GC_BODIES_CS_SOURCE_HLSL5 @private @if(env::WIN32) = {
     0x73,0x74,0x72,0x75,0x63,0x74,0x20,0x67,0x63,0x5f,0x63,0x6f,0x6c,0x6c,0x69,0x64,
     0x65,0x72,0x0a,0x7b,0x0a,0x20,0x20,0x20,0x20,0x66,0x6c,0x6f,0x61,0x74,0x34,0x20,
     0x69,0x6e,0x66,0x6f,0x3b,0x0a,0x20,0x20,0x20,0x20,0x66,0x6c,0x6f,0x61,0x74,0x34,
@@ -12518,7 +12518,7 @@ const char[4870] GC_BODIES_CS_SOURCE_HLSL5 @private = {
         comp_main();
     }
 */
-const char[3066] GC_SHAPE_CS_SOURCE_HLSL5 @private = {
+const char[3066] GC_SHAPE_CS_SOURCE_HLSL5 @private @if(env::WIN32) = {
     0x73,0x74,0x72,0x75,0x63,0x74,0x20,0x67,0x63,0x5f,0x63,0x6f,0x6c,0x6c,0x69,0x64,
     0x65,0x72,0x0a,0x7b,0x0a,0x20,0x20,0x20,0x20,0x66,0x6c,0x6f,0x61,0x74,0x34,0x20,
     0x69,0x6e,0x66,0x6f,0x3b,0x0a,0x20,0x20,0x20,0x20,0x66,0x6c,0x6f,0x61,0x74,0x34,
@@ -12791,7 +12791,7 @@ const char[3066] GC_SHAPE_CS_SOURCE_HLSL5 @private = {
         comp_main();
     }
 */
-const char[1994] GC_DAMP_CS_SOURCE_HLSL5 @private = {
+const char[1994] GC_DAMP_CS_SOURCE_HLSL5 @private @if(env::WIN32) = {
     0x73,0x74,0x72,0x75,0x63,0x74,0x20,0x67,0x63,0x5f,0x6c,0x69,0x6e,0x6b,0x0a,0x7b,
     0x0a,0x20,0x20,0x20,0x20,0x75,0x69,0x6e,0x74,0x20,0x61,0x3b,0x0a,0x20,0x20,0x20,
     0x20,0x75,0x69,0x6e,0x74,0x20,0x62,0x3b,0x0a,0x20,0x20,0x20,0x20,0x66,0x6c,0x6f,
@@ -13040,7 +13040,7 @@ const char[1994] GC_DAMP_CS_SOURCE_HLSL5 @private = {
         comp_main();
     }
 */
-const char[3478] GC_WRITE_CS_SOURCE_HLSL5 @private = {
+const char[3478] GC_WRITE_CS_SOURCE_HLSL5 @private @if(env::WIN32) = {
     0x73,0x74,0x72,0x75,0x63,0x74,0x20,0x67,0x63,0x5f,0x70,0x6f,0x69,0x6e,0x74,0x0a,
     0x7b,0x0a,0x20,0x20,0x20,0x20,0x66,0x6c,0x6f,0x61,0x74,0x34,0x20,0x70,0x3b,0x0a,
     0x7d,0x3b,0x0a,0x0a,0x73,0x74,0x72,0x75,0x63,0x74,0x20,0x67,0x63,0x5f,0x76,0x65,
@@ -13329,7 +13329,7 @@ const char[3478] GC_WRITE_CS_SOURCE_HLSL5 @private = {
     }
 
 */
-const char[1230] GC_BEGIN_CS_SOURCE_METAL_MACOS @private = {
+const char[1230] GC_BEGIN_CS_SOURCE_METAL_MACOS @private @if(env::OS_TYPE == MACOS) = {
     0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,0x20,0x3c,0x6d,0x65,0x74,0x61,0x6c,0x5f,
     0x73,0x74,0x64,0x6c,0x69,0x62,0x3e,0x0a,0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,
     0x20,0x3c,0x73,0x69,0x6d,0x64,0x2f,0x73,0x69,0x6d,0x64,0x2e,0x68,0x3e,0x0a,0x0a,
@@ -13586,7 +13586,7 @@ const char[1230] GC_BEGIN_CS_SOURCE_METAL_MACOS @private = {
     }
 
 */
-const char[5432] GC_FORCES_CS_SOURCE_METAL_MACOS @private = {
+const char[5432] GC_FORCES_CS_SOURCE_METAL_MACOS @private @if(env::OS_TYPE == MACOS) = {
     0x23,0x70,0x72,0x61,0x67,0x6d,0x61,0x20,0x63,0x6c,0x61,0x6e,0x67,0x20,0x64,0x69,
     0x61,0x67,0x6e,0x6f,0x73,0x74,0x69,0x63,0x20,0x69,0x67,0x6e,0x6f,0x72,0x65,0x64,
     0x20,0x22,0x2d,0x57,0x6d,0x69,0x73,0x73,0x69,0x6e,0x67,0x2d,0x70,0x72,0x6f,0x74,
@@ -14007,7 +14007,7 @@ const char[5432] GC_FORCES_CS_SOURCE_METAL_MACOS @private = {
     }
 
 */
-const char[1487] GC_INTEGRATE_CS_SOURCE_METAL_MACOS @private = {
+const char[1487] GC_INTEGRATE_CS_SOURCE_METAL_MACOS @private @if(env::OS_TYPE == MACOS) = {
     0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,0x20,0x3c,0x6d,0x65,0x74,0x61,0x6c,0x5f,
     0x73,0x74,0x64,0x6c,0x69,0x62,0x3e,0x0a,0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,
     0x20,0x3c,0x73,0x69,0x6d,0x64,0x2f,0x73,0x69,0x6d,0x64,0x2e,0x68,0x3e,0x0a,0x0a,
@@ -14189,7 +14189,7 @@ const char[1487] GC_INTEGRATE_CS_SOURCE_METAL_MACOS @private = {
     }
 
 */
-const char[1765] GC_LINKS_CS_SOURCE_METAL_MACOS @private = {
+const char[1765] GC_LINKS_CS_SOURCE_METAL_MACOS @private @if(env::OS_TYPE == MACOS) = {
     0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,0x20,0x3c,0x6d,0x65,0x74,0x61,0x6c,0x5f,
     0x73,0x74,0x64,0x6c,0x69,0x62,0x3e,0x0a,0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,
     0x20,0x3c,0x73,0x69,0x6d,0x64,0x2f,0x73,0x69,0x6d,0x64,0x2e,0x68,0x3e,0x0a,0x0a,
@@ -14444,7 +14444,7 @@ const char[1765] GC_LINKS_CS_SOURCE_METAL_MACOS @private = {
     }
 
 */
-const char[3435] GC_BENDS_CS_SOURCE_METAL_MACOS @private = {
+const char[3435] GC_BENDS_CS_SOURCE_METAL_MACOS @private @if(env::OS_TYPE == MACOS) = {
     0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,0x20,0x3c,0x6d,0x65,0x74,0x61,0x6c,0x5f,
     0x73,0x74,0x64,0x6c,0x69,0x62,0x3e,0x0a,0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,
     0x20,0x3c,0x73,0x69,0x6d,0x64,0x2f,0x73,0x69,0x6d,0x64,0x2e,0x68,0x3e,0x0a,0x0a,
@@ -14748,7 +14748,7 @@ const char[3435] GC_BENDS_CS_SOURCE_METAL_MACOS @private = {
     }
 
 */
-const char[1599] GC_TETHERS_CS_SOURCE_METAL_MACOS @private = {
+const char[1599] GC_TETHERS_CS_SOURCE_METAL_MACOS @private @if(env::OS_TYPE == MACOS) = {
     0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,0x20,0x3c,0x6d,0x65,0x74,0x61,0x6c,0x5f,
     0x73,0x74,0x64,0x6c,0x69,0x62,0x3e,0x0a,0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,
     0x20,0x3c,0x73,0x69,0x6d,0x64,0x2f,0x73,0x69,0x6d,0x64,0x2e,0x68,0x3e,0x0a,0x0a,
@@ -14893,7 +14893,7 @@ const char[1599] GC_TETHERS_CS_SOURCE_METAL_MACOS @private = {
     }
 
 */
-const char[755] GC_CLEAR_CS_SOURCE_METAL_MACOS @private = {
+const char[755] GC_CLEAR_CS_SOURCE_METAL_MACOS @private @if(env::OS_TYPE == MACOS) = {
     0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,0x20,0x3c,0x6d,0x65,0x74,0x61,0x6c,0x5f,
     0x73,0x74,0x64,0x6c,0x69,0x62,0x3e,0x0a,0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,
     0x20,0x3c,0x73,0x69,0x6d,0x64,0x2f,0x73,0x69,0x6d,0x64,0x2e,0x68,0x3e,0x0a,0x0a,
@@ -15015,7 +15015,7 @@ const char[755] GC_CLEAR_CS_SOURCE_METAL_MACOS @private = {
     }
 
 */
-const char[1602] GC_COUNT_CS_SOURCE_METAL_MACOS @private = {
+const char[1602] GC_COUNT_CS_SOURCE_METAL_MACOS @private @if(env::OS_TYPE == MACOS) = {
     0x23,0x70,0x72,0x61,0x67,0x6d,0x61,0x20,0x63,0x6c,0x61,0x6e,0x67,0x20,0x64,0x69,
     0x61,0x67,0x6e,0x6f,0x73,0x74,0x69,0x63,0x20,0x69,0x67,0x6e,0x6f,0x72,0x65,0x64,
     0x20,0x22,0x2d,0x57,0x6d,0x69,0x73,0x73,0x69,0x6e,0x67,0x2d,0x70,0x72,0x6f,0x74,
@@ -15298,7 +15298,7 @@ const char[1602] GC_COUNT_CS_SOURCE_METAL_MACOS @private = {
     }
 
 */
-const char[3740] GC_SCAN_BLOCK_CS_SOURCE_METAL_MACOS @private = {
+const char[3740] GC_SCAN_BLOCK_CS_SOURCE_METAL_MACOS @private @if(env::OS_TYPE == MACOS) = {
     0x23,0x70,0x72,0x61,0x67,0x6d,0x61,0x20,0x63,0x6c,0x61,0x6e,0x67,0x20,0x64,0x69,
     0x61,0x67,0x6e,0x6f,0x73,0x74,0x69,0x63,0x20,0x69,0x67,0x6e,0x6f,0x72,0x65,0x64,
     0x20,0x22,0x2d,0x57,0x6d,0x69,0x73,0x73,0x69,0x6e,0x67,0x2d,0x70,0x72,0x6f,0x74,
@@ -15701,7 +15701,7 @@ const char[3740] GC_SCAN_BLOCK_CS_SOURCE_METAL_MACOS @private = {
     }
 
 */
-const char[3368] GC_SCAN_SUMS_CS_SOURCE_METAL_MACOS @private = {
+const char[3368] GC_SCAN_SUMS_CS_SOURCE_METAL_MACOS @private @if(env::OS_TYPE == MACOS) = {
     0x23,0x70,0x72,0x61,0x67,0x6d,0x61,0x20,0x63,0x6c,0x61,0x6e,0x67,0x20,0x64,0x69,
     0x61,0x67,0x6e,0x6f,0x73,0x74,0x69,0x63,0x20,0x69,0x67,0x6e,0x6f,0x72,0x65,0x64,
     0x20,0x22,0x2d,0x57,0x6d,0x69,0x73,0x73,0x69,0x6e,0x67,0x2d,0x70,0x72,0x6f,0x74,
@@ -15971,7 +15971,7 @@ const char[3368] GC_SCAN_SUMS_CS_SOURCE_METAL_MACOS @private = {
     }
 
 */
-const char[1160] GC_SCAN_ADD_CS_SOURCE_METAL_MACOS @private = {
+const char[1160] GC_SCAN_ADD_CS_SOURCE_METAL_MACOS @private @if(env::OS_TYPE == MACOS) = {
     0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,0x20,0x3c,0x6d,0x65,0x74,0x61,0x6c,0x5f,
     0x73,0x74,0x64,0x6c,0x69,0x62,0x3e,0x0a,0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,
     0x20,0x3c,0x73,0x69,0x6d,0x64,0x2f,0x73,0x69,0x6d,0x64,0x2e,0x68,0x3e,0x0a,0x0a,
@@ -16124,7 +16124,7 @@ const char[1160] GC_SCAN_ADD_CS_SOURCE_METAL_MACOS @private = {
     }
 
 */
-const char[1734] GC_FILL_CS_SOURCE_METAL_MACOS @private = {
+const char[1734] GC_FILL_CS_SOURCE_METAL_MACOS @private @if(env::OS_TYPE == MACOS) = {
     0x23,0x70,0x72,0x61,0x67,0x6d,0x61,0x20,0x63,0x6c,0x61,0x6e,0x67,0x20,0x64,0x69,
     0x61,0x67,0x6e,0x6f,0x73,0x74,0x69,0x63,0x20,0x69,0x67,0x6e,0x6f,0x72,0x65,0x64,
     0x20,0x22,0x2d,0x57,0x6d,0x69,0x73,0x73,0x69,0x6e,0x67,0x2d,0x70,0x72,0x6f,0x74,
@@ -16397,7 +16397,7 @@ const char[1734] GC_FILL_CS_SOURCE_METAL_MACOS @private = {
     }
 
 */
-const char[4185] GC_SELF_CS_SOURCE_METAL_MACOS @private = {
+const char[4185] GC_SELF_CS_SOURCE_METAL_MACOS @private @if(env::OS_TYPE == MACOS) = {
     0x23,0x70,0x72,0x61,0x67,0x6d,0x61,0x20,0x63,0x6c,0x61,0x6e,0x67,0x20,0x64,0x69,
     0x61,0x67,0x6e,0x6f,0x73,0x74,0x69,0x63,0x20,0x69,0x67,0x6e,0x6f,0x72,0x65,0x64,
     0x20,0x22,0x2d,0x57,0x6d,0x69,0x73,0x73,0x69,0x6e,0x67,0x2d,0x70,0x72,0x6f,0x74,
@@ -17079,7 +17079,7 @@ const char[4185] GC_SELF_CS_SOURCE_METAL_MACOS @private = {
     }
 
 */
-const char[11335] GC_COLLIDE_CS_SOURCE_METAL_MACOS @private = {
+const char[11335] GC_COLLIDE_CS_SOURCE_METAL_MACOS @private @if(env::OS_TYPE == MACOS) = {
     0x23,0x70,0x72,0x61,0x67,0x6d,0x61,0x20,0x63,0x6c,0x61,0x6e,0x67,0x20,0x64,0x69,
     0x61,0x67,0x6e,0x6f,0x73,0x74,0x69,0x63,0x20,0x69,0x67,0x6e,0x6f,0x72,0x65,0x64,
     0x20,0x22,0x2d,0x57,0x6d,0x69,0x73,0x73,0x69,0x6e,0x67,0x2d,0x70,0x72,0x6f,0x74,
@@ -18279,7 +18279,7 @@ const char[11335] GC_COLLIDE_CS_SOURCE_METAL_MACOS @private = {
     }
 
 */
-const char[13815] GC_COLLIDE_BODIES_CS_SOURCE_METAL_MACOS @private = {
+const char[13815] GC_COLLIDE_BODIES_CS_SOURCE_METAL_MACOS @private @if(env::OS_TYPE == MACOS) = {
     0x23,0x70,0x72,0x61,0x67,0x6d,0x61,0x20,0x63,0x6c,0x61,0x6e,0x67,0x20,0x64,0x69,
     0x61,0x67,0x6e,0x6f,0x73,0x74,0x69,0x63,0x20,0x69,0x67,0x6e,0x6f,0x72,0x65,0x64,
     0x20,0x22,0x2d,0x57,0x6d,0x69,0x73,0x73,0x69,0x6e,0x67,0x2d,0x70,0x72,0x6f,0x74,
@@ -19309,7 +19309,7 @@ const char[13815] GC_COLLIDE_BODIES_CS_SOURCE_METAL_MACOS @private = {
     }
 
 */
-const char[3788] GC_BODIES_CS_SOURCE_METAL_MACOS @private = {
+const char[3788] GC_BODIES_CS_SOURCE_METAL_MACOS @private @if(env::OS_TYPE == MACOS) = {
     0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,0x20,0x3c,0x6d,0x65,0x74,0x61,0x6c,0x5f,
     0x73,0x74,0x64,0x6c,0x69,0x62,0x3e,0x0a,0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,
     0x20,0x3c,0x73,0x69,0x6d,0x64,0x2f,0x73,0x69,0x6d,0x64,0x2e,0x68,0x3e,0x0a,0x0a,
@@ -19650,7 +19650,7 @@ const char[3788] GC_BODIES_CS_SOURCE_METAL_MACOS @private = {
     }
 
 */
-const char[2005] GC_SHAPE_CS_SOURCE_METAL_MACOS @private = {
+const char[2005] GC_SHAPE_CS_SOURCE_METAL_MACOS @private @if(env::OS_TYPE == MACOS) = {
     0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,0x20,0x3c,0x6d,0x65,0x74,0x61,0x6c,0x5f,
     0x73,0x74,0x64,0x6c,0x69,0x62,0x3e,0x0a,0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,
     0x20,0x3c,0x73,0x69,0x6d,0x64,0x2f,0x73,0x69,0x6d,0x64,0x2e,0x68,0x3e,0x0a,0x0a,
@@ -19858,7 +19858,7 @@ const char[2005] GC_SHAPE_CS_SOURCE_METAL_MACOS @private = {
     }
 
 */
-const char[1560] GC_DAMP_CS_SOURCE_METAL_MACOS @private = {
+const char[1560] GC_DAMP_CS_SOURCE_METAL_MACOS @private @if(env::OS_TYPE == MACOS) = {
     0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,0x20,0x3c,0x6d,0x65,0x74,0x61,0x6c,0x5f,
     0x73,0x74,0x64,0x6c,0x69,0x62,0x3e,0x0a,0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,
     0x20,0x3c,0x73,0x69,0x6d,0x64,0x2f,0x73,0x69,0x6d,0x64,0x2e,0x68,0x3e,0x0a,0x0a,
@@ -20089,7 +20089,7 @@ const char[1560] GC_DAMP_CS_SOURCE_METAL_MACOS @private = {
     }
 
 */
-const char[3543] GC_WRITE_CS_SOURCE_METAL_MACOS @private = {
+const char[3543] GC_WRITE_CS_SOURCE_METAL_MACOS @private @if(env::OS_TYPE == MACOS) = {
     0x23,0x70,0x72,0x61,0x67,0x6d,0x61,0x20,0x63,0x6c,0x61,0x6e,0x67,0x20,0x64,0x69,
     0x61,0x67,0x6e,0x6f,0x73,0x74,0x69,0x63,0x20,0x69,0x67,0x6e,0x6f,0x72,0x65,0x64,
     0x20,0x22,0x2d,0x57,0x6d,0x69,0x73,0x73,0x69,0x6e,0x67,0x2d,0x70,0x72,0x6f,0x74,
@@ -20382,7 +20382,7 @@ const char[3543] GC_WRITE_CS_SOURCE_METAL_MACOS @private = {
     }
 
 */
-const char[1230] GC_BEGIN_CS_SOURCE_METAL_IOS @private = {
+const char[1230] GC_BEGIN_CS_SOURCE_METAL_IOS @private @if(env::OS_TYPE == IOS) = {
     0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,0x20,0x3c,0x6d,0x65,0x74,0x61,0x6c,0x5f,
     0x73,0x74,0x64,0x6c,0x69,0x62,0x3e,0x0a,0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,
     0x20,0x3c,0x73,0x69,0x6d,0x64,0x2f,0x73,0x69,0x6d,0x64,0x2e,0x68,0x3e,0x0a,0x0a,
@@ -20639,7 +20639,7 @@ const char[1230] GC_BEGIN_CS_SOURCE_METAL_IOS @private = {
     }
 
 */
-const char[5432] GC_FORCES_CS_SOURCE_METAL_IOS @private = {
+const char[5432] GC_FORCES_CS_SOURCE_METAL_IOS @private @if(env::OS_TYPE == IOS) = {
     0x23,0x70,0x72,0x61,0x67,0x6d,0x61,0x20,0x63,0x6c,0x61,0x6e,0x67,0x20,0x64,0x69,
     0x61,0x67,0x6e,0x6f,0x73,0x74,0x69,0x63,0x20,0x69,0x67,0x6e,0x6f,0x72,0x65,0x64,
     0x20,0x22,0x2d,0x57,0x6d,0x69,0x73,0x73,0x69,0x6e,0x67,0x2d,0x70,0x72,0x6f,0x74,
@@ -21060,7 +21060,7 @@ const char[5432] GC_FORCES_CS_SOURCE_METAL_IOS @private = {
     }
 
 */
-const char[1487] GC_INTEGRATE_CS_SOURCE_METAL_IOS @private = {
+const char[1487] GC_INTEGRATE_CS_SOURCE_METAL_IOS @private @if(env::OS_TYPE == IOS) = {
     0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,0x20,0x3c,0x6d,0x65,0x74,0x61,0x6c,0x5f,
     0x73,0x74,0x64,0x6c,0x69,0x62,0x3e,0x0a,0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,
     0x20,0x3c,0x73,0x69,0x6d,0x64,0x2f,0x73,0x69,0x6d,0x64,0x2e,0x68,0x3e,0x0a,0x0a,
@@ -21242,7 +21242,7 @@ const char[1487] GC_INTEGRATE_CS_SOURCE_METAL_IOS @private = {
     }
 
 */
-const char[1765] GC_LINKS_CS_SOURCE_METAL_IOS @private = {
+const char[1765] GC_LINKS_CS_SOURCE_METAL_IOS @private @if(env::OS_TYPE == IOS) = {
     0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,0x20,0x3c,0x6d,0x65,0x74,0x61,0x6c,0x5f,
     0x73,0x74,0x64,0x6c,0x69,0x62,0x3e,0x0a,0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,
     0x20,0x3c,0x73,0x69,0x6d,0x64,0x2f,0x73,0x69,0x6d,0x64,0x2e,0x68,0x3e,0x0a,0x0a,
@@ -21497,7 +21497,7 @@ const char[1765] GC_LINKS_CS_SOURCE_METAL_IOS @private = {
     }
 
 */
-const char[3435] GC_BENDS_CS_SOURCE_METAL_IOS @private = {
+const char[3435] GC_BENDS_CS_SOURCE_METAL_IOS @private @if(env::OS_TYPE == IOS) = {
     0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,0x20,0x3c,0x6d,0x65,0x74,0x61,0x6c,0x5f,
     0x73,0x74,0x64,0x6c,0x69,0x62,0x3e,0x0a,0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,
     0x20,0x3c,0x73,0x69,0x6d,0x64,0x2f,0x73,0x69,0x6d,0x64,0x2e,0x68,0x3e,0x0a,0x0a,
@@ -21801,7 +21801,7 @@ const char[3435] GC_BENDS_CS_SOURCE_METAL_IOS @private = {
     }
 
 */
-const char[1599] GC_TETHERS_CS_SOURCE_METAL_IOS @private = {
+const char[1599] GC_TETHERS_CS_SOURCE_METAL_IOS @private @if(env::OS_TYPE == IOS) = {
     0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,0x20,0x3c,0x6d,0x65,0x74,0x61,0x6c,0x5f,
     0x73,0x74,0x64,0x6c,0x69,0x62,0x3e,0x0a,0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,
     0x20,0x3c,0x73,0x69,0x6d,0x64,0x2f,0x73,0x69,0x6d,0x64,0x2e,0x68,0x3e,0x0a,0x0a,
@@ -21946,7 +21946,7 @@ const char[1599] GC_TETHERS_CS_SOURCE_METAL_IOS @private = {
     }
 
 */
-const char[755] GC_CLEAR_CS_SOURCE_METAL_IOS @private = {
+const char[755] GC_CLEAR_CS_SOURCE_METAL_IOS @private @if(env::OS_TYPE == IOS) = {
     0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,0x20,0x3c,0x6d,0x65,0x74,0x61,0x6c,0x5f,
     0x73,0x74,0x64,0x6c,0x69,0x62,0x3e,0x0a,0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,
     0x20,0x3c,0x73,0x69,0x6d,0x64,0x2f,0x73,0x69,0x6d,0x64,0x2e,0x68,0x3e,0x0a,0x0a,
@@ -22068,7 +22068,7 @@ const char[755] GC_CLEAR_CS_SOURCE_METAL_IOS @private = {
     }
 
 */
-const char[1602] GC_COUNT_CS_SOURCE_METAL_IOS @private = {
+const char[1602] GC_COUNT_CS_SOURCE_METAL_IOS @private @if(env::OS_TYPE == IOS) = {
     0x23,0x70,0x72,0x61,0x67,0x6d,0x61,0x20,0x63,0x6c,0x61,0x6e,0x67,0x20,0x64,0x69,
     0x61,0x67,0x6e,0x6f,0x73,0x74,0x69,0x63,0x20,0x69,0x67,0x6e,0x6f,0x72,0x65,0x64,
     0x20,0x22,0x2d,0x57,0x6d,0x69,0x73,0x73,0x69,0x6e,0x67,0x2d,0x70,0x72,0x6f,0x74,
@@ -22351,7 +22351,7 @@ const char[1602] GC_COUNT_CS_SOURCE_METAL_IOS @private = {
     }
 
 */
-const char[3740] GC_SCAN_BLOCK_CS_SOURCE_METAL_IOS @private = {
+const char[3740] GC_SCAN_BLOCK_CS_SOURCE_METAL_IOS @private @if(env::OS_TYPE == IOS) = {
     0x23,0x70,0x72,0x61,0x67,0x6d,0x61,0x20,0x63,0x6c,0x61,0x6e,0x67,0x20,0x64,0x69,
     0x61,0x67,0x6e,0x6f,0x73,0x74,0x69,0x63,0x20,0x69,0x67,0x6e,0x6f,0x72,0x65,0x64,
     0x20,0x22,0x2d,0x57,0x6d,0x69,0x73,0x73,0x69,0x6e,0x67,0x2d,0x70,0x72,0x6f,0x74,
@@ -22754,7 +22754,7 @@ const char[3740] GC_SCAN_BLOCK_CS_SOURCE_METAL_IOS @private = {
     }
 
 */
-const char[3368] GC_SCAN_SUMS_CS_SOURCE_METAL_IOS @private = {
+const char[3368] GC_SCAN_SUMS_CS_SOURCE_METAL_IOS @private @if(env::OS_TYPE == IOS) = {
     0x23,0x70,0x72,0x61,0x67,0x6d,0x61,0x20,0x63,0x6c,0x61,0x6e,0x67,0x20,0x64,0x69,
     0x61,0x67,0x6e,0x6f,0x73,0x74,0x69,0x63,0x20,0x69,0x67,0x6e,0x6f,0x72,0x65,0x64,
     0x20,0x22,0x2d,0x57,0x6d,0x69,0x73,0x73,0x69,0x6e,0x67,0x2d,0x70,0x72,0x6f,0x74,
@@ -23024,7 +23024,7 @@ const char[3368] GC_SCAN_SUMS_CS_SOURCE_METAL_IOS @private = {
     }
 
 */
-const char[1160] GC_SCAN_ADD_CS_SOURCE_METAL_IOS @private = {
+const char[1160] GC_SCAN_ADD_CS_SOURCE_METAL_IOS @private @if(env::OS_TYPE == IOS) = {
     0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,0x20,0x3c,0x6d,0x65,0x74,0x61,0x6c,0x5f,
     0x73,0x74,0x64,0x6c,0x69,0x62,0x3e,0x0a,0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,
     0x20,0x3c,0x73,0x69,0x6d,0x64,0x2f,0x73,0x69,0x6d,0x64,0x2e,0x68,0x3e,0x0a,0x0a,
@@ -23177,7 +23177,7 @@ const char[1160] GC_SCAN_ADD_CS_SOURCE_METAL_IOS @private = {
     }
 
 */
-const char[1734] GC_FILL_CS_SOURCE_METAL_IOS @private = {
+const char[1734] GC_FILL_CS_SOURCE_METAL_IOS @private @if(env::OS_TYPE == IOS) = {
     0x23,0x70,0x72,0x61,0x67,0x6d,0x61,0x20,0x63,0x6c,0x61,0x6e,0x67,0x20,0x64,0x69,
     0x61,0x67,0x6e,0x6f,0x73,0x74,0x69,0x63,0x20,0x69,0x67,0x6e,0x6f,0x72,0x65,0x64,
     0x20,0x22,0x2d,0x57,0x6d,0x69,0x73,0x73,0x69,0x6e,0x67,0x2d,0x70,0x72,0x6f,0x74,
@@ -23450,7 +23450,7 @@ const char[1734] GC_FILL_CS_SOURCE_METAL_IOS @private = {
     }
 
 */
-const char[4185] GC_SELF_CS_SOURCE_METAL_IOS @private = {
+const char[4185] GC_SELF_CS_SOURCE_METAL_IOS @private @if(env::OS_TYPE == IOS) = {
     0x23,0x70,0x72,0x61,0x67,0x6d,0x61,0x20,0x63,0x6c,0x61,0x6e,0x67,0x20,0x64,0x69,
     0x61,0x67,0x6e,0x6f,0x73,0x74,0x69,0x63,0x20,0x69,0x67,0x6e,0x6f,0x72,0x65,0x64,
     0x20,0x22,0x2d,0x57,0x6d,0x69,0x73,0x73,0x69,0x6e,0x67,0x2d,0x70,0x72,0x6f,0x74,
@@ -24132,7 +24132,7 @@ const char[4185] GC_SELF_CS_SOURCE_METAL_IOS @private = {
     }
 
 */
-const char[11335] GC_COLLIDE_CS_SOURCE_METAL_IOS @private = {
+const char[11335] GC_COLLIDE_CS_SOURCE_METAL_IOS @private @if(env::OS_TYPE == IOS) = {
     0x23,0x70,0x72,0x61,0x67,0x6d,0x61,0x20,0x63,0x6c,0x61,0x6e,0x67,0x20,0x64,0x69,
     0x61,0x67,0x6e,0x6f,0x73,0x74,0x69,0x63,0x20,0x69,0x67,0x6e,0x6f,0x72,0x65,0x64,
     0x20,0x22,0x2d,0x57,0x6d,0x69,0x73,0x73,0x69,0x6e,0x67,0x2d,0x70,0x72,0x6f,0x74,
@@ -25332,7 +25332,7 @@ const char[11335] GC_COLLIDE_CS_SOURCE_METAL_IOS @private = {
     }
 
 */
-const char[13815] GC_COLLIDE_BODIES_CS_SOURCE_METAL_IOS @private = {
+const char[13815] GC_COLLIDE_BODIES_CS_SOURCE_METAL_IOS @private @if(env::OS_TYPE == IOS) = {
     0x23,0x70,0x72,0x61,0x67,0x6d,0x61,0x20,0x63,0x6c,0x61,0x6e,0x67,0x20,0x64,0x69,
     0x61,0x67,0x6e,0x6f,0x73,0x74,0x69,0x63,0x20,0x69,0x67,0x6e,0x6f,0x72,0x65,0x64,
     0x20,0x22,0x2d,0x57,0x6d,0x69,0x73,0x73,0x69,0x6e,0x67,0x2d,0x70,0x72,0x6f,0x74,
@@ -26362,7 +26362,7 @@ const char[13815] GC_COLLIDE_BODIES_CS_SOURCE_METAL_IOS @private = {
     }
 
 */
-const char[3788] GC_BODIES_CS_SOURCE_METAL_IOS @private = {
+const char[3788] GC_BODIES_CS_SOURCE_METAL_IOS @private @if(env::OS_TYPE == IOS) = {
     0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,0x20,0x3c,0x6d,0x65,0x74,0x61,0x6c,0x5f,
     0x73,0x74,0x64,0x6c,0x69,0x62,0x3e,0x0a,0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,
     0x20,0x3c,0x73,0x69,0x6d,0x64,0x2f,0x73,0x69,0x6d,0x64,0x2e,0x68,0x3e,0x0a,0x0a,
@@ -26703,7 +26703,7 @@ const char[3788] GC_BODIES_CS_SOURCE_METAL_IOS @private = {
     }
 
 */
-const char[2005] GC_SHAPE_CS_SOURCE_METAL_IOS @private = {
+const char[2005] GC_SHAPE_CS_SOURCE_METAL_IOS @private @if(env::OS_TYPE == IOS) = {
     0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,0x20,0x3c,0x6d,0x65,0x74,0x61,0x6c,0x5f,
     0x73,0x74,0x64,0x6c,0x69,0x62,0x3e,0x0a,0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,
     0x20,0x3c,0x73,0x69,0x6d,0x64,0x2f,0x73,0x69,0x6d,0x64,0x2e,0x68,0x3e,0x0a,0x0a,
@@ -26911,7 +26911,7 @@ const char[2005] GC_SHAPE_CS_SOURCE_METAL_IOS @private = {
     }
 
 */
-const char[1560] GC_DAMP_CS_SOURCE_METAL_IOS @private = {
+const char[1560] GC_DAMP_CS_SOURCE_METAL_IOS @private @if(env::OS_TYPE == IOS) = {
     0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,0x20,0x3c,0x6d,0x65,0x74,0x61,0x6c,0x5f,
     0x73,0x74,0x64,0x6c,0x69,0x62,0x3e,0x0a,0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,
     0x20,0x3c,0x73,0x69,0x6d,0x64,0x2f,0x73,0x69,0x6d,0x64,0x2e,0x68,0x3e,0x0a,0x0a,
@@ -27142,7 +27142,7 @@ const char[1560] GC_DAMP_CS_SOURCE_METAL_IOS @private = {
     }
 
 */
-const char[3543] GC_WRITE_CS_SOURCE_METAL_IOS @private = {
+const char[3543] GC_WRITE_CS_SOURCE_METAL_IOS @private @if(env::OS_TYPE == IOS) = {
     0x23,0x70,0x72,0x61,0x67,0x6d,0x61,0x20,0x63,0x6c,0x61,0x6e,0x67,0x20,0x64,0x69,
     0x61,0x67,0x6e,0x6f,0x73,0x74,0x69,0x63,0x20,0x69,0x67,0x6e,0x6f,0x72,0x65,0x64,
     0x20,0x22,0x2d,0x57,0x6d,0x69,0x73,0x73,0x69,0x6e,0x67,0x2d,0x70,0x72,0x6f,0x74,
@@ -27435,7 +27435,7 @@ const char[3543] GC_WRITE_CS_SOURCE_METAL_IOS @private = {
     }
 
 */
-const char[1230] GC_BEGIN_CS_SOURCE_METAL_SIM @private = {
+const char[1230] GC_BEGIN_CS_SOURCE_METAL_SIM @private @if(env::OS_TYPE == IOS) = {
     0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,0x20,0x3c,0x6d,0x65,0x74,0x61,0x6c,0x5f,
     0x73,0x74,0x64,0x6c,0x69,0x62,0x3e,0x0a,0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,
     0x20,0x3c,0x73,0x69,0x6d,0x64,0x2f,0x73,0x69,0x6d,0x64,0x2e,0x68,0x3e,0x0a,0x0a,
@@ -27692,7 +27692,7 @@ const char[1230] GC_BEGIN_CS_SOURCE_METAL_SIM @private = {
     }
 
 */
-const char[5432] GC_FORCES_CS_SOURCE_METAL_SIM @private = {
+const char[5432] GC_FORCES_CS_SOURCE_METAL_SIM @private @if(env::OS_TYPE == IOS) = {
     0x23,0x70,0x72,0x61,0x67,0x6d,0x61,0x20,0x63,0x6c,0x61,0x6e,0x67,0x20,0x64,0x69,
     0x61,0x67,0x6e,0x6f,0x73,0x74,0x69,0x63,0x20,0x69,0x67,0x6e,0x6f,0x72,0x65,0x64,
     0x20,0x22,0x2d,0x57,0x6d,0x69,0x73,0x73,0x69,0x6e,0x67,0x2d,0x70,0x72,0x6f,0x74,
@@ -28113,7 +28113,7 @@ const char[5432] GC_FORCES_CS_SOURCE_METAL_SIM @private = {
     }
 
 */
-const char[1487] GC_INTEGRATE_CS_SOURCE_METAL_SIM @private = {
+const char[1487] GC_INTEGRATE_CS_SOURCE_METAL_SIM @private @if(env::OS_TYPE == IOS) = {
     0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,0x20,0x3c,0x6d,0x65,0x74,0x61,0x6c,0x5f,
     0x73,0x74,0x64,0x6c,0x69,0x62,0x3e,0x0a,0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,
     0x20,0x3c,0x73,0x69,0x6d,0x64,0x2f,0x73,0x69,0x6d,0x64,0x2e,0x68,0x3e,0x0a,0x0a,
@@ -28295,7 +28295,7 @@ const char[1487] GC_INTEGRATE_CS_SOURCE_METAL_SIM @private = {
     }
 
 */
-const char[1765] GC_LINKS_CS_SOURCE_METAL_SIM @private = {
+const char[1765] GC_LINKS_CS_SOURCE_METAL_SIM @private @if(env::OS_TYPE == IOS) = {
     0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,0x20,0x3c,0x6d,0x65,0x74,0x61,0x6c,0x5f,
     0x73,0x74,0x64,0x6c,0x69,0x62,0x3e,0x0a,0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,
     0x20,0x3c,0x73,0x69,0x6d,0x64,0x2f,0x73,0x69,0x6d,0x64,0x2e,0x68,0x3e,0x0a,0x0a,
@@ -28550,7 +28550,7 @@ const char[1765] GC_LINKS_CS_SOURCE_METAL_SIM @private = {
     }
 
 */
-const char[3435] GC_BENDS_CS_SOURCE_METAL_SIM @private = {
+const char[3435] GC_BENDS_CS_SOURCE_METAL_SIM @private @if(env::OS_TYPE == IOS) = {
     0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,0x20,0x3c,0x6d,0x65,0x74,0x61,0x6c,0x5f,
     0x73,0x74,0x64,0x6c,0x69,0x62,0x3e,0x0a,0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,
     0x20,0x3c,0x73,0x69,0x6d,0x64,0x2f,0x73,0x69,0x6d,0x64,0x2e,0x68,0x3e,0x0a,0x0a,
@@ -28854,7 +28854,7 @@ const char[3435] GC_BENDS_CS_SOURCE_METAL_SIM @private = {
     }
 
 */
-const char[1599] GC_TETHERS_CS_SOURCE_METAL_SIM @private = {
+const char[1599] GC_TETHERS_CS_SOURCE_METAL_SIM @private @if(env::OS_TYPE == IOS) = {
     0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,0x20,0x3c,0x6d,0x65,0x74,0x61,0x6c,0x5f,
     0x73,0x74,0x64,0x6c,0x69,0x62,0x3e,0x0a,0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,
     0x20,0x3c,0x73,0x69,0x6d,0x64,0x2f,0x73,0x69,0x6d,0x64,0x2e,0x68,0x3e,0x0a,0x0a,
@@ -28999,7 +28999,7 @@ const char[1599] GC_TETHERS_CS_SOURCE_METAL_SIM @private = {
     }
 
 */
-const char[755] GC_CLEAR_CS_SOURCE_METAL_SIM @private = {
+const char[755] GC_CLEAR_CS_SOURCE_METAL_SIM @private @if(env::OS_TYPE == IOS) = {
     0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,0x20,0x3c,0x6d,0x65,0x74,0x61,0x6c,0x5f,
     0x73,0x74,0x64,0x6c,0x69,0x62,0x3e,0x0a,0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,
     0x20,0x3c,0x73,0x69,0x6d,0x64,0x2f,0x73,0x69,0x6d,0x64,0x2e,0x68,0x3e,0x0a,0x0a,
@@ -29121,7 +29121,7 @@ const char[755] GC_CLEAR_CS_SOURCE_METAL_SIM @private = {
     }
 
 */
-const char[1602] GC_COUNT_CS_SOURCE_METAL_SIM @private = {
+const char[1602] GC_COUNT_CS_SOURCE_METAL_SIM @private @if(env::OS_TYPE == IOS) = {
     0x23,0x70,0x72,0x61,0x67,0x6d,0x61,0x20,0x63,0x6c,0x61,0x6e,0x67,0x20,0x64,0x69,
     0x61,0x67,0x6e,0x6f,0x73,0x74,0x69,0x63,0x20,0x69,0x67,0x6e,0x6f,0x72,0x65,0x64,
     0x20,0x22,0x2d,0x57,0x6d,0x69,0x73,0x73,0x69,0x6e,0x67,0x2d,0x70,0x72,0x6f,0x74,
@@ -29404,7 +29404,7 @@ const char[1602] GC_COUNT_CS_SOURCE_METAL_SIM @private = {
     }
 
 */
-const char[3740] GC_SCAN_BLOCK_CS_SOURCE_METAL_SIM @private = {
+const char[3740] GC_SCAN_BLOCK_CS_SOURCE_METAL_SIM @private @if(env::OS_TYPE == IOS) = {
     0x23,0x70,0x72,0x61,0x67,0x6d,0x61,0x20,0x63,0x6c,0x61,0x6e,0x67,0x20,0x64,0x69,
     0x61,0x67,0x6e,0x6f,0x73,0x74,0x69,0x63,0x20,0x69,0x67,0x6e,0x6f,0x72,0x65,0x64,
     0x20,0x22,0x2d,0x57,0x6d,0x69,0x73,0x73,0x69,0x6e,0x67,0x2d,0x70,0x72,0x6f,0x74,
@@ -29807,7 +29807,7 @@ const char[3740] GC_SCAN_BLOCK_CS_SOURCE_METAL_SIM @private = {
     }
 
 */
-const char[3368] GC_SCAN_SUMS_CS_SOURCE_METAL_SIM @private = {
+const char[3368] GC_SCAN_SUMS_CS_SOURCE_METAL_SIM @private @if(env::OS_TYPE == IOS) = {
     0x23,0x70,0x72,0x61,0x67,0x6d,0x61,0x20,0x63,0x6c,0x61,0x6e,0x67,0x20,0x64,0x69,
     0x61,0x67,0x6e,0x6f,0x73,0x74,0x69,0x63,0x20,0x69,0x67,0x6e,0x6f,0x72,0x65,0x64,
     0x20,0x22,0x2d,0x57,0x6d,0x69,0x73,0x73,0x69,0x6e,0x67,0x2d,0x70,0x72,0x6f,0x74,
@@ -30077,7 +30077,7 @@ const char[3368] GC_SCAN_SUMS_CS_SOURCE_METAL_SIM @private = {
     }
 
 */
-const char[1160] GC_SCAN_ADD_CS_SOURCE_METAL_SIM @private = {
+const char[1160] GC_SCAN_ADD_CS_SOURCE_METAL_SIM @private @if(env::OS_TYPE == IOS) = {
     0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,0x20,0x3c,0x6d,0x65,0x74,0x61,0x6c,0x5f,
     0x73,0x74,0x64,0x6c,0x69,0x62,0x3e,0x0a,0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,
     0x20,0x3c,0x73,0x69,0x6d,0x64,0x2f,0x73,0x69,0x6d,0x64,0x2e,0x68,0x3e,0x0a,0x0a,
@@ -30230,7 +30230,7 @@ const char[1160] GC_SCAN_ADD_CS_SOURCE_METAL_SIM @private = {
     }
 
 */
-const char[1734] GC_FILL_CS_SOURCE_METAL_SIM @private = {
+const char[1734] GC_FILL_CS_SOURCE_METAL_SIM @private @if(env::OS_TYPE == IOS) = {
     0x23,0x70,0x72,0x61,0x67,0x6d,0x61,0x20,0x63,0x6c,0x61,0x6e,0x67,0x20,0x64,0x69,
     0x61,0x67,0x6e,0x6f,0x73,0x74,0x69,0x63,0x20,0x69,0x67,0x6e,0x6f,0x72,0x65,0x64,
     0x20,0x22,0x2d,0x57,0x6d,0x69,0x73,0x73,0x69,0x6e,0x67,0x2d,0x70,0x72,0x6f,0x74,
@@ -30503,7 +30503,7 @@ const char[1734] GC_FILL_CS_SOURCE_METAL_SIM @private = {
     }
 
 */
-const char[4185] GC_SELF_CS_SOURCE_METAL_SIM @private = {
+const char[4185] GC_SELF_CS_SOURCE_METAL_SIM @private @if(env::OS_TYPE == IOS) = {
     0x23,0x70,0x72,0x61,0x67,0x6d,0x61,0x20,0x63,0x6c,0x61,0x6e,0x67,0x20,0x64,0x69,
     0x61,0x67,0x6e,0x6f,0x73,0x74,0x69,0x63,0x20,0x69,0x67,0x6e,0x6f,0x72,0x65,0x64,
     0x20,0x22,0x2d,0x57,0x6d,0x69,0x73,0x73,0x69,0x6e,0x67,0x2d,0x70,0x72,0x6f,0x74,
@@ -31185,7 +31185,7 @@ const char[4185] GC_SELF_CS_SOURCE_METAL_SIM @private = {
     }
 
 */
-const char[11335] GC_COLLIDE_CS_SOURCE_METAL_SIM @private = {
+const char[11335] GC_COLLIDE_CS_SOURCE_METAL_SIM @private @if(env::OS_TYPE == IOS) = {
     0x23,0x70,0x72,0x61,0x67,0x6d,0x61,0x20,0x63,0x6c,0x61,0x6e,0x67,0x20,0x64,0x69,
     0x61,0x67,0x6e,0x6f,0x73,0x74,0x69,0x63,0x20,0x69,0x67,0x6e,0x6f,0x72,0x65,0x64,
     0x20,0x22,0x2d,0x57,0x6d,0x69,0x73,0x73,0x69,0x6e,0x67,0x2d,0x70,0x72,0x6f,0x74,
@@ -32385,7 +32385,7 @@ const char[11335] GC_COLLIDE_CS_SOURCE_METAL_SIM @private = {
     }
 
 */
-const char[13815] GC_COLLIDE_BODIES_CS_SOURCE_METAL_SIM @private = {
+const char[13815] GC_COLLIDE_BODIES_CS_SOURCE_METAL_SIM @private @if(env::OS_TYPE == IOS) = {
     0x23,0x70,0x72,0x61,0x67,0x6d,0x61,0x20,0x63,0x6c,0x61,0x6e,0x67,0x20,0x64,0x69,
     0x61,0x67,0x6e,0x6f,0x73,0x74,0x69,0x63,0x20,0x69,0x67,0x6e,0x6f,0x72,0x65,0x64,
     0x20,0x22,0x2d,0x57,0x6d,0x69,0x73,0x73,0x69,0x6e,0x67,0x2d,0x70,0x72,0x6f,0x74,
@@ -33415,7 +33415,7 @@ const char[13815] GC_COLLIDE_BODIES_CS_SOURCE_METAL_SIM @private = {
     }
 
 */
-const char[3788] GC_BODIES_CS_SOURCE_METAL_SIM @private = {
+const char[3788] GC_BODIES_CS_SOURCE_METAL_SIM @private @if(env::OS_TYPE == IOS) = {
     0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,0x20,0x3c,0x6d,0x65,0x74,0x61,0x6c,0x5f,
     0x73,0x74,0x64,0x6c,0x69,0x62,0x3e,0x0a,0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,
     0x20,0x3c,0x73,0x69,0x6d,0x64,0x2f,0x73,0x69,0x6d,0x64,0x2e,0x68,0x3e,0x0a,0x0a,
@@ -33756,7 +33756,7 @@ const char[3788] GC_BODIES_CS_SOURCE_METAL_SIM @private = {
     }
 
 */
-const char[2005] GC_SHAPE_CS_SOURCE_METAL_SIM @private = {
+const char[2005] GC_SHAPE_CS_SOURCE_METAL_SIM @private @if(env::OS_TYPE == IOS) = {
     0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,0x20,0x3c,0x6d,0x65,0x74,0x61,0x6c,0x5f,
     0x73,0x74,0x64,0x6c,0x69,0x62,0x3e,0x0a,0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,
     0x20,0x3c,0x73,0x69,0x6d,0x64,0x2f,0x73,0x69,0x6d,0x64,0x2e,0x68,0x3e,0x0a,0x0a,
@@ -33964,7 +33964,7 @@ const char[2005] GC_SHAPE_CS_SOURCE_METAL_SIM @private = {
     }
 
 */
-const char[1560] GC_DAMP_CS_SOURCE_METAL_SIM @private = {
+const char[1560] GC_DAMP_CS_SOURCE_METAL_SIM @private @if(env::OS_TYPE == IOS) = {
     0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,0x20,0x3c,0x6d,0x65,0x74,0x61,0x6c,0x5f,
     0x73,0x74,0x64,0x6c,0x69,0x62,0x3e,0x0a,0x23,0x69,0x6e,0x63,0x6c,0x75,0x64,0x65,
     0x20,0x3c,0x73,0x69,0x6d,0x64,0x2f,0x73,0x69,0x6d,0x64,0x2e,0x68,0x3e,0x0a,0x0a,
@@ -34195,7 +34195,7 @@ const char[1560] GC_DAMP_CS_SOURCE_METAL_SIM @private = {
     }
 
 */
-const char[3543] GC_WRITE_CS_SOURCE_METAL_SIM @private = {
+const char[3543] GC_WRITE_CS_SOURCE_METAL_SIM @private @if(env::OS_TYPE == IOS) = {
     0x23,0x70,0x72,0x61,0x67,0x6d,0x61,0x20,0x63,0x6c,0x61,0x6e,0x67,0x20,0x64,0x69,
     0x61,0x67,0x6e,0x6f,0x73,0x74,0x69,0x63,0x20,0x69,0x67,0x6e,0x6f,0x72,0x65,0x64,
     0x20,0x22,0x2d,0x57,0x6d,0x69,0x73,0x73,0x69,0x6e,0x67,0x2d,0x70,0x72,0x6f,0x74,
@@ -34518,7 +34518,7 @@ const char[3543] GC_WRITE_CS_SOURCE_METAL_SIM @private = {
       main_1();
     }
 */
-const char[1896] GC_BEGIN_CS_SOURCE_WGSL @private = {
+const char[1896] GC_BEGIN_CS_SOURCE_WGSL @private @if(env::EMSCRIPTEN) = {
     0x64,0x69,0x61,0x67,0x6e,0x6f,0x73,0x74,0x69,0x63,0x28,0x6f,0x66,0x66,0x2c,0x20,
     0x64,0x65,0x72,0x69,0x76,0x61,0x74,0x69,0x76,0x65,0x5f,0x75,0x6e,0x69,0x66,0x6f,
     0x72,0x6d,0x69,0x74,0x79,0x29,0x3b,0x0a,0x0a,0x73,0x74,0x72,0x75,0x63,0x74,0x20,
@@ -34874,7 +34874,7 @@ const char[1896] GC_BEGIN_CS_SOURCE_WGSL @private = {
       main_1();
     }
 */
-const char[6130] GC_FORCES_CS_SOURCE_WGSL @private = {
+const char[6130] GC_FORCES_CS_SOURCE_WGSL @private @if(env::EMSCRIPTEN) = {
     0x64,0x69,0x61,0x67,0x6e,0x6f,0x73,0x74,0x69,0x63,0x28,0x6f,0x66,0x66,0x2c,0x20,
     0x64,0x65,0x72,0x69,0x76,0x61,0x74,0x69,0x76,0x65,0x5f,0x75,0x6e,0x69,0x66,0x6f,
     0x72,0x6d,0x69,0x74,0x79,0x29,0x3b,0x0a,0x0a,0x73,0x74,0x72,0x75,0x63,0x74,0x20,
@@ -35373,7 +35373,7 @@ const char[6130] GC_FORCES_CS_SOURCE_WGSL @private = {
       main_1();
     }
 */
-const char[2236] GC_INTEGRATE_CS_SOURCE_WGSL @private = {
+const char[2236] GC_INTEGRATE_CS_SOURCE_WGSL @private @if(env::EMSCRIPTEN) = {
     0x64,0x69,0x61,0x67,0x6e,0x6f,0x73,0x74,0x69,0x63,0x28,0x6f,0x66,0x66,0x2c,0x20,
     0x64,0x65,0x72,0x69,0x76,0x61,0x74,0x69,0x76,0x65,0x5f,0x75,0x6e,0x69,0x66,0x6f,
     0x72,0x6d,0x69,0x74,0x79,0x29,0x3b,0x0a,0x0a,0x73,0x74,0x72,0x75,0x63,0x74,0x20,
@@ -35634,7 +35634,7 @@ const char[2236] GC_INTEGRATE_CS_SOURCE_WGSL @private = {
       main_1();
     }
 */
-const char[2487] GC_LINKS_CS_SOURCE_WGSL @private = {
+const char[2487] GC_LINKS_CS_SOURCE_WGSL @private @if(env::EMSCRIPTEN) = {
     0x64,0x69,0x61,0x67,0x6e,0x6f,0x73,0x74,0x69,0x63,0x28,0x6f,0x66,0x66,0x2c,0x20,
     0x64,0x65,0x72,0x69,0x76,0x61,0x74,0x69,0x76,0x65,0x5f,0x75,0x6e,0x69,0x66,0x6f,
     0x72,0x6d,0x69,0x74,0x79,0x29,0x3b,0x0a,0x0a,0x73,0x74,0x72,0x75,0x63,0x74,0x20,
@@ -35977,7 +35977,7 @@ const char[2487] GC_LINKS_CS_SOURCE_WGSL @private = {
       main_1();
     }
 */
-const char[4406] GC_BENDS_CS_SOURCE_WGSL @private = {
+const char[4406] GC_BENDS_CS_SOURCE_WGSL @private @if(env::EMSCRIPTEN) = {
     0x64,0x69,0x61,0x67,0x6e,0x6f,0x73,0x74,0x69,0x63,0x28,0x6f,0x66,0x66,0x2c,0x20,
     0x64,0x65,0x72,0x69,0x76,0x61,0x74,0x69,0x76,0x65,0x5f,0x75,0x6e,0x69,0x66,0x6f,
     0x72,0x6d,0x69,0x74,0x79,0x29,0x3b,0x0a,0x0a,0x73,0x74,0x72,0x75,0x63,0x74,0x20,
@@ -36370,7 +36370,7 @@ const char[4406] GC_BENDS_CS_SOURCE_WGSL @private = {
       main_1();
     }
 */
-const char[2263] GC_TETHERS_CS_SOURCE_WGSL @private = {
+const char[2263] GC_TETHERS_CS_SOURCE_WGSL @private @if(env::EMSCRIPTEN) = {
     0x64,0x69,0x61,0x67,0x6e,0x6f,0x73,0x74,0x69,0x63,0x28,0x6f,0x66,0x66,0x2c,0x20,
     0x64,0x65,0x72,0x69,0x76,0x61,0x74,0x69,0x76,0x65,0x5f,0x75,0x6e,0x69,0x66,0x6f,
     0x72,0x6d,0x69,0x74,0x79,0x29,0x3b,0x0a,0x0a,0x73,0x74,0x72,0x75,0x63,0x74,0x20,
@@ -36574,7 +36574,7 @@ const char[2263] GC_TETHERS_CS_SOURCE_WGSL @private = {
       main_1();
     }
 */
-const char[1153] GC_CLEAR_CS_SOURCE_WGSL @private = {
+const char[1153] GC_CLEAR_CS_SOURCE_WGSL @private @if(env::EMSCRIPTEN) = {
     0x64,0x69,0x61,0x67,0x6e,0x6f,0x73,0x74,0x69,0x63,0x28,0x6f,0x66,0x66,0x2c,0x20,
     0x64,0x65,0x72,0x69,0x76,0x61,0x74,0x69,0x76,0x65,0x5f,0x75,0x6e,0x69,0x66,0x6f,
     0x72,0x6d,0x69,0x74,0x79,0x29,0x3b,0x0a,0x0a,0x73,0x74,0x72,0x75,0x63,0x74,0x20,
@@ -36754,7 +36754,7 @@ const char[1153] GC_CLEAR_CS_SOURCE_WGSL @private = {
       main_1();
     }
 */
-const char[2182] GC_COUNT_CS_SOURCE_WGSL @private = {
+const char[2182] GC_COUNT_CS_SOURCE_WGSL @private @if(env::EMSCRIPTEN) = {
     0x64,0x69,0x61,0x67,0x6e,0x6f,0x73,0x74,0x69,0x63,0x28,0x6f,0x66,0x66,0x2c,0x20,
     0x64,0x65,0x72,0x69,0x76,0x61,0x74,0x69,0x76,0x65,0x5f,0x75,0x6e,0x69,0x66,0x6f,
     0x72,0x6d,0x69,0x74,0x79,0x29,0x3b,0x0a,0x0a,0x73,0x74,0x72,0x75,0x63,0x74,0x20,
@@ -37048,7 +37048,7 @@ const char[2182] GC_COUNT_CS_SOURCE_WGSL @private = {
       main_1(gl_WorkGroupID_param);
     }
 */
-const char[3119] GC_SCAN_BLOCK_CS_SOURCE_WGSL @private = {
+const char[3119] GC_SCAN_BLOCK_CS_SOURCE_WGSL @private @if(env::EMSCRIPTEN) = {
     0x64,0x69,0x61,0x67,0x6e,0x6f,0x73,0x74,0x69,0x63,0x28,0x6f,0x66,0x66,0x2c,0x20,
     0x64,0x65,0x72,0x69,0x76,0x61,0x74,0x69,0x76,0x65,0x5f,0x75,0x6e,0x69,0x66,0x6f,
     0x72,0x6d,0x69,0x74,0x79,0x29,0x3b,0x0a,0x0a,0x73,0x74,0x72,0x75,0x63,0x74,0x20,
@@ -37381,7 +37381,7 @@ const char[3119] GC_SCAN_BLOCK_CS_SOURCE_WGSL @private = {
       main_1();
     }
 */
-const char[2677] GC_SCAN_SUMS_CS_SOURCE_WGSL @private = {
+const char[2677] GC_SCAN_SUMS_CS_SOURCE_WGSL @private @if(env::EMSCRIPTEN) = {
     0x64,0x69,0x61,0x67,0x6e,0x6f,0x73,0x74,0x69,0x63,0x28,0x6f,0x66,0x66,0x2c,0x20,
     0x64,0x65,0x72,0x69,0x76,0x61,0x74,0x69,0x76,0x65,0x5f,0x75,0x6e,0x69,0x66,0x6f,
     0x72,0x6d,0x69,0x74,0x79,0x29,0x3b,0x0a,0x0a,0x73,0x74,0x72,0x75,0x63,0x74,0x20,
@@ -37639,7 +37639,7 @@ const char[2677] GC_SCAN_SUMS_CS_SOURCE_WGSL @private = {
       main_1(gl_WorkGroupID_param);
     }
 */
-const char[1785] GC_SCAN_ADD_CS_SOURCE_WGSL @private = {
+const char[1785] GC_SCAN_ADD_CS_SOURCE_WGSL @private @if(env::EMSCRIPTEN) = {
     0x64,0x69,0x61,0x67,0x6e,0x6f,0x73,0x74,0x69,0x63,0x28,0x6f,0x66,0x66,0x2c,0x20,
     0x64,0x65,0x72,0x69,0x76,0x61,0x74,0x69,0x76,0x65,0x5f,0x75,0x6e,0x69,0x66,0x6f,
     0x72,0x6d,0x69,0x74,0x79,0x29,0x3b,0x0a,0x0a,0x73,0x74,0x72,0x75,0x63,0x74,0x20,
@@ -37868,7 +37868,7 @@ const char[1785] GC_SCAN_ADD_CS_SOURCE_WGSL @private = {
       main_1();
     }
 */
-const char[2398] GC_FILL_CS_SOURCE_WGSL @private = {
+const char[2398] GC_FILL_CS_SOURCE_WGSL @private @if(env::EMSCRIPTEN) = {
     0x64,0x69,0x61,0x67,0x6e,0x6f,0x73,0x74,0x69,0x63,0x28,0x6f,0x66,0x66,0x2c,0x20,
     0x64,0x65,0x72,0x69,0x76,0x61,0x74,0x69,0x76,0x65,0x5f,0x75,0x6e,0x69,0x66,0x6f,
     0x72,0x6d,0x69,0x74,0x79,0x29,0x3b,0x0a,0x0a,0x73,0x74,0x72,0x75,0x63,0x74,0x20,
@@ -38264,7 +38264,7 @@ const char[2398] GC_FILL_CS_SOURCE_WGSL @private = {
       main_1();
     }
 */
-const char[5291] GC_SELF_CS_SOURCE_WGSL @private = {
+const char[5291] GC_SELF_CS_SOURCE_WGSL @private @if(env::EMSCRIPTEN) = {
     0x64,0x69,0x61,0x67,0x6e,0x6f,0x73,0x74,0x69,0x63,0x28,0x6f,0x66,0x66,0x2c,0x20,
     0x64,0x65,0x72,0x69,0x76,0x61,0x74,0x69,0x76,0x65,0x5f,0x75,0x6e,0x69,0x66,0x6f,
     0x72,0x6d,0x69,0x74,0x79,0x29,0x3b,0x0a,0x0a,0x73,0x74,0x72,0x75,0x63,0x74,0x20,
@@ -39096,7 +39096,7 @@ const char[5291] GC_SELF_CS_SOURCE_WGSL @private = {
       main_1();
     }
 */
-const char[13118] GC_COLLIDE_CS_SOURCE_WGSL @private = {
+const char[13118] GC_COLLIDE_CS_SOURCE_WGSL @private @if(env::EMSCRIPTEN) = {
     0x64,0x69,0x61,0x67,0x6e,0x6f,0x73,0x74,0x69,0x63,0x28,0x6f,0x66,0x66,0x2c,0x20,
     0x64,0x65,0x72,0x69,0x76,0x61,0x74,0x69,0x76,0x65,0x5f,0x75,0x6e,0x69,0x66,0x6f,
     0x72,0x6d,0x69,0x74,0x79,0x29,0x3b,0x0a,0x0a,0x73,0x74,0x72,0x75,0x63,0x74,0x20,
@@ -40534,7 +40534,7 @@ const char[13118] GC_COLLIDE_CS_SOURCE_WGSL @private = {
       main_1(gl_WorkGroupID_param);
     }
 */
-const char[16196] GC_COLLIDE_BODIES_CS_SOURCE_WGSL @private = {
+const char[16196] GC_COLLIDE_BODIES_CS_SOURCE_WGSL @private @if(env::EMSCRIPTEN) = {
     0x64,0x69,0x61,0x67,0x6e,0x6f,0x73,0x74,0x69,0x63,0x28,0x6f,0x66,0x66,0x2c,0x20,
     0x64,0x65,0x72,0x69,0x76,0x61,0x74,0x69,0x76,0x65,0x5f,0x75,0x6e,0x69,0x66,0x6f,
     0x72,0x6d,0x69,0x74,0x79,0x29,0x3b,0x0a,0x0a,0x73,0x74,0x72,0x75,0x63,0x74,0x20,
@@ -41796,7 +41796,7 @@ const char[16196] GC_COLLIDE_BODIES_CS_SOURCE_WGSL @private = {
       main_1();
     }
 */
-const char[5461] GC_BODIES_CS_SOURCE_WGSL @private = {
+const char[5461] GC_BODIES_CS_SOURCE_WGSL @private @if(env::EMSCRIPTEN) = {
     0x64,0x69,0x61,0x67,0x6e,0x6f,0x73,0x74,0x69,0x63,0x28,0x6f,0x66,0x66,0x2c,0x20,
     0x64,0x65,0x72,0x69,0x76,0x61,0x74,0x69,0x76,0x65,0x5f,0x75,0x6e,0x69,0x66,0x6f,
     0x72,0x6d,0x69,0x74,0x79,0x29,0x3b,0x0a,0x0a,0x73,0x74,0x72,0x75,0x63,0x74,0x20,
@@ -42295,7 +42295,7 @@ const char[5461] GC_BODIES_CS_SOURCE_WGSL @private = {
       main_1();
     }
 */
-const char[3117] GC_SHAPE_CS_SOURCE_WGSL @private = {
+const char[3117] GC_SHAPE_CS_SOURCE_WGSL @private @if(env::EMSCRIPTEN) = {
     0x64,0x69,0x61,0x67,0x6e,0x6f,0x73,0x74,0x69,0x63,0x28,0x6f,0x66,0x66,0x2c,0x20,
     0x64,0x65,0x72,0x69,0x76,0x61,0x74,0x69,0x76,0x65,0x5f,0x75,0x6e,0x69,0x66,0x6f,
     0x72,0x6d,0x69,0x74,0x79,0x29,0x3b,0x0a,0x0a,0x73,0x74,0x72,0x75,0x63,0x74,0x20,
@@ -42604,7 +42604,7 @@ const char[3117] GC_SHAPE_CS_SOURCE_WGSL @private = {
       main_1();
     }
 */
-const char[2281] GC_DAMP_CS_SOURCE_WGSL @private = {
+const char[2281] GC_DAMP_CS_SOURCE_WGSL @private @if(env::EMSCRIPTEN) = {
     0x64,0x69,0x61,0x67,0x6e,0x6f,0x73,0x74,0x69,0x63,0x28,0x6f,0x66,0x66,0x2c,0x20,
     0x64,0x65,0x72,0x69,0x76,0x61,0x74,0x69,0x76,0x65,0x5f,0x75,0x6e,0x69,0x66,0x6f,
     0x72,0x6d,0x69,0x74,0x79,0x29,0x3b,0x0a,0x0a,0x73,0x74,0x72,0x75,0x63,0x74,0x20,
@@ -42950,7 +42950,7 @@ const char[2281] GC_DAMP_CS_SOURCE_WGSL @private = {
       main_1();
     }
 */
-const char[4738] GC_WRITE_CS_SOURCE_WGSL @private = {
+const char[4738] GC_WRITE_CS_SOURCE_WGSL @private @if(env::EMSCRIPTEN) = {
     0x64,0x69,0x61,0x67,0x6e,0x6f,0x73,0x74,0x69,0x63,0x28,0x6f,0x66,0x66,0x2c,0x20,
     0x64,0x65,0x72,0x69,0x76,0x61,0x74,0x69,0x76,0x65,0x5f,0x75,0x6e,0x69,0x66,0x6f,
     0x72,0x6d,0x69,0x74,0x79,0x29,0x3b,0x0a,0x0a,0x73,0x74,0x72,0x75,0x63,0x74,0x20,
@@ -43256,6 +43256,7 @@ fn SgShaderDesc gc_begin_shader_desc(SgBackend backend)
     switch (backend)
     {
         case SgBackend.GLCORE:
+            $if !env::DARWIN && !env::WIN32 && !env::EMSCRIPTEN:
             desc.compute_func.source = (ZString)&GC_BEGIN_CS_SOURCE_GLSL430;
             desc.compute_func.entry = "main";
             desc.uniform_blocks[0].stage = SgShaderStage.COMPUTE;
@@ -43306,7 +43307,11 @@ fn SgShaderDesc gc_begin_shader_desc(SgBackend backend)
             desc.views[3].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[3].storage_buffer.readonly = true;
             desc.views[3].storage_buffer.glsl_binding_n = 3;
+            $else
+                break;
+            $endif
         case SgBackend.D3D11:
+            $if env::WIN32:
             desc.compute_func.source = (ZString)&GC_BEGIN_CS_SOURCE_HLSL5;
             desc.compute_func.d3d11_target = "cs_5_0";
             desc.compute_func.entry = "main";
@@ -43326,7 +43331,11 @@ fn SgShaderDesc gc_begin_shader_desc(SgBackend backend)
             desc.views[3].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[3].storage_buffer.readonly = true;
             desc.views[3].storage_buffer.hlsl_register_t_n = 0;
+            $else
+                break;
+            $endif
         case SgBackend.METAL_MACOS:
+            $if env::OS_TYPE == MACOS:
             desc.compute_func.source = (ZString)&GC_BEGIN_CS_SOURCE_METAL_MACOS;
             desc.compute_func.entry = "main0";
             desc.mtl_threads_per_threadgroup.x = 128;
@@ -43348,7 +43357,11 @@ fn SgShaderDesc gc_begin_shader_desc(SgBackend backend)
             desc.views[3].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[3].storage_buffer.readonly = true;
             desc.views[3].storage_buffer.msl_buffer_n = 11;
+            $else
+                break;
+            $endif
         case SgBackend.METAL_IOS:
+            $if env::OS_TYPE == IOS:
             desc.compute_func.source = (ZString)&GC_BEGIN_CS_SOURCE_METAL_IOS;
             desc.compute_func.entry = "main0";
             desc.mtl_threads_per_threadgroup.x = 128;
@@ -43370,7 +43383,11 @@ fn SgShaderDesc gc_begin_shader_desc(SgBackend backend)
             desc.views[3].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[3].storage_buffer.readonly = true;
             desc.views[3].storage_buffer.msl_buffer_n = 11;
+            $else
+                break;
+            $endif
         case SgBackend.METAL_SIMULATOR:
+            $if env::OS_TYPE == IOS:
             desc.compute_func.source = (ZString)&GC_BEGIN_CS_SOURCE_METAL_SIM;
             desc.compute_func.entry = "main0";
             desc.mtl_threads_per_threadgroup.x = 128;
@@ -43392,7 +43409,11 @@ fn SgShaderDesc gc_begin_shader_desc(SgBackend backend)
             desc.views[3].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[3].storage_buffer.readonly = true;
             desc.views[3].storage_buffer.msl_buffer_n = 11;
+            $else
+                break;
+            $endif
         case SgBackend.WGPU:
+            $if env::EMSCRIPTEN:
             desc.compute_func.source = (ZString)&GC_BEGIN_CS_SOURCE_WGSL;
             desc.compute_func.entry = "main";
             desc.uniform_blocks[0].stage = SgShaderStage.COMPUTE;
@@ -43411,6 +43432,9 @@ fn SgShaderDesc gc_begin_shader_desc(SgBackend backend)
             desc.views[3].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[3].storage_buffer.readonly = true;
             desc.views[3].storage_buffer.wgsl_group1_binding_n = 3;
+            $else
+                break;
+            $endif
     }
     return desc;
 }
@@ -43421,6 +43445,7 @@ fn SgShaderDesc gc_bends_shader_desc(SgBackend backend)
     switch (backend)
     {
         case SgBackend.GLCORE:
+            $if !env::DARWIN && !env::WIN32 && !env::EMSCRIPTEN:
             desc.compute_func.source = (ZString)&GC_BENDS_CS_SOURCE_GLSL430;
             desc.compute_func.entry = "main";
             desc.uniform_blocks[0].stage = SgShaderStage.COMPUTE;
@@ -43468,7 +43493,11 @@ fn SgShaderDesc gc_bends_shader_desc(SgBackend backend)
             desc.views[2].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[2].storage_buffer.readonly = true;
             desc.views[2].storage_buffer.glsl_binding_n = 2;
+            $else
+                break;
+            $endif
         case SgBackend.D3D11:
+            $if env::WIN32:
             desc.compute_func.source = (ZString)&GC_BENDS_CS_SOURCE_HLSL5;
             desc.compute_func.d3d11_target = "cs_5_0";
             desc.compute_func.entry = "main";
@@ -43485,7 +43514,11 @@ fn SgShaderDesc gc_bends_shader_desc(SgBackend backend)
             desc.views[2].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[2].storage_buffer.readonly = true;
             desc.views[2].storage_buffer.hlsl_register_t_n = 1;
+            $else
+                break;
+            $endif
         case SgBackend.METAL_MACOS:
+            $if env::OS_TYPE == MACOS:
             desc.compute_func.source = (ZString)&GC_BENDS_CS_SOURCE_METAL_MACOS;
             desc.compute_func.entry = "main0";
             desc.mtl_threads_per_threadgroup.x = 128;
@@ -43504,7 +43537,11 @@ fn SgShaderDesc gc_bends_shader_desc(SgBackend backend)
             desc.views[2].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[2].storage_buffer.readonly = true;
             desc.views[2].storage_buffer.msl_buffer_n = 10;
+            $else
+                break;
+            $endif
         case SgBackend.METAL_IOS:
+            $if env::OS_TYPE == IOS:
             desc.compute_func.source = (ZString)&GC_BENDS_CS_SOURCE_METAL_IOS;
             desc.compute_func.entry = "main0";
             desc.mtl_threads_per_threadgroup.x = 128;
@@ -43523,7 +43560,11 @@ fn SgShaderDesc gc_bends_shader_desc(SgBackend backend)
             desc.views[2].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[2].storage_buffer.readonly = true;
             desc.views[2].storage_buffer.msl_buffer_n = 10;
+            $else
+                break;
+            $endif
         case SgBackend.METAL_SIMULATOR:
+            $if env::OS_TYPE == IOS:
             desc.compute_func.source = (ZString)&GC_BENDS_CS_SOURCE_METAL_SIM;
             desc.compute_func.entry = "main0";
             desc.mtl_threads_per_threadgroup.x = 128;
@@ -43542,7 +43583,11 @@ fn SgShaderDesc gc_bends_shader_desc(SgBackend backend)
             desc.views[2].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[2].storage_buffer.readonly = true;
             desc.views[2].storage_buffer.msl_buffer_n = 10;
+            $else
+                break;
+            $endif
         case SgBackend.WGPU:
+            $if env::EMSCRIPTEN:
             desc.compute_func.source = (ZString)&GC_BENDS_CS_SOURCE_WGSL;
             desc.compute_func.entry = "main";
             desc.uniform_blocks[0].stage = SgShaderStage.COMPUTE;
@@ -43558,6 +43603,9 @@ fn SgShaderDesc gc_bends_shader_desc(SgBackend backend)
             desc.views[2].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[2].storage_buffer.readonly = true;
             desc.views[2].storage_buffer.wgsl_group1_binding_n = 2;
+            $else
+                break;
+            $endif
     }
     return desc;
 }
@@ -43568,6 +43616,7 @@ fn SgShaderDesc gc_bodies_shader_desc(SgBackend backend)
     switch (backend)
     {
         case SgBackend.GLCORE:
+            $if !env::DARWIN && !env::WIN32 && !env::EMSCRIPTEN:
             desc.compute_func.source = (ZString)&GC_BODIES_CS_SOURCE_GLSL430;
             desc.compute_func.entry = "main";
             desc.uniform_blocks[0].stage = SgShaderStage.COMPUTE;
@@ -43615,7 +43664,11 @@ fn SgShaderDesc gc_bodies_shader_desc(SgBackend backend)
             desc.views[2].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[2].storage_buffer.readonly = true;
             desc.views[2].storage_buffer.glsl_binding_n = 2;
+            $else
+                break;
+            $endif
         case SgBackend.D3D11:
+            $if env::WIN32:
             desc.compute_func.source = (ZString)&GC_BODIES_CS_SOURCE_HLSL5;
             desc.compute_func.d3d11_target = "cs_5_0";
             desc.compute_func.entry = "main";
@@ -43632,7 +43685,11 @@ fn SgShaderDesc gc_bodies_shader_desc(SgBackend backend)
             desc.views[2].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[2].storage_buffer.readonly = true;
             desc.views[2].storage_buffer.hlsl_register_t_n = 1;
+            $else
+                break;
+            $endif
         case SgBackend.METAL_MACOS:
+            $if env::OS_TYPE == MACOS:
             desc.compute_func.source = (ZString)&GC_BODIES_CS_SOURCE_METAL_MACOS;
             desc.compute_func.entry = "main0";
             desc.mtl_threads_per_threadgroup.x = 32;
@@ -43651,7 +43708,11 @@ fn SgShaderDesc gc_bodies_shader_desc(SgBackend backend)
             desc.views[2].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[2].storage_buffer.readonly = true;
             desc.views[2].storage_buffer.msl_buffer_n = 10;
+            $else
+                break;
+            $endif
         case SgBackend.METAL_IOS:
+            $if env::OS_TYPE == IOS:
             desc.compute_func.source = (ZString)&GC_BODIES_CS_SOURCE_METAL_IOS;
             desc.compute_func.entry = "main0";
             desc.mtl_threads_per_threadgroup.x = 32;
@@ -43670,7 +43731,11 @@ fn SgShaderDesc gc_bodies_shader_desc(SgBackend backend)
             desc.views[2].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[2].storage_buffer.readonly = true;
             desc.views[2].storage_buffer.msl_buffer_n = 10;
+            $else
+                break;
+            $endif
         case SgBackend.METAL_SIMULATOR:
+            $if env::OS_TYPE == IOS:
             desc.compute_func.source = (ZString)&GC_BODIES_CS_SOURCE_METAL_SIM;
             desc.compute_func.entry = "main0";
             desc.mtl_threads_per_threadgroup.x = 32;
@@ -43689,7 +43754,11 @@ fn SgShaderDesc gc_bodies_shader_desc(SgBackend backend)
             desc.views[2].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[2].storage_buffer.readonly = true;
             desc.views[2].storage_buffer.msl_buffer_n = 10;
+            $else
+                break;
+            $endif
         case SgBackend.WGPU:
+            $if env::EMSCRIPTEN:
             desc.compute_func.source = (ZString)&GC_BODIES_CS_SOURCE_WGSL;
             desc.compute_func.entry = "main";
             desc.uniform_blocks[0].stage = SgShaderStage.COMPUTE;
@@ -43705,6 +43774,9 @@ fn SgShaderDesc gc_bodies_shader_desc(SgBackend backend)
             desc.views[2].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[2].storage_buffer.readonly = true;
             desc.views[2].storage_buffer.wgsl_group1_binding_n = 2;
+            $else
+                break;
+            $endif
     }
     return desc;
 }
@@ -43715,6 +43787,7 @@ fn SgShaderDesc gc_clear_shader_desc(SgBackend backend)
     switch (backend)
     {
         case SgBackend.GLCORE:
+            $if !env::DARWIN && !env::WIN32 && !env::EMSCRIPTEN:
             desc.compute_func.source = (ZString)&GC_CLEAR_CS_SOURCE_GLSL430;
             desc.compute_func.entry = "main";
             desc.uniform_blocks[0].stage = SgShaderStage.COMPUTE;
@@ -43756,7 +43829,11 @@ fn SgShaderDesc gc_clear_shader_desc(SgBackend backend)
             desc.views[0].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[0].storage_buffer.readonly = false;
             desc.views[0].storage_buffer.glsl_binding_n = 0;
+            $else
+                break;
+            $endif
         case SgBackend.D3D11:
+            $if env::WIN32:
             desc.compute_func.source = (ZString)&GC_CLEAR_CS_SOURCE_HLSL5;
             desc.compute_func.d3d11_target = "cs_5_0";
             desc.compute_func.entry = "main";
@@ -43767,7 +43844,11 @@ fn SgShaderDesc gc_clear_shader_desc(SgBackend backend)
             desc.views[0].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[0].storage_buffer.readonly = false;
             desc.views[0].storage_buffer.hlsl_register_u_n = 0;
+            $else
+                break;
+            $endif
         case SgBackend.METAL_MACOS:
+            $if env::OS_TYPE == MACOS:
             desc.compute_func.source = (ZString)&GC_CLEAR_CS_SOURCE_METAL_MACOS;
             desc.compute_func.entry = "main0";
             desc.mtl_threads_per_threadgroup.x = 128;
@@ -43780,7 +43861,11 @@ fn SgShaderDesc gc_clear_shader_desc(SgBackend backend)
             desc.views[0].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[0].storage_buffer.readonly = false;
             desc.views[0].storage_buffer.msl_buffer_n = 8;
+            $else
+                break;
+            $endif
         case SgBackend.METAL_IOS:
+            $if env::OS_TYPE == IOS:
             desc.compute_func.source = (ZString)&GC_CLEAR_CS_SOURCE_METAL_IOS;
             desc.compute_func.entry = "main0";
             desc.mtl_threads_per_threadgroup.x = 128;
@@ -43793,7 +43878,11 @@ fn SgShaderDesc gc_clear_shader_desc(SgBackend backend)
             desc.views[0].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[0].storage_buffer.readonly = false;
             desc.views[0].storage_buffer.msl_buffer_n = 8;
+            $else
+                break;
+            $endif
         case SgBackend.METAL_SIMULATOR:
+            $if env::OS_TYPE == IOS:
             desc.compute_func.source = (ZString)&GC_CLEAR_CS_SOURCE_METAL_SIM;
             desc.compute_func.entry = "main0";
             desc.mtl_threads_per_threadgroup.x = 128;
@@ -43806,7 +43895,11 @@ fn SgShaderDesc gc_clear_shader_desc(SgBackend backend)
             desc.views[0].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[0].storage_buffer.readonly = false;
             desc.views[0].storage_buffer.msl_buffer_n = 8;
+            $else
+                break;
+            $endif
         case SgBackend.WGPU:
+            $if env::EMSCRIPTEN:
             desc.compute_func.source = (ZString)&GC_CLEAR_CS_SOURCE_WGSL;
             desc.compute_func.entry = "main";
             desc.uniform_blocks[0].stage = SgShaderStage.COMPUTE;
@@ -43816,6 +43909,9 @@ fn SgShaderDesc gc_clear_shader_desc(SgBackend backend)
             desc.views[0].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[0].storage_buffer.readonly = false;
             desc.views[0].storage_buffer.wgsl_group1_binding_n = 0;
+            $else
+                break;
+            $endif
     }
     return desc;
 }
@@ -43826,6 +43922,7 @@ fn SgShaderDesc gc_collide_shader_desc(SgBackend backend)
     switch (backend)
     {
         case SgBackend.GLCORE:
+            $if !env::DARWIN && !env::WIN32 && !env::EMSCRIPTEN:
             desc.compute_func.source = (ZString)&GC_COLLIDE_CS_SOURCE_GLSL430;
             desc.compute_func.entry = "main";
             desc.uniform_blocks[0].stage = SgShaderStage.COMPUTE;
@@ -43882,7 +43979,11 @@ fn SgShaderDesc gc_collide_shader_desc(SgBackend backend)
             desc.views[5].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[5].storage_buffer.readonly = true;
             desc.views[5].storage_buffer.glsl_binding_n = 5;
+            $else
+                break;
+            $endif
         case SgBackend.D3D11:
+            $if env::WIN32:
             desc.compute_func.source = (ZString)&GC_COLLIDE_CS_SOURCE_HLSL5;
             desc.compute_func.d3d11_target = "cs_5_0";
             desc.compute_func.entry = "main";
@@ -43908,7 +44009,11 @@ fn SgShaderDesc gc_collide_shader_desc(SgBackend backend)
             desc.views[5].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[5].storage_buffer.readonly = true;
             desc.views[5].storage_buffer.hlsl_register_t_n = 3;
+            $else
+                break;
+            $endif
         case SgBackend.METAL_MACOS:
+            $if env::OS_TYPE == MACOS:
             desc.compute_func.source = (ZString)&GC_COLLIDE_CS_SOURCE_METAL_MACOS;
             desc.compute_func.entry = "main0";
             desc.mtl_threads_per_threadgroup.x = 128;
@@ -43936,7 +44041,11 @@ fn SgShaderDesc gc_collide_shader_desc(SgBackend backend)
             desc.views[5].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[5].storage_buffer.readonly = true;
             desc.views[5].storage_buffer.msl_buffer_n = 13;
+            $else
+                break;
+            $endif
         case SgBackend.METAL_IOS:
+            $if env::OS_TYPE == IOS:
             desc.compute_func.source = (ZString)&GC_COLLIDE_CS_SOURCE_METAL_IOS;
             desc.compute_func.entry = "main0";
             desc.mtl_threads_per_threadgroup.x = 128;
@@ -43964,7 +44073,11 @@ fn SgShaderDesc gc_collide_shader_desc(SgBackend backend)
             desc.views[5].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[5].storage_buffer.readonly = true;
             desc.views[5].storage_buffer.msl_buffer_n = 13;
+            $else
+                break;
+            $endif
         case SgBackend.METAL_SIMULATOR:
+            $if env::OS_TYPE == IOS:
             desc.compute_func.source = (ZString)&GC_COLLIDE_CS_SOURCE_METAL_SIM;
             desc.compute_func.entry = "main0";
             desc.mtl_threads_per_threadgroup.x = 128;
@@ -43992,7 +44105,11 @@ fn SgShaderDesc gc_collide_shader_desc(SgBackend backend)
             desc.views[5].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[5].storage_buffer.readonly = true;
             desc.views[5].storage_buffer.msl_buffer_n = 13;
+            $else
+                break;
+            $endif
         case SgBackend.WGPU:
+            $if env::EMSCRIPTEN:
             desc.compute_func.source = (ZString)&GC_COLLIDE_CS_SOURCE_WGSL;
             desc.compute_func.entry = "main";
             desc.uniform_blocks[0].stage = SgShaderStage.COMPUTE;
@@ -44017,6 +44134,9 @@ fn SgShaderDesc gc_collide_shader_desc(SgBackend backend)
             desc.views[5].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[5].storage_buffer.readonly = true;
             desc.views[5].storage_buffer.wgsl_group1_binding_n = 5;
+            $else
+                break;
+            $endif
     }
     return desc;
 }
@@ -44027,6 +44147,7 @@ fn SgShaderDesc gc_collide_bodies_shader_desc(SgBackend backend)
     switch (backend)
     {
         case SgBackend.GLCORE:
+            $if !env::DARWIN && !env::WIN32 && !env::EMSCRIPTEN:
             desc.compute_func.source = (ZString)&GC_COLLIDE_BODIES_CS_SOURCE_GLSL430;
             desc.compute_func.entry = "main";
             desc.uniform_blocks[0].stage = SgShaderStage.COMPUTE;
@@ -44089,7 +44210,11 @@ fn SgShaderDesc gc_collide_bodies_shader_desc(SgBackend backend)
             desc.views[7].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[7].storage_buffer.readonly = false;
             desc.views[7].storage_buffer.glsl_binding_n = 7;
+            $else
+                break;
+            $endif
         case SgBackend.D3D11:
+            $if env::WIN32:
             desc.compute_func.source = (ZString)&GC_COLLIDE_BODIES_CS_SOURCE_HLSL5;
             desc.compute_func.d3d11_target = "cs_5_0";
             desc.compute_func.entry = "main";
@@ -44121,7 +44246,11 @@ fn SgShaderDesc gc_collide_bodies_shader_desc(SgBackend backend)
             desc.views[7].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[7].storage_buffer.readonly = false;
             desc.views[7].storage_buffer.hlsl_register_u_n = 2;
+            $else
+                break;
+            $endif
         case SgBackend.METAL_MACOS:
+            $if env::OS_TYPE == MACOS:
             desc.compute_func.source = (ZString)&GC_COLLIDE_BODIES_CS_SOURCE_METAL_MACOS;
             desc.compute_func.entry = "main0";
             desc.mtl_threads_per_threadgroup.x = 128;
@@ -44155,7 +44284,11 @@ fn SgShaderDesc gc_collide_bodies_shader_desc(SgBackend backend)
             desc.views[7].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[7].storage_buffer.readonly = false;
             desc.views[7].storage_buffer.msl_buffer_n = 15;
+            $else
+                break;
+            $endif
         case SgBackend.METAL_IOS:
+            $if env::OS_TYPE == IOS:
             desc.compute_func.source = (ZString)&GC_COLLIDE_BODIES_CS_SOURCE_METAL_IOS;
             desc.compute_func.entry = "main0";
             desc.mtl_threads_per_threadgroup.x = 128;
@@ -44189,7 +44322,11 @@ fn SgShaderDesc gc_collide_bodies_shader_desc(SgBackend backend)
             desc.views[7].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[7].storage_buffer.readonly = false;
             desc.views[7].storage_buffer.msl_buffer_n = 15;
+            $else
+                break;
+            $endif
         case SgBackend.METAL_SIMULATOR:
+            $if env::OS_TYPE == IOS:
             desc.compute_func.source = (ZString)&GC_COLLIDE_BODIES_CS_SOURCE_METAL_SIM;
             desc.compute_func.entry = "main0";
             desc.mtl_threads_per_threadgroup.x = 128;
@@ -44223,7 +44360,11 @@ fn SgShaderDesc gc_collide_bodies_shader_desc(SgBackend backend)
             desc.views[7].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[7].storage_buffer.readonly = false;
             desc.views[7].storage_buffer.msl_buffer_n = 15;
+            $else
+                break;
+            $endif
         case SgBackend.WGPU:
+            $if env::EMSCRIPTEN:
             desc.compute_func.source = (ZString)&GC_COLLIDE_BODIES_CS_SOURCE_WGSL;
             desc.compute_func.entry = "main";
             desc.uniform_blocks[0].stage = SgShaderStage.COMPUTE;
@@ -44254,6 +44395,9 @@ fn SgShaderDesc gc_collide_bodies_shader_desc(SgBackend backend)
             desc.views[7].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[7].storage_buffer.readonly = false;
             desc.views[7].storage_buffer.wgsl_group1_binding_n = 7;
+            $else
+                break;
+            $endif
     }
     return desc;
 }
@@ -44264,6 +44408,7 @@ fn SgShaderDesc gc_count_shader_desc(SgBackend backend)
     switch (backend)
     {
         case SgBackend.GLCORE:
+            $if !env::DARWIN && !env::WIN32 && !env::EMSCRIPTEN:
             desc.compute_func.source = (ZString)&GC_COUNT_CS_SOURCE_GLSL430;
             desc.compute_func.entry = "main";
             desc.uniform_blocks[0].stage = SgShaderStage.COMPUTE;
@@ -44308,7 +44453,11 @@ fn SgShaderDesc gc_count_shader_desc(SgBackend backend)
             desc.views[1].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[1].storage_buffer.readonly = false;
             desc.views[1].storage_buffer.glsl_binding_n = 1;
+            $else
+                break;
+            $endif
         case SgBackend.D3D11:
+            $if env::WIN32:
             desc.compute_func.source = (ZString)&GC_COUNT_CS_SOURCE_HLSL5;
             desc.compute_func.d3d11_target = "cs_5_0";
             desc.compute_func.entry = "main";
@@ -44322,7 +44471,11 @@ fn SgShaderDesc gc_count_shader_desc(SgBackend backend)
             desc.views[1].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[1].storage_buffer.readonly = false;
             desc.views[1].storage_buffer.hlsl_register_u_n = 0;
+            $else
+                break;
+            $endif
         case SgBackend.METAL_MACOS:
+            $if env::OS_TYPE == MACOS:
             desc.compute_func.source = (ZString)&GC_COUNT_CS_SOURCE_METAL_MACOS;
             desc.compute_func.entry = "main0";
             desc.mtl_threads_per_threadgroup.x = 128;
@@ -44338,7 +44491,11 @@ fn SgShaderDesc gc_count_shader_desc(SgBackend backend)
             desc.views[1].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[1].storage_buffer.readonly = false;
             desc.views[1].storage_buffer.msl_buffer_n = 9;
+            $else
+                break;
+            $endif
         case SgBackend.METAL_IOS:
+            $if env::OS_TYPE == IOS:
             desc.compute_func.source = (ZString)&GC_COUNT_CS_SOURCE_METAL_IOS;
             desc.compute_func.entry = "main0";
             desc.mtl_threads_per_threadgroup.x = 128;
@@ -44354,7 +44511,11 @@ fn SgShaderDesc gc_count_shader_desc(SgBackend backend)
             desc.views[1].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[1].storage_buffer.readonly = false;
             desc.views[1].storage_buffer.msl_buffer_n = 9;
+            $else
+                break;
+            $endif
         case SgBackend.METAL_SIMULATOR:
+            $if env::OS_TYPE == IOS:
             desc.compute_func.source = (ZString)&GC_COUNT_CS_SOURCE_METAL_SIM;
             desc.compute_func.entry = "main0";
             desc.mtl_threads_per_threadgroup.x = 128;
@@ -44370,7 +44531,11 @@ fn SgShaderDesc gc_count_shader_desc(SgBackend backend)
             desc.views[1].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[1].storage_buffer.readonly = false;
             desc.views[1].storage_buffer.msl_buffer_n = 9;
+            $else
+                break;
+            $endif
         case SgBackend.WGPU:
+            $if env::EMSCRIPTEN:
             desc.compute_func.source = (ZString)&GC_COUNT_CS_SOURCE_WGSL;
             desc.compute_func.entry = "main";
             desc.uniform_blocks[0].stage = SgShaderStage.COMPUTE;
@@ -44383,6 +44548,9 @@ fn SgShaderDesc gc_count_shader_desc(SgBackend backend)
             desc.views[1].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[1].storage_buffer.readonly = false;
             desc.views[1].storage_buffer.wgsl_group1_binding_n = 1;
+            $else
+                break;
+            $endif
     }
     return desc;
 }
@@ -44393,6 +44561,7 @@ fn SgShaderDesc gc_damp_shader_desc(SgBackend backend)
     switch (backend)
     {
         case SgBackend.GLCORE:
+            $if !env::DARWIN && !env::WIN32 && !env::EMSCRIPTEN:
             desc.compute_func.source = (ZString)&GC_DAMP_CS_SOURCE_GLSL430;
             desc.compute_func.entry = "main";
             desc.uniform_blocks[0].stage = SgShaderStage.COMPUTE;
@@ -44440,7 +44609,11 @@ fn SgShaderDesc gc_damp_shader_desc(SgBackend backend)
             desc.views[2].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[2].storage_buffer.readonly = true;
             desc.views[2].storage_buffer.glsl_binding_n = 2;
+            $else
+                break;
+            $endif
         case SgBackend.D3D11:
+            $if env::WIN32:
             desc.compute_func.source = (ZString)&GC_DAMP_CS_SOURCE_HLSL5;
             desc.compute_func.d3d11_target = "cs_5_0";
             desc.compute_func.entry = "main";
@@ -44457,7 +44630,11 @@ fn SgShaderDesc gc_damp_shader_desc(SgBackend backend)
             desc.views[2].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[2].storage_buffer.readonly = true;
             desc.views[2].storage_buffer.hlsl_register_t_n = 1;
+            $else
+                break;
+            $endif
         case SgBackend.METAL_MACOS:
+            $if env::OS_TYPE == MACOS:
             desc.compute_func.source = (ZString)&GC_DAMP_CS_SOURCE_METAL_MACOS;
             desc.compute_func.entry = "main0";
             desc.mtl_threads_per_threadgroup.x = 128;
@@ -44476,7 +44653,11 @@ fn SgShaderDesc gc_damp_shader_desc(SgBackend backend)
             desc.views[2].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[2].storage_buffer.readonly = true;
             desc.views[2].storage_buffer.msl_buffer_n = 10;
+            $else
+                break;
+            $endif
         case SgBackend.METAL_IOS:
+            $if env::OS_TYPE == IOS:
             desc.compute_func.source = (ZString)&GC_DAMP_CS_SOURCE_METAL_IOS;
             desc.compute_func.entry = "main0";
             desc.mtl_threads_per_threadgroup.x = 128;
@@ -44495,7 +44676,11 @@ fn SgShaderDesc gc_damp_shader_desc(SgBackend backend)
             desc.views[2].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[2].storage_buffer.readonly = true;
             desc.views[2].storage_buffer.msl_buffer_n = 10;
+            $else
+                break;
+            $endif
         case SgBackend.METAL_SIMULATOR:
+            $if env::OS_TYPE == IOS:
             desc.compute_func.source = (ZString)&GC_DAMP_CS_SOURCE_METAL_SIM;
             desc.compute_func.entry = "main0";
             desc.mtl_threads_per_threadgroup.x = 128;
@@ -44514,7 +44699,11 @@ fn SgShaderDesc gc_damp_shader_desc(SgBackend backend)
             desc.views[2].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[2].storage_buffer.readonly = true;
             desc.views[2].storage_buffer.msl_buffer_n = 10;
+            $else
+                break;
+            $endif
         case SgBackend.WGPU:
+            $if env::EMSCRIPTEN:
             desc.compute_func.source = (ZString)&GC_DAMP_CS_SOURCE_WGSL;
             desc.compute_func.entry = "main";
             desc.uniform_blocks[0].stage = SgShaderStage.COMPUTE;
@@ -44530,6 +44719,9 @@ fn SgShaderDesc gc_damp_shader_desc(SgBackend backend)
             desc.views[2].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[2].storage_buffer.readonly = true;
             desc.views[2].storage_buffer.wgsl_group1_binding_n = 2;
+            $else
+                break;
+            $endif
     }
     return desc;
 }
@@ -44540,6 +44732,7 @@ fn SgShaderDesc gc_fill_shader_desc(SgBackend backend)
     switch (backend)
     {
         case SgBackend.GLCORE:
+            $if !env::DARWIN && !env::WIN32 && !env::EMSCRIPTEN:
             desc.compute_func.source = (ZString)&GC_FILL_CS_SOURCE_GLSL430;
             desc.compute_func.entry = "main";
             desc.uniform_blocks[0].stage = SgShaderStage.COMPUTE;
@@ -44587,7 +44780,11 @@ fn SgShaderDesc gc_fill_shader_desc(SgBackend backend)
             desc.views[2].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[2].storage_buffer.readonly = false;
             desc.views[2].storage_buffer.glsl_binding_n = 2;
+            $else
+                break;
+            $endif
         case SgBackend.D3D11:
+            $if env::WIN32:
             desc.compute_func.source = (ZString)&GC_FILL_CS_SOURCE_HLSL5;
             desc.compute_func.d3d11_target = "cs_5_0";
             desc.compute_func.entry = "main";
@@ -44604,7 +44801,11 @@ fn SgShaderDesc gc_fill_shader_desc(SgBackend backend)
             desc.views[2].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[2].storage_buffer.readonly = false;
             desc.views[2].storage_buffer.hlsl_register_u_n = 1;
+            $else
+                break;
+            $endif
         case SgBackend.METAL_MACOS:
+            $if env::OS_TYPE == MACOS:
             desc.compute_func.source = (ZString)&GC_FILL_CS_SOURCE_METAL_MACOS;
             desc.compute_func.entry = "main0";
             desc.mtl_threads_per_threadgroup.x = 128;
@@ -44623,7 +44824,11 @@ fn SgShaderDesc gc_fill_shader_desc(SgBackend backend)
             desc.views[2].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[2].storage_buffer.readonly = false;
             desc.views[2].storage_buffer.msl_buffer_n = 10;
+            $else
+                break;
+            $endif
         case SgBackend.METAL_IOS:
+            $if env::OS_TYPE == IOS:
             desc.compute_func.source = (ZString)&GC_FILL_CS_SOURCE_METAL_IOS;
             desc.compute_func.entry = "main0";
             desc.mtl_threads_per_threadgroup.x = 128;
@@ -44642,7 +44847,11 @@ fn SgShaderDesc gc_fill_shader_desc(SgBackend backend)
             desc.views[2].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[2].storage_buffer.readonly = false;
             desc.views[2].storage_buffer.msl_buffer_n = 10;
+            $else
+                break;
+            $endif
         case SgBackend.METAL_SIMULATOR:
+            $if env::OS_TYPE == IOS:
             desc.compute_func.source = (ZString)&GC_FILL_CS_SOURCE_METAL_SIM;
             desc.compute_func.entry = "main0";
             desc.mtl_threads_per_threadgroup.x = 128;
@@ -44661,7 +44870,11 @@ fn SgShaderDesc gc_fill_shader_desc(SgBackend backend)
             desc.views[2].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[2].storage_buffer.readonly = false;
             desc.views[2].storage_buffer.msl_buffer_n = 10;
+            $else
+                break;
+            $endif
         case SgBackend.WGPU:
+            $if env::EMSCRIPTEN:
             desc.compute_func.source = (ZString)&GC_FILL_CS_SOURCE_WGSL;
             desc.compute_func.entry = "main";
             desc.uniform_blocks[0].stage = SgShaderStage.COMPUTE;
@@ -44677,6 +44890,9 @@ fn SgShaderDesc gc_fill_shader_desc(SgBackend backend)
             desc.views[2].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[2].storage_buffer.readonly = false;
             desc.views[2].storage_buffer.wgsl_group1_binding_n = 2;
+            $else
+                break;
+            $endif
     }
     return desc;
 }
@@ -44687,6 +44903,7 @@ fn SgShaderDesc gc_forces_shader_desc(SgBackend backend)
     switch (backend)
     {
         case SgBackend.GLCORE:
+            $if !env::DARWIN && !env::WIN32 && !env::EMSCRIPTEN:
             desc.compute_func.source = (ZString)&GC_FORCES_CS_SOURCE_GLSL430;
             desc.compute_func.entry = "main";
             desc.uniform_blocks[0].stage = SgShaderStage.COMPUTE;
@@ -44737,7 +44954,11 @@ fn SgShaderDesc gc_forces_shader_desc(SgBackend backend)
             desc.views[3].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[3].storage_buffer.readonly = true;
             desc.views[3].storage_buffer.glsl_binding_n = 3;
+            $else
+                break;
+            $endif
         case SgBackend.D3D11:
+            $if env::WIN32:
             desc.compute_func.source = (ZString)&GC_FORCES_CS_SOURCE_HLSL5;
             desc.compute_func.d3d11_target = "cs_5_0";
             desc.compute_func.entry = "main";
@@ -44757,7 +44978,11 @@ fn SgShaderDesc gc_forces_shader_desc(SgBackend backend)
             desc.views[3].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[3].storage_buffer.readonly = true;
             desc.views[3].storage_buffer.hlsl_register_t_n = 2;
+            $else
+                break;
+            $endif
         case SgBackend.METAL_MACOS:
+            $if env::OS_TYPE == MACOS:
             desc.compute_func.source = (ZString)&GC_FORCES_CS_SOURCE_METAL_MACOS;
             desc.compute_func.entry = "main0";
             desc.mtl_threads_per_threadgroup.x = 128;
@@ -44779,7 +45004,11 @@ fn SgShaderDesc gc_forces_shader_desc(SgBackend backend)
             desc.views[3].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[3].storage_buffer.readonly = true;
             desc.views[3].storage_buffer.msl_buffer_n = 11;
+            $else
+                break;
+            $endif
         case SgBackend.METAL_IOS:
+            $if env::OS_TYPE == IOS:
             desc.compute_func.source = (ZString)&GC_FORCES_CS_SOURCE_METAL_IOS;
             desc.compute_func.entry = "main0";
             desc.mtl_threads_per_threadgroup.x = 128;
@@ -44801,7 +45030,11 @@ fn SgShaderDesc gc_forces_shader_desc(SgBackend backend)
             desc.views[3].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[3].storage_buffer.readonly = true;
             desc.views[3].storage_buffer.msl_buffer_n = 11;
+            $else
+                break;
+            $endif
         case SgBackend.METAL_SIMULATOR:
+            $if env::OS_TYPE == IOS:
             desc.compute_func.source = (ZString)&GC_FORCES_CS_SOURCE_METAL_SIM;
             desc.compute_func.entry = "main0";
             desc.mtl_threads_per_threadgroup.x = 128;
@@ -44823,7 +45056,11 @@ fn SgShaderDesc gc_forces_shader_desc(SgBackend backend)
             desc.views[3].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[3].storage_buffer.readonly = true;
             desc.views[3].storage_buffer.msl_buffer_n = 11;
+            $else
+                break;
+            $endif
         case SgBackend.WGPU:
+            $if env::EMSCRIPTEN:
             desc.compute_func.source = (ZString)&GC_FORCES_CS_SOURCE_WGSL;
             desc.compute_func.entry = "main";
             desc.uniform_blocks[0].stage = SgShaderStage.COMPUTE;
@@ -44842,6 +45079,9 @@ fn SgShaderDesc gc_forces_shader_desc(SgBackend backend)
             desc.views[3].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[3].storage_buffer.readonly = true;
             desc.views[3].storage_buffer.wgsl_group1_binding_n = 3;
+            $else
+                break;
+            $endif
     }
     return desc;
 }
@@ -44852,6 +45092,7 @@ fn SgShaderDesc gc_integrate_shader_desc(SgBackend backend)
     switch (backend)
     {
         case SgBackend.GLCORE:
+            $if !env::DARWIN && !env::WIN32 && !env::EMSCRIPTEN:
             desc.compute_func.source = (ZString)&GC_INTEGRATE_CS_SOURCE_GLSL430;
             desc.compute_func.entry = "main";
             desc.uniform_blocks[0].stage = SgShaderStage.COMPUTE;
@@ -44905,7 +45146,11 @@ fn SgShaderDesc gc_integrate_shader_desc(SgBackend backend)
             desc.views[4].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[4].storage_buffer.readonly = true;
             desc.views[4].storage_buffer.glsl_binding_n = 4;
+            $else
+                break;
+            $endif
         case SgBackend.D3D11:
+            $if env::WIN32:
             desc.compute_func.source = (ZString)&GC_INTEGRATE_CS_SOURCE_HLSL5;
             desc.compute_func.d3d11_target = "cs_5_0";
             desc.compute_func.entry = "main";
@@ -44928,7 +45173,11 @@ fn SgShaderDesc gc_integrate_shader_desc(SgBackend backend)
             desc.views[4].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[4].storage_buffer.readonly = true;
             desc.views[4].storage_buffer.hlsl_register_t_n = 1;
+            $else
+                break;
+            $endif
         case SgBackend.METAL_MACOS:
+            $if env::OS_TYPE == MACOS:
             desc.compute_func.source = (ZString)&GC_INTEGRATE_CS_SOURCE_METAL_MACOS;
             desc.compute_func.entry = "main0";
             desc.mtl_threads_per_threadgroup.x = 128;
@@ -44953,7 +45202,11 @@ fn SgShaderDesc gc_integrate_shader_desc(SgBackend backend)
             desc.views[4].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[4].storage_buffer.readonly = true;
             desc.views[4].storage_buffer.msl_buffer_n = 12;
+            $else
+                break;
+            $endif
         case SgBackend.METAL_IOS:
+            $if env::OS_TYPE == IOS:
             desc.compute_func.source = (ZString)&GC_INTEGRATE_CS_SOURCE_METAL_IOS;
             desc.compute_func.entry = "main0";
             desc.mtl_threads_per_threadgroup.x = 128;
@@ -44978,7 +45231,11 @@ fn SgShaderDesc gc_integrate_shader_desc(SgBackend backend)
             desc.views[4].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[4].storage_buffer.readonly = true;
             desc.views[4].storage_buffer.msl_buffer_n = 12;
+            $else
+                break;
+            $endif
         case SgBackend.METAL_SIMULATOR:
+            $if env::OS_TYPE == IOS:
             desc.compute_func.source = (ZString)&GC_INTEGRATE_CS_SOURCE_METAL_SIM;
             desc.compute_func.entry = "main0";
             desc.mtl_threads_per_threadgroup.x = 128;
@@ -45003,7 +45260,11 @@ fn SgShaderDesc gc_integrate_shader_desc(SgBackend backend)
             desc.views[4].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[4].storage_buffer.readonly = true;
             desc.views[4].storage_buffer.msl_buffer_n = 12;
+            $else
+                break;
+            $endif
         case SgBackend.WGPU:
+            $if env::EMSCRIPTEN:
             desc.compute_func.source = (ZString)&GC_INTEGRATE_CS_SOURCE_WGSL;
             desc.compute_func.entry = "main";
             desc.uniform_blocks[0].stage = SgShaderStage.COMPUTE;
@@ -45025,6 +45286,9 @@ fn SgShaderDesc gc_integrate_shader_desc(SgBackend backend)
             desc.views[4].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[4].storage_buffer.readonly = true;
             desc.views[4].storage_buffer.wgsl_group1_binding_n = 4;
+            $else
+                break;
+            $endif
     }
     return desc;
 }
@@ -45035,6 +45299,7 @@ fn SgShaderDesc gc_links_shader_desc(SgBackend backend)
     switch (backend)
     {
         case SgBackend.GLCORE:
+            $if !env::DARWIN && !env::WIN32 && !env::EMSCRIPTEN:
             desc.compute_func.source = (ZString)&GC_LINKS_CS_SOURCE_GLSL430;
             desc.compute_func.entry = "main";
             desc.uniform_blocks[0].stage = SgShaderStage.COMPUTE;
@@ -45082,7 +45347,11 @@ fn SgShaderDesc gc_links_shader_desc(SgBackend backend)
             desc.views[2].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[2].storage_buffer.readonly = true;
             desc.views[2].storage_buffer.glsl_binding_n = 2;
+            $else
+                break;
+            $endif
         case SgBackend.D3D11:
+            $if env::WIN32:
             desc.compute_func.source = (ZString)&GC_LINKS_CS_SOURCE_HLSL5;
             desc.compute_func.d3d11_target = "cs_5_0";
             desc.compute_func.entry = "main";
@@ -45099,7 +45368,11 @@ fn SgShaderDesc gc_links_shader_desc(SgBackend backend)
             desc.views[2].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[2].storage_buffer.readonly = true;
             desc.views[2].storage_buffer.hlsl_register_t_n = 1;
+            $else
+                break;
+            $endif
         case SgBackend.METAL_MACOS:
+            $if env::OS_TYPE == MACOS:
             desc.compute_func.source = (ZString)&GC_LINKS_CS_SOURCE_METAL_MACOS;
             desc.compute_func.entry = "main0";
             desc.mtl_threads_per_threadgroup.x = 128;
@@ -45118,7 +45391,11 @@ fn SgShaderDesc gc_links_shader_desc(SgBackend backend)
             desc.views[2].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[2].storage_buffer.readonly = true;
             desc.views[2].storage_buffer.msl_buffer_n = 10;
+            $else
+                break;
+            $endif
         case SgBackend.METAL_IOS:
+            $if env::OS_TYPE == IOS:
             desc.compute_func.source = (ZString)&GC_LINKS_CS_SOURCE_METAL_IOS;
             desc.compute_func.entry = "main0";
             desc.mtl_threads_per_threadgroup.x = 128;
@@ -45137,7 +45414,11 @@ fn SgShaderDesc gc_links_shader_desc(SgBackend backend)
             desc.views[2].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[2].storage_buffer.readonly = true;
             desc.views[2].storage_buffer.msl_buffer_n = 10;
+            $else
+                break;
+            $endif
         case SgBackend.METAL_SIMULATOR:
+            $if env::OS_TYPE == IOS:
             desc.compute_func.source = (ZString)&GC_LINKS_CS_SOURCE_METAL_SIM;
             desc.compute_func.entry = "main0";
             desc.mtl_threads_per_threadgroup.x = 128;
@@ -45156,7 +45437,11 @@ fn SgShaderDesc gc_links_shader_desc(SgBackend backend)
             desc.views[2].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[2].storage_buffer.readonly = true;
             desc.views[2].storage_buffer.msl_buffer_n = 10;
+            $else
+                break;
+            $endif
         case SgBackend.WGPU:
+            $if env::EMSCRIPTEN:
             desc.compute_func.source = (ZString)&GC_LINKS_CS_SOURCE_WGSL;
             desc.compute_func.entry = "main";
             desc.uniform_blocks[0].stage = SgShaderStage.COMPUTE;
@@ -45172,6 +45457,9 @@ fn SgShaderDesc gc_links_shader_desc(SgBackend backend)
             desc.views[2].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[2].storage_buffer.readonly = true;
             desc.views[2].storage_buffer.wgsl_group1_binding_n = 2;
+            $else
+                break;
+            $endif
     }
     return desc;
 }
@@ -45182,6 +45470,7 @@ fn SgShaderDesc gc_scan_add_shader_desc(SgBackend backend)
     switch (backend)
     {
         case SgBackend.GLCORE:
+            $if !env::DARWIN && !env::WIN32 && !env::EMSCRIPTEN:
             desc.compute_func.source = (ZString)&GC_SCAN_ADD_CS_SOURCE_GLSL430;
             desc.compute_func.entry = "main";
             desc.uniform_blocks[0].stage = SgShaderStage.COMPUTE;
@@ -45226,7 +45515,11 @@ fn SgShaderDesc gc_scan_add_shader_desc(SgBackend backend)
             desc.views[1].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[1].storage_buffer.readonly = true;
             desc.views[1].storage_buffer.glsl_binding_n = 1;
+            $else
+                break;
+            $endif
         case SgBackend.D3D11:
+            $if env::WIN32:
             desc.compute_func.source = (ZString)&GC_SCAN_ADD_CS_SOURCE_HLSL5;
             desc.compute_func.d3d11_target = "cs_5_0";
             desc.compute_func.entry = "main";
@@ -45240,7 +45533,11 @@ fn SgShaderDesc gc_scan_add_shader_desc(SgBackend backend)
             desc.views[1].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[1].storage_buffer.readonly = true;
             desc.views[1].storage_buffer.hlsl_register_t_n = 0;
+            $else
+                break;
+            $endif
         case SgBackend.METAL_MACOS:
+            $if env::OS_TYPE == MACOS:
             desc.compute_func.source = (ZString)&GC_SCAN_ADD_CS_SOURCE_METAL_MACOS;
             desc.compute_func.entry = "main0";
             desc.mtl_threads_per_threadgroup.x = 256;
@@ -45256,7 +45553,11 @@ fn SgShaderDesc gc_scan_add_shader_desc(SgBackend backend)
             desc.views[1].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[1].storage_buffer.readonly = true;
             desc.views[1].storage_buffer.msl_buffer_n = 9;
+            $else
+                break;
+            $endif
         case SgBackend.METAL_IOS:
+            $if env::OS_TYPE == IOS:
             desc.compute_func.source = (ZString)&GC_SCAN_ADD_CS_SOURCE_METAL_IOS;
             desc.compute_func.entry = "main0";
             desc.mtl_threads_per_threadgroup.x = 256;
@@ -45272,7 +45573,11 @@ fn SgShaderDesc gc_scan_add_shader_desc(SgBackend backend)
             desc.views[1].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[1].storage_buffer.readonly = true;
             desc.views[1].storage_buffer.msl_buffer_n = 9;
+            $else
+                break;
+            $endif
         case SgBackend.METAL_SIMULATOR:
+            $if env::OS_TYPE == IOS:
             desc.compute_func.source = (ZString)&GC_SCAN_ADD_CS_SOURCE_METAL_SIM;
             desc.compute_func.entry = "main0";
             desc.mtl_threads_per_threadgroup.x = 256;
@@ -45288,7 +45593,11 @@ fn SgShaderDesc gc_scan_add_shader_desc(SgBackend backend)
             desc.views[1].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[1].storage_buffer.readonly = true;
             desc.views[1].storage_buffer.msl_buffer_n = 9;
+            $else
+                break;
+            $endif
         case SgBackend.WGPU:
+            $if env::EMSCRIPTEN:
             desc.compute_func.source = (ZString)&GC_SCAN_ADD_CS_SOURCE_WGSL;
             desc.compute_func.entry = "main";
             desc.uniform_blocks[0].stage = SgShaderStage.COMPUTE;
@@ -45301,6 +45610,9 @@ fn SgShaderDesc gc_scan_add_shader_desc(SgBackend backend)
             desc.views[1].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[1].storage_buffer.readonly = true;
             desc.views[1].storage_buffer.wgsl_group1_binding_n = 1;
+            $else
+                break;
+            $endif
     }
     return desc;
 }
@@ -45311,6 +45623,7 @@ fn SgShaderDesc gc_scan_block_shader_desc(SgBackend backend)
     switch (backend)
     {
         case SgBackend.GLCORE:
+            $if !env::DARWIN && !env::WIN32 && !env::EMSCRIPTEN:
             desc.compute_func.source = (ZString)&GC_SCAN_BLOCK_CS_SOURCE_GLSL430;
             desc.compute_func.entry = "main";
             desc.uniform_blocks[0].stage = SgShaderStage.COMPUTE;
@@ -45355,7 +45668,11 @@ fn SgShaderDesc gc_scan_block_shader_desc(SgBackend backend)
             desc.views[1].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[1].storage_buffer.readonly = false;
             desc.views[1].storage_buffer.glsl_binding_n = 1;
+            $else
+                break;
+            $endif
         case SgBackend.D3D11:
+            $if env::WIN32:
             desc.compute_func.source = (ZString)&GC_SCAN_BLOCK_CS_SOURCE_HLSL5;
             desc.compute_func.d3d11_target = "cs_5_0";
             desc.compute_func.entry = "main";
@@ -45369,7 +45686,11 @@ fn SgShaderDesc gc_scan_block_shader_desc(SgBackend backend)
             desc.views[1].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[1].storage_buffer.readonly = false;
             desc.views[1].storage_buffer.hlsl_register_u_n = 1;
+            $else
+                break;
+            $endif
         case SgBackend.METAL_MACOS:
+            $if env::OS_TYPE == MACOS:
             desc.compute_func.source = (ZString)&GC_SCAN_BLOCK_CS_SOURCE_METAL_MACOS;
             desc.compute_func.entry = "main0";
             desc.mtl_threads_per_threadgroup.x = 256;
@@ -45385,7 +45706,11 @@ fn SgShaderDesc gc_scan_block_shader_desc(SgBackend backend)
             desc.views[1].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[1].storage_buffer.readonly = false;
             desc.views[1].storage_buffer.msl_buffer_n = 9;
+            $else
+                break;
+            $endif
         case SgBackend.METAL_IOS:
+            $if env::OS_TYPE == IOS:
             desc.compute_func.source = (ZString)&GC_SCAN_BLOCK_CS_SOURCE_METAL_IOS;
             desc.compute_func.entry = "main0";
             desc.mtl_threads_per_threadgroup.x = 256;
@@ -45401,7 +45726,11 @@ fn SgShaderDesc gc_scan_block_shader_desc(SgBackend backend)
             desc.views[1].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[1].storage_buffer.readonly = false;
             desc.views[1].storage_buffer.msl_buffer_n = 9;
+            $else
+                break;
+            $endif
         case SgBackend.METAL_SIMULATOR:
+            $if env::OS_TYPE == IOS:
             desc.compute_func.source = (ZString)&GC_SCAN_BLOCK_CS_SOURCE_METAL_SIM;
             desc.compute_func.entry = "main0";
             desc.mtl_threads_per_threadgroup.x = 256;
@@ -45417,7 +45746,11 @@ fn SgShaderDesc gc_scan_block_shader_desc(SgBackend backend)
             desc.views[1].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[1].storage_buffer.readonly = false;
             desc.views[1].storage_buffer.msl_buffer_n = 9;
+            $else
+                break;
+            $endif
         case SgBackend.WGPU:
+            $if env::EMSCRIPTEN:
             desc.compute_func.source = (ZString)&GC_SCAN_BLOCK_CS_SOURCE_WGSL;
             desc.compute_func.entry = "main";
             desc.uniform_blocks[0].stage = SgShaderStage.COMPUTE;
@@ -45430,6 +45763,9 @@ fn SgShaderDesc gc_scan_block_shader_desc(SgBackend backend)
             desc.views[1].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[1].storage_buffer.readonly = false;
             desc.views[1].storage_buffer.wgsl_group1_binding_n = 1;
+            $else
+                break;
+            $endif
     }
     return desc;
 }
@@ -45440,6 +45776,7 @@ fn SgShaderDesc gc_scan_sums_shader_desc(SgBackend backend)
     switch (backend)
     {
         case SgBackend.GLCORE:
+            $if !env::DARWIN && !env::WIN32 && !env::EMSCRIPTEN:
             desc.compute_func.source = (ZString)&GC_SCAN_SUMS_CS_SOURCE_GLSL430;
             desc.compute_func.entry = "main";
             desc.uniform_blocks[0].stage = SgShaderStage.COMPUTE;
@@ -45481,7 +45818,11 @@ fn SgShaderDesc gc_scan_sums_shader_desc(SgBackend backend)
             desc.views[0].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[0].storage_buffer.readonly = false;
             desc.views[0].storage_buffer.glsl_binding_n = 0;
+            $else
+                break;
+            $endif
         case SgBackend.D3D11:
+            $if env::WIN32:
             desc.compute_func.source = (ZString)&GC_SCAN_SUMS_CS_SOURCE_HLSL5;
             desc.compute_func.d3d11_target = "cs_5_0";
             desc.compute_func.entry = "main";
@@ -45492,7 +45833,11 @@ fn SgShaderDesc gc_scan_sums_shader_desc(SgBackend backend)
             desc.views[0].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[0].storage_buffer.readonly = false;
             desc.views[0].storage_buffer.hlsl_register_u_n = 0;
+            $else
+                break;
+            $endif
         case SgBackend.METAL_MACOS:
+            $if env::OS_TYPE == MACOS:
             desc.compute_func.source = (ZString)&GC_SCAN_SUMS_CS_SOURCE_METAL_MACOS;
             desc.compute_func.entry = "main0";
             desc.mtl_threads_per_threadgroup.x = 256;
@@ -45505,7 +45850,11 @@ fn SgShaderDesc gc_scan_sums_shader_desc(SgBackend backend)
             desc.views[0].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[0].storage_buffer.readonly = false;
             desc.views[0].storage_buffer.msl_buffer_n = 8;
+            $else
+                break;
+            $endif
         case SgBackend.METAL_IOS:
+            $if env::OS_TYPE == IOS:
             desc.compute_func.source = (ZString)&GC_SCAN_SUMS_CS_SOURCE_METAL_IOS;
             desc.compute_func.entry = "main0";
             desc.mtl_threads_per_threadgroup.x = 256;
@@ -45518,7 +45867,11 @@ fn SgShaderDesc gc_scan_sums_shader_desc(SgBackend backend)
             desc.views[0].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[0].storage_buffer.readonly = false;
             desc.views[0].storage_buffer.msl_buffer_n = 8;
+            $else
+                break;
+            $endif
         case SgBackend.METAL_SIMULATOR:
+            $if env::OS_TYPE == IOS:
             desc.compute_func.source = (ZString)&GC_SCAN_SUMS_CS_SOURCE_METAL_SIM;
             desc.compute_func.entry = "main0";
             desc.mtl_threads_per_threadgroup.x = 256;
@@ -45531,7 +45884,11 @@ fn SgShaderDesc gc_scan_sums_shader_desc(SgBackend backend)
             desc.views[0].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[0].storage_buffer.readonly = false;
             desc.views[0].storage_buffer.msl_buffer_n = 8;
+            $else
+                break;
+            $endif
         case SgBackend.WGPU:
+            $if env::EMSCRIPTEN:
             desc.compute_func.source = (ZString)&GC_SCAN_SUMS_CS_SOURCE_WGSL;
             desc.compute_func.entry = "main";
             desc.uniform_blocks[0].stage = SgShaderStage.COMPUTE;
@@ -45541,6 +45898,9 @@ fn SgShaderDesc gc_scan_sums_shader_desc(SgBackend backend)
             desc.views[0].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[0].storage_buffer.readonly = false;
             desc.views[0].storage_buffer.wgsl_group1_binding_n = 0;
+            $else
+                break;
+            $endif
     }
     return desc;
 }
@@ -45551,6 +45911,7 @@ fn SgShaderDesc gc_self_shader_desc(SgBackend backend)
     switch (backend)
     {
         case SgBackend.GLCORE:
+            $if !env::DARWIN && !env::WIN32 && !env::EMSCRIPTEN:
             desc.compute_func.source = (ZString)&GC_SELF_CS_SOURCE_GLSL430;
             desc.compute_func.entry = "main";
             desc.uniform_blocks[0].stage = SgShaderStage.COMPUTE;
@@ -45610,7 +45971,11 @@ fn SgShaderDesc gc_self_shader_desc(SgBackend backend)
             desc.views[6].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[6].storage_buffer.readonly = false;
             desc.views[6].storage_buffer.glsl_binding_n = 6;
+            $else
+                break;
+            $endif
         case SgBackend.D3D11:
+            $if env::WIN32:
             desc.compute_func.source = (ZString)&GC_SELF_CS_SOURCE_HLSL5;
             desc.compute_func.d3d11_target = "cs_5_0";
             desc.compute_func.entry = "main";
@@ -45639,7 +46004,11 @@ fn SgShaderDesc gc_self_shader_desc(SgBackend backend)
             desc.views[6].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[6].storage_buffer.readonly = false;
             desc.views[6].storage_buffer.hlsl_register_u_n = 0;
+            $else
+                break;
+            $endif
         case SgBackend.METAL_MACOS:
+            $if env::OS_TYPE == MACOS:
             desc.compute_func.source = (ZString)&GC_SELF_CS_SOURCE_METAL_MACOS;
             desc.compute_func.entry = "main0";
             desc.mtl_threads_per_threadgroup.x = 128;
@@ -45670,7 +46039,11 @@ fn SgShaderDesc gc_self_shader_desc(SgBackend backend)
             desc.views[6].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[6].storage_buffer.readonly = false;
             desc.views[6].storage_buffer.msl_buffer_n = 14;
+            $else
+                break;
+            $endif
         case SgBackend.METAL_IOS:
+            $if env::OS_TYPE == IOS:
             desc.compute_func.source = (ZString)&GC_SELF_CS_SOURCE_METAL_IOS;
             desc.compute_func.entry = "main0";
             desc.mtl_threads_per_threadgroup.x = 128;
@@ -45701,7 +46074,11 @@ fn SgShaderDesc gc_self_shader_desc(SgBackend backend)
             desc.views[6].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[6].storage_buffer.readonly = false;
             desc.views[6].storage_buffer.msl_buffer_n = 14;
+            $else
+                break;
+            $endif
         case SgBackend.METAL_SIMULATOR:
+            $if env::OS_TYPE == IOS:
             desc.compute_func.source = (ZString)&GC_SELF_CS_SOURCE_METAL_SIM;
             desc.compute_func.entry = "main0";
             desc.mtl_threads_per_threadgroup.x = 128;
@@ -45732,7 +46109,11 @@ fn SgShaderDesc gc_self_shader_desc(SgBackend backend)
             desc.views[6].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[6].storage_buffer.readonly = false;
             desc.views[6].storage_buffer.msl_buffer_n = 14;
+            $else
+                break;
+            $endif
         case SgBackend.WGPU:
+            $if env::EMSCRIPTEN:
             desc.compute_func.source = (ZString)&GC_SELF_CS_SOURCE_WGSL;
             desc.compute_func.entry = "main";
             desc.uniform_blocks[0].stage = SgShaderStage.COMPUTE;
@@ -45760,6 +46141,9 @@ fn SgShaderDesc gc_self_shader_desc(SgBackend backend)
             desc.views[6].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[6].storage_buffer.readonly = false;
             desc.views[6].storage_buffer.wgsl_group1_binding_n = 6;
+            $else
+                break;
+            $endif
     }
     return desc;
 }
@@ -45770,6 +46154,7 @@ fn SgShaderDesc gc_shape_shader_desc(SgBackend backend)
     switch (backend)
     {
         case SgBackend.GLCORE:
+            $if !env::DARWIN && !env::WIN32 && !env::EMSCRIPTEN:
             desc.compute_func.source = (ZString)&GC_SHAPE_CS_SOURCE_GLSL430;
             desc.compute_func.entry = "main";
             desc.uniform_blocks[0].stage = SgShaderStage.COMPUTE;
@@ -45820,7 +46205,11 @@ fn SgShaderDesc gc_shape_shader_desc(SgBackend backend)
             desc.views[3].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[3].storage_buffer.readonly = false;
             desc.views[3].storage_buffer.glsl_binding_n = 3;
+            $else
+                break;
+            $endif
         case SgBackend.D3D11:
+            $if env::WIN32:
             desc.compute_func.source = (ZString)&GC_SHAPE_CS_SOURCE_HLSL5;
             desc.compute_func.d3d11_target = "cs_5_0";
             desc.compute_func.entry = "main";
@@ -45840,7 +46229,11 @@ fn SgShaderDesc gc_shape_shader_desc(SgBackend backend)
             desc.views[3].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[3].storage_buffer.readonly = false;
             desc.views[3].storage_buffer.hlsl_register_u_n = 0;
+            $else
+                break;
+            $endif
         case SgBackend.METAL_MACOS:
+            $if env::OS_TYPE == MACOS:
             desc.compute_func.source = (ZString)&GC_SHAPE_CS_SOURCE_METAL_MACOS;
             desc.compute_func.entry = "main0";
             desc.mtl_threads_per_threadgroup.x = 128;
@@ -45862,7 +46255,11 @@ fn SgShaderDesc gc_shape_shader_desc(SgBackend backend)
             desc.views[3].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[3].storage_buffer.readonly = false;
             desc.views[3].storage_buffer.msl_buffer_n = 11;
+            $else
+                break;
+            $endif
         case SgBackend.METAL_IOS:
+            $if env::OS_TYPE == IOS:
             desc.compute_func.source = (ZString)&GC_SHAPE_CS_SOURCE_METAL_IOS;
             desc.compute_func.entry = "main0";
             desc.mtl_threads_per_threadgroup.x = 128;
@@ -45884,7 +46281,11 @@ fn SgShaderDesc gc_shape_shader_desc(SgBackend backend)
             desc.views[3].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[3].storage_buffer.readonly = false;
             desc.views[3].storage_buffer.msl_buffer_n = 11;
+            $else
+                break;
+            $endif
         case SgBackend.METAL_SIMULATOR:
+            $if env::OS_TYPE == IOS:
             desc.compute_func.source = (ZString)&GC_SHAPE_CS_SOURCE_METAL_SIM;
             desc.compute_func.entry = "main0";
             desc.mtl_threads_per_threadgroup.x = 128;
@@ -45906,7 +46307,11 @@ fn SgShaderDesc gc_shape_shader_desc(SgBackend backend)
             desc.views[3].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[3].storage_buffer.readonly = false;
             desc.views[3].storage_buffer.msl_buffer_n = 11;
+            $else
+                break;
+            $endif
         case SgBackend.WGPU:
+            $if env::EMSCRIPTEN:
             desc.compute_func.source = (ZString)&GC_SHAPE_CS_SOURCE_WGSL;
             desc.compute_func.entry = "main";
             desc.uniform_blocks[0].stage = SgShaderStage.COMPUTE;
@@ -45925,6 +46330,9 @@ fn SgShaderDesc gc_shape_shader_desc(SgBackend backend)
             desc.views[3].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[3].storage_buffer.readonly = false;
             desc.views[3].storage_buffer.wgsl_group1_binding_n = 3;
+            $else
+                break;
+            $endif
     }
     return desc;
 }
@@ -45935,6 +46343,7 @@ fn SgShaderDesc gc_tethers_shader_desc(SgBackend backend)
     switch (backend)
     {
         case SgBackend.GLCORE:
+            $if !env::DARWIN && !env::WIN32 && !env::EMSCRIPTEN:
             desc.compute_func.source = (ZString)&GC_TETHERS_CS_SOURCE_GLSL430;
             desc.compute_func.entry = "main";
             desc.uniform_blocks[0].stage = SgShaderStage.COMPUTE;
@@ -45982,7 +46391,11 @@ fn SgShaderDesc gc_tethers_shader_desc(SgBackend backend)
             desc.views[2].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[2].storage_buffer.readonly = true;
             desc.views[2].storage_buffer.glsl_binding_n = 2;
+            $else
+                break;
+            $endif
         case SgBackend.D3D11:
+            $if env::WIN32:
             desc.compute_func.source = (ZString)&GC_TETHERS_CS_SOURCE_HLSL5;
             desc.compute_func.d3d11_target = "cs_5_0";
             desc.compute_func.entry = "main";
@@ -45999,7 +46412,11 @@ fn SgShaderDesc gc_tethers_shader_desc(SgBackend backend)
             desc.views[2].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[2].storage_buffer.readonly = true;
             desc.views[2].storage_buffer.hlsl_register_t_n = 1;
+            $else
+                break;
+            $endif
         case SgBackend.METAL_MACOS:
+            $if env::OS_TYPE == MACOS:
             desc.compute_func.source = (ZString)&GC_TETHERS_CS_SOURCE_METAL_MACOS;
             desc.compute_func.entry = "main0";
             desc.mtl_threads_per_threadgroup.x = 128;
@@ -46018,7 +46435,11 @@ fn SgShaderDesc gc_tethers_shader_desc(SgBackend backend)
             desc.views[2].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[2].storage_buffer.readonly = true;
             desc.views[2].storage_buffer.msl_buffer_n = 10;
+            $else
+                break;
+            $endif
         case SgBackend.METAL_IOS:
+            $if env::OS_TYPE == IOS:
             desc.compute_func.source = (ZString)&GC_TETHERS_CS_SOURCE_METAL_IOS;
             desc.compute_func.entry = "main0";
             desc.mtl_threads_per_threadgroup.x = 128;
@@ -46037,7 +46458,11 @@ fn SgShaderDesc gc_tethers_shader_desc(SgBackend backend)
             desc.views[2].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[2].storage_buffer.readonly = true;
             desc.views[2].storage_buffer.msl_buffer_n = 10;
+            $else
+                break;
+            $endif
         case SgBackend.METAL_SIMULATOR:
+            $if env::OS_TYPE == IOS:
             desc.compute_func.source = (ZString)&GC_TETHERS_CS_SOURCE_METAL_SIM;
             desc.compute_func.entry = "main0";
             desc.mtl_threads_per_threadgroup.x = 128;
@@ -46056,7 +46481,11 @@ fn SgShaderDesc gc_tethers_shader_desc(SgBackend backend)
             desc.views[2].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[2].storage_buffer.readonly = true;
             desc.views[2].storage_buffer.msl_buffer_n = 10;
+            $else
+                break;
+            $endif
         case SgBackend.WGPU:
+            $if env::EMSCRIPTEN:
             desc.compute_func.source = (ZString)&GC_TETHERS_CS_SOURCE_WGSL;
             desc.compute_func.entry = "main";
             desc.uniform_blocks[0].stage = SgShaderStage.COMPUTE;
@@ -46072,6 +46501,9 @@ fn SgShaderDesc gc_tethers_shader_desc(SgBackend backend)
             desc.views[2].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[2].storage_buffer.readonly = true;
             desc.views[2].storage_buffer.wgsl_group1_binding_n = 2;
+            $else
+                break;
+            $endif
     }
     return desc;
 }
@@ -46082,6 +46514,7 @@ fn SgShaderDesc gc_write_shader_desc(SgBackend backend)
     switch (backend)
     {
         case SgBackend.GLCORE:
+            $if !env::DARWIN && !env::WIN32 && !env::EMSCRIPTEN:
             desc.compute_func.source = (ZString)&GC_WRITE_CS_SOURCE_GLSL430;
             desc.compute_func.entry = "main";
             desc.uniform_blocks[0].stage = SgShaderStage.COMPUTE;
@@ -46129,7 +46562,11 @@ fn SgShaderDesc gc_write_shader_desc(SgBackend backend)
             desc.views[2].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[2].storage_buffer.readonly = false;
             desc.views[2].storage_buffer.glsl_binding_n = 2;
+            $else
+                break;
+            $endif
         case SgBackend.D3D11:
+            $if env::WIN32:
             desc.compute_func.source = (ZString)&GC_WRITE_CS_SOURCE_HLSL5;
             desc.compute_func.d3d11_target = "cs_5_0";
             desc.compute_func.entry = "main";
@@ -46146,7 +46583,11 @@ fn SgShaderDesc gc_write_shader_desc(SgBackend backend)
             desc.views[2].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[2].storage_buffer.readonly = false;
             desc.views[2].storage_buffer.hlsl_register_u_n = 0;
+            $else
+                break;
+            $endif
         case SgBackend.METAL_MACOS:
+            $if env::OS_TYPE == MACOS:
             desc.compute_func.source = (ZString)&GC_WRITE_CS_SOURCE_METAL_MACOS;
             desc.compute_func.entry = "main0";
             desc.mtl_threads_per_threadgroup.x = 128;
@@ -46165,7 +46606,11 @@ fn SgShaderDesc gc_write_shader_desc(SgBackend backend)
             desc.views[2].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[2].storage_buffer.readonly = false;
             desc.views[2].storage_buffer.msl_buffer_n = 10;
+            $else
+                break;
+            $endif
         case SgBackend.METAL_IOS:
+            $if env::OS_TYPE == IOS:
             desc.compute_func.source = (ZString)&GC_WRITE_CS_SOURCE_METAL_IOS;
             desc.compute_func.entry = "main0";
             desc.mtl_threads_per_threadgroup.x = 128;
@@ -46184,7 +46629,11 @@ fn SgShaderDesc gc_write_shader_desc(SgBackend backend)
             desc.views[2].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[2].storage_buffer.readonly = false;
             desc.views[2].storage_buffer.msl_buffer_n = 10;
+            $else
+                break;
+            $endif
         case SgBackend.METAL_SIMULATOR:
+            $if env::OS_TYPE == IOS:
             desc.compute_func.source = (ZString)&GC_WRITE_CS_SOURCE_METAL_SIM;
             desc.compute_func.entry = "main0";
             desc.mtl_threads_per_threadgroup.x = 128;
@@ -46203,7 +46652,11 @@ fn SgShaderDesc gc_write_shader_desc(SgBackend backend)
             desc.views[2].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[2].storage_buffer.readonly = false;
             desc.views[2].storage_buffer.msl_buffer_n = 10;
+            $else
+                break;
+            $endif
         case SgBackend.WGPU:
+            $if env::EMSCRIPTEN:
             desc.compute_func.source = (ZString)&GC_WRITE_CS_SOURCE_WGSL;
             desc.compute_func.entry = "main";
             desc.uniform_blocks[0].stage = SgShaderStage.COMPUTE;
@@ -46219,6 +46672,9 @@ fn SgShaderDesc gc_write_shader_desc(SgBackend backend)
             desc.views[2].storage_buffer.stage = SgShaderStage.COMPUTE;
             desc.views[2].storage_buffer.readonly = false;
             desc.views[2].storage_buffer.wgsl_group1_binding_n = 2;
+            $else
+                break;
+            $endif
     }
     return desc;
 }

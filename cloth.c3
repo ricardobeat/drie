@@ -727,7 +727,7 @@ fn void update_all(Cloth*[] cloths, float dt) {
         if (c.self_distance <= 0) continue;
         if (c.snap.len != (sz)c.count()) {
             free(c.snap);
-            c.snap = mem::new_array(Vector3, c.count());
+            c.snap = mem::new_array(Vector3, (sz)c.count());
         }
         foreach (i, at : c.pos) c.snap[i] = c.origin + at;
         c.snap_mask = build_hash(c.snap.ptr, c.count(), c.self_distance, &c.snap_bucket, &c.snap_order, &c.snap_start);
@@ -885,8 +885,8 @@ fn uint build_hash(Vector3* p, uint n, float d, uint[]* bucket_arr, uint[]* orde
     if (bucket_arr.len != (sz)n) {
         free(*bucket_arr);
         free(*order_arr);
-        *bucket_arr = mem::new_array(uint, n);
-        *order_arr  = mem::new_array(uint, n);
+        *bucket_arr = mem::new_array(uint, (sz)n);
+        *order_arr  = mem::new_array(uint, (sz)n);
     }
     if (start_arr.len != (sz)size + 1) {
         free(*start_arr);
