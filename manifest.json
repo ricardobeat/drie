@@ -2,15 +2,14 @@
     "provides": "drie",
     "linklib-dir": "build/c",
     "sources": [
-        "./*",
-        "generated/*",
-        "platform/*"
+        "src/**",
+        "generated/*"
     ],
     "dependencies": [
         "sokol"
     ],
     "c-sources": [
-        "display.c",
+        "platform/display.c",
         "platform/cgltf.c",
         "platform/readback.c",
         "platform/gpucaps.c",

@@ -1,6 +1,6 @@
-// What the GPU can do beyond sokol's portable feature set (gpu_caps.c3): on Metal, the Apple GPU
-// family and the newest Metal Shading Language version the OS compiles. Compiled as Objective-C
-// on Apple; elsewhere it reports nothing (the portable tier).
+// Queries Metal GPU capabilities beyond sokol's portable feature set for drie::GpuCaps: Apple
+// GPU family, newest MSL version supported by the OS, unified memory, and threadgroup limits.
+// Compiled as Objective-C on Apple; elsewhere returns false (portable tier).
 #include <stdbool.h>
 #include <string.h>
 

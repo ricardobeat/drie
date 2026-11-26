@@ -1,7 +1,6 @@
-// GPU time per pass on desktop GL (gpu_timer.c3): a GL_TIMESTAMP query (glQueryCounter, GL 3.3)
-// at the start of each pass and one at the end of the frame, per frame in flight; read back
-// once available, a few frames later. A pass's time runs to the next pass's start. (Built on
-// every platform from the same list of C files: empty where sokol doesn't use GL, i.e. not Linux.)
+// Per-pass GPU timing on desktop OpenGL for drie::gpu_timer: issues GL_TIMESTAMP queries
+// (glQueryCounter, GL 3.3) at each pass start and frame end, resolving elapsed ms a few frames
+// later so each pass spans to the next pass start. Compiles empty outside desktop Linux.
 #if defined(__linux__) && !defined(__ANDROID__)
 #define GL_GLEXT_PROTOTYPES
 #include <GL/gl.h>

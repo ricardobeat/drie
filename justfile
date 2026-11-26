@@ -1,6 +1,6 @@
 # drie. `just` lists the recipes; `just driejs::<recipe>` runs driejs's (three.js on drie),
 # as does `just <recipe>` inside driejs/. Nothing here is part of the library: c3c only compiles
-# the .c3 files at the top of this folder.
+# the .c3 files listed in manifest.json (src/** and generated/*).
 
 mod driejs
 
@@ -13,6 +13,8 @@ libs := "--libdir " + libdir + " --lib sokol"
 target := "drie-" + os()
 # where bindgen.c3l is (the folder holding bindgen.c3l/), for `just bindings`
 bindgen := "../bindgen.c3l"
+# sokol-shdc binary for `just shaders`: `just shdc=sokol-shdc shaders` if on PATH
+shdc := "../house/tools/sokol-shdc"
 # the macOS c3c builds for: the one it runs on, as clang does for C without a target (and as
 # Homebrew's libdraco and boomkat's C are built), so that the linker finds nothing newer
 macos := if os() == "macos" { "--macos-min-version " + `sw_vers -productVersion 2>/dev/null || true` } else { "" }
@@ -21,10 +23,6 @@ macos := if os() == "macos" { "--macos-min-version " + `sw_vers -productVersion 
 # (tools/c_libs.py; elsewhere c3c compiles them)
 c_libs := if os() == "macos" { "python3 tools/c_libs.py macos-aarch64" } else { "true" }
 
-# the sources c3fmt formats: the hand written ones at the top. The sokol-shdc generated
-# files are in generated/ (manifest.json's "sources" adds it to the library).
-c3fmt_files := "*.c3"
-
 
 [private]
 default:
@@ -32,7 +30,7 @@ default:
 
 # type-check drie, without building a program
 check:
-    c3c compile-only {{libs}} --obj-out build/check *.c3 generated/*.c3 platform/*.c3
+    c3c compile-only {{libs}} --obj-out build/check $(find src -name '*.c3' | sort) generated/*.c3
 
 # build and run a rendering test, headless: `just test radiance` writes tests/build/radiance.png
 # (`just test radiance out.png --p3`: elsewhere, and in Display P3's colors)
@@ -79,14 +77,14 @@ bindings:
     build/cgltf/layout_c3 > build/cgltf/layout_c3.txt
     diff build/cgltf/layout_c.txt build/cgltf/layout_c3.txt && echo "cgltf.c3: the layout of $(grep -c '^cgltf' build/cgltf/layout_c.txt) structs matches C"
 
-# regenerate generated/*.c3 from the .glsl files with sokol-shdc (sokol-tools)
+# regenerate generated/*.c3 from shaders/*.glsl with sokol-shdc (sokol-tools)
 shaders:
     for s in radiance_cs radiance_rays_cs; do \
-        sokol-shdc -i $s.glsl -o generated/$s.c3 -f sokol_c3 -l glsl430:hlsl5:metal_macos:metal_ios:metal_sim || exit 1; \
+        {{shdc}} -i shaders/$s.glsl -o generated/$s.c3 -f sokol_c3 -l glsl430:hlsl5:metal_macos:metal_ios:metal_sim || exit 1; \
     done
     # these also in WGSL, for WebGPU (the others don't translate yet)
     for s in shader shader_deferred kernels output gtao taa bloom flare grade bokeh vsm atlas lightmap gpu_cloth; do \
-        sokol-shdc -i $s.glsl -o generated/$s.c3 -f sokol_c3 -l glsl430:hlsl5:metal_macos:metal_ios:metal_sim:wgsl || exit 1; \
+        {{shdc}} -i shaders/$s.glsl -o generated/$s.c3 -f sokol_c3 -l glsl430:hlsl5:metal_macos:metal_ios:metal_sim:wgsl || exit 1; \
     done
     # sokol-shdc's C3 output writes storage image view slots as `const int VIEW_X (0)`;
     # rewrite them to `const int VIEW_X = 0;` (BSD sed -i '' syntax, macOS)
@@ -99,14 +97,14 @@ shaders:
 ltc:
     python3 third_party/ltc/ltc.py driejs/vendor/jsm/lights/RectAreaLightTexturesLib.js generated/ltc.c3
 
-# docs.html: the API of drie's modules, with their comments (docgen.py)
+# docs.html: the API of drie's modules, with their comments (tools/docgen.py)
 docs:
-    c3c docgen *.c3 generated/*.c3 platform/*.c3 --emit-stdlib=no {{libs}} --json | python3 docgen.py -o docs.html
+    c3c docgen $(find src -name '*.c3' | sort) generated/*.c3 --emit-stdlib=no {{libs}} --json | python3 tools/docgen.py -o docs.html
 
 # format drie's sources with c3fmt (see .c3fmt)
 fmt:
-    c3fmt --in-place {{c3fmt_files}}
+    c3fmt --in-place $(find src -name '*.c3' | sort)
 
 # check that drie's sources are formatted (same files as `just fmt`)
 fmt-check:
-    c3fmt --check {{c3fmt_files}}
+    c3fmt --check $(find src -name '*.c3' | sort)
