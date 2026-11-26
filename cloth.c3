@@ -5,9 +5,13 @@
 //
 //   - stretch: each point to its neighbours across and down
 //   - shear: the diagonals of each cell
-//   - bend: along each row and column, how far a point sits off the midpoint of its two
-//     neighbours, along the cloth's normal there, is held at the rest shape's (a signed
-//     curvature: a fold bulges back the way it did at rest, not either way)
+//   - bend, by `bend_model`:
+//       SIGNED: along each row and column, how far a point sits off the midpoint of its two
+//       neighbours, along the cloth's normal there, is held at the rest shape's (a signed
+//       curvature: a fold bulges back the way it did at rest, not either way). For a rest
+//       shape with folds to keep (a pleated curtain).
+//       DISTANCE: each point to the one two away, across and down. A fold may bulge either
+//       way; soft and forgiving, for a cloth that starts flat (a sheet, a tablecloth).
 //   - tethers: no point gets further from its nearest pin than it is along the cloth at rest
 //   - self: with self_distance set, no two points come closer than that (collide_self), so
 //     a fold doesn't pass through the cloth
@@ -102,6 +106,11 @@ struct Tether {
     float rest;
 }
 
+enum BendModel : char {
+    SIGNED,
+    DISTANCE,
+}
+
 struct Cloth {
     int cols, rows;
     // where the points are kept from (the rest shape's first point): a point at p is at
@@ -125,6 +134,8 @@ struct Cloth {
     List{Link} stretch;
     List{Link} shear;
     List{Bend} bend;
+    // the DISTANCE bend's links
+    List{Link} bend_links;
     List{Tether} tethers;
     bool tethers_dirty;
     // the compliances (over h²) the links' ka and kb were worked out for; -1: not yet
@@ -136,7 +147,10 @@ struct Cloth {
     // curvature offset)
     float stretch_compliance;
     float shear_compliance;
+    // the bend's compliance, on its model's own scale: SIGNED about 0.1 (folds held) to 20
+    // (limp), DISTANCE about 1e-3 to 1e-1
     float bend_compliance;
+    BendModel bend_model;
     // a tether lets its point go this much further than the rest distance (0.02 = 2%)
     float tether_slack;
     // velocity lost per second (0..)
@@ -256,6 +270,7 @@ fn Cloth* from_positions(int cols, int rows, Vector3[] rest, float mass = 0.4f) 
     c.stretch.allocator = mem;
     c.shear.allocator = mem;
     c.bend.allocator = mem;
+    c.bend_links.allocator = mem;
     c.tethers.allocator = mem;
     c.colliders.allocator = mem;
     c.touching.allocator = mem;
@@ -297,6 +312,8 @@ fn Cloth* from_positions(int cols, int rows, Vector3[] rest, float mass = 0.4f) 
                 c.link(&c.shear, i, c.index(k + 1, r + 1));
                 c.link(&c.shear, c.index(k + 1, r), c.index(k, r + 1));
             }
+            if (k + 2 < cols) c.link(&c.bend_links, i, c.index(k + 2, r));
+            if (r + 2 < rows) c.link(&c.bend_links, i, c.index(k, r + 2));
         }
     }
     // in runs, rows then columns, at every third middle point along the bends and every third
@@ -317,6 +334,7 @@ fn Cloth* from_positions(int cols, int rows, Vector3[] rest, float mass = 0.4f) 
     }
     color_links(&c.stretch, n);
     color_links(&c.shear, n);
+    color_links(&c.bend_links, n);
     return c;
 }
 
@@ -473,6 +491,7 @@ fn void Cloth.free(&self) {
     self.stretch.free();
     self.shear.free();
     self.bend.free();
+    self.bend_links.free();
     self.tethers.free();
     self.colliders.free();
     free(self.shown);
@@ -783,6 +802,7 @@ fn void Cloth.step_once(&self, float from = 0, float until = 1) {
         prepare_links(&self.stretch, w, alpha[0]);
         prepare_links(&self.shear, w, alpha[1]);
         prepare_bends(&self.bend, alpha[2]);
+        prepare_links(&self.bend_links, w, alpha[2]);
     }
     for (int s = 0; s < self.substeps; s++) {
         for (uint i = 0; i < n; i++) {
@@ -793,7 +813,11 @@ fn void Cloth.step_once(&self, float from = 0, float until = 1) {
         }
         solve_links(p, &self.stretch);
         solve_links(p, &self.shear);
-        solve_bends(p, w, &self.bend);
+        if (self.bend_model == DISTANCE) {
+            solve_links(p, &self.bend_links);
+        } else {
+            solve_bends(p, w, &self.bend);
+        }
         self.solve_tethers();
         if (self.self_distance > 0 && (s + 1) % math::max(self.self_every, 1) == 0) self.collide_self();
         self.collide(from + (until - from) * (float)(s + 1) * step_frac, from + (until - from) * (float)s * step_frac);
