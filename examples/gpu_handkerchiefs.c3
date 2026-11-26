@@ -13,10 +13,6 @@ import std::io, std::math, std::collections::list;
 
 const int W = 1280;
 const int H = 720;
-const float LOOK_SPEED = 0.002f;
-const float LOOK_SPRING = 18;
-const float WALK_SPEED = 2.5f;
-const float WALK_SPRING = 6;
 const float RENDER_SCALE = 0.7f;
 const int HANDKERCHIEFS = 64;
 const int GRID = 21;
@@ -49,7 +45,7 @@ struct Handkerchief {
 Renderer* renderer;
 Scene* scene;
 PerspectiveCamera* camera;
-OrbitControls* controls;
+WalkControls* controls;
 Sky* sky;
 RenderTarget* scene_rt;
 GTAOPass* ao;
@@ -480,12 +476,6 @@ fn void build_scene() {
     camera.look_at_vec(START_AT);
 }
 
-fn void keep_inside(Vector3* p, float margin) {
-    p.x = math::clamp(p.x, -ROOM + margin, ROOM - margin);
-    p.z = math::clamp(p.z, -ROOM + margin, ROOM - margin);
-    p.y = math::clamp(p.y, margin, CEILING - margin);
-}
-
 String off = "";
 DirectionalLight* sun;
 
@@ -535,86 +525,19 @@ fn void render_frame(RenderTarget* target) {
 
 float last_time = -1;
 
-bool[6] held;
-
-float yaw;
-float pitch;
-float want_yaw;
-float want_pitch;
-bool looking;
-
-fn void aim_from(Vector3 eye, Vector3 at) {
-    Vector3 d = (at - eye).normalize();
-    yaw = want_yaw = math::atan2(d.x, -d.z);
-    pitch = want_pitch = math::asin(d.y);
-}
-
-fn void look(float dt) {
-    if (!looking) {
-        sapp::lock_mouse(true);
-        looking = true;
-    }
-    float k = 1 - math::exp(-LOOK_SPRING * dt);
-    yaw += (want_yaw - yaw) * k;
-    pitch += (want_pitch - pitch) * k;
-    Vector3 d = { math::sin(yaw) * math::cos(pitch), math::sin(pitch), -math::cos(yaw) * math::cos(pitch) };
-    controls.target = camera.position + d;
-    camera.look_at_vec(controls.target);
-}
-
 fn void on_event(Event* e) {
-    if (e.type == MOUSE_MOVE && sapp::mouse_locked()) {
-        want_yaw += e.mouse_dx * LOOK_SPEED;
-        want_pitch = math::clamp(want_pitch - e.mouse_dy * LOOK_SPEED, -1.5f, 1.5f);
-        return;
+    if (e.type == KEY_DOWN && e.key_code == P) {
+        Vector3 at = camera.position + controls.direction();
+        io::printfn("camera { %.2f, %.2f, %.2f } looking at { %.2f, %.2f, %.2f }", camera.position.x, camera.position.y,
+                    camera.position.z, at.x, at.y, at.z);
     }
-    if (e.type == MOUSE_DOWN) sapp::lock_mouse(true);
-    if (e.type != KEY_DOWN && e.type != KEY_UP) return;
-    bool down = e.type == KEY_DOWN;
-    switch (e.key_code) {
-        case W: held[0] = down;
-        case S: held[1] = down;
-        case A: held[2] = down;
-        case D: held[3] = down;
-        case E: held[4] = down;
-        case Q: held[5] = down;
-        case ESCAPE: if (down) sapp::lock_mouse(false);
-        case P:
-            if (down) io::printfn("camera { %.2f, %.2f, %.2f } looking at { %.2f, %.2f, %.2f }", camera.position.x, camera.position.y,
-                                  camera.position.z, controls.target.x, controls.target.y, controls.target.z);
-        default:
-    }
-}
-
-Vector3 walk_velocity;
-
-fn void walk(float dt) {
-    Vector3 ahead = controls.target - camera.position;
-    ahead.y = 0;
-    if (ahead.length() < 1e-4f) return;
-    ahead = ahead.normalize();
-    Vector3 right = { -ahead.z, 0, ahead.x };
-    Vector3 move;
-    if (held[0]) move += ahead;
-    if (held[1]) move -= ahead;
-    if (held[2]) move -= right;
-    if (held[3]) move += right;
-    if (held[4]) move.y += 1;
-    if (held[5]) move.y -= 1;
-    Vector3 want = move.length() > 1e-4f ? move.normalize() * WALK_SPEED : (Vector3) { 0, 0, 0 };
-    walk_velocity += (want - walk_velocity) * (1 - math::exp(-WALK_SPRING * dt));
-    Vector3 step = walk_velocity * dt;
-    camera.position += step;
-    controls.target += step;
 }
 
 fn void animate(double time) {
     float now = renderer.time;
     float dt = last_time < 0 ? 0 : math::min(now - last_time, 0.1f);
     last_time = now;
-    walk(dt);
-    keep_inside(&camera.position, 0.25f);
-    look(dt);
+    controls.update(dt);
     step(dt);
     render_frame(null);
 }
@@ -658,10 +581,10 @@ fn int main(String[] args) {
     if (!png_path) {
         renderer = drie::renderer(antialias: true, width: W, height: H, title: "drie: handkerchiefs");
         build_scene();
-        controls = controls::orbit_controls(camera);
-        controls.enabled = false;
-        controls.target = START_AT;
-        aim_from(START_EYE, START_AT);
+        controls = controls::walk_controls(camera, START_AT);
+        controls.bounded = true;
+        controls.min = { -ROOM + 0.25f, 0.25f, -ROOM + 0.25f };
+        controls.max = { ROOM - 0.25f, CEILING - 0.25f, ROOM - 0.25f };
         drie::add_overlay(&hud);
         drie::add_event_listener(&on_event);
         renderer.set_animation_loop(&animate);
