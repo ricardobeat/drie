@@ -1,7 +1,7 @@
-// Reads the current game controller (DualSense, DualShock, Xbox, MFi...) through Apple's
-// (Built on every platform from the same list of C files: empty where it is not Apple.)
+// Polls the active game controller (DualSense, DualShock, Xbox, MFi) via Apple's GameController
+// framework for drie::gamectl and drie::input. Compiled as Objective-C on Apple platforms and
+// empty elsewhere so every target builds the same C source list.
 #if defined(__APPLE__)
-// GameController framework. Compiled as Objective-C.
 #import <GameController/GameController.h>
 #include <stdbool.h>
 #include <string.h>

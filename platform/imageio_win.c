@@ -1,5 +1,6 @@
-// Decodes images with the Windows Imaging Component into straight (non-premultiplied) RGBA8.
-// (Built on every platform from the same list of C files: empty where it is not Windows.)
+// Windows image decoding for drie::imageio: decodes images via Windows Imaging Component (WIC)
+// into straight (non-premultiplied) RGBA8, with stub text metrics and rasterization entry points.
+// Compiles empty outside Windows so every target shares the same C source list.
 #if defined(_WIN32)
 #define COBJMACROS
 #include <windows.h>

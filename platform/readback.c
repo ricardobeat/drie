@@ -1,5 +1,6 @@
-// Copies a Metal texture (BGRA8/RGBA8) into CPU memory. Compiled as Objective-C.
-// (Built on every platform from the same list of C files: empty where it is not Apple.)
+// Metal GPU readback and headless device helpers for drie::readback: copies textures to CPU
+// memory, creates the default MTLDevice for headless rendering, and tracks non-blocking storage
+// buffer readbacks across up to 64 staging slots. Compiled as Objective-C on Apple; empty elsewhere.
 #if defined(__APPLE__)
 #import <Metal/Metal.h>
 #include <stdbool.h>

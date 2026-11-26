@@ -7,12 +7,11 @@
         "sokol"
     ],
     "sources": [
-        "./*",
-        "generated/*",
-        "platform/*"
+        "src/**",
+        "generated/*"
     ],
     "c-sources": [
-        "display.c",
+        "platform/display.c",
         "platform/cgltf.c",
         "platform/readback.c",
         "platform/gpucaps.c",
@@ -47,7 +46,7 @@
         "drie-web": {
             "type": "executable",
             "c-sources-override": [
-                "display.c",
+                "platform/display.c",
                 "platform/cgltf.c",
                 "platform/web.c"
             ],

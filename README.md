@@ -76,7 +76,7 @@ three.js API coverage:
 | Lighting addons | ✅ | Clustered forward lighting (`ClusteredLighting`), irradiance volume (`LightProbeGrid`) |
 | Reflections | ✅ | Box-projected env maps, `CubeCamera` capture, SSR (`SSRNode`), planar `Reflector` |
 | Fog | ✅ | `Fog`, `FogExp2` |
-| Controls | ✅ | `OrbitControls` (`drie::controls`) |
+| Controls | ✅ | `OrbitControls`, `WalkControls` (`drie::controls`) |
 | Raycasting | ✅ | `Raycaster` against `Mesh`, `InstancedMesh`, `Lod` (per-triangle) |
 | Post-processing | ✅ | `EffectComposer`, `RenderPass`, `ShaderPass`, `output_pass`, `gtao_pass`, `taa_pass` |
 | Renderer | ✅ | `render_target`, tone mapping, frustum culling, `renderer.info`, MRT, compute passes |
@@ -124,8 +124,7 @@ three.js API coverage:
 - Objects are allocated with the heap allocator and never freed. `geometry.dispose()` frees GPU buffers.
 - Create objects outside of `@pool()` blocks. Their lists live on the heap, but anything you
   build with the temp allocator and hand to the library does not outlive the pool.
-- Shaders are built for Metal, GL 4.3 and D3D11, but the library has only been tested on macOS/Metal. `./build.sh windows` cross-compiles a
-  D3D11 build for Windows.
+- Shaders are built for Metal, GL 4.3, and D3D11, though macOS/Metal is the tested backend.
 
 ### Extensions
 
@@ -148,7 +147,8 @@ Features not in three.js:
 | **GPU Culling** | Depth pre-pass and GPU instanced culling |
 | **Light Radius & Tubes** | Point and spot lights with a size: softer close-range falloff, highlights the shape and size of the bulb; tube lights (`point_light.length`) |
 | **Material Extensions** | Foliage wind sway, glass viewer silhouette, refraction with dispersion, clearcoat, sheen, iridescence |
-| **UI, Input & Tooling** | Menus, macOS GameController support, deterministic timeline rewind, profiling |
+| **Cloth Simulation** | CPU (`drie::cloth`) and GPU compute (`drie::gpu_cloth`) XPBD cloth with wind, colliders, body coupling, and self-collision |
+| **UI, Input & Tooling** | Text/shape overlay (`drie::ui`), screen fades (`drie::transitions`), touch controls and gamepads (`drie::input`), `WalkControls` (`drie::controls`), timeline rewind, CPU/GPU profiling |
 
 ### Materials & Geometry
 
@@ -171,7 +171,7 @@ Features not in three.js:
 - **Flat backgrounds:** `scene.background_flat` shows `background_texture` as a picture over the whole view, placed by its `repeat` and `offset` (three's `scene.background` as a plain texture).
 - **Background materials:** `scene.background_material` is drawn behind everything on a sphere around the camera, a node material that reads the view's direction from `normal_geometry` (three's `scene.backgroundNode`).
 - **World-space box UVs:** `geometry.box_project_uv(tiles_per_unit)` generates box-projected UVs.
-- **Node materials** (`nodes.c3`, `nodes_tsl.c3`): a material's color, opacity, normal, roughness, metalness, glow, vertex positions and final color can come from graphs of nodes built at runtime, as three's TSL and `NodeMaterial` do (`colorNode`, `positionNode`...). drie prints each graph in the backend's own language (Metal, HLSL or GLSL) into the material's generated program, where it replaces the step it stands for (see **Generated programs**), so there is no shader compiler in drie: the driver compiles the result, as the browser does with three's WGSL. Uniforms change with `Node.set` without a rebuild. driejs runs three's real TSL on top of it (`three/webgpu`, `three/tsl`). Graphs can also be written as text: `nodes::snippet("mix(material_color.rgb, tint, smoothstep(0.0, 1.0, uv.y))", { { "tint", tint } })` (`nodes_snippet.c3`) parses GLSL-style expressions with `let`s, using drie::nodes' names, into the same nodes; a mistake fails with `SNIPPET_ERROR` and `nodes::snippet_error()` gives its line and column (`just test nodes_snippet`). `just example nodes` (`examples/nodes.c3`) burns a torus away with noise and a discard, its shadow with it, twists a column with `position_node`, and swaps a ball's `color_node` while it runs (keys 1 to 4).
+- **Node materials** (`src/nodes/graph.c3`, `src/nodes/tsl.c3`): a material's color, opacity, normal, roughness, metalness, glow, vertex positions and final color can come from graphs of nodes built at runtime, as three's TSL and `NodeMaterial` do (`colorNode`, `positionNode`...). drie prints each graph in the backend's own language (Metal, HLSL or GLSL) into the material's generated program, where it replaces the step it stands for (see **Generated programs**), so there is no shader compiler in drie: the driver compiles the result, as the browser does with three's WGSL. Uniforms change with `Node.set` without a rebuild. driejs runs three's real TSL on top of it (`three/webgpu`, `three/tsl`). Graphs can also be written as text: `nodes::snippet("mix(material_color.rgb, tint, smoothstep(0.0, 1.0, uv.y))", { { "tint", tint } })` (`src/nodes/snippet.c3`) parses GLSL-style expressions with `let`s, using drie::nodes' names, into the same nodes; a mistake fails with `SNIPPET_ERROR` and `nodes::snippet_error()` gives its line and column (`just test nodes_snippet`). `just example nodes` (`examples/nodes.c3`) burns a torus away with noise and a discard, its shadow with it, twists a column with `position_node`, and swaps a ball's `color_node` while it runs (keys 1 to 4).
 
 ```c3
 Node wave = nodes::sin(nodes::position_local().y() * 8 + nodes::time() * 2);
@@ -211,10 +211,10 @@ A material's maps besides `map`, `normal_map` and `arm_map` share six texture sl
 - **Variance shadow maps:** `renderer.shadow_type = VSM` (three.js `VSMShadowMap`; default `PCF`, three's `PCFSoftShadowMap`) blurs each spot and directional map into its moments (`shadow.radius`, `shadow.blur_samples`, `shadow.bias`), in RG32F where the GPU can draw and filter it, else RG16F.
 - **Several shadowed directional lights:** as in three.js, every directional light can cast a shadow: the first is the cascaded sun, each other one a box (`light.shadow_extent`) in a tile of the shadow atlas.
 - **Light maps:** `material.light_map` and `light_map_intensity` (three.js `lightMap`, `lightMapIntensity`) add baked light to the indirect irradiance, read from the uv set of the texture's `channel` (`1`: the geometry's `uv1`).
-- **Progressive light maps** (`lightmap.c3`): `drie::progressive_lightmap(renderer, res)` (three.js `ProgressiveLightMap`) bakes light into the objects' `uv1` a little at a time, from lights that may move (jittered, they give soft shadows); `renderer.render_bake` draws the samples.
+- **Progressive light maps** (`src/lighting/lightmap.c3`): `drie::progressive_lightmap(renderer, res)` (three.js `ProgressiveLightMap`) bakes light into the objects' `uv1` a little at a time, from lights that may move (jittered, they give soft shadows); `renderer.render_bake` draws the samples.
 - **Cascaded shadow maps:** `DirectionalLight` supports 1–4 texel-snapped cascades with blending and debug visualization.
-- **Irradiance volume** (`irradiance.c3`): `scene.irradiance` (`IrradianceVolume`), a probe grid of indirect bounce light, filled by the application or by `renderer.bake_irradiance(scene, volume)` (three's `LightProbeGrid.bake`: six small faces drawn around each probe, optionally with bounces); `irradiance_grid(min, max, nx, ny, nz)` makes one by probe counts. `scene.irradiance_volumes` adds more (up to `MAX_IRRADIANCE_VOLUMES` in all), each lighting its own box in front of the ones before it and fading out over half a cell outside it, so a volume the size of a room lights its walls, floor and ceiling fully.
-- **Radiance Cascades GI** (`radiance.c3`): `scene.radiance` (`RadianceCascades`) computes real-time GPU GI and emissive bounce, replacing ambient/hemisphere lights and `scene.irradiance` inside its box.
+- **Irradiance volume** (`src/lighting/irradiance.c3`): `scene.irradiance` (`IrradianceVolume`), a probe grid of indirect bounce light, filled by the application or by `renderer.bake_irradiance(scene, volume)` (three's `LightProbeGrid.bake`: six small faces drawn around each probe, optionally with bounces); `irradiance_grid(min, max, nx, ny, nz)` makes one by probe counts. `scene.irradiance_volumes` adds more (up to `MAX_IRRADIANCE_VOLUMES` in all), each lighting its own box in front of the ones before it and fading out over half a cell outside it, so a volume the size of a room lights its walls, floor and ceiling fully.
+- **Radiance Cascades GI** (`src/lighting/radiance.c3`): `scene.radiance` (`RadianceCascades`) computes real-time GPU GI and emissive bounce, replacing ambient/hemisphere lights and `scene.irradiance` inside its box.
 
 <details>
 <summary>Lighting, shadow, and GI extension API</summary>
@@ -265,7 +265,7 @@ A material's maps besides `map`, `normal_map` and `arm_map` share six texture sl
 
 - **Exponential fog:** `drie::fog_exp(color, density)` (three.js `FogExp2`).
 - **three's fog and background:** `renderer.display_fog` mixes the fog in after tone mapping, in the colors that are shown, and clears to the background color without tone mapping it, as three does. Off, both are tone mapped with the rest of the light.
-- **Volumetric fog** (`fog.c3`): Compute-marched froxel grid supporting light scatter (`spot_light.fog_glow`), height falloff, sun shafts, 3D animated noise, and clear boxes.
+- **Volumetric fog** (`src/lighting/fog.c3`): Compute-marched froxel grid supporting light scatter (`spot_light.fog_glow`), height falloff, sun shafts, 3D animated noise, and clear boxes.
 
 <details>
 <summary>Fog extension API</summary>
@@ -278,16 +278,16 @@ A material's maps besides `map`, `normal_map` and `arm_map` share six texture sl
 
 ### Renderer, Compute & Shaders
 
-- **Clustered forward lighting** (`clusters.c3`): `16x9x24` view-space light clusters assigned via compute shader (requires GL 4.3+ on OpenGL).
-- **Compute shaders** (`compute.c3`): Storage buffers, `@cs` compute passes, and async GPU-to-CPU readback.
-- **GPU instance culling** (`culling.c3`, `renderer.gpu_culling`): Compute-based per-instance frustum culling for static `InstancedMesh`es (`>= 8` instances) across the main camera and live shadow passes.
+- **Clustered forward lighting** (`src/renderer/clusters.c3`): `16x9x24` view-space light clusters assigned via compute shader (requires GL 4.3+ on OpenGL).
+- **Compute shaders** (`src/renderer/compute.c3`): Storage buffers, `@cs` compute passes, and async GPU-to-CPU readback.
+- **GPU instance culling** (`src/renderer/culling.c3`, `renderer.gpu_culling`): Compute-based per-instance frustum culling for static `InstancedMesh`es (`>= 8` instances) across the main camera and live shadow passes.
 - **Depth pre-pass:** `renderer.depth_prepass` for `alpha_test` and LOD cross-fade meshes.
 - **Compute validation:** `renderer.check_compute` and `drie::print_compute_checks()` validate GPU cluster and culling results against CPU reference runs.
 - **Render target & emissive extras:** `render_target.depth_texture`, `overlay_view` for post-resolve overlays, and alpha `0` for high-emissive light sources (`>= 16`) so post-processing can preserve blown-out lamps.
 - **Viewports, scissor and clearing:** `renderer.viewport` (`set_viewport`), `renderer.scissor` (`set_scissor`) with `scissor_test`, `auto_clear` and `renderer.clear()`, as three's `setViewport`, `setScissor`, `setScissorTest`, `autoClear` and `clear()`: several renders can share one frame, each in its own part of the window or target, in pixels from the bottom left. A background color clears the scissor box (or all of the target) even with `auto_clear` off, as in three. Several `render()` calls to the window inside the animation loop all go into the same frame, which is shown when the loop's callback returns.
 - **Headless & LOD scaling:** `renderer.init_headless()` (with `drie::commit()`) and `renderer.lod_scale` global multiplier for `Lod` distances.
-- **Generated programs** (`materials_nodes.c3`, `shading_nodes.c3`, `nodes_program.c3`): every material is a node graph, as three's `NodeMaterial`s are, built from what the material and the render use (its maps, lighting model, the kinds of lights present, shadow type, fog, tone mapping, the target...) and printed into a program for the backend at runtime. A flat textured quad gets a program of a few KB, a physical material with every layer one of tens of KB; materials that print the same share one (node materials too: those whose graphs print the same text, reading their own uniforms and textures in the same places, share a program and its pipelines, and each draw hands it the material's own). A value a graph uses in several places is printed once where all of them can read it (one expression printed for two nodes is worked out once, and what both branches of an `if` read is worked out before it). Light counts are uniforms, so adding or moving lights of a kind already in the scene builds nothing. Metal is the backend that is run and checked; the HLSL and GLSL printers are written but not yet compiled by anyone, so D3D11 and OpenGL are unverified.
-- **Pipeline cache** (`pipeline_cache.c3`): like Unreal's PSO cache. drie lists every render pipeline it makes (the engine's and node materials', with the state and target they draw with): save the list from a run that plays the game, load it at the start of the next, and the pipelines compile on worker threads, a few at a time, while frames go on, with `renderer.compiling()` for a loading bar. The list is text and holds no compiled code (a generated program goes in as its material key; a node material's, which its key alone can't print, as the program's text), so it doesn't go stale with the driver or GPU, it only gets less complete. Metal only; elsewhere loading does nothing.
+- **Generated programs** (`src/material/material_graph.c3`, `src/nodes/shading.c3`, `src/nodes/program.c3`): every material is a node graph, as three's `NodeMaterial`s are, built from what the material and the render use (its maps, lighting model, the kinds of lights present, shadow type, fog, tone mapping, the target...) and printed into a program for the backend at runtime. A flat textured quad gets a program of a few KB, a physical material with every layer one of tens of KB; materials that print the same share one (node materials too: those whose graphs print the same text, reading their own uniforms and textures in the same places, share a program and its pipelines, and each draw hands it the material's own). A value a graph uses in several places is printed once where all of them can read it (one expression printed for two nodes is worked out once, and what both branches of an `if` read is worked out before it). Light counts are uniforms, so adding or moving lights of a kind already in the scene builds nothing. Metal is the backend that is run and checked; the HLSL and GLSL printers are written but not yet compiled by anyone, so D3D11 and OpenGL are unverified.
+- **Pipeline cache** (`src/renderer/pipeline_cache.c3`): like Unreal's PSO cache. drie lists every render pipeline it makes (the engine's and node materials', with the state and target they draw with): save the list from a run that plays the game, load it at the start of the next, and the pipelines compile on worker threads, a few at a time, while frames go on, with `renderer.compiling()` for a loading bar. The list is text and holds no compiled code (a generated program goes in as its material key; a node material's, which its key alone can't print, as the program's text), so it doesn't go stale with the driver or GPU, it only gets less complete. Metal only; elsewhere loading does nothing.
 - **Programs at once** (`renderer.max_programs`, `1024`): how many programs (sokol shaders) can exist at once, the generated ones and the passes'; set it before the renderer starts. A game whose node materials print many different programs raises it (house's 199 test views take about 750).
 - **Compiling in the background:** a render starts compiling the programs its draws take on worker threads, all at once, and each draw waits only for its own. With `renderer.compile_in_background` (off by default) a node material's meshes are left out of the frame until their programs are ready, rather than the frame waiting.
 - **Programs are made when a draw first takes one**, not at startup. A render starts compiling, all at once on worker threads (Metal), the ones its draws, background and passes will take, and a draw waits only for its own. After that the driver's cache has them.
@@ -306,23 +306,33 @@ A material's maps besides `map`, `normal_map` and `arm_map` share six texture sl
 
 </details>
 
-### UI, Input & Utilities
+### Cloth
 
-- **Menus & UI** (`drie::ui`): Escape-toggled menu, screen fade, setup, and touch controls.
-- **Game controllers** (`drie::input`, macOS GameController): Polled every frame; d-pad, cross/A, circle/B, and options also emit arrow, enter, backspace, and escape key events by default.
-- **Rewind timeline** (`drie::timeline`): `Timeline{Input, State}` records per-frame inputs and periodic state snapshots for deterministic `seek()` replay.
-- **Profiling** (`drie::profile`): Frame section timing and reporting.
+- **CPU cloth** (`drie::cloth`, `src/cloth/cloth.c3`): XPBD point-mass grid solved in fixed 1/60 s substeps with stretch, shear, `SIGNED` or `DISTANCE` bending, pin tethers, self-collision, wind/gusts, swept sphere/capsule/box/plane colliders, and two-way rigid body coupling (`just example cloth`, `just example curtains`).
+- **GPU cloth** (`drie::gpu_cloth`, `src/cloth/gpu_cloth.c3`, `shaders/gpu_cloth.glsl`): compute-shader XPBD solver for large multi-panel meshes, using colored constraint dispatches, fixed-point spatial-hash self-collision, swept colliders with body feedback, and direct GPU vertex buffer writes (`just example cloth_furniture`, `just example gpu_cloth_balls`).
+
+### Controls, UI, Input & Utilities
+
+- **Controls** (`drie::controls`, `src/controls/`): `OrbitControls` (`src/controls/orbit.c3`) for mouse rotate/pan/zoom, and `WalkControls` (`src/controls/walk.c3`) for pointer-locked mouse look with spring-damped WASD/QE movement and optional world bounds.
+- **Overlay** (`drie::ui`, `src/ui/ui.c3`): `ui::setup()` initializes `sokol_debugtext` (with `FONT_*` bitmap fonts) and `sokol_gl` with an alpha-blending pipeline (`ui::blend_pipeline()`); `ui::text()` and `ui::rect()` draw text and rectangles, and `ui::draw()` renders touch controls and active transitions over the window.
+- **Transitions** (`drie::transitions`, `src/ui/transitions.c3`): `transitions::screen_fade` fades to and from black (`out()`, `in()`, `update(dt)`).
+- **Touch controls** (`drie::input`, `src/input/touch.c3`): `input::touch_controls()` provides a left-thumb virtual stick (with `run_beyond` sprint and `stick_as_dpad` menu mode), look drag (`take_look()`), and on-screen buttons (`add_button()`) that feed into gamepad button bits.
+- **Game controllers** (`drie::input`, `src/input/gamepad.c3`, `platform/gamectl.c`, `platform/gamectl_win.c`): polled every frame via Apple GameController and Windows XInput; d-pad, south, east, and menu also emit arrow, enter, backspace, and escape key events when `keys` is enabled.
+- **Rewind timeline** (`drie::timeline`, `src/util/timeline.c3`): `Timeline{Input, State}` records per-frame inputs and periodic state snapshots for deterministic `seek()` replay.
+- **Profiling** (`drie::profile`, `drie::gpu_timer`, `src/debug/`): CPU frame section timing and per-pass GPU timing (`platform/gputimer*.c`).
 - **Application hooks:** `drie::add_frame_hook`, `add_event_filter`, and `add_overlay`.
 
 <details>
-<summary>UI, input, timeline, and profiling API</summary>
+<summary>Cloth, controls, UI, input, timeline, and profiling API</summary>
 
 | Area | Key API / Fields | Notes |
 | --- | --- | --- |
-| UI | `ui::menu(title, handler)`, `ui::screen_fade`, `ui::setup()`, `ui::touch_controls()` | Captures keyboard/mouse when open; sends `OPEN`, `CLOSE`, `SELECT`, `CONFIRM`, `BACK`; `overlay = true` for built-in rendering or draw manually |
-| Gamepad | `input::gamepad()`, `PAD_*` (`pressed()` / `released()`), sticks, triggers | — |
+| Cloth | `drie::cloth` (`Cloth`, `bend_model`, `pin()`, `move_collider()`, `set_collider_mass()`), `drie::gpu_cloth` (`GpuCloth`, `panels()`) | CPU and GPU XPBD cloth solvers in `src/cloth/` |
+| Controls | `controls::orbit_controls(camera)`, `controls::walk_controls(camera, at)` | Call `update()` / `update(dt)` each frame |
+| UI & Transitions | `ui::setup()`, `ui::text()`, `ui::rect()`, `ui::blend_pipeline()`, `transitions::screen_fade` | `ui::draw()` draws touch controls and the fade over the window; set `screen_fade.custom = true` to apply `level` yourself |
+| Touch & Gamepad | `input::gamepad()`, `PAD_*` (`down()` / `pressed()` / `released()`), `input::touch_controls()` (`add_button()`, `stick_x` / `stick_y`, `take_look()`) | Touch buttons set `gamepad().held` bits and share `keys` event mapping |
 | Timeline | `Timeline{Input, State}`, `seek()` | Requires a deterministic step function |
-| Profiling | `profile::enabled = true`, `profile::start()`, `profile::stop(name, t)`, `profile::report(frames)` | — |
+| Profiling | `profile::enabled = true`, `profile::start()`, `profile::stop(name, t)`, `profile::report(frames)`, `gpu_timer::enabled = true` | `DRIE_GPU_TIMER=1` enables periodic GPU pass reports |
 
 </details>
 
@@ -332,20 +342,21 @@ TBD. Currently the demo, with all advanced features on, runs at 40-60FPS on a Ma
 
 ## Editing the shaders
 
-The materials' programs are written in C3, as node graphs: the material's steps in
-`materials_nodes.c3`, the shading functions (BRDFs, lights, shadows, fog, tone mapping) in
-`shading_nodes.c3`, and the printers for Metal, HLSL and GLSL in `nodes_program.c3`. They need
-no build step. `DRIE_TRACE_PROGRAMS=1` prints each program as it is built.
+The materials' programs are written in C3 as node graphs: material assembly in `src/material/`
+(`material_graph.c3`, `material_lit.c3`, `layers.c3`, `shadow_lookup.c3`), shading functions
+(BRDFs, lights, shadows, fog, tone mapping) in `src/nodes/shading.c3`, and the Metal, HLSL, and
+GLSL printers in `src/nodes/printer.c3` and `src/nodes/program.c3`. They need no build step.
+`DRIE_TRACE_PROGRAMS=1` prints each program as it is built.
 
-`shader_core.glsl` is the old uber shader; `shader.glsl` includes it with empty hooks, which
-gives drie the structs and slots its bindings use, and the depth and shadow programs of its
-own passes. Run `just shaders` (sokol-shdc,
-from sokol-tools) to regenerate `generated/shader.c3`, and with it `kernels.c3` (the compute
-shaders, from `kernels.glsl`), `output.c3`, `gtao.c3` and `taa.c3` (the post-processing passes),
-`radiance_cs.c3`, `vsm.c3` (the variance shadow maps' blur) and `lightmap.c3` (the progressive
-light map's seams pass); the recipe then fixes sokol-shdc's storage image slot constants with
-macOS `sed -i ''`. An application with its own copy of the uber shader generates it into its
-own sources, and regenerates it whenever `shader_core.glsl` changes.
+`shaders/shader_core.glsl` is the shared GLSL shader core included by `shaders/shader.glsl`
+(which supplies the structs and binding slots plus the depth, shadow, and clear programs) and
+`shaders/shader_deferred.glsl` (deferred fullscreen lighting). Run `just shaders` (`sokol-shdc`
+from sokol-tools) to regenerate `generated/*.c3` from `shaders/*.glsl` (`shader`,
+`shader_deferred`, `kernels`, `output`, `gtao`, `taa`, `bloom`, `flare`, `grade`, `bokeh`,
+`radiance_cs`, `radiance_rays_cs`, `vsm`, `atlas`, `lightmap`, `gpu_cloth`); the recipe then
+fixes sokol-shdc's storage image slot constants with macOS `sed -i ''`. An application with its
+own copy of the shader core generates it into its own sources and regenerates it whenever
+`shaders/shader_core.glsl` changes.
 
 ## RectAreaLight's tables
 
@@ -357,7 +368,7 @@ has no view slot left for textures of their own: a frame with rect area lights a
 
 ## cgltf
 
-The glTF loader (`gltf.c3`) reads files with [cgltf](https://github.com/jkuhlmann/cgltf) 1.15
+The glTF loader (`src/loaders/gltf.c3`) reads files with [cgltf](https://github.com/jkuhlmann/cgltf) 1.15
 (MIT), vendored as `third_party/cgltf/cgltf.h` and compiled by `platform/cgltf.c`. Its C3
 binding, `generated/cgltf.c3`, is made with [bindgen.c3l](../bindgen.c3l) (`just bindings`;
 `just bindgen=path bindings` for a checkout elsewhere), which also checks that every struct of
@@ -385,6 +396,6 @@ NormalTangentMirrorTest (CC-BY 4.0, tangents): each normal-mapped cell should re
 
 ## Justfile
 
-This repository uses [just](https://github.com/casey/just) as a task runner.
-
-`just --list` to see all available commands.
+This repository uses [just](https://github.com/casey/just) as a task runner (`just docs` builds
+`docs.html` via `tools/docgen.py`, `just check` type-checks `src/` and `generated/`, and
+`just --list` shows all commands).
