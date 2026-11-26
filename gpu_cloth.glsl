@@ -8,6 +8,9 @@
 //   gc_links_cs       per link of one color (no two of a color share a point): XPBD distance
 //                     constraint, one pass; one dispatch per color, so the points are solved in
 //                     the same order every time (Gauss-Seidel), without atomics
+//   gc_bends_cs       per bend of one run (no two of a run share a point): XPBD on a point's
+//                     offset from the midpoint of its neighbours along the normal, as Cloth's
+//                     (bend_model SIGNED; DISTANCE bends are links)
 //   gc_tethers_cs     per point: no further from its nearest pin than along the cloth at rest
 //   gc_clear_cs, gc_count_cs, gc_scan_*_cs, gc_fill_cs
 //                     the spatial hash of the points: counted into cells, the counts summed
@@ -17,7 +20,8 @@
 //                     order the hash lists them in does not change the result
 //   gc_collide_cs     per point: the self-collision push, the colliders, the floor, and the
 //                     velocity from the substep's move
-//   gc_write_cs       per vertex: the mesh's position and normal, written into its vertex buffer
+//   gc_write_cs       per vertex of a panel's mesh: its position and normal, written into its
+//                     vertex buffer
 @header module drie::shaders;
 @header import drie;
 
@@ -38,6 +42,7 @@ layout(binding=0) uniform gc_params {
     vec4 gc_self;      // x = 1 / hash cell size, y = self-collision stiffness, z = tether slack,
                        //   w = self-collision friction
     vec4 gc_mode;      // w = gc_bodies_cs's mode (xy: the update and its steps), x = gc_damp_cs's share
+    ivec4 gc_grid;     // x = columns of a panel (y: the first column of gc_write_cs's)
 };
 
 struct gc_point {
@@ -52,6 +57,20 @@ struct gc_pin {
 struct gc_link {
     uint a;
     uint b;
+    float rest;
+    float pad;
+};
+
+// m between a and b along a row or column: (a + b - 2m) along the normal at m, s (b - a) x
+// (d - c), is held at `rest`; c and d are m's neighbours the other way (m itself at an edge), s
+// 1 along a row and -1 down a column
+struct gc_bend {
+    uint a;
+    uint m;
+    uint b;
+    uint c;
+    uint d;
+    float s;
     float rest;
     float pad;
 };
@@ -181,7 +200,8 @@ void main() {
         // the two triangles of each cell around the point (i00, i01, i11) and (i00, i11, i10)
         for (int r = row - 1; r <= row; r++) {
             for (int c = col - 1; c <= col; c++) {
-                if (c < 0 || r < 0 || c + 1 >= cols || r + 1 >= gc_counts.z) continue;
+                // (a cell between two panels is none)
+                if (c < 0 || r < 0 || c + 1 >= cols || r + 1 >= gc_counts.z || (c + 1) % gc_grid.x == 0) continue;
                 int i00 = r * cols + c;
                 int i10 = i00 + 1;
                 int i01 = i00 + cols;
@@ -240,6 +260,65 @@ void main() {
     vec3 c = d * (1.0 - l.rest * inversesqrt(d2));
     pos[l.a].p = vec4(pa - c * (wa / sum), 0.0);
     pos[l.b].p = vec4(pb + c * (wb / sum), 0.0);
+}
+@end
+
+// As Cloth's solve_bends: the gradient takes in how the normal turns as a, b, c and d move, so
+// that the correction is a force's. Every point's gradient is along the normal, so each is a
+// number: a's 1 - ge, b's 1 + ge, m's -2, c's -gf and d's gf.
+@cs gc_bends_cs
+@include_block gc_common
+layout(binding=0) buffer gc_bends_pos { gc_point pos[]; };
+layout(binding=1) readonly buffer gc_bends_bends { gc_bend bends[]; };
+layout(binding=2) readonly buffer gc_bends_pins { gc_pin pins[]; };
+layout(local_size_x=128) in;
+void main() {
+    int k = int(gl_GlobalInvocationID.x);
+    if (k >= gc_range.y) return;
+    gc_bend b = bends[gc_range.x + k];
+    vec3 pa = pos[b.a].p.xyz;
+    vec3 pb = pos[b.b].p.xyz;
+    vec3 pm = pos[b.m].p.xyz;
+    vec3 pc = pos[b.c].p.xyz;
+    vec3 pd = pos[b.d].p.xyz;
+    vec3 e = pb - pa;
+    vec3 f = pd - pc;
+    vec3 nn = cross(e, f) * b.s;
+    float n2 = dot(nn, nn);
+    if (n2 < 1e-24) return;
+    float inv2 = 1.0 / n2;
+    vec3 n = nn * sqrt(inv2);
+    vec3 dv = pa + pb - pm * 2.0;
+    float c = dot(dv, n) - b.rest;
+    float ef = dot(e, f);
+    float de = dot(dv, e);
+    float df = dot(dv, f);
+    float ge = (df * ef - de * dot(f, f)) * inv2;
+    float gf = (de * ef - df * dot(e, e)) * inv2;
+    float ga = 1.0 - ge;
+    float gb = 1.0 + ge;
+    float gm = -2.0;
+    float gc = -gf;
+    // (at an edge c or d is m)
+    bool c_edge = b.c == b.m;
+    bool d_edge = b.d == b.m;
+    if (c_edge) gm += gc;
+    if (d_edge) gm += gf;
+    float wa = pins[b.a].p.w;
+    float wb = pins[b.b].p.w;
+    float wm = pins[b.m].p.w;
+    float wc = pins[b.c].p.w;
+    float wd = pins[b.d].p.w;
+    float sum = wa * ga * ga + wb * gb * gb + wm * gm * gm + gc_step.z;
+    if (!c_edge) sum += wc * gc * gc;
+    if (!d_edge) sum += wd * gf * gf;
+    if (sum <= 0.0) return;
+    vec3 l = n * (-c / sum);
+    pos[b.a].p = vec4(pa + l * (ga * wa), 0.0);
+    pos[b.b].p = vec4(pb + l * (gb * wb), 0.0);
+    pos[b.m].p = vec4(pm + l * (gm * wm), 0.0);
+    if (!c_edge) pos[b.c].p = vec4(pc + l * (gc * wc), 0.0);
+    if (!d_edge) pos[b.d].p = vec4(pd + l * (gf * wd), 0.0);
 }
 @end
 
@@ -772,18 +851,22 @@ vec3 gc_shown(int i) {
 
 void main() {
     int i = int(gl_GlobalInvocationID.x);
-    if (i >= gc_counts.x) return;
     int cols = gc_counts.y;
     int rows = gc_counts.z;
-    int c = i % cols;
-    int r = i / cols;
+    int w = gc_grid.x;
+    if (i >= w * rows) return;
+    // vertex i of the mesh of the panel from column gc_grid.y: the point at column gc_grid.y + k
+    // of row r
+    int k = i % w;
+    int r = i / w;
+    int row = r * cols + gc_grid.y;
     // the normal from the neighbours across and down (the side cross(across, -down) faces)
-    vec3 du = gc_shown(r * cols + min(c + 1, cols - 1)) - gc_shown(r * cols + max(c - 1, 0));
-    vec3 dv = gc_shown(max(r - 1, 0) * cols + c) - gc_shown(min(r + 1, rows - 1) * cols + c);
+    vec3 du = gc_shown(row + min(k + 1, w - 1)) - gc_shown(row + max(k - 1, 0));
+    vec3 dv = gc_shown(max(r - 1, 0) * cols + gc_grid.y + k) - gc_shown(min(r + 1, rows - 1) * cols + gc_grid.y + k);
     vec3 n = cross(du, dv);
     float len = length(n);
     n = len > 1e-12 ? n / len : vec3(0.0, 0.0, 1.0);
-    vec3 p = gc_origin.xyz + gc_shown(i);
+    vec3 p = gc_origin.xyz + gc_shown(row + k);
     verts[i].a = vec4(p, n.x);
     vec4 b = verts[i].b;
     verts[i].b = vec4(n.y, n.z, b.z, b.w);
@@ -794,6 +877,7 @@ void main() {
 @program gc_forces gc_forces_cs
 @program gc_integrate gc_integrate_cs
 @program gc_links gc_links_cs
+@program gc_bends gc_bends_cs
 @program gc_tethers gc_tethers_cs
 @program gc_clear gc_clear_cs
 @program gc_count gc_count_cs
