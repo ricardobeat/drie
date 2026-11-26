@@ -2,7 +2,7 @@
 // buttons whose pressed bits merge into `input::gamepad().held`. Enabled from startup on iOS and
 // Android, or upon the first touch event elsewhere; positions are in points (`pixels / dpi_scale`),
 // and `ui::draw()` renders the overlay.
-//
+// 
 //   TouchControls* touch = input::touch_controls();
 //   touch.add_button(input::PAD_NORTH, "LAMP", 70, 150);
 //   walk(touch.stick_x, touch.stick_y);
@@ -15,9 +15,9 @@ import sokol, drie, drie::ui;
 // Screen corner from which a `TouchButton` offset `(x, y)` is measured.
 enum TouchAnchor {
     BOTTOM_RIGHT, // Offset inward from the bottom-right corner.
-    TOP_RIGHT, // Offset inward from the top-right corner.
-    BOTTOM_LEFT, // Offset inward from the bottom-left corner.
-    TOP_LEFT, // Offset inward from the top-left corner.
+    TOP_RIGHT,    // Offset inward from the top-right corner.
+    BOTTOM_LEFT,  // Offset inward from the bottom-left corner.
+    TOP_LEFT,     // Offset inward from the top-left corner.
 }
 
 // Circular on-screen button that drives one or more `PAD_*` bits while held.

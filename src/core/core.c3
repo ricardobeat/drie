@@ -598,10 +598,10 @@ fn void Mesh.set_morph_weights(&self, float[] weights, int target_count, int ins
         self.morph_weights_uploaded = false;
         return;
     }
-    int rows = instance_count > 0 ? instance_count : 1;
-    int stride_v4 = (target_count + 3) / 4;
+    int rows       = instance_count > 0 ? instance_count : 1;
+    int stride_v4  = (target_count + 3) / 4;
     int gpu_stride = instance_count > 0 ? stride_v4 : 0;
-    sz total = (sz)(1 + rows * stride_v4) * 4;
+    sz total       = (sz)(1 + rows * stride_v4) * 4;
     self.morph_weights.reserve(total);
     self.morph_weights.push((float)target_count);
     self.morph_weights.push((float)vertex_count);
@@ -1159,7 +1159,8 @@ fn DirectionalLight* directional_light(Color color = 0xffffff, float intensity =
     l.init_light(DIRECTIONAL, color, intensity);
     l.position = { 0, 1, 0 };
     l.target = object3d();
-    l.shadow = { .map_size = 2048, .normal_bias = 0.03f, .radius = 2, .blur_samples = 8, .intensity = 1, .near = 0.5f, .far = 300, .auto_update = true,
+    l
+        .shadow = { .map_size = 2048, .normal_bias = 0.03f, .radius = 2, .blur_samples = 8, .intensity = 1, .near = 0.5f, .far = 300, .auto_update = true,
         .cascades = 4, .split_lambda = 0.7f, .max_distance = 150, .cascade_blend = 0.1f };
     l.shadow_extent = 30;
     return l;

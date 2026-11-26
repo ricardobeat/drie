@@ -2,7 +2,7 @@
 // `drie::add_overlay()` at startup so `render()` and post-processing `end_screen()` automatically
 // draw enabled touch controls (`input::touch_controls()`) and screen transitions
 // (`transitions::screen_fade`) over the final window pass.
-//
+// 
 //   ui::setup();
 //   sdtx::font(ui::FONT_KC853);
 //   ui::text(2, 2, "HELLO", 1, 1, 1);

@@ -1,6 +1,6 @@
 // Shader source emission for node programs: resource slot allocation, expression printing, and
 // Metal/HLSL/GLSL stage source assembly (`build_program`, `vertex_source`, `fragment_source`).
-//
+// 
 // `build_program` emits the fragment stage before the vertex stage so `p.varyings` captures
 // every interpolated value needed. Metal assigns textures `texture(0..)` and storage buffers
 // `buffer(8..)` and passes resources explicitly into functions; HLSL assigns per-stage `t`/`s`
@@ -20,16 +20,36 @@ fn int ProgramGen.view(&self, int source, bool storage, NodeTextureKind kind, No
     foreach (i, v : p.views) {
         if (v.stage != self.stage) continue;
         if (v.source == source && v.storage == storage) {
-            if (!storage && v.kind != kind) abort("drie: nodes: view %d read as a %s and as a %s", source, v.kind, kind);
-            if (storage && v.elem != elem) abort("drie: nodes: storage buffer %d read as %ss and as %ss", source, v.elem, elem);
+            if (!storage && v.kind != kind) abort(
+                "drie: nodes: view %d read as a %s and as a %s",
+                source,
+                v.kind,
+                kind
+            );
+            if (storage && v.elem != elem) abort(
+                "drie: nodes: storage buffer %d read as %ss and as %ss",
+                source,
+                v.elem,
+                elem
+            );
             self.uses_view((int)i);
             return (int)i;
         }
         if (v.storage == storage) msl++;
         hlsl++;
     }
-    p.views.push({ .stage = self.stage, .source = source, .storage = storage, .kind = kind, .elem = elem,
-                   .msl = storage ? 8 + msl : msl, .hlsl = hlsl, .glsl = (int)p.views.len() });
+    p.views.push(
+        {
+            .stage = self.stage,
+            .source = source,
+            .storage = storage,
+            .kind = kind,
+            .elem = elem,
+            .msl = storage ? 8 + msl : msl,
+            .hlsl = hlsl,
+            .glsl = (int)p.views.len()
+        }
+    );
     int at = (int)p.views.len() - 1;
     self.uses_view(at);
     return at;
@@ -73,7 +93,7 @@ fn String ProgramGen.pair(&self, int v, int s) {
 // The row of the stage's block where rows `row`..+`count` of `source` are.
 fn int ProgramGen.rows(&self, NodeSource source, int row, int count) {
     ShaderProgram* p = self.p;
-    int st = self.stage.ordinal;
+    int st           = self.stage.ordinal;
     foreach (r : p.rows[st]) {
         if (r.source == source && r.row == row && r.count == count) return r.at;
     }
@@ -89,13 +109,13 @@ fn String ProgramGen.block_name(&self) => self.stage == VERTEX ? "vu" : "fu";
 // Formats a `NodeOp.INPUT` read from the active stage's packed uniform block (`vu` or `fu`).
 fn String ProgramGen.input(&self, NodeData* d) {
     self.body.block = true;
-    NodeType t = d.type;
-    int rows = t == MAT4 ? 4 : (t == MAT3 ? 3 : 1);
-    int stride = (int)bitcast(d.value[0], uint);
-    int len = (int)bitcast(d.value[1], uint);
+    NodeType t   = d.type;
+    int rows     = t == MAT4 ? 4 : (t == MAT3 ? 3 : 1);
+    int stride   = (int)bitcast(d.value[0], uint);
+    int len      = (int)bitcast(d.value[1], uint);
     bool indexed = d.args[0] != 0;
-    int at = self.rows((NodeSource)d.res[0], d.res[1], indexed ? stride * (len - 1) + rows : rows);
-    String base = self.block_name();
+    int at       = self.rows((NodeSource)d.res[0], d.res[1], indexed ? stride * (len - 1) + rows : rows);
+    String base  = self.block_name();
     String index = indexed ? string::tformat(" + %s * %d", self.value_as({ d.args[0] }, INT), stride) : "";
     String[4] r;
     for (int i = 0; i < rows; i++) r[i] = string::tformat("%s[%d%s]", base, at + i, index);
@@ -128,8 +148,11 @@ fn String ProgramGen.user_uniform(&self, Node n) {
         b.uniforms.push(n);
     }
     NodeType t = n.type();
-    NodeData d = { .op = INPUT, .type = t == MAT4 ? MAT4 : type_of(FLOAT, components(t)),
-                   .res = { NodeSource.USER.ordinal, NODE_USER_HEADER + at, 0 } };
+    NodeData d = {
+        .op = INPUT,
+        .type = t == MAT4 ? MAT4 : type_of(FLOAT, components(t)),
+        .res = { NodeSource.USER.ordinal, NODE_USER_HEADER + at, 0 }
+    };
     String x = self.input(&d);
     // (integers and bools as floats: Node.set)
     return t == MAT4 ? x : self.convert(x, d.type, t);
@@ -137,7 +160,7 @@ fn String ProgramGen.user_uniform(&self, Node n) {
 
 // Formats a readonly storage buffer element load (indexing in GLSL/MSL, `Load`/`Load4` in HLSL).
 fn String ProgramGen.storage(&self, NodeData* d) {
-    int v = self.view(d.res[0], true, TEX_2D, d.type);
+    int v    = self.view(d.res[0], true, TEX_2D, d.type);
     String i = self.value_as({ d.args[0] }, d.type == UINT ? UINT : INT);
     if (self.lang != HLSL) return string::tformat("b%d[%s]", v, i);
     switch (d.type) {
@@ -149,15 +172,15 @@ fn String ProgramGen.storage(&self, NodeData* d) {
 
 // Formats a texture sample, level, grad, texel fetch, size, mip-count, or depth-compare expression.
 fn String ProgramGen.sample(&self, Node n, NodeData* d) {
-    NodeSampling how = (NodeSampling)d.kind;
+    NodeSampling how     = (NodeSampling)d.kind;
     NodeTextureKind kind = (NodeTextureKind)d.res[2];
-    int v = self.view(d.res[0], false, kind, VOID);
-    int s = self.sampler(d.res[1], kind == TEX_DEPTH);
-    String t = string::tformat("t%d", v);
-    String smp = string::tformat("s%d", s);
-    String ts = self.lang == GLSL ? self.pair(v, s) : "";
-    bool vol = kind == TEX_3D || kind == TEX_ARRAY;
-    NodeType ct = vol ? VEC3 : VEC2;
+    int v                = self.view(d.res[0], false, kind, VOID);
+    int s                = self.sampler(d.res[1], kind == TEX_DEPTH);
+    String t             = string::tformat("t%d", v);
+    String smp           = string::tformat("s%d", s);
+    String ts            = self.lang == GLSL ? self.pair(v, s) : "";
+    bool vol             = kind == TEX_3D || kind == TEX_ARRAY;
+    NodeType ct          = vol ? VEC3 : VEC2;
     switch (how) {
         case SAMPLE:
         case LEVEL:
@@ -174,14 +197,26 @@ fn String ProgramGen.sample(&self, Node n, NodeData* d) {
                     NodeType gt = kind == TEX_3D ? VEC3 : VEC2;
                     String dx = self.value_as({ d.args[1] }, gt);
                     String dy = self.value_as({ d.args[2] }, gt);
-                    if (self.lang == MSL) extra = string::tformat(", gradient%s(%s, %s)", kind == TEX_3D ? "3d" : "2d", dx, dy);
+                    if (self.lang == MSL) extra = string::tformat(
+                        ", gradient%s(%s, %s)",
+                        kind == TEX_3D ? "3d" : "2d",
+                        dx,
+                        dy
+                    );
                     if (self.lang == GLSL) return string::tformat("textureGrad(%s, %s, %s, %s)", ts, c, dx, dy);
                     if (self.lang == HLSL) return string::tformat("%s.SampleGrad(%s, %s, %s, %s)", t, smp, c, dx, dy);
                 default:
                     if (self.lang == GLSL) return string::tformat("texture(%s, %s)", ts, c);
                     if (self.lang == HLSL) return string::tformat("%s.Sample(%s, %s)", t, smp, c);
             }
-            if (kind == TEX_ARRAY) return string::tformat("%s.sample(%s, %s.xy, uint(rint(%s.z))%s)", t, smp, c, c, extra);
+            if (kind == TEX_ARRAY) return string::tformat(
+                "%s.sample(%s, %s.xy, uint(rint(%s.z))%s)",
+                t,
+                smp,
+                c,
+                c,
+                extra
+            );
             return string::tformat("%s.sample(%s, %s%s)", t, smp, c, extra);
         case FETCH:
             String c = self.value_as({ d.args[0] }, vol ? IVEC3 : IVEC2);
@@ -190,7 +225,13 @@ fn String ProgramGen.sample(&self, Node n, NodeData* d) {
                 case GLSL: return string::tformat("texelFetch(%s, %s, %s)", ts, c, l);
                 case HLSL: return string::tformat("%s.Load(%s(%s, %s))", t, vol ? "int4" : "int3", c, l);
                 case MSL:
-                    if (kind == TEX_ARRAY) return string::tformat("%s.read(uint2(%s.xy), uint(%s.z), uint(%s))", t, c, c, l);
+                    if (kind == TEX_ARRAY) return string::tformat(
+                        "%s.read(uint2(%s.xy), uint(%s.z), uint(%s))",
+                        t,
+                        c,
+                        c,
+                        l
+                    );
                     return string::tformat("%s.read(%s(%s), uint(%s))", t, vol ? "uint3" : "uint2", c, l);
             }
         case SIZE:
@@ -248,8 +289,13 @@ fn String ProgramGen.user_texture(&self, Node n, NodeData* d) {
         k = b.texture_count++;
         b.textures[k] = d.texture;
     }
-    NodeData s = { .op = SAMPLE, .type = VEC4, .kind = (char)NodeSampling.SAMPLE.ordinal, .args = { d.args[0], d.args[1], 0, 0 },
-                   .res = { NODE_USER_VIEW + k, 0, NodeTextureKind.TEX_2D.ordinal } };
+    NodeData s = {
+        .op = SAMPLE,
+        .type = VEC4,
+        .kind = (char)NodeSampling.SAMPLE.ordinal,
+        .args = { d.args[0], d.args[1], 0, 0 },
+        .res = { NODE_USER_VIEW + k, 0, NodeTextureKind.TEX_2D.ordinal }
+    };
     if (d.kind == 1) {
         s.kind = (char)NodeSampling.SIZE.ordinal;
         s.type = IVEC2;
@@ -270,14 +316,22 @@ fn String ProgramGen.attribute(&self, NodeData* d) {
     if (self.stage != VERTEX) abort("drie: nodes: attributes are read in the vertex stage");
     if (self.body.func >= 0) abort("drie: nodes: attributes are read in main (a function takes them as arguments)");
     NodeType have = self.p.attrs[d.kind];
-    if (have != VOID && have != d.type) abort("drie: nodes: attribute %d read as a %s and as a %s", d.kind, have, d.type);
+    if (have != VOID && have != d.type) abort(
+        "drie: nodes: attribute %d read as a %s and as a %s",
+        d.kind,
+        have,
+        d.type
+    );
     self.p.attrs[d.kind] = d.type;
     return self.lang == GLSL ? string::tformat("a%d", d.kind) : string::tformat("vin.a%d", d.kind);
 }
 
 // Records a stage system value and returns its backend expression (`gl_FragCoord`, `fin.fc`, etc.).
 fn String ProgramGen.system(&self, NodeData* d) {
-    if (self.body.func >= 0) abort("drie: nodes: %s is read in main (a function takes it as an argument)", (NodeSystem)d.kind);
+    if (self.body.func >= 0) abort(
+        "drie: nodes: %s is read in main (a function takes it as an argument)",
+        (NodeSystem)d.kind
+    );
     switch ((NodeSystem)d.kind) {
         case INSTANCE_ID:
             if (self.stage != VERTEX) abort("drie: nodes: the instance index is the vertex stage's");
@@ -314,7 +368,7 @@ fn NodeType carried(NodeType t) @local => t == BOOL ? UINT : t;
 // Registers varying `n` and formats its fragment-stage input expression (`vN` or `fin.vN`).
 fn String ProgramGen.read_varying(&self, Node n) {
     if (self.body.func >= 0) abort("drie: nodes: varyings are read in main (a function takes them as arguments)");
-    int k = self.varying(n);
+    int k      = self.varying(n);
     NodeType t = n.type();
     if (is_matrix(t) || t == VOID) abort("drie: nodes: a %s can't be a varying", t);
     String x = self.lang == GLSL ? string::tformat("v%d", k) : string::tformat("fin.v%d", k);
@@ -348,11 +402,14 @@ fn FuncDone* ProgramGen.func(&self, int f) {
     NodeFunc* fd = node_funcs.get_ref(f);
     if (done.printing) abort("drie: nodes: %s calls itself", fd.name);
     foreach (i, &other : self.func_done) {
-        if (other.printed && i < node_funcs.len() && node_funcs[i].name == fd.name) abort("drie: nodes: two functions named %s in one program", fd.name);
+        if (other.printed && i < node_funcs.len() && node_funcs[i].name == fd.name) abort(
+            "drie: nodes: two functions named %s in one program",
+            fd.name
+        );
     }
     done.printing = true;
     GenBody* outer = self.body;
-    GenBody* b = self.new_body(f);
+    GenBody* b     = self.new_body(f);
     self.body = b;
     if (fd.ret == VOID) {
         self.emit(fd.body);
@@ -396,7 +453,7 @@ fn String[] ProgramGen.resource_args(&self, FuncDone* done, bool declare) {
     sort_ints(views.array_view());
     foreach (v : views) {
         ProgramView* pv = self.p.views.get_ref(v);
-        String name = string::tformat(pv.storage ? "b%d" : "t%d", v);
+        String name     = string::tformat(pv.storage ? "b%d" : "t%d", v);
         out.push(declare ? string::tformat("%s %s", msl_view_type(pv), name) : name);
     }
     List{int} smps;
@@ -435,10 +492,10 @@ fn String msl_view_type(ProgramView* v) @local {
 
 // Emits the callee definition if needed and formats the call (with Metal resource args).
 fn String ProgramGen.call_fn(&self, Node n, NodeData* d) {
-    int f = call_func(d);
+    int f          = call_func(d);
     FuncDone* done = self.func(f);
-    NodeFunc* fd = node_funcs.get_ref(f);
-    DString c = dstring::temp();
+    NodeFunc* fd   = node_funcs.get_ref(f);
+    DString c      = dstring::temp();
     c.appendf("%s(", fd.name);
     for (int i = 0; i < d.count; i++) c.appendf("%s%s", i ? ", " : "", self.value_as({ call_arg(d, i) }, fd.params[i]));
     if (self.lang == MSL) {
@@ -472,7 +529,9 @@ fn String ProgramGen.emit(&self, Node n) {
             if (components(d.type) == 1) return const_component(d.type, &d.value, 0);
             if (is_matrix(d.type)) abort("drie: nodes: no matrix constants (node_matrix of vectors)");
             e = string::tformat("%s(", self.type_name(d.type));
-            for (int i = 0; i < components(d.type); i++) e = string::tformat("%s%s%s", e, i ? ", " : "", const_component(d.type, &d.value, i));
+            for (int i = 0; i < components(
+                d.type
+            ); i++) e = string::tformat("%s%s%s", e, i ? ", " : "", const_component(d.type, &d.value, i));
             return string::tformat("%s)", e);
         case VAR:
             String init = d.args[0] ? self.value_as({ d.args[0] }, d.type) : self.zero(d.type);
@@ -485,10 +544,14 @@ fn String ProgramGen.emit(&self, Node n) {
             bool again = self.body.serial[n.id] > 0;
             for (uint st = d.args[0]; st; st = node_data({ st }).next) {
                 NodeData* sd = node_data({ st });
-                Node v = sd.op == EVAL ? (Node) { sd.args[0] } : (Node) { st };
+                Node v       = sd.op == EVAL ? (Node) { sd.args[0] } : (Node) { st };
                 NodeData* vd = node_data(v);
                 if (again && vd.op == VAR && self.printed(v)) {
-                    self.line("%s = %s;", self.name(v), vd.args[0] ? self.value_as({ vd.args[0] }, vd.type) : self.zero(vd.type));
+                    self.line(
+                        "%s = %s;",
+                        self.name(v),
+                        vd.args[0] ? self.value_as({ vd.args[0] }, vd.type) : self.zero(vd.type)
+                    );
                     self.assigned(v.id);
                     continue;
                 }
@@ -530,7 +593,10 @@ fn String ProgramGen.emit(&self, Node n) {
         case SYSTEM:
             e = self.system(&d);
         case PARAM:
-            if (self.body.func != d.res[0]) abort("drie: nodes: a parameter of %s outside it", node_funcs[d.res[0]].name);
+            if (self.body.func != d.res[0]) abort(
+                "drie: nodes: a parameter of %s outside it",
+                node_funcs[d.res[0]].name
+            );
             return string::tformat("p%d", d.kind);
         case CALL_FN:
             e = self.call_fn(n, &d);
@@ -544,8 +610,12 @@ fn String ProgramGen.emit(&self, Node n) {
         case CALL:
             e = self.call(&d);
         case SELECT:
-            e = string::tformat("(%s ? %s : %s)", self.value_as({ d.args[0] }, BOOL), self.value_as({ d.args[1] }, d.type),
-                                self.value_as({ d.args[2] }, d.type));
+            e = string::tformat(
+                "(%s ? %s : %s)",
+                self.value_as({ d.args[0] }, BOOL),
+                self.value_as({ d.args[1] }, d.type),
+                self.value_as({ d.args[2] }, d.type)
+            );
         case SWIZZLE:
             Node a = { d.args[0] };
             String s = (String)d.swizzle[:d.count];
@@ -557,7 +627,7 @@ fn String ProgramGen.emit(&self, Node n) {
         case JOIN:
             e = string::tformat("%s(", self.type_name(d.type));
             for (int i = 0; i < d.count; i++) {
-                Node p = { d.args[i] };
+                Node p      = { d.args[i] };
                 NodeType pt = is_matrix(d.type) ? p.type() : type_of(scalar_of(d.type), components(p.type()));
                 e = string::tformat("%s%s%s", e, i ? ", " : "", self.value_as(p, pt));
             }
@@ -583,8 +653,8 @@ fn String ProgramGen.emit(&self, Node n) {
     }
     // (a value printed already for another node, where it can still be read: its name; what
     // reads a variable has the same variables as that node, and the same assignments since)
-    String key = string::tformat("%s %s", self.type_name(d.type), e);
-    GenBody* b = self.body;
+    String key   = string::tformat("%s %s", self.type_name(d.type), e);
+    GenBody* b   = self.body;
     uint[2]? had = d.op == CALL_FN && !node_funcs[call_func(&d)].pure ? NOT_FOUND~ : b.exprs[key];
     if (try had) {
         Node m = { had[0] };
@@ -604,10 +674,30 @@ fn String ProgramGen.emit(&self, Node n) {
 
 // Formats a `NodeOp.BINARY` expression (handling matrix multiplies and float floored remainder).
 fn String ProgramGen.binary(&self, NodeData* d) {
-    Node a = { d.args[0] };
-    Node b = { d.args[1] };
+    Node a        = { d.args[0] };
+    Node b        = { d.args[1] };
     NodeBinary op = (NodeBinary)d.kind;
-    String[*] ops = { "+", "-", "*", "/", "<", "<=", ">", ">=", "==", "!=", "&&", "||", "%", "&", "|", "^", "<<", ">>", "!=" };
+    String[*] ops = {
+        "+",
+        "-",
+        "*",
+        "/",
+        "<",
+        "<=",
+        ">",
+        ">=",
+        "==",
+        "!=",
+        "&&",
+        "||",
+        "%",
+        "&",
+        "|",
+        "^",
+        "<<",
+        ">>",
+        "!="
+    };
     NodeType ta = a.type();
     NodeType tb = b.type();
     switch (op) {
@@ -615,13 +705,19 @@ fn String ProgramGen.binary(&self, NodeData* d) {
             if (is_matrix(ta) || is_matrix(tb)) {
                 if (ta == MAT3 || tb == MAT3) {
                     NodeType o = ta == MAT3 ? tb : ta;
-                    if (components(o) == 1) return string::tformat("(%s * %s)", self.value_as(a, ta == MAT3 ? MAT3 : FLOAT), self.value_as(b, tb == MAT3 ? MAT3 : FLOAT));
+                    if (components(
+                        o
+                    ) == 1) return string::tformat(
+                        "(%s * %s)",
+                        self.value_as(a, ta == MAT3 ? MAT3 : FLOAT),
+                        self.value_as(b, tb == MAT3 ? MAT3 : FLOAT)
+                    );
                     return self.mat_mul(self.emit(a), self.emit(b));
                 }
                 if (ta == MAT4 && tb == MAT4) return self.mat_mul(self.emit(a), self.emit(b));
                 NodeType v = ta == MAT4 ? tb : ta;
-                String x = ta == MAT4 ? self.emit(a) : self.value_as(a, components(v) == 1 ? FLOAT : VEC4);
-                String y = tb == MAT4 ? self.emit(b) : self.value_as(b, components(v) == 1 ? FLOAT : VEC4);
+                String x   = ta == MAT4 ? self.emit(a) : self.value_as(a, components(v) == 1 ? FLOAT : VEC4);
+                String y   = tb == MAT4 ? self.emit(b) : self.value_as(b, components(v) == 1 ? FLOAT : VEC4);
                 return components(v) == 1 ? string::tformat("(%s * %s)", x, y) : self.mat_mul(x, y);
             }
             nextcase ADD;
@@ -656,11 +752,11 @@ fn String ProgramGen.binary(&self, NodeData* d) {
 
 // Formats a `NodeOp.CALL` built-in intrinsic expression for GLSL, MSL, or HLSL.
 fn String ProgramGen.call(&self, NodeData* d) {
-    NodeFn f = (NodeFn)d.kind;
+    NodeFn f   = (NodeFn)d.kind;
     NodeType t = d.type;
-    Node a = { d.args[0] };
-    Node b = { d.args[1] };
-    Node c = { d.args[2] };
+    Node a     = { d.args[0] };
+    Node b     = { d.args[1] };
+    Node c     = { d.args[2] };
     switch (f) {
         case TRANSPOSE:
         case DETERMINANT:
@@ -687,24 +783,59 @@ fn String ProgramGen.call(&self, NodeData* d) {
         case REFLECT:
             return string::tformat("reflect(%s, %s)", self.value_as(a, t), self.value_as(b, t));
         case REFRACT:
-            return string::tformat("refract(%s, %s, %s)", self.value_as(a, t), self.value_as(b, t), self.value_as(c, FLOAT));
+            return string::tformat(
+                "refract(%s, %s, %s)",
+                self.value_as(a, t),
+                self.value_as(b, t),
+                self.value_as(c, FLOAT)
+            );
         case FACEFORWARD:
-            return string::tformat("faceforward(%s, %s, %s)", self.value_as(a, t), self.value_as(b, t), self.value_as(c, t));
+            return string::tformat(
+                "faceforward(%s, %s, %s)",
+                self.value_as(a, t),
+                self.value_as(b, t),
+                self.value_as(c, t)
+            );
         case BITS_AS_UINT:
-            if (self.lang == GLSL) return string::tformat("floatBitsToUint(%s)", self.value_as(a, type_of(FLOAT, components(t))));
-            if (self.lang == MSL) return string::tformat("as_type<%s>(%s)", self.type_name(t), self.value_as(a, type_of(FLOAT, components(t))));
+            if (self.lang == GLSL) return string::tformat(
+                "floatBitsToUint(%s)",
+                self.value_as(a, type_of(FLOAT, components(t)))
+            );
+            if (self.lang == MSL) return string::tformat(
+                "as_type<%s>(%s)",
+                self.type_name(t),
+                self.value_as(a, type_of(FLOAT, components(t)))
+            );
             return string::tformat("asuint(%s)", self.value_as(a, type_of(FLOAT, components(t))));
         case BITS_AS_FLOAT:
-            if (self.lang == GLSL) return string::tformat("uintBitsToFloat(%s)", self.value_as(a, type_of(UINT, components(t))));
-            if (self.lang == MSL) return string::tformat("as_type<%s>(%s)", self.type_name(t), self.value_as(a, type_of(UINT, components(t))));
+            if (self.lang == GLSL) return string::tformat(
+                "uintBitsToFloat(%s)",
+                self.value_as(a, type_of(UINT, components(t)))
+            );
+            if (self.lang == MSL) return string::tformat(
+                "as_type<%s>(%s)",
+                self.type_name(t),
+                self.value_as(a, type_of(UINT, components(t)))
+            );
             return string::tformat("asfloat(%s)", self.value_as(a, type_of(UINT, components(t))));
         case FWIDTH:
             if (self.lang == HLSL) return string::tformat("fwidth(%s)", self.value_as(a, t));
             nextcase default;
         default:
             if (d.count == 1) return string::tformat("%s(%s)", self.fn_name(f), self.value_as(a, t));
-            if (d.count == 2) return string::tformat("%s(%s, %s)", self.fn_name(f), self.value_as(a, t), self.value_as(b, t));
-            return string::tformat("%s(%s, %s, %s)", self.fn_name(f), self.value_as(a, t), self.value_as(b, t), self.value_as(c, t));
+            if (d.count == 2) return string::tformat(
+                "%s(%s, %s)",
+                self.fn_name(f),
+                self.value_as(a, t),
+                self.value_as(b, t)
+            );
+            return string::tformat(
+                "%s(%s, %s, %s)",
+                self.fn_name(f),
+                self.value_as(a, t),
+                self.value_as(b, t),
+                self.value_as(c, t)
+            );
     }
 }
 
@@ -731,8 +862,13 @@ fn ProgramGen* new_gen(ShaderProgram* p, ProgramStage st, NodeBuild* build, Node
 // The program of `graph` in `lang`, its sources and resources (not made yet: ShaderProgram.make).
 // `build`: the node material whose uniforms and textures its graphs read. `vertex_bind` and
 // `fragment_bind`: what the user graphs' builtins read in each stage at first.
-fn ShaderProgram* build_program(NodeLang lang, ProgramGraph* graph, NodeBuild* build = null, Node[NodeBuiltin::len]* vertex_bind = null,
-                                Node[NodeBuiltin::len]* fragment_bind = null) {
+fn ShaderProgram* build_program(
+    NodeLang lang,
+    ProgramGraph* graph,
+    NodeBuild* build = null,
+    Node[NodeBuiltin::len]* vertex_bind = null,
+    Node[NodeBuiltin::len]* fragment_bind = null
+) {
     ShaderProgram* p = mem::new(ShaderProgram);
     p.lang = lang;
     p.rows[0].init(mem);
@@ -766,11 +902,11 @@ fn ShaderProgram* build_program(NodeLang lang, ProgramGraph* graph, NodeBuild* b
         p.fs = f.fragment_source().copy(mem);
         if (graph.fragment_only) return p;
         ProgramGen* v = new_gen(p, VERTEX, build, vertex_bind);
-        String pos = v.value_as(graph.position, VEC4);
+        String pos    = v.value_as(graph.position, VEC4);
         foreach (i, n : p.varyings) {
             NodeData* d = node_data(n);
-            Node src = d.op == VARYING ? (Node) { d.args[0] } : n;
-            NodeType t = carried(n.type());
+            Node src    = d.op == VARYING ? (Node) { d.args[0] } : n;
+            NodeType t  = carried(n.type());
             v.line(lang == GLSL ? "v%d = %s;" : "vout.v%d = %s;", i, v.value_as(src, t));
         }
         v.line(lang == GLSL ? "gl_Position = %s;" : "vout.pos = %s;", pos);
@@ -796,23 +932,35 @@ fn String ProgramGen.msl_header(&self) {
 // The declarations of the stage's views and samplers (GLSL, HLSL), or Metal's entry arguments.
 fn String ProgramGen.resource_decls(&self) {
     ShaderProgram* p = self.p;
-    DString s = dstring::temp();
+    DString s        = dstring::temp();
     foreach (i, v : p.views) {
         if (v.stage != self.stage) continue;
         switch (self.lang) {
             case MSL:
-                s.appendf(", %s %s%d [[%s(%d)]]", msl_view_type(&v), v.storage ? "b" : "t", i, v.storage ? "buffer" : "texture", v.msl);
+                s.appendf(
+                    ", %s %s%d [[%s(%d)]]",
+                    msl_view_type(&v),
+                    v.storage ? "b" : "t",
+                    i,
+                    v.storage ? "buffer" : "texture",
+                    v.msl
+                );
             case HLSL:
                 if (v.storage) {
                     s.appendf("ByteAddressBuffer b%d : register(t%d);\n", i, v.hlsl);
                 } else {
-                    String[*] types = { "Texture2D<float4>", "Texture3D<float4>", "Texture2DArray<float4>", "Texture2D<float>" };
+                    String[*] types = {
+                        "Texture2D<float4>",
+                        "Texture3D<float4>",
+                        "Texture2DArray<float4>",
+                        "Texture2D<float>"
+                    };
                     s.appendf("%s t%d : register(t%d);\n", types[v.kind.ordinal], i, v.hlsl);
                 }
             case GLSL:
                 if (v.storage) {
                     String[*] elems = { "vec4", "uvec4", "uint" };
-                    int e = v.elem == VEC4 ? 0 : (v.elem == UVEC4 ? 1 : 2);
+                    int e           = v.elem == VEC4 ? 0 : (v.elem == UVEC4 ? 1 : 2);
                     s.appendf("layout(binding = %d, std430) readonly buffer B%d { %s b%d[]; };\n", i, i, elems[e], i);
                 }
         }
@@ -828,7 +976,7 @@ fn String ProgramGen.resource_decls(&self) {
     if (self.lang == GLSL) {
         foreach (i, pr : p.pairs) {
             if (pr.stage != self.stage) continue;
-            ProgramView* v = p.views.get_ref(pr.view);
+            ProgramView* v  = p.views.get_ref(pr.view);
             String[*] types = { "sampler2D", "sampler3D", "sampler2DArray", "sampler2DShadow" };
             s.appendf("layout(binding = %d) uniform %s %s;\n", i, types[v.kind.ordinal], (ZString)pr.name);
         }
@@ -851,7 +999,7 @@ fn String ProgramGen.block_decl(&self) {
 // Assembles the complete vertex shader source in MSL, HLSL, or GLSL from the emitted body.
 fn String ProgramGen.vertex_source(&self) {
     ShaderProgram* p = self.p;
-    DString s = dstring::temp();
+    DString s        = dstring::temp();
     switch (self.lang) {
         case MSL:
             s.append(self.msl_header());
@@ -865,15 +1013,26 @@ fn String ProgramGen.vertex_source(&self) {
             s.append("};\n\nstruct VOut {\n");
             foreach (i, n : p.varyings) {
                 NodeType t = carried(n.type());
-                s.appendf("    %s v%d [[user(locn%d)%s]];\n", self.type_name(t), i, i, scalar_of(t) == FLOAT ? "" : ", flat");
+                s.appendf(
+                    "    %s v%d [[user(locn%d)%s]];\n",
+                    self.type_name(t),
+                    i,
+                    i,
+                    scalar_of(t) == FLOAT ? "" : ", flat"
+                );
             }
             // (invariant: the depth prepass's pipeline and the EQUAL-tested one after it compute
             // the same depth from the same vertex function)
             s.append("    float4 pos [[position, invariant]];\n};\n\n");
             s.append(self.funcs.str_view());
             s.appendf("vertex VOut main0(%s", attrs ? "VIn vin [[stage_in]]" : "");
-            String rest = string::tformat("%s%s%s%s", self.block_decl(), self.resource_decls(),
-                                          self.instance_id ? ", uint iid [[instance_id]]" : "", self.vertex_id ? ", uint vid [[vertex_id]]" : "");
+            String rest = string::tformat(
+                "%s%s%s%s",
+                self.block_decl(),
+                self.resource_decls(),
+                self.instance_id ? ", uint iid [[instance_id]]" : "",
+                self.vertex_id ? ", uint vid [[vertex_id]]" : ""
+            );
             s.append(attrs ? rest : (rest.len ? rest[2..] : ""));
             s.append(") {\n    VOut vout = {};\n");
             s.append(self.body.out.str_view());
@@ -921,8 +1080,8 @@ fn String ProgramGen.vertex_source(&self) {
 // Assembles the complete fragment shader source in MSL, HLSL, or GLSL from the emitted body.
 fn String ProgramGen.fragment_source(&self) {
     ShaderProgram* p = self.p;
-    DString s = dstring::temp();
-    bool input = p.varyings.len() > 0 || self.frag_coord;
+    DString s        = dstring::temp();
+    bool input       = p.varyings.len() > 0 || self.frag_coord;
     switch (self.lang) {
         case MSL:
             s.append(self.msl_header());
@@ -930,7 +1089,13 @@ fn String ProgramGen.fragment_source(&self) {
                 s.append("struct FIn {\n");
                 foreach (i, n : p.varyings) {
                     NodeType t = carried(n.type());
-                    s.appendf("    %s v%d [[user(locn%d)%s]];\n", self.type_name(t), i, i, scalar_of(t) == FLOAT ? "" : ", flat");
+                    s.appendf(
+                        "    %s v%d [[user(locn%d)%s]];\n",
+                        self.type_name(t),
+                        i,
+                        i,
+                        scalar_of(t) == FLOAT ? "" : ", flat"
+                    );
                 }
                 if (self.frag_coord) s.append("    float4 fc [[position]];\n");
                 s.append("};\n\n");
@@ -944,7 +1109,12 @@ fn String ProgramGen.fragment_source(&self) {
             }
             s.append(self.funcs.str_view());
             s.appendf("fragment %s main0(%s", fout ? "FOut" : "void", input ? "FIn fin [[stage_in]]" : "");
-            String rest = string::tformat("%s%s%s", self.block_decl(), self.resource_decls(), self.front_facing ? ", bool ff [[front_facing]]" : "");
+            String rest = string::tformat(
+                "%s%s%s",
+                self.block_decl(),
+                self.resource_decls(),
+                self.front_facing ? ", bool ff [[front_facing]]" : ""
+            );
             s.append(input ? rest : (rest.len ? rest[2..] : ""));
             s.append(") {\n");
             if (fout) s.append("    FOut fout = {};\n");
@@ -992,4 +1162,3 @@ fn String ProgramGen.fragment_source(&self) {
     }
     return s.str_view();
 }
-

@@ -45,10 +45,10 @@ fn SgVertexLayoutState vertex_layout(int[12] attrs) @private {
 
 // Pass mode for main-pass draws (see Renderer.depth_prepass).
 enum DrawKind : char @private {
-    CUT,        // Shader may discard fragments (alpha test, dither, cull box, or transparent).
-    SOLID,      // No fragment discard; preserves hardware early-Z.
-    PRETESTED,  // Shaded after depth prepass with EQUAL depth test and depth writes disabled.
-    DEPTH,      // Depth-only prepass with color writes masked off and discard enabled.
+    CUT,       // Shader may discard fragments (alpha test, dither, cull box, or transparent).
+    SOLID,     // No fragment discard; preserves hardware early-Z.
+    PRETESTED, // Shaded after depth prepass with EQUAL depth test and depth writes disabled.
+    DEPTH,     // Depth-only prepass with color writes masked off and discard enabled.
 }
 
 // Packs a material's blend configuration into an integer key (0 disables blending; normal
@@ -56,10 +56,13 @@ enum DrawKind : char @private {
 // equations and factors pack above bit 4.
 fn ulong blend_key(Material* mat) @private {
     if (mat.blending == NO_BLENDING || (mat.blending == NORMAL_BLENDING && !mat.transparent)) return 0;
-    if (mat.blending != CUSTOM_BLENDING) return 1 + 2 * (ulong)mat.blending.ordinal + (mat.premultiplied_alpha ? 1UL : 0UL);
+    if (mat.blending != CUSTOM_BLENDING) return 1 + 2 * (ulong)mat.blending.ordinal + (mat.premultiplied_alpha ? 1UL
+        : 0UL);
     return 16 | (ulong)mat.blend_equation.ordinal << 5 | (ulong)mat.blend_equation_alpha.ordinal << 8
-        | (ulong)mat.blend_src.ordinal << 11 | (ulong)mat.blend_dst.ordinal << 15
-        | (ulong)mat.blend_src_alpha.ordinal << 19 | (ulong)mat.blend_dst_alpha.ordinal << 23;
+        | (ulong)mat.blend_src.ordinal << 11
+        | (ulong)mat.blend_dst.ordinal << 15
+        | (ulong)mat.blend_src_alpha.ordinal << 19
+        | (ulong)mat.blend_dst_alpha.ordinal << 23;
 }
 
 fn SgBlendFactor sg_factor(ulong f) @local {
@@ -113,11 +116,21 @@ fn SgBlendState blend_state(ulong key) @private {
                 .dst_factor_alpha = ONE,
             };
         case SUBTRACTIVE_BLENDING:
-            return { .enabled = true, .src_factor_rgb = ZERO, .dst_factor_rgb = ONE_MINUS_SRC_COLOR,
-                     .src_factor_alpha = ZERO, .dst_factor_alpha = ONE };
+            return {
+                .enabled = true,
+                .src_factor_rgb = ZERO,
+                .dst_factor_rgb = ONE_MINUS_SRC_COLOR,
+                .src_factor_alpha = ZERO,
+                .dst_factor_alpha = ONE
+            };
         case MULTIPLY_BLENDING:
-            return { .enabled = true, .src_factor_rgb = DST_COLOR, .dst_factor_rgb = ONE_MINUS_SRC_ALPHA,
-                     .src_factor_alpha = ZERO, .dst_factor_alpha = ONE };
+            return {
+                .enabled = true,
+                .src_factor_rgb = DST_COLOR,
+                .dst_factor_rgb = ONE_MINUS_SRC_ALPHA,
+                .src_factor_alpha = ZERO,
+                .dst_factor_alpha = ONE
+            };
         default:
             return {
                 .enabled = true,
@@ -134,12 +147,17 @@ fn SgBlendState blend_state(ulong key) @private {
 // True when `mat` uses physical surface layers not representable in the deferred G-Buffer
 // (clearcoat, sheen, iridescence, anisotropy, transmission, or glass).
 fn bool physical_layers(Material* mat) @private {
-    return mat.type == STANDARD && (mat.clearcoat > 0 || mat.clearcoat_node.id || mat.clearcoat_roughness_node.id
-        || mat.sheen > 0 || mat.sheen_color_map != null || mat.sheen_roughness_map != null
-        || mat.iridescence > 0 || mat.iridescence_map != null
-        || mat.anisotropy > 0 || mat.anisotropy_map != null
-        || mat.transmission > 0 || mat.transmission_map != null
-        || mat.glass);
+    return mat.type == STANDARD
+        && (mat.clearcoat > 0 || mat.clearcoat_node.id || mat.clearcoat_roughness_node.id || mat.sheen > 0
+            || mat.sheen_color_map != null
+            || mat.sheen_roughness_map != null
+            || mat.iridescence > 0
+            || mat.iridescence_map != null
+            || mat.anisotropy > 0
+            || mat.anisotropy_map != null
+            || mat.transmission > 0
+            || mat.transmission_map != null
+            || mat.glass);
 }
 
 // Looks up or creates a cached SgPipeline on `gen` for the requested raster, depth, target, and
@@ -161,11 +179,11 @@ fn SgPipeline get_pipeline(
     int target = rt ? (rt.samples > 1 ? 2 : 1) + (rt.mrt ? 4 : (rt.is_linear() ? 2 : 0)) : 0;
     if (rt && rt.samples != 1 && rt.samples != 4) abort("drie: render targets support 1 or 4 samples");
     if (rt && rt.pixel_format() != RGBA8 && !rt.is_linear()) abort("drie: a scene renders into RGBA8 or RGBA16F");
-    int samples   = rt ? rt.samples : sapp::sample_count();
+    int samples = rt ? rt.samples : sapp::sample_count();
     // Pretested draws rely on per-sample depth written by the depth prepass instead of A2C.
-    bool a2c      = alpha_test && !transparent && samples > 1 && kind != PRETESTED;
+    bool a2c    = alpha_test && !transparent && samples > 1 && kind != PRETESTED;
     if (kind == DEPTH) blend = 0;
-    bool vsm      = kind != DEPTH && !gbuffer && state.renderer && state.renderer.shadow_type == VSM;
+    bool vsm = kind != DEPTH && !gbuffer && state.renderer && state.renderer.shadow_type == VSM;
     if (kind == DEPTH || kind == PRETESTED) {
         depth_test = true;
         depth_write = true;
@@ -176,30 +194,32 @@ fn SgPipeline get_pipeline(
         a2c = false;
         blend = 0;
     }
-    ulong key = blend | (ulong)depth << 28 | (ulong)(vsm ? 1 : 0) << 30
-        | (ulong)kind.ordinal << 31 | (ulong)side.ordinal << 33 | (ulong)(wireframe ? 1 : 0) << 35
-        | (ulong)target << 36 | (ulong)(a2c ? 1 : 0) << 39 | (ulong)(transparent ? 1 : 0) << 40
-        | (ulong)(gbuffer ? 1 : 0) << 41;
+    ulong key         = blend | (ulong)depth << 28 | (ulong)(vsm ? 1
+        : 0) << 30 | (ulong)kind.ordinal << 31 | (ulong)side.ordinal << 33 | (ulong)(wireframe ? 1
+            : 0) << 35 | (ulong)target << 36 | (ulong)(a2c ? 1
+                : 0) << 39 | (ulong)(transparent ? 1 : 0) << 40 | (ulong)(gbuffer ? 1 : 0) << 41;
     SgPipeline? found = gen.pipelines[key];
     if (try found) return found;
     bool window = !rt || (state.renderer && rt == state.renderer.screen_stand_in);
-    record_pipeline({
-        .key = gen.key,
-        .shared = gen.key.nodes ? gen : null,
-        .side = side,
-        .transparent = transparent,
-        .wireframe = wireframe,
-        .alpha_test = alpha_test,
-        .blend = blend,
-        .kind = kind,
-        .gbuffer = gbuffer,
-        .depth_test = depth_test,
-        .depth_write = depth_write,
-        .vsm = vsm,
-        .target_samples = window ? 0 : rt.samples,
-        .target_format = window ? SgPixelFormat.DEFAULT : rt.pixel_format(),
-        .target_mrt = !window && rt.mrt,
-    });
+    record_pipeline(
+        {
+            .key = gen.key,
+            .shared = gen.key.nodes ? gen : null,
+            .side = side,
+            .transparent = transparent,
+            .wireframe = wireframe,
+            .alpha_test = alpha_test,
+            .blend = blend,
+            .kind = kind,
+            .gbuffer = gbuffer,
+            .depth_test = depth_test,
+            .depth_write = depth_write,
+            .vsm = vsm,
+            .target_samples = window ? 0 : rt.samples,
+            .target_format = window ? SgPixelFormat.DEFAULT : rt.pixel_format(),
+            .target_mrt = !window && rt.mrt,
+        }
+    );
     SgCullMode cull;
     switch (side) {
         case FRONT_SIDE: cull = BACK;
@@ -212,31 +232,25 @@ fn SgPipeline get_pipeline(
         .primitive_type = wireframe ? LINES : TRIANGLES,
         .cull_mode = wireframe ? NONE : cull,
         .face_winding = CCW,
-        .layout = vertex_layout(
-            {
-                shaders::ATTR_THREE_POSITION,
-                shaders::ATTR_THREE_NORMAL,
-                shaders::ATTR_THREE_UV,
-                shaders::ATTR_THREE_COLOR0,
-                shaders::ATTR_THREE_UV1,
-                shaders::ATTR_THREE_TANGENT,
-                shaders::ATTR_THREE_INST0,
-                shaders::ATTR_THREE_INST1,
-                shaders::ATTR_THREE_INST2,
-                shaders::ATTR_THREE_HEIGHT,
-                shaders::ATTR_THREE_INSTANCE_COLOR,
-                shaders::ATTR_THREE_PREV_POSITION
-            }
-        ),
-        .depth = {
-            .write_enabled = !transparent && kind != PRETESTED && depth_write,
-            .compare = kind == PRETESTED ? SgCompareFunc.EQUAL
-                : depth_test ? SgCompareFunc.LESS_EQUAL
-                : SgCompareFunc.ALWAYS,
-        },
-        .alpha_to_coverage_enabled = a2c,
-        .label = kind == DEPTH ? "drie-depth-prepass" : "drie-pipeline",
-    };
+        .layout = vertex_layout({
+        shaders::ATTR_THREE_POSITION,
+        shaders::ATTR_THREE_NORMAL,
+        shaders::ATTR_THREE_UV,
+        shaders::ATTR_THREE_COLOR0,
+        shaders::ATTR_THREE_UV1,
+        shaders::ATTR_THREE_TANGENT,
+        shaders::ATTR_THREE_INST0,
+        shaders::ATTR_THREE_INST1,
+        shaders::ATTR_THREE_INST2,
+        shaders::ATTR_THREE_HEIGHT,
+        shaders::ATTR_THREE_INSTANCE_COLOR,
+        shaders::ATTR_THREE_PREV_POSITION
+    }), .depth = {
+        .write_enabled = !transparent && kind != PRETESTED && depth_write,
+        .compare = kind == PRETESTED ? SgCompareFunc.EQUAL
+            : depth_test ? SgCompareFunc.LESS_EQUAL
+            : SgCompareFunc.ALWAYS,
+    }, .alpha_to_coverage_enabled = a2c, .label = kind == DEPTH ? "drie-depth-prepass" : "drie-pipeline", };
     if (kind == DEPTH) desc.colors[0].write_mask = NONE;
     if (gbuffer) {
         desc.sample_count = 1;
@@ -338,14 +352,14 @@ fn NodeBuild* draw_build(Material* mat) @private => state.bake.on ? null : node_
 fn Vec4[] user_block(NodeBuild* b, Mesh* m) @private {
     int rows = NODE_USER_HEADER;
     foreach (u : b.uniforms) rows += u.type() == MAT4 ? 4 : 1;
-    Vec4[] out = mem::temp_array(Vec4, rows);
+    Vec4[] out   = mem::temp_array(Vec4, rows);
     Mat4[3] mats = { state.node_view, state.node_proj, m.matrix_world };
     foreach (i, mt : mats) mem::copy(&out[i * 4], &mt, Mat4::size);
     out[12] = { ...state.node_camera, state.renderer ? state.renderer.time : 0 };
     int at = NODE_USER_HEADER;
     foreach (u : b.uniforms) {
         float[16] v = node_data(u).value;
-        int n = u.type() == MAT4 ? 4 : 1;
+        int n       = u.type() == MAT4 ? 4 : 1;
         for (int r = 0; r < n; r++) out[at++] = { v[r * 4], v[r * 4 + 1], v[r * 4 + 2], v[r * 4 + 3] };
     }
     return out;
@@ -384,32 +398,24 @@ fn SgPipelineDesc shadow_pipeline_desc() @local {
         .shader = { },
         .index_type = UINT32,
         .cull_mode = NONE,
-        .layout = vertex_layout(
-            {
-                shaders::ATTR_SHADOW_POSITION,
-                shaders::ATTR_SHADOW_NORMAL,
-                shaders::ATTR_SHADOW_UV,
-                shaders::ATTR_SHADOW_COLOR0,
-                shaders::ATTR_SHADOW_UV1,
-                -1,
-                shaders::ATTR_SHADOW_INST0,
-                shaders::ATTR_SHADOW_INST1,
-                shaders::ATTR_SHADOW_INST2,
-                shaders::ATTR_SHADOW_HEIGHT,
-                -1,
-                -1
-            }
-        ),
-        .depth = {
-            .pixel_format = DEPTH,
-            .write_enabled = true,
-            .compare = LESS_EQUAL,
-        },
-        .color_count = 0,
-        .colors[0].pixel_format = NONE,
-        .sample_count = 1,
-        .label = "drie-shadow-pipeline",
-    };
+        .layout = vertex_layout({
+        shaders::ATTR_SHADOW_POSITION,
+        shaders::ATTR_SHADOW_NORMAL,
+        shaders::ATTR_SHADOW_UV,
+        shaders::ATTR_SHADOW_COLOR0,
+        shaders::ATTR_SHADOW_UV1,
+        -1,
+        shaders::ATTR_SHADOW_INST0,
+        shaders::ATTR_SHADOW_INST1,
+        shaders::ATTR_SHADOW_INST2,
+        shaders::ATTR_SHADOW_HEIGHT,
+        -1,
+        -1
+    }), .depth = {
+        .pixel_format = DEPTH,
+        .write_enabled = true,
+        .compare = LESS_EQUAL,
+    }, .color_count = 0, .colors[0].pixel_format = NONE, .sample_count = 1, .label = "drie-shadow-pipeline", };
 }
 
 // Looks up or creates the shadow pipeline for `gen` (`MaterialKey.shadow`), using ATLAS_FORMAT

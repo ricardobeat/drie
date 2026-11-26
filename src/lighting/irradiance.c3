@@ -13,12 +13,12 @@ import sokol;
 const Vector3[6] IRRADIANCE_AXES = { { 1, 0, 0 }, { -1, 0, 0 }, { 0, 1, 0 }, { 0, -1, 0 }, { 0, 0, 1 }, { 0, 0, -1 } };
 
 // Axis-aligned 3D grid of 6-axis irradiance probes attached via `Scene.irradiance`.
-//
+// 
 //   IrradianceVolume* v = drie::irradiance_volume(room_min, room_max, 0.5f);
 //   // For every probe (x, y, z) and direction dir in 0..5 (IRRADIANCE_AXES):
 //   v.set(x, y, z, dir, irradiance_at_probe);
 //   scene.irradiance = v;
-//
+// 
 // Lit materials inside `[min, max]` receive this light on top of scene lights unless
 // `replaces_ambient` is set. Use `sample()` on the CPU to feed one bounce into the next.
 struct IrradianceVolume {

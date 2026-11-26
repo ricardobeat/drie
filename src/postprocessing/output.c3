@@ -12,7 +12,7 @@ import sokol, drie;
 // ---- OutputPass
 
 // Tone-mapping and display-encoding pass placed at the end of a linear HDR chain.
-//
+// 
 //   OutputPass* out = postprocessing::output_pass(renderer);
 //   out.set_source(hdr_target.texture);
 //   out.render(ldr_target); // or null for the window
@@ -87,7 +87,10 @@ fn void OutputPass.render(
     float clear_alpha = 1
 ) {
     if (!target) self.match_window();
-    if (self.grade && !self.hdr) self.grade.prepare(self.renderer.tone_mapping, self.color_space == DISPLAY_P3_COLOR_SPACE);
+    if (self.grade && !self.hdr) self.grade.prepare(
+        self.renderer.tone_mapping,
+        self.color_space == DISPLAY_P3_COLOR_SPACE
+    );
     self.update();
     self.shader_pass.render(target, load, clear, clear_alpha);
 }

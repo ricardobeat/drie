@@ -50,14 +50,14 @@ struct Intersection {
 }
 
 // Ray intersection query over scene objects within `[near, far]`.
-//
+// 
 //   Raycaster ray = drie::raycaster();
 //   ray.set_from_camera({ x, y }, camera);            // x, y in -1..1 NDC
 //   List{Intersection} hits;
 //   ray.intersect_objects(scene.children.array_view(), &hits);
 //   if (hits.len()) hits[0].object.visible = false;   // sorted nearest first
 //   hits.clear();
-//
+// 
 //   Intersection hit;
 //   if (ray.intersect_first(scene, &hit)) aim_at(hit.point);
 struct Raycaster {

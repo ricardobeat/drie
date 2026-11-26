@@ -2,7 +2,7 @@
 // is true; when enabled, `start()` and `stop()` accumulate wall ticks per named stage (up to 48
 // distinct names) and `begin_pass()` measures time spent waiting on the GPU in the first pass of
 // each frame. Also hooks `drie::gpu_timer` into every pass and commit.
-//
+// 
 //   profile::enabled = true;
 //   ulong t = profile::start();
 //   ...

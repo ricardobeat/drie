@@ -10,24 +10,24 @@ import sokol;
 // Offscreen render surface with optional MSAA, depth buffer, and MRT auxiliary attachments.
 // Sample `texture` directly in post-processing passes or call as_map() for a material Texture.
 struct RenderTarget {
-    int width;                      // Target width in pixels.
-    int height;                     // Target height in pixels.
-    int samples;                    // MSAA sample count (1 or 4 for scene rendering).
+    int width; // Target width in pixels.
+    int height; // Target height in pixels.
+    int samples; // MSAA sample count (1 or 4 for scene rendering).
     // Pixel format (DEFAULT selects RGBA8). RGBA8 holds tone-mapped sRGB; RGBA16F holds linear
     // HDR light for post-processing passes such as drie::postprocessing OutputPass.
     SgPixelFormat format;
-    bool depth_buffer;              // Whether a depth attachment and depth_texture are allocated.
-    SgImage color;                  // Primary color attachment image (multisampled when samples > 1).
-    SgImage resolve;                // Single-sampled resolve target when samples > 1.
-    SgImage depth;                  // Depth attachment image (DEPTH format).
-    SgView color_view;              // Color attachment view for `color`.
-    SgView resolve_view;            // Resolve attachment view for `resolve`.
-    SgView depth_view;              // Depth-stencil attachment view for `depth`.
-    SgView texture;                 // Sampleable texture view of the resolved color image.
-    SgImage texture_image;          // Resolved image backing `texture` (`resolve` or `color`).
-    SgView depth_texture;           // Sampleable depth view (multisampled if `samples > 1`).
-    SgView overlay_view;            // Color attachment view over `texture_image` for post overlays.
-    Texture* map_texture;           // Cached Texture wrapper returned by as_map().
+    bool depth_buffer; // Whether a depth attachment and depth_texture are allocated.
+    SgImage color; // Primary color attachment image (multisampled when samples > 1).
+    SgImage resolve; // Single-sampled resolve target when samples > 1.
+    SgImage depth; // Depth attachment image (DEPTH format).
+    SgView color_view; // Color attachment view for `color`.
+    SgView resolve_view; // Resolve attachment view for `resolve`.
+    SgView depth_view; // Depth-stencil attachment view for `depth`.
+    SgView texture; // Sampleable texture view of the resolved color image.
+    SgImage texture_image; // Resolved image backing `texture` (`resolve` or `color`).
+    SgView depth_texture; // Sampleable depth view (multisampled if `samples > 1`).
+    SgView overlay_view; // Color attachment view over `texture_image` for post overlays.
+    Texture* map_texture; // Cached Texture wrapper returned by as_map().
     // Enables three extra attachments on an RGBA16F target (set before the first set_size()):
     //   normal_texture    RG16SN (RG16F fallback): world-space shaded normal packed with
     //                     octahedral encoding (see unpack_octahedral_normal in shaders/gtao.glsl)
@@ -37,14 +37,14 @@ struct RenderTarget {
     //                     by GTAOPass in drie::postprocessing), b = roughness, a = metalness
     // Transparent materials do not write to MRT attachments.
     bool mrt;
-    uint drawn_frame;               // Engine frame counter + 1 of the last pass into this target.
+    uint drawn_frame; // Engine frame counter + 1 of the last pass into this target.
     SgImage[MRT_COUNT] mrt_color;
     SgImage[MRT_COUNT] mrt_resolve;
     SgView[MRT_COUNT] mrt_color_view;
     SgView[MRT_COUNT] mrt_resolve_view;
-    SgView normal_texture;          // Sampleable MRT attachment 1: world-space octahedral normals.
-    SgView velocity_texture;        // Sampleable MRT attachment 2: screen-space motion vectors.
-    SgView indirect_texture;        // Sampleable MRT attachment 3: indirect shares, rough, metal.
+    SgView normal_texture; // Sampleable MRT attachment 1: world-space octahedral normals.
+    SgView velocity_texture; // Sampleable MRT attachment 2: screen-space motion vectors.
+    SgView indirect_texture; // Sampleable MRT attachment 3: indirect shares, rough, metal.
 }
 
 // Number of extra MRT color attachments after color (attachments 1..3: normal, velocity, indirect).

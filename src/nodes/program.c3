@@ -1,7 +1,7 @@
 // Whole-program node IR (`ProgramGraph`, `ShaderProgram`, `NodeFunc`), engine node constructors
 // (`node_input`, `node_storage`, `node_sample`, `node_attribute`, `node_system`, `node_matrix`,
 // `node_bind`, `node_return`), dataflow analysis (`ProgramGen`), sokol descriptors, and cache I/O.
-//
+// 
 // `NODE_USER_HEADER` (13) reserves rows 0..12 of `NodeSource.USER` for view/projection/model
 // matrices and camera/time before user uniforms; `NODE_USER_VIEW` (64) separates custom node
 // textures from engine view slots. `ProgramGen` numbers locals in emission order, stamps var and
@@ -13,12 +13,12 @@ import std::collections::list, std::collections::map, std::io, std::thread, soko
 // The uniform blocks programs read rows of (INPUT), in the order the renderer hands them to
 // ShaderProgram.gather.
 enum NodeSource : char {
-    VS,         // shaders::VsParams
-    FS,         // shaders::FsParams
-    SHADOW_VS,  // shaders::ShadowVsParams
-    SHADOW_FS,  // shaders::ShadowFsParams
-    DEPTH_FS,   // shaders::DepthFsParams
-    USER,       // a node material's uniforms (nodes::uniform), as its NodeBuild lists them
+    VS,        // shaders::VsParams
+    FS,        // shaders::FsParams
+    SHADOW_VS, // shaders::ShadowVsParams
+    SHADOW_FS, // shaders::ShadowFsParams
+    DEPTH_FS,  // shaders::DepthFsParams
+    USER,      // a node material's uniforms (nodes::uniform), as its NodeBuild lists them
 }
 
 // A node material's textures (nodes::texture) take the view sources from here on, in the order
@@ -40,11 +40,11 @@ enum ProgramStage : char {
 // Metadata and body root for a reusable shader function emitted once per stage that calls it.
 struct NodeFunc {
     String name;
-    NodeType ret;            // VOID: returns nothing
+    NodeType ret; // VOID: returns nothing
     NodeType[12] params;
     int count;
-    Node body;               // what it returns: a value (a SEQ with its statements); VOID: a block's SEQ
-    uint mark;               // node_count() when it was made
+    Node body; // what it returns: a value (a SEQ with its statements); VOID: a block's SEQ
+    uint mark; // node_count() when it was made
     // nodes::function's: calls with the same arguments are one value, and can be hoisted out
     // of an if (hoist_shared); no discard
     bool pure;
@@ -116,8 +116,16 @@ fn int call_func(NodeData* d) @private => (int)bitcast(d.value[0], uint);
 // them, `stride` rows apart.
 fn Node node_input(NodeSource src, int row, NodeType t, int comp = 0, Node index = { }, int stride = 0, int len = 0) {
     if (t == VOID || t == BOOL) abort("drie: nodes: no input of a %s", t);
-    if (!is_matrix(t) && comp + components(t) > 4) abort("drie: nodes: a %s from component %d is past its row", t, comp);
-    NodeData d = { .op = INPUT, .type = t, .count = index.id ? 1 : 0, .args = { index.id, 0, 0, 0 }, .res = { src.ordinal, row, comp } };
+    if (!is_matrix(
+        t
+    ) && comp + components(t) > 4) abort("drie: nodes: a %s from component %d is past its row", t, comp);
+    NodeData d = {
+        .op = INPUT,
+        .type = t,
+        .count = index.id ? 1 : 0,
+        .args = { index.id, 0, 0, 0 },
+        .res = { src.ordinal, row, comp }
+    };
     d.value[0] = bitcast((uint)stride, float);
     d.value[1] = bitcast((uint)len, float);
     return add_node(d);
@@ -125,12 +133,23 @@ fn Node node_input(NodeSource src, int row, NodeType t, int comp = 0, Node index
 
 // Element `index` of the storage buffer in view slot `view`: of vec4s, uvec4s or uints.
 fn Node node_storage(int view, NodeType elem, Node index) {
-    if (elem != VEC4 && elem != UVEC4 && elem != UINT) abort("drie: nodes: storage buffers of vec4s, uvec4s or uints, not %ss", elem);
+    if (elem != VEC4 && elem != UVEC4 && elem != UINT) abort(
+        "drie: nodes: storage buffers of vec4s, uvec4s or uints, not %ss",
+        elem
+    );
     return add_node({ .op = STORAGE, .type = elem, .count = 1, .args = { index.id, 0, 0, 0 }, .res = { view, 0, 0 } });
 }
 
 // Creates a texture read or query node (`how`) against engine view slot `view` and `sampler`.
-fn Node node_sample(NodeSampling how, int view, int sampler, NodeTextureKind kind, Node coords, Node a = { }, Node b = { }) {
+fn Node node_sample(
+    NodeSampling how,
+    int view,
+    int sampler,
+    NodeTextureKind kind,
+    Node coords,
+    Node a = { },
+    Node b = { }
+) {
     NodeType t = VEC4;
     switch (how) {
         case SIZE: t = kind == TEX_3D || kind == TEX_ARRAY ? IVEC3 : IVEC2;
@@ -141,8 +160,16 @@ fn Node node_sample(NodeSampling how, int view, int sampler, NodeTextureKind kin
         default:
             if (kind == TEX_DEPTH) abort("drie: nodes: a depth texture is read with compare()");
     }
-    return add_node({ .op = SAMPLE, .type = t, .kind = (char)how.ordinal, .count = 3, .args = { coords.id, a.id, b.id, 0 },
-                      .res = { view, sampler, kind.ordinal } });
+    return add_node(
+        {
+            .op = SAMPLE,
+            .type = t,
+            .kind = (char)how.ordinal,
+            .count = 3,
+            .args = { coords.id, a.id, b.id, 0 },
+            .res = { view, sampler, kind.ordinal }
+        }
+    );
 }
 
 // Creates a vertex attribute input node at vertex attribute location `location`.
@@ -193,10 +220,10 @@ fn Node node_return(Node value = { }) {
 
 // What a program is printed from.
 struct ProgramGraph {
-    Node position;          // vertex: the clip position (a vec4; a SEQ for statements before it)
-    Node[4] colors;         // fragment: its outputs (vec4s; 0 past the last); none: depth only
-    Node depth;             // fragment: the depth it writes (a float; 0: the rasterizer's)
-    Node fragment;          // fragment: a block worked out before the outputs (0: none)
+    Node position; // vertex: the clip position (a vec4; a SEQ for statements before it)
+    Node[4] colors; // fragment: its outputs (vec4s; 0 past the last); none: depth only
+    Node depth; // fragment: the depth it writes (a float; 0: the rasterizer's)
+    Node fragment; // fragment: a block worked out before the outputs (0: none)
     // Two programs that place vertices exactly alike (the depth prepass and the main pass
     // that tests against its depth with EQUAL) share one vertex stage: the one whose fragment
     // stage reads less is built first with `fragment_only` (no vertex stage yet), the other
@@ -210,21 +237,21 @@ struct ProgramGraph {
 // Texture or readonly storage buffer binding used by one stage of a `ShaderProgram`.
 struct ProgramView {
     ProgramStage stage;
-    int source;               // the engine's view slot (shaders::VIEW_*) or NODE_USER_VIEW + k
+    int source; // the engine's view slot (shaders::VIEW_*) or NODE_USER_VIEW + k
     bool storage;
-    NodeTextureKind kind;     // a texture's
-    NodeType elem;            // a storage buffer's: VEC4, UVEC4 or UINT
-    int msl;                  // Metal's texture(n), or buffer(n) for a storage buffer
-    int hlsl;                 // HLSL's t register
-    int glsl;                 // GLSL's binding of a storage buffer (its place in the list when made)
+    NodeTextureKind kind; // a texture's
+    NodeType elem; // a storage buffer's: VEC4, UVEC4 or UINT
+    int msl; // Metal's texture(n), or buffer(n) for a storage buffer
+    int hlsl; // HLSL's t register
+    int glsl; // GLSL's binding of a storage buffer (its place in the list when made)
 }
 
 // Sampler binding used by one stage of a `ShaderProgram`.
 struct ProgramSampler {
     ProgramStage stage;
-    int source;               // the engine's sampler slot (shaders::SMP_*)
+    int source; // the engine's sampler slot (shaders::SMP_*)
     bool compare;
-    int msl;                  // and HLSL's s register
+    int msl; // and HLSL's s register
 }
 
 // Combined texture-sampler pair emitted as a GLSL `sampler*` uniform.
@@ -248,13 +275,13 @@ struct ShaderProgram {
     NodeLang lang;
     String vs;
     String fs;
-    List{ProgramRows}[2] rows;    // by ProgramStage
+    List{ProgramRows}[2] rows; // by ProgramStage
     int[2] block_rows;
     List{ProgramView} views;
     List{ProgramSampler} samplers;
     List{ProgramPair} pairs;
-    List{Node} varyings;          // (for programs sharing the vertex stage)
-    NodeType[16] attrs;           // the vertex attributes it reads by location (VOID: not read)
+    List{Node} varyings; // (for programs sharing the vertex stage)
+    NodeType[16] attrs; // the vertex attributes it reads by location (VOID: not read)
     int colors;
     bool depth_out;
     bool discards;
@@ -279,14 +306,24 @@ fn void ShaderProgram.free(&self) {
 
 // Its uniform block for stage `st`, from the engine's blocks (`sources`, by NodeSource; null:
 // not filled for this draw, read as zeros), into `out` (block_rows[st] vec4s).
-fn void ShaderProgram.gather(&self, ProgramStage st, void*[NodeSource::len] sources, sz[NodeSource::len] sizes, Vec4[] out) {
+fn void ShaderProgram.gather(
+    &self,
+    ProgramStage st,
+    void*[NodeSource::len] sources,
+    sz[NodeSource::len] sizes,
+    Vec4[] out
+) {
     foreach (r : self.rows[st.ordinal]) {
         char* src = sources[r.source.ordinal];
-        sz from = (sz)r.row * 16;
-        sz bytes = (sz)r.count * 16;
+        sz from   = (sz)r.row * 16;
+        sz bytes  = (sz)r.count * 16;
         if (!src || from + bytes > sizes[r.source.ordinal]) {
             for (int i = 0; i < r.count; i++) out[(sz)r.at + i] = { };
-            if (src && from < sizes[r.source.ordinal]) mem::copy(&out[r.at], src + from, sizes[r.source.ordinal] - from);
+            if (src && from < sizes[r.source.ordinal]) mem::copy(
+                &out[r.at],
+                src + from,
+                sizes[r.source.ordinal] - from
+            );
             continue;
         }
         mem::copy(&out[r.at], src + from, bytes);
@@ -298,12 +335,12 @@ fn void ShaderProgram.gather(&self, ProgramStage st, void*[NodeSource::len] sour
 // One function's (or a stage's main's) text, and what printing it knows.
 struct GenBody @private {
     DString out;
-    uint[] memo;          // per node: the scope it was printed in (0: not printed)
-    uint[] memo_stamp;    //   the assignment count then
-    uint[] serial;        //   how many times (its name's suffix)
-    uint[] local;         //   its number in this body
-    String[] same_as;     //   the name it reads instead, printed for another node of the same value
-                          //   (see ProgramGen.emit; null: its own)
+    uint[] memo; // per node: the scope it was printed in (0: not printed)
+    uint[] memo_stamp; // the assignment count then
+    uint[] serial; // how many times (its name's suffix)
+    uint[] local; // its number in this body
+    String[] same_as; // the name it reads instead, printed for another node of the same value
+    //   (see ProgramGen.emit; null: its own)
     uint locals;
     // what has been printed, by its type and expression: the node whose name it is, and that
     // name's suffix then
@@ -311,7 +348,7 @@ struct GenBody @private {
     List{bool} scope_open;
     uint scope;
     int indent;
-    int func;             // the function (in node_funcs), -1 for main
+    int func; // the function (in node_funcs), -1 for main
     // what it reads that Metal hands functions as arguments (its own and its calls')
     bool block;
     List{int} views;
@@ -331,14 +368,14 @@ struct ProgramGen @private {
     ProgramStage stage;
     ShaderProgram* p;
     GenBody* body;
-    uint nodes;              // node_count() when printing started
+    uint nodes; // node_count() when printing started
     uint stamp;
-    uint[] var_stamp;        // per VAR: its last assignment's count; per builtin b, at nodes + 1 + b
-    uint[][] var_sets;       // per node: the VARs (and builtins) its value reads, ascending
+    uint[] var_stamp; // per VAR: its last assignment's count; per builtin b, at nodes + 1 + b
+    uint[][] var_sets; // per node: the VARs (and builtins) its value reads, ascending
     bool[] var_set_done;
     Node[NodeBuiltin::len] binding;
-    DString funcs;           // the stage's functions, each before its callers
-    FuncDone[] func_done;    // by node_funcs index
+    DString funcs; // the stage's functions, each before its callers
+    FuncDone[] func_done; // by node_funcs index
     NodeBuild* build;
     bool frag_coord;
     bool front_facing;
@@ -349,7 +386,7 @@ struct ProgramGen @private {
 // Allocates a fresh temporary `GenBody` for function index `func` (`-1` for stage `main`).
 fn GenBody* ProgramGen.new_body(&self, int func) {
     GenBody* b = mem::tnew(GenBody);
-    sz count = (sz)self.nodes + 1;
+    sz count   = (sz)self.nodes + 1;
     b.out = dstring::temp();
     b.memo = mem::temp_array(uint, count);
     b.memo_stamp = mem::temp_array(uint, count);
@@ -418,7 +455,7 @@ fn String scalar_one(NodeScalar s) @local {
 
 // Formats a zero-valued literal of type `t` in the target shading language.
 fn String ProgramGen.zero(&self, NodeType t) {
-    int n = components(t);
+    int n    = components(t);
     String z = scalar_zero(scalar_of(t));
     if (n == 1) return z;
     if (self.lang == HLSL) return string::tformat("((%s)0)", self.type_name(t));
@@ -442,7 +479,7 @@ fn String ProgramGen.name(&self, Node n) {
     GenBody* b = self.body;
     if (b.same_as[n.id].ptr) return b.same_as[n.id];
     uint id = b.local[n.id];
-    uint k = b.serial[n.id];
+    uint k  = b.serial[n.id];
     if (k <= 1) return string::tformat("n%d", id);
     return string::tformat("n%d_%d", id, k);
 }
@@ -451,19 +488,26 @@ fn String ProgramGen.name(&self, Node n) {
 // gets zeros and a w of 1, a wider one loses its last components.
 fn String ProgramGen.convert(&self, String x, NodeType from, NodeType to) {
     if (from == to) return x;
-    if (from == VOID || to == VOID) abort("drie: nodes: a statement (or a function that returns nothing) where a value goes");
+    if (from == VOID || to == VOID) abort(
+        "drie: nodes: a statement (or a function that returns nothing) where a value goes"
+    );
     if (is_matrix(from) || is_matrix(to)) abort("drie: nodes: a %s doesn't convert to a %s (node_matrix)", from, to);
     NodeScalar sf = scalar_of(from);
     NodeScalar st = scalar_of(to);
-    int f = components(from);
-    int t = components(to);
+    int f         = components(from);
+    int t         = components(to);
     if (st == BOOL) return string::tformat("(%s != %s)", f == 1 ? x : string::tformat("%s.x", x), scalar_zero(sf));
-    if (sf == BOOL) return self.convert(string::tformat("(%s ? %s : %s)", x, scalar_one(st), scalar_zero(st)), type_of(st, 1), to);
+    if (sf == BOOL) return self.convert(
+        string::tformat("(%s ? %s : %s)", x, scalar_one(st), scalar_zero(st)),
+        type_of(st, 1),
+        to
+    );
     if (f != t) {
         NodeType mid = type_of(sf, t);
-        String z = scalar_zero(sf);
+        String z     = scalar_zero(sf);
         if (f == 1) {
-            x = self.lang == HLSL ? string::tformat("((%s)%s)", self.type_name(mid), x) : string::tformat("%s(%s)", self.type_name(mid), x);
+            x = self.lang == HLSL ? string::tformat("((%s)%s)", self.type_name(mid), x)
+                : string::tformat("%s(%s)", self.type_name(mid), x);
         } else if (t < f) {
             x = string::tformat("%s.%s", x, "xyzw"[:(sz)t]);
         } else {
@@ -664,7 +708,7 @@ fn void ProgramGen.seq_assigns_in(&self, uint first, bool[] assigns) {
 // Returns true if `n` was emitted in an enclosing open scope and none of its dependencies changed.
 fn bool ProgramGen.printed(&self, Node n) {
     GenBody* b = self.body;
-    uint at = b.memo[n.id];
+    uint at    = b.memo[n.id];
     if (!at || !b.scope_open[(sz)at - 1]) return false;
     if (node_data(n).op == VAR) return true;
     foreach (v : self.vars_of(n)) {
@@ -802,17 +846,26 @@ fn void ProgramGen.statement(&self, Node s) {
                 self.open_scope();
                 self.line("if (!%s) break;", self.value_as({ d.args[2] }, BOOL));
             } else {
-                Node index = { d.args[0] };
-                NodeType t = index.type();
-                String from = self.value_as({ d.args[1] }, t);
-                String to = self.value_as({ d.args[2] }, t);
+                Node index    = { d.args[0] };
+                NodeType t    = index.type();
+                String from   = self.value_as({ d.args[1] }, t);
+                String to     = self.value_as({ d.args[2] }, t);
                 String[*] ops = { "<", "<=", ">", ">=" };
                 b.scope_open.push(true);
                 b.scope = (uint)b.scope_open.len();
                 self.assigned(index.id);
                 String i = self.mark(index);
-                self.line("for (%s %s = %s; %s %s %s; %s%s) {", self.type_name(t), i, from, i, ops[how.ordinal], to, i,
-                          how.ordinal < 2 ? "++" : "--");
+                self.line(
+                    "for (%s %s = %s; %s %s %s; %s%s) {",
+                    self.type_name(t),
+                    i,
+                    from,
+                    i,
+                    ops[how.ordinal],
+                    to,
+                    i,
+                    how.ordinal < 2 ? "++" : "--"
+                );
                 b.indent++;
             }
             self.statements(d.args[3]);
@@ -824,7 +877,10 @@ fn void ProgramGen.statement(&self, Node s) {
                 case 1: self.line("continue;");
                 case 2:
                     if (self.stage != FRAGMENT) abort("drie: nodes: discard is for the fragment stage");
-                    if (self.body.func >= 0 && node_funcs[self.body.func].pure) abort("drie: nodes: discard in a function (%s)", node_funcs[self.body.func].name);
+                    if (self.body.func >= 0 && node_funcs[self.body.func].pure) abort(
+                        "drie: nodes: discard in a function (%s)",
+                        node_funcs[self.body.func].name
+                    );
                     self.p.discards = true;
                     self.line(self.discard());
                 default:
@@ -850,8 +906,8 @@ fn void ProgramGen.statement(&self, Node s) {
 fn void ProgramGen.hoist_shared(&self, uint a, uint b) {
     if (!a || !b) return;
     // (in the temporary memory the printing is in: emit grows the body's text and lists)
-    sz count = (sz)self.nodes + 1;
-    char[] in = mem::temp_array(char, count);
+    sz count        = (sz)self.nodes + 1;
+    char[] in       = mem::temp_array(char, count);
     bool[] assigned = mem::temp_array(bool, count + NodeBuiltin::len);
     self.reads_in(a, in, 1, assigned);
     self.reads_in(b, in, 2, assigned);
@@ -870,7 +926,7 @@ fn void ProgramGen.reads_in(&self, uint first, char[] in, char bit, bool[] assig
 // Marks `n` and its unprinted dependencies with branch mask `bit` in `in`, tracking `assigned`.
 fn void ProgramGen.reads_of(&self, Node n, char[] in, char bit, bool[] assigned) {
     if (!n.id || n.id >= in.len || (in[n.id] & bit)) return;
-    NodeData* d = node_data(n);
+    NodeData* d    = node_data(n);
     bool statement = d.op == ASSIGN || d.op == IF || d.op == LOOP || d.op == JUMP || d.op == EVAL || d.op == BIND;
     if (!statement && self.printed(n)) return;
     in[n.id] |= bit;
@@ -911,7 +967,7 @@ fn void ProgramGen.reads_of(&self, Node n, char[] in, char bit, bool[] assigned)
 fn bool ProgramGen.hoistable(&self, Node n, char[] can, bool[] assigned) {
     if (!n.id) return true;
     if (can[n.id]) return can[n.id] == 1;
-    bool ok = true;
+    bool ok     = true;
     NodeData* d = node_data(n);
     if (self.printed(n)) {
         ok = true;
@@ -925,7 +981,9 @@ fn bool ProgramGen.hoistable(&self, Node n, char[] can, bool[] assigned) {
                 ok = d.op != INPUT || self.hoistable({ d.args[0] }, can, assigned);
             case BUILTIN:
                 Node bound = self.binding[d.kind];
-                ok = bound.id && !assigned[self.builtin_var((NodeBuiltin)d.kind)] && self.hoistable(bound, can, assigned);
+                ok = bound.id && !assigned[self.builtin_var(
+                    (NodeBuiltin)d.kind
+                )] && self.hoistable(bound, can, assigned);
             case VARYING:
                 ok = self.stage == FRAGMENT || self.hoistable({ d.args[0] }, can, assigned);
             case TEXTURE:
@@ -982,7 +1040,24 @@ fn void ProgramGen.ret(&self, Node value) {
 
 // ---- Sokol shader descriptors and serialization
 
-const ZString[16] ATTR_GLSL_NAMES @local = { "a0", "a1", "a2", "a3", "a4", "a5", "a6", "a7", "a8", "a9", "a10", "a11", "a12", "a13", "a14", "a15" };
+const ZString[16] ATTR_GLSL_NAMES @local = {
+    "a0",
+    "a1",
+    "a2",
+    "a3",
+    "a4",
+    "a5",
+    "a6",
+    "a7",
+    "a8",
+    "a9",
+    "a10",
+    "a11",
+    "a12",
+    "a13",
+    "a14",
+    "a15"
+};
 
 fn SgShaderStage sg_stage(ProgramStage st) @local => st == VERTEX ? SgShaderStage.VERTEX : SgShaderStage.FRAGMENT;
 
@@ -1079,7 +1154,11 @@ fn SgShader ShaderProgram.make(&self) {
     self.shader = sg::make_shader(&d);
     sg_warm_archivable(self.shader.id);
     if (sg::query_shader_state(self.shader) != VALID) {
-        io::eprintfn("drie: a generated program failed to build.\n--- vertex:\n%s\n--- fragment:\n%s", self.vs, self.fs);
+        io::eprintfn(
+            "drie: a generated program failed to build.\n--- vertex:\n%s\n--- fragment:\n%s",
+            self.vs,
+            self.fs
+        );
         abort("drie: a generated program failed to build");
     }
     return self.shader;
@@ -1090,7 +1169,7 @@ fn SgShader ShaderProgram.make(&self) {
 fn void ShaderProgram.start(&self) {
     if (self.shader.id || self.job) return;
     SgShaderDesc d = self.desc();
-    int job = sg_warm_shader_begin(&d);
+    int job        = sg_warm_shader_begin(&d);
     if (job >= 0) self.job = job + 1;
 }
 
@@ -1131,27 +1210,50 @@ fn void ShaderProgram.take_vertex(&self, ShaderProgram* from) {
     foreach (pr : from.pairs) {
         if (pr.stage != VERTEX) continue;
         foreach (mine : self.pairs) {
-            if (((ZString)mine.name).str_view() == ((ZString)pr.name).str_view()) abort("drie: nodes: two programs sharing a vertex stage name a sampler alike");
+            if (((ZString)mine.name).str_view() == ((ZString)pr.name).str_view()) abort(
+                "drie: nodes: two programs sharing a vertex stage name a sampler alike"
+            );
         }
         String name = ((ZString)pr.name).str_view().copy(mem);
-        self.pairs.push({ .stage = VERTEX, .view = view_at[pr.view], .sampler = sampler_at[pr.sampler], .name = (ZString)name.ptr });
+        self.pairs.push(
+            { .stage = VERTEX, .view = view_at[pr.view], .sampler = sampler_at[pr.sampler], .name = (ZString)name.ptr }
+        );
     }
 }
 
 // The program as text, for the pipeline cache (read_program reads it back): a line of counts,
 // the two sources, then a line for each of its rows, views, samplers and pairs.
 fn void ShaderProgram.write(&self, DString* out) {
-    out.appendf("%d %d %d %d %d %d %d %d %d %d\n", self.lang.ordinal, self.vs.len, self.fs.len, self.block_rows[0],
-                self.block_rows[1], self.rows[0].len(), self.rows[1].len(), self.views.len(), self.samplers.len(),
-                self.pairs.len());
+    out.appendf(
+        "%d %d %d %d %d %d %d %d %d %d\n",
+        self.lang.ordinal,
+        self.vs.len,
+        self.fs.len,
+        self.block_rows[0],
+        self.block_rows[1],
+        self.rows[0].len(),
+        self.rows[1].len(),
+        self.views.len(),
+        self.samplers.len(),
+        self.pairs.len()
+    );
     out.append(self.vs);
     out.append(self.fs);
     for (int st = 0; st < 2; st++) {
         foreach (r : self.rows[st]) out.appendf("%d %d %d %d\n", r.source.ordinal, r.row, r.count, r.at);
     }
     foreach (v : self.views) {
-        out.appendf("%d %d %d %d %d %d %d %d\n", v.stage.ordinal, v.source, v.storage ? 1 : 0, v.kind.ordinal, v.elem.ordinal,
-                    v.msl, v.hlsl, v.glsl);
+        out.appendf(
+            "%d %d %d %d %d %d %d %d\n",
+            v.stage.ordinal,
+            v.source,
+            v.storage ? 1 : 0,
+            v.kind.ordinal,
+            v.elem.ordinal,
+            v.msl,
+            v.hlsl,
+            v.glsl
+        );
     }
     foreach (sm : self.samplers) out.appendf("%d %d %d %d\n", sm.stage.ordinal, sm.source, sm.compare ? 1 : 0, sm.msl);
     foreach (pr : self.pairs) out.appendf("%d %d %d %s\n", pr.stage.ordinal, pr.view, pr.sampler, (ZString)pr.name);
@@ -1206,9 +1308,14 @@ fn ShaderProgram*? read_program(String text, usz* at) {
     }
     for (int i = 0; i < h[7] && ok; i++) {
         int[8] v;
-        ok = read_numbers(text, at, &v) == 8 && v[0] >= 0 && v[0] < 2 && v[3] >= 0 && v[3] < NodeTextureKind::len
-            && v[4] >= 0 && v[4] < NodeType::len;
-        if (ok) p.views.push({ (ProgramStage)v[0], v[1], v[2] == 1, (NodeTextureKind)v[3], (NodeType)v[4], v[5], v[6], v[7] });
+        ok = read_numbers(
+            text,
+            at,
+            &v
+        ) == 8 && v[0] >= 0 && v[0] < 2 && v[3] >= 0 && v[3] < NodeTextureKind::len && v[4] >= 0 && v[4] < NodeType::len;
+        if (ok) p.views.push(
+            { (ProgramStage)v[0], v[1], v[2] == 1, (NodeTextureKind)v[3], (NodeType)v[4], v[5], v[6], v[7] }
+        );
     }
     for (int i = 0; i < h[8] && ok; i++) {
         int[4] sm;
@@ -1225,7 +1332,7 @@ fn ShaderProgram*? read_program(String text, usz* at) {
         *at += (usz)end + 1;
         ok = f.len == 4 && (f[0] == "0" || f[0] == "1");
         if (!ok) break;
-        int? view = f[1].to_int();
+        int? view    = f[1].to_int();
         int? sampler = f[2].to_int();
         ok = @ok(view) && @ok(sampler);
         if (ok) p.pairs.push({ f[0] == "1" ? FRAGMENT : VERTEX, view!!, sampler!!, (ZString)f[3].copy(mem).ptr });

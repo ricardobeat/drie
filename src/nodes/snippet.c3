@@ -1,6 +1,6 @@
 // Text expression parser (`drie::nodes::snippet`) compiling GLSL-like expressions with `let`
 // bindings into shader `Node` graphs, plus error reporting (`SNIPPET_ERROR`, `snippet_error`).
-//
+// 
 // Validates operand types, swizzles, and arity before calling `drie::nodes` constructors so
 // syntax or type mistakes return `SNIPPET_ERROR~` with `"line:col: message"` instead of
 // aborting. Supports up to 32 `let` bindings and 4 arguments per call. Emits nodes through
@@ -35,25 +35,25 @@ struct Snippet @local {
 
 // Parses GLSL-like expression text `src` (with optional leading `let name = expr;` bindings and
 // external `names`) into a shader `Node`, returning `SNIPPET_ERROR~` on failure:
-//
+// 
 //   Node dirt = nodes::snippet(`
 //       let h = position_world.y - floor_y;
 //       let d = smoothstep(0.6, 0.0, h) * amount;
 //       mix(material_color.rgb, vec3(0.2, 0.17, 0.12), d)
 //   `, { { "floor_y", floor_y }, { "amount", amount } })!!;
 //   mat.color_node = nodes::vec4(dirt, 1);
-//
+// 
 // Supports numbers, `+ - * / % < <= > >= == != && || ! ?: ()`, swizzles (`.x`, `.xy`, `.rgb`,
 // ...), `vec2`/`vec3`/`vec4`, `drie::nodes` math functions (`sin`..`smoothstep`, `one_minus`),
 // and shader builtins (`uv`, `uv1`, `position_local`, `position_world`, `normal_local`,
 // `normal_world`, `normal_geometry`, `camera_position`, `view_direction`, `time`, `vertex_color`,
 // `frag_coord`, `material_color`, `material_roughness`, `material_metalness`, `instance_index`).
 // Pass textures, loops, or functions constructed with `drie::nodes` through `names`.
-fn Node? snippet(String src, SnippetName[] names = {}) {
+fn Node? snippet(String src, SnippetName[] names = { }) {
     Snippet s = { .src = src, .names = names };
     snippet_message_len = 0;
     while (s.word("let")) {
-        usz start = s.at;
+        usz start   = s.at;
         String name = s.ident();
         if (!name.len) return s.fail_at(start, "a name after let");
         if (!s.symbol("=")) return s.fail("'=' after let %s", name);
@@ -76,7 +76,7 @@ fn Node? Snippet.fail(&self, String fmt, args...) => self.fail_at(self.at, fmt, 
 // Records a formatted `"line:col: msg"` error at byte offset `at` and returns `SNIPPET_ERROR~`.
 fn Node? Snippet.fail_at(&self, usz at, String fmt, args...) {
     int line = 1;
-    int col = 1;
+    int col  = 1;
     for (usz i = 0; i < at && i < self.src.len; i++) {
         if (self.src[i] == '\n') {
             line++;
@@ -87,7 +87,7 @@ fn Node? Snippet.fail_at(&self, usz at, String fmt, args...) {
     }
     @pool() {
         String what = string::tformat(fmt, ...args);
-        String msg = string::tformat("%d:%d: %s", line, col, what);
+        String msg  = string::tformat("%d:%d: %s", line, col, what);
         snippet_message_len = msg.len < snippet_message.len ? msg.len : snippet_message.len;
         snippet_message[:snippet_message_len] = msg[:snippet_message_len];
     };
@@ -134,7 +134,8 @@ fn bool Snippet.symbol(&self, String sym) {
     self.space();
     usz end = self.at + sym.len;
     if (end > self.src.len || self.src[self.at:sym.len] != sym) return false;
-    if (sym.len == 1 && end < self.src.len && self.src[end] == '=' && (sym[0] == '<' || sym[0] == '>' || sym[0] == '=' || sym[0] == '!')) return false;
+    if (sym.len == 1 && end < self.src.len && self.src[end] == '='
+        && (sym[0] == '<' || sym[0] == '>' || sym[0] == '=' || sym[0] == '!')) return false;
     self.at = end;
     return true;
 }
@@ -175,7 +176,16 @@ fn bool fits(Node a, Node b) @local {
 
 // Type-checks binary operator `op` on `x` and `y` and builds the corresponding `NodeBinary` node.
 fn Node? Snippet.binary(&self, usz at, String op, NodeBinary b, Node x, Node y) {
-    if (!fits(x, y)) return self.fail_at(at, "%s %s %s: the sizes don't go together (.xyz, vec3(...))", glsl(x.type()), op, glsl(y.type()));
+    if (!fits(
+        x,
+        y
+    )) return self.fail_at(
+        at,
+        "%s %s %s: the sizes don't go together (.xyz, vec3(...))",
+        glsl(x.type()),
+        op,
+        glsl(y.type())
+    );
     if (drie::is_matrix(x.type()) && b != MUL) return self.fail_at(at, "matrices only multiply");
     return drie::node_binary(b, x, y);
 }
@@ -190,7 +200,10 @@ fn Node? Snippet.expr(&self) {
     Node a = self.expr()!;
     if (!self.symbol(":")) return self.fail("':' in c ? a : b");
     Node b = self.expr()!;
-    if (!fits(a, b)) return self.fail_at(at, "c ? %s : %s: the sizes don't go together", glsl(a.type()), glsl(b.type()));
+    if (!fits(
+        a,
+        b
+    )) return self.fail_at(at, "c ? %s : %s: the sizes don't go together", glsl(a.type()), glsl(b.type()));
     return select(c, a, b);
 }
 
@@ -250,7 +263,10 @@ fn Node? Snippet.product(&self) {
             a = self.binary(at, "/", DIV, a, self.unary()!)!;
         } else if (self.symbol("%")) {
             Node b = self.unary()!;
-            if (!fits(a, b)) return self.fail_at(at, "%s %% %s: the sizes don't go together", glsl(a.type()), glsl(b.type()));
+            if (!fits(
+                a,
+                b
+            )) return self.fail_at(at, "%s %% %s: the sizes don't go together", glsl(a.type()), glsl(b.type()));
             a = mod(a, b);
         } else {
             return a;
@@ -269,7 +285,7 @@ fn Node? Snippet.unary(&self) {
 fn Node? Snippet.postfix(&self) {
     Node n = self.primary()!;
     while (self.symbol(".")) {
-        usz at = self.at;
+        usz at    = self.at;
         String sw = self.ident();
         if (!sw.len || sw.len > 4) return self.fail_at(at, "a swizzle after '.' (x, xy, rgb...)");
         if (drie::is_matrix(n.type())) return self.fail_at(at, "no swizzle of a matrix");
@@ -277,10 +293,14 @@ fn Node? Snippet.postfix(&self) {
         foreach (ch : sw) {
             int c = -1;
             switch (ch) {
-                case 'x': case 'r': c = 0;
-                case 'y': case 'g': c = 1;
-                case 'z': case 'b': c = 2;
-                case 'w': case 'a': c = 3;
+                case 'x':
+                case 'r': c = 0;
+                case 'y':
+                case 'g': c = 1;
+                case 'z':
+                case 'b': c = 2;
+                case 'w':
+                case 'a': c = 3;
                 default: c = -1;
             }
             if (c < 0) return self.fail_at(at, "'%s' is not a swizzle (x y z w, r g b a)", sw);
@@ -385,7 +405,19 @@ fn Node? Snippet.call(&self, usz at, String name) {
     }
     // the math: GLSL's way, a vector with numbers or with a vector as large
     for (int i = 1; i < n; i++) {
-        if (!fits(args[0], args[i]) && !fits(args[i], args[0])) return self.fail_at(at, "%s(): %s and %s don't go together", name, glsl(args[0].type()), glsl(args[i].type()));
+        if (!fits(
+            args[0],
+            args[i]
+        ) && !fits(
+            args[i],
+            args[0]
+        )) return self.fail_at(
+            at,
+            "%s(): %s and %s don't go together",
+            name,
+            glsl(args[0].type()),
+            glsl(args[i].type())
+        );
     }
     for (int i = 0; i < n; i++) {
         if (drie::is_matrix(args[i].type())) return self.fail_at(at, "%s() of a matrix", name);
@@ -445,16 +477,47 @@ fn Node? Snippet.call(&self, usz at, String name) {
 // How many arguments math function `name` takes (0: there is none).
 fn int math_args(String name) @local {
     switch (name) {
-        case "sin": case "cos": case "tan": case "asin": case "acos": case "atan": case "exp":
-        case "exp2": case "log": case "log2": case "sqrt": case "inversesqrt": case "abs":
-        case "sign": case "floor": case "ceil": case "fract": case "round": case "trunc":
-        case "normalize": case "length": case "saturate": case "dfdx": case "dfdy":
-        case "fwidth": case "one_minus":
+        case "sin":
+        case "cos":
+        case "tan":
+        case "asin":
+        case "acos":
+        case "atan":
+        case "exp":
+        case "exp2":
+        case "log":
+        case "log2":
+        case "sqrt":
+        case "inversesqrt":
+        case "abs":
+        case "sign":
+        case "floor":
+        case "ceil":
+        case "fract":
+        case "round":
+        case "trunc":
+        case "normalize":
+        case "length":
+        case "saturate":
+        case "dfdx":
+        case "dfdy":
+        case "fwidth":
+        case "one_minus":
             return 1;
-        case "pow": case "min": case "max": case "step": case "dot": case "cross":
-        case "distance": case "atan2": case "reflect": case "mod":
+        case "pow":
+        case "min":
+        case "max":
+        case "step":
+        case "dot":
+        case "cross":
+        case "distance":
+        case "atan2":
+        case "reflect":
+        case "mod":
             return 2;
-        case "mix": case "smoothstep": case "clamp":
+        case "mix":
+        case "smoothstep":
+        case "clamp":
             return 3;
     }
     return 0;

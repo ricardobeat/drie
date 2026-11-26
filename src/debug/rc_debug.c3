@@ -2,7 +2,7 @@
 // Provides a top-down orthographic slice view and 3D orbit view with async 1-frame-late readback
 // of irradiance and cascade buffers, probe cubes, angular radiance roses, optional voxel overlays,
 // a `sokol_debugtext` HUD, and synchronous sparse probe statistics via `rc_debug::stats()`.
-//
+// 
 //   if (rc_debug::handle_event(e, player_pos)) return;
 //   Camera* cam = rc_debug::update(dt, w, h, player_pos);
 //   rc_debug::track(rc);
