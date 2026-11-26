@@ -80,8 +80,8 @@ fn Mat4 Reflector.mirror(&self) {
 // `cam.update_matrix_world()` and `cam.update_projection_matrix()`, with `cam.custom_projection`
 // enabled so `Renderer.render()` preserves the modified projection matrix.
 fn void oblique_projection(Camera* cam, Vector3 normal, float constant, float clip_bias = 0) {
-    Vector3 n = normal.normalize();
-    Mat4 mw   = cam.matrix_world;
+    Vector3 n     = normal.normalize();
+    Mat4 mw       = cam.matrix_world;
     float[<4>] pw = { n.x, n.y, n.z, -constant + clip_bias };
     float[<4>] cv;
     for (int i = 0; i < 4; i++) cv[i] = mw[i][0] * pw[0] + mw[i][1] * pw[1] + mw[i][2] * pw[2] + mw[i][3] * pw[3];

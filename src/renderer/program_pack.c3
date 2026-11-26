@@ -18,14 +18,14 @@ struct ProgramPack @local {
     char[] data;
     String target;
     HashMap{ulong, PackEntry} entries;
-    int found;   // Stages satisfied from pack bytecode.
-    int missed;  // Stages absent from the pack and compiled from source.
+    int found; // Stages satisfied from pack bytecode.
+    int missed; // Stages absent from the pack and compiled from source.
 }
 
 ProgramPack program_pack @local;
-String dump_dir @local;  // Target directory from DRIE_DUMP_PROGRAMS or dump_programs().
+String dump_dir @local; // Target directory from DRIE_DUMP_PROGRAMS or dump_programs().
 bool dump_read @local;
-bool dump_only @local;   // True when dump_programs(compile: false) skips GPU compilation.
+bool dump_only @local;  // True when dump_programs(compile: false) skips GPU compilation.
 
 // True when shader sources are being dumped without compiling them on the GPU.
 fn bool dumping_only() @private => dump_only;
@@ -51,7 +51,10 @@ fn ulong program_hash(String s) {
     return h;
 }
 
-fn uint read_u32(char[] d, usz at) @local => (uint)d[at] | (uint)d[at + 1] << 8 | (uint)d[at + 2] << 16 | (uint)d[at + 3] << 24;
+fn uint read_u32(
+    char[] d,
+    usz at
+) @local => (uint)d[at] | (uint)d[at + 1] << 8 | (uint)d[at + 2] << 16 | (uint)d[at + 3] << 24;
 
 fn ulong read_u64(char[] d, usz at) @local => (ulong)read_u32(d, at) | (ulong)read_u32(d, at + 4) << 32;
 
@@ -96,7 +99,7 @@ fn int load_program_pack(char[] data) {
     }
     if (!p.entries.is_initialized()) p.entries.init(mem);
     for (uint i = 0; i < count; i++) {
-        usz at = head + (usz)i * 16;
+        usz at      = head + (usz)i * 16;
         PackEntry e = { read_u32(data, at + 8), read_u32(data, at + 12) };
         if ((usz)e.offset + e.size > data.len) continue;
         p.entries[read_u64(data, at)] = e;
@@ -130,7 +133,7 @@ fn bool use_pack() @local {
     if (checked) return true;
     checked = true;
     String want = pack_target();
-    bool ok = want.len && want == p.target;
+    bool ok     = want.len && want == p.target;
     if (ok) {
         // Probe one library on the active device; bytecode built for a newer OS or GPU fails here.
         bool tried;
@@ -138,10 +141,16 @@ fn bool use_pack() @local {
             if (!tried && !sg_warm_library_loads(&p.data[e.offset], e.size)) ok = false;
             tried = true;
         };
-        if (!ok) io::eprintfn("drie: the program pack (%s) doesn't load on this device: compiling from source", p.target);
+        if (!ok) io::eprintfn(
+            "drie: the program pack (%s) doesn't load on this device: compiling from source",
+            p.target
+        );
     } else {
-        io::eprintfn("drie: the program pack is for %s, not this backend (%s): compiling from source", p.target,
-            want.len ? want : "none");
+        io::eprintfn(
+            "drie: the program pack is for %s, not this backend (%s): compiling from source",
+            p.target,
+            want.len ? want : "none"
+        );
     }
     if (!ok) {
         free(p.data);
@@ -164,10 +173,10 @@ fn String source_ext() @local {
 fn void stage_bytecode(SgShaderFunction* f, bool pack) @local {
     if (!f.source || f.bytecode.ptr) return;
     String src = ((ZString)f.source).str_view();
-    ulong h = program_hash(src);
+    ulong h    = program_hash(src);
     if (dump_dir.len) {
         @pool() {
-            String ext = source_ext();
+            String ext  = source_ext();
             String name = string::tformat("%s/%016x.%s", dump_dir, h, ext);
             if (ext.len && !file::exists(name)) {
                 if (catch file::save(name, src)) io::eprintfn("drie: can't write %s", name);

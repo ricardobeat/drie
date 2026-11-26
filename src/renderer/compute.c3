@@ -12,13 +12,13 @@ import sokol, drie::readback;
 // With `cpu_write`, the CPU updates it at most once per frame via transient writes and the GPU
 // only reads it; otherwise the GPU writes it and it is zero-initialized on creation.
 struct StorageBuffer {
-    SgBuffer buffer;     // Underlying sokol buffer handle.
-    SgView view;         // Storage-buffer view bound to compute or vertex slots.
-    usz size;            // Allocated capacity in bytes (16-byte aligned).
-    bool cpu_write;      // Transient CPU-written buffer, read-only on the GPU.
-    bool vertex;         // Also usable as a vertex buffer (e.g. instanced attributes).
-    bool indirect;       // Also usable as an indirect dispatch argument buffer.
-    ZString label;       // Debug label passed to sokol.
+    SgBuffer buffer; // Underlying sokol buffer handle.
+    SgView view; // Storage-buffer view bound to compute or vertex slots.
+    usz size; // Allocated capacity in bytes (16-byte aligned).
+    bool cpu_write; // Transient CPU-written buffer, read-only on the GPU.
+    bool vertex; // Also usable as a vertex buffer (e.g. instanced attributes).
+    bool indirect; // Also usable as an indirect dispatch argument buffer.
+    ZString label; // Debug label passed to sokol.
     // (a CPU-written buffer's contents last one frame: the last ones written, and the frame they
     // were written in, for renew)
     char[] kept;
@@ -26,7 +26,13 @@ struct StorageBuffer {
 }
 
 // Allocates a StorageBuffer with at least `size` bytes (rounded up to 16 bytes).
-fn StorageBuffer* storage_buffer(sz size, bool cpu_write = false, bool vertex = false, ZString label = "drie-storage", bool indirect = false) {
+fn StorageBuffer* storage_buffer(
+    sz size,
+    bool cpu_write = false,
+    bool vertex = false,
+    ZString label = "drie-storage",
+    bool indirect = false
+) {
     StorageBuffer* b = mem::new(StorageBuffer);
     b.cpu_write = cpu_write;
     b.vertex = vertex;
@@ -137,11 +143,11 @@ fn bool read_back(int slot, void* out, sz bytes, bool wait = false) {
 // with set_buffer/set_view/set_uniforms, then run via Renderer.compute() or dispatch() inside a
 // begin_compute/end_compute block.
 struct ComputePass {
-    SgShader shader;           // Compiled compute shader.
-    SgPipeline pipeline;       // Compute pipeline created from `shader`.
-    SgBindings bindings;       // Storage-buffer and texture views applied on dispatch.
-    char[4096][4] uniforms;    // Cached uniform blocks (slots 0..3), applied on dispatch.
-    usz[4] uniform_size;       // Active byte size per uniform slot (0 skips that slot).
+    SgShader shader; // Compiled compute shader.
+    SgPipeline pipeline; // Compute pipeline created from `shader`.
+    SgBindings bindings; // Storage-buffer and texture views applied on dispatch.
+    char[4096][4] uniforms; // Cached uniform blocks (slots 0..3), applied on dispatch.
+    usz[4] uniform_size; // Active byte size per uniform slot (0 skips that slot).
 }
 
 // Creates a ComputePass from a sokol-shdc compute shader descriptor.

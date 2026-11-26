@@ -11,12 +11,12 @@ import sokol;
 // ---- Quadtree block packer
 
 // Minimum square shadow atlas block dimension, in texels.
-const int ATLAS_MIN_BLOCK = 128;
+const int ATLAS_MIN_BLOCK     = 128;
 const int ATLAS_LEVELS @local = 9;
 
 struct AtlasPacker @private {
-    int root;                         // Quadtree side length in pixels (power of two >= ATLAS_MIN_BLOCK).
-    List{uint}[ATLAS_LEVELS] free;    // Free block keys per level (level 0 = root), encoded via atlas_key().
+    int root; // Quadtree side length in pixels (power of two >= ATLAS_MIN_BLOCK).
+    List{uint}[ATLAS_LEVELS] free; // Free block keys per level (level 0 = root), encoded via atlas_key().
 }
 
 // Encodes block coordinates in ATLAS_MIN_BLOCK units: x in the upper 16 bits, y in the lower 16.
@@ -56,8 +56,8 @@ fn int AtlasPacker.level(&self, int size) {
 // Allocates the lowest Z-order free block at `level`, splitting a parent block when necessary.
 fn bool AtlasPacker.take(&self, int level, uint* out) {
     if (level < 0 || level >= ATLAS_LEVELS) return false;
-    List{uint}* l = &self.free[level];
-    sz best = -1;
+    List{uint}* l =  &self.free[level];
+    sz best       = -1;
     ulong best_z;
     foreach (i, k : *l) {
         ulong z = atlas_z(k);
@@ -74,8 +74,8 @@ fn bool AtlasPacker.take(&self, int level, uint* out) {
     uint parent;
     if (!self.take(level - 1, &parent)) return false;
     int half = (self.root >> level);
-    int x = atlas_key_x(parent);
-    int y = atlas_key_y(parent);
+    int x    = atlas_key_x(parent);
+    int y    = atlas_key_y(parent);
     l.push(atlas_key(x + half, y));
     l.push(atlas_key(x, y + half));
     l.push(atlas_key(x + half, y + half));
@@ -96,9 +96,14 @@ fn void AtlasPacker.release(&self, uint key, int size) {
     }
     // Check whether all three sibling quarters are already free so the parent can be merged.
     int side = size * 2;
-    int px = atlas_key_x(key) / side * side;
-    int py = atlas_key_y(key) / side * side;
-    uint[4] quarter = { atlas_key(px, py), atlas_key(px + size, py), atlas_key(px, py + size), atlas_key(px + size, py + size) };
+    int px   = atlas_key_x(key) / side * side;
+    int py   = atlas_key_y(key) / side * side;
+    uint[4] quarter = {
+        atlas_key(px, py),
+        atlas_key(px + size, py),
+        atlas_key(px, py + size),
+        atlas_key(px + size, py + size)
+    };
     List{uint}* l = &self.free[level];
     int found;
     foreach (q : quarter) {
@@ -134,17 +139,17 @@ struct AtlasMap @private {
     int y;
     int w;
     int h;
-    Mat4 view_proj;    // Projection used when last drawn (lookups match this matrix).
-    bool drawn;        // True once rendered into its current atlas rectangle.
-    bool empty;        // True when zero casters rendered into this tile (shader skips lookup).
-    int block;         // Index into the owning AtlasSlot's block array.
+    Mat4 view_proj; // Projection used when last drawn (lookups match this matrix).
+    bool drawn; // True once rendered into its current atlas rectangle.
+    bool empty; // True when zero casters rendered into this tile (shader skips lookup).
+    int block; // Index into the owning AtlasSlot's block array.
     // Static-vs-dynamic split: maps containing moving casters copy static depth from the cache
     // texture and draw moving casters on top (`composed`).
     bool cached;
     bool cache_empty;
     bool composed;
-    uint cache_used;   // Frame when this tile's cache block was last composited.
-    bool stale;        // Invalidated while outside the camera frustum; redrawn when seen again.
+    uint cache_used; // Frame when this tile's cache block was last composited.
+    bool stale; // Invalidated while outside the camera frustum; redrawn when seen again.
 }
 
 // Per-tile work item scheduled by place_and_draw_atlas().
@@ -152,36 +157,36 @@ struct AtlasJob @local {
     int slot;
     int face;
     Mat4 vp;
-    bool full;     // Draw all casters directly into the atlas tile.
-    bool cache;    // Refresh static casters into the cache tile first.
-    bool compose;  // Copy static cache into the atlas tile, then draw moving casters over it.
-    bool restore;  // Copy static cache into the atlas tile (moving casters have left).
-    bool plain;    // Set if any caster fell back to a plain shader while compiling.
+    bool full; // Draw all casters directly into the atlas tile.
+    bool cache; // Refresh static casters into the cache tile first.
+    bool compose; // Copy static cache into the atlas tile, then draw moving casters over it.
+    bool restore; // Copy static cache into the atlas tile (moving casters have left).
+    bool plain; // Set if any caster fell back to a plain shader while compiling.
 }
 
 // Atlas allocation record for one light (bake lights carry `bake = true` and stay separate).
 struct AtlasSlot @private {
     Light* light;
     bool bake;
-    int size;            // Block side in pixels (0 when unallocated).
-    int maps;            // Map count (1 spot/dir, 5 rect area, 6 point).
-    int blocks;          // Quadtree block count (rect area packs 4 half-height sides into 2 blocks).
-    int target;          // Hysteresis-stabilized desired block size.
-    int asked;           // Candidate size requested in recent frames.
-    int asked_frames;    // Consecutive frames requesting `asked`.
-    float importance;    // Screen coverage weighted by brightness at the camera.
-    float fade;          // Smooth [0, 1] strength fade during budget eviction and reallocation.
-    uint seen;           // Last engine frame this light requested atlas space.
+    int size; // Block side in pixels (0 when unallocated).
+    int maps; // Map count (1 spot/dir, 5 rect area, 6 point).
+    int blocks; // Quadtree block count (rect area packs 4 half-height sides into 2 blocks).
+    int target; // Hysteresis-stabilized desired block size.
+    int asked; // Candidate size requested in recent frames.
+    int asked_frames; // Consecutive frames requesting `asked`.
+    float importance; // Screen coverage weighted by brightness at the camera.
+    float fade; // Smooth [0, 1] strength fade during budget eviction and reallocation.
+    uint seen; // Last engine frame this light requested atlas space.
     uint[6] block;
     uint[6] cache_block;
     bool[6] cache_has;
     AtlasMap[6] map;
 }
 
-const uint ATLAS_KEEP_FRAMES @local = 120;      // Grace frames before reclaiming an unseen light's slot.
-const int ATLAS_GROW_FRAMES @local = 3;         // Consecutive frames before growing a light's block size.
-const int ATLAS_SHRINK_FRAMES @local = 30;      // Consecutive frames before shrinking an auto-updated light.
-const float ATLAS_FADE_STEP @local = 0.125f;    // Per-frame shadow intensity fade step on eviction/entry.
+const uint ATLAS_KEEP_FRAMES @local  = 120;  // Grace frames before reclaiming an unseen light's slot.
+const int ATLAS_GROW_FRAMES @local   = 3;    // Consecutive frames before growing a light's block size.
+const int ATLAS_SHRINK_FRAMES @local = 30;   // Consecutive frames before shrinking an auto-updated light.
+const float ATLAS_FADE_STEP @local   = 0.125f; // Per-frame shadow intensity fade step on eviction/entry.
 
 fn int atlas_map_count(Light* l) @local => l.light_type == RECT_AREA ? 5 : l.light_type == POINT ? 6 : 1;
 fn int atlas_block_count(Light* l) @local => l.light_type == RECT_AREA ? 3 : l.light_type == POINT ? 6 : 1;
@@ -240,10 +245,10 @@ fn float render_height() @local {
 // Computes desired block size (2 texels per screen pixel spanned, capped at `shadow.map_size`)
 // and priority `importance` (screen coverage * attenuated intensity at the camera).
 fn int atlas_wanted(Light* l, Camera* camera, bool bake, float* importance) @local {
-    int most    = atlas_pow2(shadow_map_size(light_shadow(l).map_size));
-    Vector3 at  = camera.matrix_world.get_position();
-    Vector3 pos = l.matrix_world.get_position();
-    float dl    = (pos - at).length();
+    int most     = atlas_pow2(shadow_map_size(light_shadow(l).map_size));
+    Vector3 at   = camera.matrix_world.get_position();
+    Vector3 pos  = l.matrix_world.get_position();
+    float dl     = (pos - at).length();
     float bright = math::max(l.intensity, 0.0f) / math::max(dl * dl, 1.0f);
     if (bake || l.light_type == DIRECTIONAL) {
         // Bake and secondary directional lights always take priority over local lights.
@@ -325,7 +330,13 @@ fn bool atlas_place(AtlasSlot* s, int size) @local {
     s.map[0] = { .x = atlas_key_x(s.block[0]), .y = atlas_key_y(s.block[0]), .w = size, .h = size };
     for (int f = 1; f < s.maps; f++) {
         uint b = s.block[(f + 1) / 2];
-        s.map[f] = { .x = atlas_key_x(b), .y = atlas_key_y(b) + (f % 2 ? 0 : size / 2), .w = size, .h = size / 2, .block = (f + 1) / 2 };
+        s.map[f] = {
+            .x = atlas_key_x(b),
+            .y = atlas_key_y(b) + (f % 2 ? 0 : size / 2),
+            .w = size,
+            .h = size / 2,
+            .block = (f + 1) / 2
+        };
     }
     return true;
 }
@@ -345,7 +356,7 @@ fn Vector3[8] clip_box_corners(Mat4 inv, float z0, float z1) @local {
 // Separating-plane overlap test between two frusta and their 8 world-space corners.
 fn bool frusta_overlap(Frustum* a, Vector3[8]* ac, Frustum* b, Vector3[8]* bc) @local {
     for (int k = 0; k < 2; k++) {
-        Frustum* f = k ? b : a;
+        Frustum* f    = k ? b : a;
         Vector3[8]* c = k ? ac : bc;
         foreach (p : f.planes) {
             bool inside;
@@ -384,19 +395,19 @@ fn AtlasView atlas_view_of(Camera* camera) @local {
 
 // True when a light frustum (`light_vp`) overlaps the camera frustum truncated to light reach.
 fn bool atlas_seen(AtlasView* v, Mat4 light_vp, Light* l, Vector3 eye) @local {
-    bool zo = depth_zero_to_one();
+    bool zo  = depth_zero_to_one();
     float z0 = zo ? 0 : -1;
     float z1 = 1;
     if (v.perspective) {
         float reach = (l.matrix_world.get_position() - eye).length() + point_shadow_far(l);
-        float d = math::min(v.far, math::max(reach, v.near * 2));
+        float d     = math::min(v.far, math::max(reach, v.near * 2));
         // Clip-space depth of view-space distance `d`.
         z1 = (v.proj[3][2] - v.proj[2][2] * d) / d;
         z1 = math::min(z1, 1.0f);
     }
     Vector3[8] cam = clip_box_corners(v.inv, z0, z1);
-    Frustum lf = frustum_from(light_vp);
-    Vector3[8] lc = clip_box_corners(light_vp.invert(), z0, 1);
+    Frustum lf     = frustum_from(light_vp);
+    Vector3[8] lc  = clip_box_corners(light_vp.invert(), z0, 1);
     return frusta_overlap(&v.frustum, &cam, &lf, &lc);
 }
 
@@ -404,7 +415,7 @@ fn bool atlas_seen(AtlasView* v, Mat4 light_vp, Light* l, Vector3 eye) @local {
 fn void atlas_sort(List{int}* order, float[] key) @local {
     for (sz i = 1; i < order.len(); i++) {
         int v = (*order)[i];
-        sz j = i;
+        sz j  = i;
         while (j > 0 && key[(*order)[j - 1]] < key[v]) {
             (*order)[j] = (*order)[j - 1];
             j--;
@@ -415,8 +426,8 @@ fn void atlas_sort(List{int}* order, float[] key) @local {
 
 // ---- Static and moving caster tracking
 
-const uint CASTER_WALK_FRAMES @local = 60;       // Interval between full scene-graph caster walks.
-const uint CASTER_STILL_FRAMES @local = 8;       // Frames a modified caster remains classified as moving.
+const uint CASTER_WALK_FRAMES @local      = 60;  // Interval between full scene-graph caster walks.
+const uint CASTER_STILL_FRAMES @local     = 8;   // Frames a modified caster remains classified as moving.
 const uint ATLAS_CACHE_KEEP_FRAMES @local = 120; // Idle frames before freeing an unused static cache block.
 
 // Snapshot of a shadow-casting mesh tracked across frames by CasterWalk.
@@ -427,9 +438,9 @@ struct CasterRec @local {
     Material* material;
     uint version;
     int instances;
-    Vec4 sphere;       // World-space bounding sphere `{ cx, cy, cz, radius }`.
-    uint moved;        // Frame when transform, geometry, material, or instances last changed.
-    bool animated;     // Moves on GPU every frame (sway, position_node, or morph targets).
+    Vec4 sphere; // World-space bounding sphere `{ cx, cy, cz, radius }`.
+    uint moved; // Frame when transform, geometry, material, or instances last changed.
+    bool animated; // Moves on GPU every frame (sway, position_node, or morph targets).
     bool instanced;
 }
 
@@ -464,10 +475,12 @@ fn bool rec_moving(CasterRec* r, uint frame) @local => frame - r.moved < CASTER_
 fn void walk_object(CasterWalk* w, Object3D* obj, uint frame) @local {
     if (!obj.visible) return;
     if (obj.kind == MESH) {
-        Mesh* m = (Mesh*)obj;
+        Mesh* m           = (Mesh*)obj;
         BufferGeometry* g = m.geometry;
-        bool caster = g && m.material && m.material.visible && m.cast_shadow && !m.material.transparent && !m.is_line()
-            && m.billboard == NO_BILLBOARD && (g.uploaded || g.indices.len() > 0);
+        bool caster       = g && m.material && m.material.visible && m.cast_shadow && !m.material.transparent
+            && !m.is_line()
+            && m.billboard == NO_BILLBOARD
+            && (g.uploaded || g.indices.len() > 0);
         if (caster) walk_caster(w, m, frame);
     }
     // Walk all LOD children; individual tiles keep whichever LOD level they rendered.
@@ -478,26 +491,31 @@ fn void walk_caster(CasterWalk* w, Mesh* m, uint frame) @local {
     // Guard against shared meshes visited twice in one scene graph.
     if (m.shadow_walk == w && m.shadow_walk_frame == frame) return;
     BufferGeometry* g = m.geometry;
-    int i = m.shadow_walk_at;
-    bool known = m.shadow_walk == w && m.shadow_walk_frame == w.last_frame && i >= 0 && i < w.last.len() && w.last[i].mesh == m;
+    int i             = m.shadow_walk_at;
+    bool known        = m.shadow_walk == w && m.shadow_walk_frame == w.last_frame && i >= 0 && i < w.last.len()
+        && w.last[i].mesh == m;
     CasterRec rec;
-    bool changed = true;
+    bool changed      = true;
     if (known) {
         w.found[i] = true;
         CasterRec* was = &w.last[i];
-        changed = libc::memcmp(&was.world, &m.matrix_world, Mat4::size) != 0 || was.geometry != g
-            || was.material != m.material || was.version != g.version || was.instances != m.instance_uploads;
+        changed = libc::memcmp(
+            &was.world,
+            &m.matrix_world,
+            Mat4::size
+        ) != 0 || was.geometry
+            != g || was.material != m.material || was.version != g.version || was.instances != m.instance_uploads;
         if (!changed) rec = *was;
     }
     if (changed) {
         Vector3 center = g.bounds_center;
-        float radius = g.bounds_radius;
+        float radius   = g.bounds_radius;
         if (m.instance_data.len() > 0) {
             center = m.instance_center;
             radius = m.instance_radius;
         }
         Vector3 wc = m.matrix_world.transform_point(center);
-        float r = radius * max_scale(m.matrix_world) + m.material.sway * 2;
+        float r    = radius * max_scale(m.matrix_world) + m.material.sway * 2;
         rec = {
             .mesh = m,
             .world = m.matrix_world,
@@ -535,7 +553,7 @@ fn void walk_caster(CasterWalk* w, Mesh* m, uint frame) @local {
 // full scene walk on structure changes or every CASTER_WALK_FRAMES, and incremental updates via
 // `moved_meshes` and dynamic geometries in between.
 fn CasterWalk* walk_casters(Scene* scene) @private {
-    uint frame = state.frame;
+    uint frame         = state.frame;
     CasterWalk* w;
     CasterWalk* oldest = &state.caster_walks[0];
     foreach (&cw : state.caster_walks) {
@@ -563,7 +581,8 @@ fn CasterWalk* walk_casters(Scene* scene) @private {
     w.changes.clear();
     // Run a full walk periodically or on scene-graph/overflow changes; otherwise check movers only.
     bool full = fresh || frame - w.full_frame >= CASTER_WALK_FRAMES || w.structure != scene_structure_changes
-        || w.dropped != moved_meshes_dropped || w.moved_seen > moved_meshes.len();
+        || w.dropped != moved_meshes_dropped
+        || w.moved_seen > moved_meshes.len();
     if (full) {
         List{CasterRec} t = w.last;
         w.last = w.recs;
@@ -612,11 +631,15 @@ fn CasterWalk* walk_casters(Scene* scene) @private {
 fn void refresh_caster(CasterWalk* w, Mesh* m, uint frame) @local {
     int i = m.shadow_walk_at;
     if (m.shadow_walk != w || i < 0 || i >= w.recs.len() || w.recs[i].mesh != m) return;
-    CasterRec* r = &w.recs[i];
+    CasterRec* r      = &w.recs[i];
     BufferGeometry* g = m.geometry;
     if (r.moved == frame) return;
-    bool changed = libc::memcmp(&r.world, &m.matrix_world, Mat4::size) != 0 || r.geometry != g
-        || r.material != m.material || r.version != g.version || r.instances != m.instance_uploads;
+    bool changed = libc::memcmp(
+        &r.world,
+        &m.matrix_world,
+        Mat4::size
+    ) != 0 || r.geometry
+        != g || r.material != m.material || r.version != g.version || r.instances != m.instance_uploads;
     if (!changed) return;
     // Evict from static caches on first movement frame and track in `recent`.
     if (!rec_moving(r, frame - 1)) {
@@ -624,7 +647,7 @@ fn void refresh_caster(CasterWalk* w, Mesh* m, uint frame) @local {
         w.recent.push(i);
     }
     Vector3 center = g.bounds_center;
-    float radius = g.bounds_radius;
+    float radius   = g.bounds_radius;
     if (m.instance_data.len() > 0) {
         center = m.instance_center;
         radius = m.instance_radius;
@@ -654,8 +677,8 @@ fn bool moving_in(CasterWalk* w, List{int}* near, Frustum* f) @local {
 fn void movers_near(CasterWalk* w, Light* l, List{int}* near) @local {
     LightShadow* sh = light_shadow(l);
     bool everywhere = l.light_type == DIRECTIONAL;
-    Vector3 pos = l.matrix_world.get_position();
-    float reach = l.light_type == SPOT ? spot_shadow_far((SpotLight*)l) : point_shadow_far(l);
+    Vector3 pos     = l.matrix_world.get_position();
+    float reach     = l.light_type == SPOT ? spot_shadow_far((SpotLight*)l) : point_shadow_far(l);
     // Cached lights (`auto_update == false`) bake animated foliage into their static cache.
     for (int pass = 0; pass < (sh.auto_update ? 2 : 1); pass++) {
         foreach (i : pass == 0 ? w.recent : w.animated) {
@@ -664,7 +687,7 @@ fn void movers_near(CasterWalk* w, Light* l, List{int}* near) @local {
             if (sh.skip_instanced && r.instanced) continue;
             if (!everywhere) {
                 Vector3 c = { r.sphere.x, r.sphere.y, r.sphere.z };
-                float d = reach + r.sphere.w;
+                float d   = reach + r.sphere.w;
                 if ((c - pos).length_sq() > d * d) continue;
             }
             near.push(i);
@@ -727,7 +750,7 @@ List{int}* atlas_movers_near @local;
 // all casters, `1` draws static casters only, `2` draws moving casters only. Returns draw count.
 fn int draw_atlas_casters(Scene* scene, Camera* camera, Light* l, int face, int size, Mat4 vp, int which) @private {
     LightShadow* sh = light_shadow(l);
-    Frustum fr = frustum_from(vp);
+    Frustum fr      = frustum_from(vp);
     state.casters.clear();
     state.skip_instanced = sh.skip_instanced;
     if (which == 2 && atlas_movers) {
@@ -735,7 +758,7 @@ fn int draw_atlas_casters(Scene* scene, Camera* camera, Light* l, int face, int 
         Vector3 from = camera.matrix_world.get_position();
         foreach (k : *atlas_movers_near) {
             Mesh* mover = atlas_movers.recs[k].mesh;
-            sz first = state.casters.len();
+            sz first    = state.casters.len();
             collect(mover, camera.matrix_world_inverse, &fr, from, true);
             // Exclude children walked independently as their own CasterRec entries.
             for (sz j = state.casters.len(); j > first; j--) {
@@ -747,9 +770,9 @@ fn int draw_atlas_casters(Scene* scene, Camera* camera, Light* l, int face, int 
     }
     state.skip_instanced = false;
     state.shadow_plain = false;
-    bool every = sh.auto_update;
-    bool from_light = l.light_type == SPOT || casts_cube(l);
-    Mat4 light_rel = from_light ? light_view_proj(l, camera, true, face, size) : vp;
+    bool every        = sh.auto_update;
+    bool from_light   = l.light_type == SPOT || casts_cube(l);
+    Mat4 light_rel    = from_light ? light_view_proj(l, camera, true, face, size) : vp;
     Vector3 light_pos = from_light ? l.matrix_world.get_position() : (Vector3) { 0, 0, 0 };
     int drawn;
     atlas_drawing = true;
@@ -785,8 +808,9 @@ fn void update_shadow_atlas(Scene* scene, Camera* camera, bool bake = false, Spo
 
 fn void place_and_draw_atlas(Scene* scene, Camera* camera, bool bake, SpotLight* caster) @local {
     RenderInfo* info = &state.renderer.info;
-    int most = state.renderer.shadow_atlas_size > 0 ? state.renderer.shadow_atlas_size : DEFAULT_SHADOW_ATLAS_SIZE;
-    int limit = sg::query_limits().max_image_size_2d;
+    int most         = state.renderer.shadow_atlas_size > 0 ? state.renderer.shadow_atlas_size
+        : DEFAULT_SHADOW_ATLAS_SIZE;
+    int limit        = sg::query_limits().max_image_size_2d;
     if (limit > 0) most = math::min(most, limit);
     int root = ATLAS_MIN_BLOCK;
     while (root * 2 <= most) root *= 2;
@@ -802,7 +826,9 @@ fn void place_and_draw_atlas(Scene* scene, Camera* camera, bool bake, SpotLight*
         if (!atlas_wants(l, bake, caster)) continue;
         AtlasSlot* s = atlas_slot_of(l);
         if (!s) {
-            state.atlas_slots.push({ .light = l, .bake = bake, .maps = atlas_map_count(l), .blocks = atlas_block_count(l), .fade = 1 });
+            state.atlas_slots.push(
+                { .light = l, .bake = bake, .maps = atlas_map_count(l), .blocks = atlas_block_count(l), .fade = 1 }
+            );
             s = &state.atlas_slots[state.atlas_slots.len() - 1];
         }
         s.seen = frame;
@@ -837,8 +863,8 @@ fn void place_and_draw_atlas(Scene* scene, Camera* camera, bool bake, SpotLight*
     List{int} order;
     order.tinit();
     float[] importance = mem::temp_array(float, n);
-    int[] give = mem::temp_array(int, n);
-    long budget = (long)root * root;
+    int[] give         = mem::temp_array(int, n);
+    long budget        = (long)root * root;
     long area;
     long others;
     foreach (i, &s : state.atlas_slots) {
@@ -947,31 +973,31 @@ fn void place_and_draw_atlas(Scene* scene, Camera* camera, bool bake, SpotLight*
     }
 
     // 5. Classify dirty/moving tiles into full, cache+compose, or restore jobs.
-    CasterWalk* walk = bake ? null : walk_casters(scene);
-    AtlasView view = atlas_view_of(camera);
-    Vector3 eye = camera.matrix_world.get_position();
+    CasterWalk* walk   = bake ? null : walk_casters(scene);
+    AtlasView view     = atlas_view_of(camera);
+    Vector3 eye        = camera.matrix_world.get_position();
     List{AtlasJob} jobs;
     List{int}[] movers = mem::temp_array(List{int}, state.atlas_slots.len());
     jobs.tinit();
     foreach (i : order) {
         AtlasSlot* s = &state.atlas_slots[i];
         if (!s.size) continue;
-        Light* l = s.light;
+        Light* l        = s.light;
         LightShadow* sh = light_shadow(l);
         List{int}* near = &movers[i];
         near.tinit();
         if (walk) movers_near(walk, l, near);
         for (int f = 0; f < s.maps; f++) {
             AtlasMap* m = &s.map[f];
-            Mat4 vp = light_view_proj(l, camera, false, f, m.w);
+            Mat4 vp     = light_view_proj(l, camera, false, f, m.w);
             if (bake) {
                 jobs.push({ .slot = i, .face = f, .vp = vp, .full = true });
                 continue;
             }
-            Frustum fr = frustum_from(vp);
+            Frustum fr       = frustum_from(vp);
             bool light_moved = m.drawn && libc::memcmp(&vp, &m.view_proj, Mat4::size) != 0;
-            bool dirty = !m.drawn || m.stale || sh.needs_update || light_moved || changed_in(walk, &fr);
-            bool moves = near.len() > 0 && moving_in(walk, near, &fr);
+            bool dirty       = !m.drawn || m.stale || sh.needs_update || light_moved || changed_in(walk, &fr);
+            bool moves       = near.len() > 0 && moving_in(walk, near, &fr);
             if (!dirty && !moves && !m.composed) continue;
             // Defer offscreen redraws for already-rendered tiles unless explicitly requested.
             if (m.drawn && !sh.needs_update && !atlas_seen(&view, vp, l, eye)) {
@@ -997,7 +1023,7 @@ fn void place_and_draw_atlas(Scene* scene, Camera* camera, bool bake, SpotLight*
     bool top_left = depth_zero_to_one();
 
     // 6. Static caster cache pass.
-    int cache_width = math::max(state.cache_width, ATLAS_MIN_BLOCK);
+    int cache_width  = math::max(state.cache_width, ATLAS_MIN_BLOCK);
     int cache_height = math::max(state.cache_height, ATLAS_MIN_BLOCK);
     bool caching;
     foreach (&s : state.atlas_slots) {
@@ -1022,10 +1048,10 @@ fn void place_and_draw_atlas(Scene* scene, Camera* camera, bool bake, SpotLight*
             );
             cache_pass = true;
         }
-        AtlasSlot* s = &state.atlas_slots[job.slot];
-        AtlasMap* m = &s.map[job.face];
+        AtlasSlot* s    = &state.atlas_slots[job.slot];
+        AtlasMap* m     = &s.map[job.face];
         LightShadow* sh = light_shadow(s.light);
-        int[2] at = atlas_cache_at(s, m);
+        int[2] at       = atlas_cache_at(s, m);
         sg::apply_viewport(at[0], at[1], m.w, m.h, top_left);
         sg::apply_scissor_rect(at[0], at[1], m.w, m.h, top_left);
         clear_atlas_tile();
@@ -1049,9 +1075,9 @@ fn void place_and_draw_atlas(Scene* scene, Camera* camera, bool bake, SpotLight*
     );
     bool plain;
     foreach (k, &job : jobs) {
-        AtlasSlot* s = &state.atlas_slots[job.slot];
-        AtlasMap* m = &s.map[job.face];
-        Light* l = s.light;
+        AtlasSlot* s    = &state.atlas_slots[job.slot];
+        AtlasMap* m     = &s.map[job.face];
+        Light* l        = s.light;
         LightShadow* sh = light_shadow(l);
         m.view_proj = job.vp;
         m.drawn = true;

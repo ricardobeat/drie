@@ -1,7 +1,7 @@
 // Whole-program node IR (`ProgramGraph`, `ShaderProgram`, `NodeFunc`), engine node constructors
 // (`node_input`, `node_storage`, `node_sample`, `node_attribute`, `node_system`, `node_matrix`,
 // `node_bind`, `node_return`), dataflow analysis (`ProgramGen`), sokol descriptors, and cache I/O.
-// 
+//
 // `NODE_USER_HEADER` (13) reserves rows 0..12 of `NodeSource.USER` for view/projection/model
 // matrices and camera/time before user uniforms; `NODE_USER_VIEW` (64) separates custom node
 // textures from engine view slots. `ProgramGen` numbers locals in emission order, stamps var and
@@ -460,7 +460,13 @@ fn String wgsl_type(NodeType t) @local {
 // A declaration of `name`, a `t` that is `value`: a variable (`var`, assigned again later) or a
 // value (WGSL's `let`).
 fn String ProgramGen.decl(&self, NodeType t, String name, String value, bool mutable = false) {
-    if (self.lang == WGSL) return string::tformat("%s %s: %s = %s;", mutable ? "var" : "let", name, self.type_name(t), value);
+    if (self.lang == WGSL) return string::tformat(
+        "%s %s: %s = %s;",
+        mutable ? "var" : "let",
+        name,
+        self.type_name(t),
+        value
+    );
     return string::tformat("%s %s = %s;", self.type_name(t), name, value);
 }
 
@@ -532,11 +538,7 @@ fn String ProgramGen.convert(&self, String x, NodeType from, NodeType to) {
     int f         = components(from);
     int t         = components(to);
     if (st == BOOL) return string::tformat("(%s != %s)", f == 1 ? x : string::tformat("%s.x", x), scalar_zero(sf));
-    if (sf == BOOL) return self.convert(
-        self.choose(x, scalar_one(st), scalar_zero(st)),
-        type_of(st, 1),
-        to
-    );
+    if (sf == BOOL) return self.convert(self.choose(x, scalar_one(st), scalar_zero(st)), type_of(st, 1), to);
     if (f != t) {
         NodeType mid = type_of(sf, t);
         String z     = scalar_zero(sf);
@@ -896,7 +898,10 @@ fn void ProgramGen.statement(&self, Node s) {
             if (how == WHILE) {
                 self.line(self.lang == WGSL ? "loop {" : "for (;;) {");
                 self.open_scope();
-                self.line(self.lang == WGSL ? "if (!%s) { break; }" : "if (!%s) break;", self.value_as({ d.args[2] }, BOOL));
+                self.line(
+                    self.lang == WGSL ? "if (!%s) { break; }" : "if (!%s) break;",
+                    self.value_as({ d.args[2] }, BOOL)
+                );
             } else {
                 Node index    = { d.args[0] };
                 NodeType t    = index.type();

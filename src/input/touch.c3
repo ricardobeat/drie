@@ -15,9 +15,9 @@ import sokol, drie, drie::ui;
 // Screen corner from which a `TouchButton` offset `(x, y)` is measured.
 enum TouchAnchor {
     BOTTOM_RIGHT, // Offset inward from the bottom-right corner.
-    TOP_RIGHT, // Offset inward from the top-right corner.
-    BOTTOM_LEFT, // Offset inward from the bottom-left corner.
-    TOP_LEFT, // Offset inward from the top-left corner.
+    TOP_RIGHT,    // Offset inward from the top-right corner.
+    BOTTOM_LEFT,  // Offset inward from the bottom-left corner.
+    TOP_LEFT,     // Offset inward from the top-left corner.
 }
 
 // Circular on-screen button that drives one or more `PAD_*` bits while held.

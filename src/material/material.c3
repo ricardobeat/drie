@@ -92,10 +92,10 @@ constdef MaterialType : int {
 
 // Standard vertex uniform block (binding 0) provided to ShaderMaterial shaders.
 struct ShaderMaterialVsParams {
-    Mat4 view_proj;   // world - view_origin -> clip space
+    Mat4 view_proj; // world - view_origin -> clip space
     Vec4 view_origin; // xyz = camera world position
-    Mat4 model;       // mesh matrix_world
-    Mat4 normal_mat;  // transpose(inverse(model))
+    Mat4 model; // mesh matrix_world
+    Mat4 normal_mat; // transpose(inverse(model))
     Vec4 camera_time; // xyz = camera world position, w = renderer time (s)
 }
 

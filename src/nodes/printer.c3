@@ -1,6 +1,6 @@
 // Shader source emission for node programs: resource slot allocation, expression printing, and
 // Metal/HLSL/GLSL stage source assembly (`build_program`, `vertex_source`, `fragment_source`).
-// 
+//
 // `build_program` emits the fragment stage before the vertex stage so `p.varyings` captures
 // every interpolated value needed. Metal assigns textures `texture(0..)` and storage buffers
 // `buffer(8..)` and passes resources explicitly into functions; HLSL assigns per-stage `t`/`s`
@@ -281,9 +281,18 @@ fn String ProgramGen.sample(&self, Node n, NodeData* d) {
     }
 }
 
-fn String ProgramGen.wgsl_sample(&self, NodeData* d, NodeSampling how, NodeTextureKind kind, String t, String smp, bool vol, NodeType ct) {
+fn String ProgramGen.wgsl_sample(
+    &self,
+    NodeData* d,
+    NodeSampling how,
+    NodeTextureKind kind,
+    String t,
+    String smp,
+    bool vol,
+    NodeType ct
+) {
     // (an array's layer: its coordinates' z, rounded)
-    bool array = kind == TEX_ARRAY;
+    bool array  = kind == TEX_ARRAY;
     bool vertex = self.stage == VERTEX;
     switch (how) {
         case SAMPLE:
@@ -293,11 +302,23 @@ fn String ProgramGen.wgsl_sample(&self, NodeData* d, NodeSampling how, NodeTextu
             String at = array ? string::tformat("%s.xy, i32(round(%s.z))", c, c) : c;
             switch (how) {
                 case LEVEL:
-                    return string::tformat("textureSampleLevel(%s, %s, %s, %s)", t, smp, at, self.value_as({ d.args[1] }, FLOAT));
+                    return string::tformat(
+                        "textureSampleLevel(%s, %s, %s, %s)",
+                        t,
+                        smp,
+                        at,
+                        self.value_as({ d.args[1] }, FLOAT)
+                    );
                 case GRAD:
                     NodeType gt = kind == TEX_3D ? VEC3 : VEC2;
-                    return string::tformat("textureSampleGrad(%s, %s, %s, %s, %s)", t, smp, at, self.value_as({ d.args[1] }, gt),
-                                           self.value_as({ d.args[2] }, gt));
+                    return string::tformat(
+                        "textureSampleGrad(%s, %s, %s, %s, %s)",
+                        t,
+                        smp,
+                        at,
+                        self.value_as({ d.args[1] }, gt),
+                        self.value_as({ d.args[2] }, gt)
+                    );
                 default:
                     // (the vertex stage has no derivatives: its first level)
                     if (vertex) return string::tformat("textureSampleLevel(%s, %s, %s, 0.0)", t, smp, at);
@@ -311,7 +332,12 @@ fn String ProgramGen.wgsl_sample(&self, NodeData* d, NodeSampling how, NodeTextu
         case SIZE:
             String l = d.args[0] ? self.value_as({ d.args[0] }, INT) : "0";
             if (kind == TEX_3D) return string::tformat("vec3i(textureDimensions(%s, u32(%s)))", t, l);
-            if (array) return string::tformat("vec3i(vec2i(textureDimensions(%s, u32(%s))), i32(textureNumLayers(%s)))", t, l, t);
+            if (array) return string::tformat(
+                "vec3i(vec2i(textureDimensions(%s, u32(%s))), i32(textureNumLayers(%s)))",
+                t,
+                l,
+                t
+            );
             return string::tformat("vec2i(textureDimensions(%s, u32(%s)))", t, l);
         case LEVELS:
             return string::tformat("i32(textureNumLevels(%s))", t);
@@ -1010,8 +1036,13 @@ fn String ProgramGen.resource_decls(&self) {
             if (v.stage != self.stage) continue;
             if (v.storage) {
                 String[*] elems = { "vec4f", "vec4u", "u32" };
-                int e = v.elem == VEC4 ? 0 : (v.elem == UVEC4 ? 1 : 2);
-                s.appendf("@group(1) @binding(%d) var<storage, read> b%d: array<%s>;\n", wgsl_view_binding((int)i), i, elems[e]);
+                int e           = v.elem == VEC4 ? 0 : (v.elem == UVEC4 ? 1 : 2);
+                s.appendf(
+                    "@group(1) @binding(%d) var<storage, read> b%d: array<%s>;\n",
+                    wgsl_view_binding((int)i),
+                    i,
+                    elems[e]
+                );
             } else {
                 String[*] types = { "texture_2d<f32>", "texture_3d<f32>", "texture_2d_array<f32>", "texture_depth_2d" };
                 s.appendf("@group(1) @binding(%d) var t%d: %s;\n", wgsl_view_binding((int)i), i, types[v.kind.ordinal]);
@@ -1019,7 +1050,12 @@ fn String ProgramGen.resource_decls(&self) {
         }
         foreach (i, sm : p.samplers) {
             if (sm.stage != self.stage) continue;
-            s.appendf("@group(1) @binding(%d) var s%d: %s;\n", wgsl_sampler_binding((int)i), i, sm.compare ? "sampler_comparison" : "sampler");
+            s.appendf(
+                "@group(1) @binding(%d) var s%d: %s;\n",
+                wgsl_sampler_binding((int)i),
+                i,
+                sm.compare ? "sampler_comparison" : "sampler"
+            );
         }
         return s.str_view();
     }

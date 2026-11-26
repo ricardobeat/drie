@@ -12,14 +12,14 @@ import sokol, drie_shaders::deferred;
 // Shared view and sampler slots: forward transmission binds the opaque scene copy here, while
 // the deferred lighting pass binds the target's depth texture in the same view slot.
 const int VIEW_TEX_TRANSMISSION @private = deferred::VIEW_TEX_TRANSMISSION;
-const int SMP_TRANSMISSION_SMP @private = 5;
+const int SMP_TRANSMISSION_SMP @private  = 5;
 
 // Per-pass camera and screen uniforms for shaders/shader_deferred.glsl (uniform block 0).
 struct DeferredLightParams @align(16) @packed @private {
     Mat4 inv_view_proj;
-    Vec4 view_origin;   // xyz = camera world position, w = 1 on [0,1] depth backends else 0.
+    Vec4 view_origin; // xyz = camera world position, w = 1 on [0,1] depth backends else 0.
     Vec4 clear_color;
-    Vec4 screen_info;   // xy = inv target size, z = 1 on [0,1] depth backends, w = frame % 64.
+    Vec4 screen_info; // xy = inv target size, z = 1 on [0,1] depth backends, w = frame % 64.
     Mat4 view_proj;
 }
 
@@ -27,7 +27,9 @@ struct DeferredLightParams @align(16) @packed @private {
 // A bilinear sampler, clamped to the edge (made at first use).
 fn SgSampler clamp_sampler() @private {
     if (!state.clamp_sampler.id) {
-        state.clamp_sampler = sg::make_sampler(&&{ .min_filter = LINEAR, .mag_filter = LINEAR, .wrap_u = CLAMP_TO_EDGE, .wrap_v = CLAMP_TO_EDGE });
+        state.clamp_sampler = sg::make_sampler(
+            &&{ .min_filter = LINEAR, .mag_filter = LINEAR, .wrap_u = CLAMP_TO_EDGE, .wrap_v = CLAMP_TO_EDGE }
+        );
     }
     return state.clamp_sampler;
 }
@@ -79,13 +81,15 @@ fn void ensure_gbuffer(int w, int h) @private {
 // full-target clear, no active lightmap bake, and no sub-viewport.
 fn bool can_defer(Renderer* self, bool clears, bool first) @private {
     RenderTarget* rt = self.render_target;
-    return self.deferred && rt && rt.samples == 1 && rt.depth_buffer && clears
-        && (!self.scissor_test || first) && !state.bake.on && self.viewport[2] == 0 && self.viewport[3] == 0;
+    return self.deferred && rt && rt.samples == 1 && rt.depth_buffer && clears && (!self.scissor_test || first)
+        && !state.bake.on
+        && self.viewport[2] == 0
+        && self.viewport[3] == 0;
 }
 
 // True when `item` can be encoded into the G-Buffer without losing material features.
 fn bool is_deferred_item(DrawItem* item) @private {
-    Mesh* m = item.mesh;
+    Mesh* m       = item.mesh;
     Material* mat = m.material;
     if (mat.transparent || draws_lines(item) || refracts(item)) return false;
     if (m.geometry.morph_view.id != 0 && m.morph_weights_view.id != 0) return false;
@@ -120,9 +124,9 @@ fn void draw_deferred_lighting(
     float clear_alpha
 ) @private {
     RenderTarget* rt = r.render_target;
-    bool mrt = rt.mrt;
-    bool vsm = vsm_on();
-    int sidx = (mrt ? 1 : 0) | (vsm ? 2 : 0);
+    bool mrt         = rt.mrt;
+    bool vsm         = vsm_on();
+    int sidx         = (mrt ? 1 : 0) | (vsm ? 2 : 0);
     if (!state.deferred_shaders[sidx].id) {
         state.deferred_shaders[sidx] = make_program(split_deferred_shader_desc(mrt, vsm, sg::query_backend()));
     }
@@ -187,9 +191,9 @@ fn void draw_deferred_lighting(
     bind.samplers[shaders::SMP_GI_SMP] = state.irradiance.sampler;
 
     shaders::FsParams df = *fs;
-    Texture* env_map = scene.environment;
-    Texture* env = ready(env_map);
-    bool env_diffuse = false;
+    Texture* env_map     = scene.environment;
+    Texture* env         = ready(env_map);
+    bool env_diffuse     = false;
     if (env_map && env_map.has_env_sh) {
         env_diffuse = true;
         EnvLight* el = &env_map.env_light;
@@ -215,9 +219,13 @@ fn void draw_deferred_lighting(
 
     df.screen_params = { 1.0f / rt.width, 1.0f / rt.height, 0, 0 };
     df.surface_params = { 0, 0, 0, 0 };
-    df.env_params = probes
-        ? (Vec4) { 2, 1, 0, 0 }
-        : (Vec4) { env_map ? 1 : 0, env_map ? scene.environment_intensity : 1, env_diffuse ? 1 : 0, env_map ? env_map.env_distance_range : 0 };
+    df.env_params = probes ? (Vec4) { 2, 1, 0, 0 }
+        : (Vec4) {
+            env_map ? 1 : 0,
+            env_map ? scene.environment_intensity : 1,
+            env_diffuse ? 1 : 0,
+            env_map ? env_map.env_distance_range : 0
+        };
     df.env_combine = { };
     df.reflector_params = { };
     df.ssr_view_proj = r.ssr_view_proj;

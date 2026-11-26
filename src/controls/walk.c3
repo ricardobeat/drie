@@ -60,7 +60,11 @@ fn void WalkControls.look_at(&self, Vector3 at) {
 
 // Returns the current unit forward direction derived from `yaw` and `pitch`.
 fn Vector3 WalkControls.direction(&self) {
-    return { math::sin(self.yaw) * math::cos(self.pitch), math::sin(self.pitch), -math::cos(self.yaw) * math::cos(self.pitch) };
+    return {
+        math::sin(self.yaw) * math::cos(self.pitch),
+        math::sin(self.pitch),
+        -math::cos(self.yaw) * math::cos(self.pitch)
+    };
 }
 
 // Processes keyboard, mouse, and focus events into target look angles and held movement keys.
@@ -87,7 +91,7 @@ fn void WalkControls.handle_event(&self, SappEvent* e) {
                 default:
             }
         case UNFOCUSED:
-            self.held = {};
+            self.held = { };
         default:
     }
 }
@@ -115,7 +119,11 @@ fn void WalkControls.update(&self, float dt) {
     self.velocity += (want - self.velocity) * (1 - math::exp(-self.walk_spring * dt));
     Vector3 p = self.camera.position + self.velocity * dt;
     if (self.bounded) {
-        p = { math::clamp(p.x, self.min.x, self.max.x), math::clamp(p.y, self.min.y, self.max.y), math::clamp(p.z, self.min.z, self.max.z) };
+        p = {
+            math::clamp(p.x, self.min.x, self.max.x),
+            math::clamp(p.y, self.min.y, self.max.y),
+            math::clamp(p.z, self.min.z, self.max.z)
+        };
     }
     self.camera.position = p;
     self.camera.look_at_vec(p + self.direction());

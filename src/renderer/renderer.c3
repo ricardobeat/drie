@@ -23,13 +23,13 @@ alias Event = SappEvent;
 alias KeyCode = SappKeycode;
 
 // Default cap per light kind (directional, point, spot) in Renderer.max_lights.
-const int DEFAULT_MAX_LIGHTS            = 1024;
+const int DEFAULT_MAX_LIGHTS           = 1024;
 // Default cap for RectAreaLight count in Renderer.max_rect_area_lights.
-const int DEFAULT_MAX_RECT_AREA_LIGHTS  = 16;
+const int DEFAULT_MAX_RECT_AREA_LIGHTS = 16;
 // Default maximum shadow atlas side length in pixels (Renderer.shadow_atlas_size).
-const int DEFAULT_SHADOW_ATLAS_SIZE = 8192;
+const int DEFAULT_SHADOW_ATLAS_SIZE    = 8192;
 // Maximum IrradianceVolumes bound simultaneously (Scene.irradiance + Scene.irradiance_volumes).
-const int MAX_IRRADIANCE_VOLUMES        = 4;
+const int MAX_IRRADIANCE_VOLUMES       = 4;
 
 // Shadow map filtering mode (Renderer.shadow_type).
 enum ShadowType {
@@ -46,18 +46,18 @@ enum ShadowType {
 
 // Main rendering context owning window settings, quality knobs, render target binding, and stats.
 struct Renderer {
-    int width;                      // Window width in logical pixels.
-    int height;                     // Window height in logical pixels.
-    int sample_count;               // Window MSAA sample count (1 or 4).
-    String title;                   // Window title string.
+    int width; // Window width in logical pixels.
+    int height; // Window height in logical pixels.
+    int sample_count; // Window MSAA sample count (1 or 4).
+    String title; // Window title string.
     // Open the window fullscreen (set before set_animation_loop). F11 or Alt+Enter toggles it.
     bool fullscreen;
-    Color clear_color;              // Default background clear color when Scene.background is 0.
-    float clear_alpha;              // Default clear alpha (0..1).
+    Color clear_color; // Default background clear color when Scene.background is 0.
+    float clear_alpha; // Default clear alpha (0..1).
     // Automatically sync perspective camera aspect ratios with the active viewport or target.
     bool auto_aspect;
-    AnimationLoop animation_loop;   // Active per-frame callback set by set_animation_loop().
-    RenderTarget* render_target;    // Active offscreen target, or null to render to the window.
+    AnimationLoop animation_loop; // Active per-frame callback set by set_animation_loop().
+    RenderTarget* render_target; // Active offscreen target, or null to render to the window.
     // Clear the target before drawing (restricted to `scissor` when `scissor_test` is enabled).
     // When false, preserves prior frame contents unless `Scene.background` is a solid color.
     bool auto_clear;
@@ -65,9 +65,9 @@ struct Renderer {
     int[4] viewport;
     // Scissor rectangle `{ x, y, width, height }` in target pixels from bottom-left.
     int[4] scissor;
-    bool scissor_test;              // Restricts render() and clear() writes to `scissor`.
-    ToneMapping tone_mapping;       // Tone mapping operator applied on SDR/window output.
-    float tone_mapping_exposure;    // Exposure multiplier applied before tone mapping.
+    bool scissor_test; // Restricts render() and clear() writes to `scissor`.
+    ToneMapping tone_mapping; // Tone mapping operator applied on SDR/window output.
+    float tone_mapping_exposure; // Exposure multiplier applied before tone mapping.
     // Mix fog after tone mapping in display space and clear background without tone mapping
     // (three.js style). When false, both fog and background are shaded and tone mapped in linear light.
     bool display_fog;
@@ -92,8 +92,8 @@ struct Renderer {
     float lod_scale;
     // Optional 1x1 focus-distance map (meters in R, e.g. BokehPass.focus_map()) driving Material.defocus.
     Texture* focus_map;
-    float focus_aperture;           // Lens aperture factor for Material.defocus blur radius.
-    float focus_maxblur;            // Maximum defocus blur radius in pixels.
+    float focus_aperture; // Lens aperture factor for Material.defocus blur radius.
+    float focus_maxblur; // Maximum defocus blur radius in pixels.
     // Distance multiplier for LOD selection during shadow passes (<= 1 matches main view).
     float shadow_lod_bias;
     // Elapsed time in seconds driving sway and node shaders; follows clock when `auto_time` is true.
@@ -204,27 +204,24 @@ fn void Renderer.render_back_faces(&self, RenderTarget* target) {
                 .index_type = UINT32,
                 .cull_mode = FRONT,
                 .face_winding = CCW,
-                .layout = vertex_layout(
-                    {
-                        shaders::ATTR_THREE_POSITION,
-                        shaders::ATTR_THREE_NORMAL,
-                        shaders::ATTR_THREE_UV,
-                        shaders::ATTR_THREE_COLOR0,
-                        shaders::ATTR_THREE_UV1,
-                        shaders::ATTR_THREE_TANGENT,
-                        shaders::ATTR_THREE_INST0,
-                        shaders::ATTR_THREE_INST1,
-                        shaders::ATTR_THREE_INST2,
-                        shaders::ATTR_THREE_HEIGHT,
-                        shaders::ATTR_THREE_INSTANCE_COLOR,
-                        shaders::ATTR_THREE_PREV_POSITION
-                    }
-                ),
-                .depth = { .pixel_format = DEPTH, .write_enabled = true, .compare = LESS_EQUAL },
-                .colors[0].pixel_format = R16F,
-                .label = "drie-back-faces",
-            }
-        );
+                .layout = vertex_layout({
+            shaders::ATTR_THREE_POSITION,
+            shaders::ATTR_THREE_NORMAL,
+            shaders::ATTR_THREE_UV,
+            shaders::ATTR_THREE_COLOR0,
+            shaders::ATTR_THREE_UV1,
+            shaders::ATTR_THREE_TANGENT,
+            shaders::ATTR_THREE_INST0,
+            shaders::ATTR_THREE_INST1,
+            shaders::ATTR_THREE_INST2,
+            shaders::ATTR_THREE_HEIGHT,
+            shaders::ATTR_THREE_INSTANCE_COLOR,
+            shaders::ATTR_THREE_PREV_POSITION
+        }), .depth = {
+            .pixel_format = DEPTH,
+            .write_enabled = true,
+            .compare = LESS_EQUAL
+        }, .colors[0].pixel_format = R16F, .label = "drie-back-faces", });
     }
     profile::begin_pass(
         &&{
@@ -266,23 +263,23 @@ fn void Renderer.render_back_faces(&self, RenderTarget* target) {
 
 // Per-render statistics populated by Renderer.render().
 struct RenderInfo {
-    int calls;             // Main/deferred/prepass draw calls submitted.
-    int triangles;         // Triangles submitted in main and deferred passes.
-    int lines;             // Line segments submitted (Line, LineSegments, LineLoop).
-    int shadow_calls;      // Draw calls submitted across all shadow passes.
-    int shadow_triangles;  // Triangles submitted across all shadow passes.
-    int atlas_width;       // Current shadow atlas texture width in pixels.
-    int atlas_height;      // Current shadow atlas texture height in pixels.
-    usz atlas_bytes;       // GPU bytes used by shadow atlas, static cache, and VSM atlas targets.
-    int atlas_tiles;       // Shadow atlas and cache tiles rendered this frame.
-    int atlas_casters;     // Caster draw calls submitted into atlas/cache tiles this frame.
-    int atlas_lights;      // Active shadowed lights currently allocated in the atlas.
-    int atlas_dropped;     // Shadowed lights dropped from the atlas due to budget pressure.
-    int waiting;           // Draws using a fallback or skipped while background compilation runs.
-    Mesh* waiting_mesh;    // Last mesh counted in `waiting`.
-    int waiting_why;       // Reason for `waiting_mesh`: 1 node job, 2 shader compiling, 3 pipeline pending.
-    int updates;           // Dynamic BufferGeometries re-uploaded to the GPU this frame.
-    usz update_bytes;      // Total vertex bytes uploaded by dynamic geometry updates.
+    int calls; // Main/deferred/prepass draw calls submitted.
+    int triangles; // Triangles submitted in main and deferred passes.
+    int lines; // Line segments submitted (Line, LineSegments, LineLoop).
+    int shadow_calls; // Draw calls submitted across all shadow passes.
+    int shadow_triangles; // Triangles submitted across all shadow passes.
+    int atlas_width; // Current shadow atlas texture width in pixels.
+    int atlas_height; // Current shadow atlas texture height in pixels.
+    usz atlas_bytes; // GPU bytes used by shadow atlas, static cache, and VSM atlas targets.
+    int atlas_tiles; // Shadow atlas and cache tiles rendered this frame.
+    int atlas_casters; // Caster draw calls submitted into atlas/cache tiles this frame.
+    int atlas_lights; // Active shadowed lights currently allocated in the atlas.
+    int atlas_dropped; // Shadowed lights dropped from the atlas due to budget pressure.
+    int waiting; // Draws using a fallback or skipped while background compilation runs.
+    Mesh* waiting_mesh; // Last mesh counted in `waiting`.
+    int waiting_why; // Reason for `waiting_mesh`: 1 node job, 2 shader compiling, 3 pipeline pending.
+    int updates; // Dynamic BufferGeometries re-uploaded to the GPU this frame.
+    usz update_bytes; // Total vertex bytes uploaded by dynamic geometry updates.
 }
 
 // Alias for Renderer matching three.js naming.
@@ -660,7 +657,8 @@ fn void setup_gfx(SgEnvironment environment) @private {
             .view_pool_size = 4096,
             .sampler_pool_size = 4096, // Covers material/pass/target/VSM/G-Buffer pipeline permutations.
             .pipeline_pool_size = 4096,
-            .shader_pool_size = state.renderer && state.renderer.max_programs > 0 ? state.renderer.max_programs : DEFAULT_PROGRAMS,
+            .shader_pool_size = state.renderer && state.renderer.max_programs > 0 ? state.renderer.max_programs
+                : DEFAULT_PROGRAMS,
         }
     );
     stm::setup();
@@ -768,14 +766,18 @@ fn void on_event(SappEvent* e) @local {
 // or tone-mapped sRGB to match fog color in SDR renders.
 fn Vector3 clear_value(Renderer* r, Color color) @private {
     if (r.render_target && r.render_target.is_linear()) return color_to_linear(color);
-    if (r.display_fog) return { ((color >> 16) & 0xff) / 255.0f, ((color >> 8) & 0xff) / 255.0f, (color & 0xff) / 255.0f };
+    if (r.display_fog) return {
+        ((color >> 16) & 0xff) / 255.0f,
+        ((color >> 8) & 0xff) / 255.0f,
+        (color & 0xff) / 255.0f
+    };
     return tone_mapped(r, color);
 }
 
 // Marks `rt` (or the window) drawn on the current frame and returns true if this is its first pass.
 fn bool first_pass(RenderTarget* rt) @private {
     uint* drawn = rt ? &rt.drawn_frame : &state.window_drawn_frame;
-    bool first = *drawn != state.frame + 1;
+    bool first  = *drawn != state.frame + 1;
     *drawn = state.frame + 1;
     return first;
 }
@@ -802,13 +804,15 @@ fn void apply_view_rect(Renderer* r) @local {
 // Draws a fullscreen triangle restricted to `r.scissor` that writes `rgba` and far depth (z = 1).
 fn void clear_rect(Renderer* r, float[4] rgba) @local {
     RenderTarget* rt = r.render_target;
-    int target = rt ? (rt.samples > 1 ? 2 : 1) + (rt.mrt ? 4 : (rt.is_linear() ? 2 : 0)) : 0;
-    ulong key = (ulong)target;
+    int target       = rt ? (rt.samples > 1 ? 2 : 1) + (rt.mrt ? 4 : (rt.is_linear() ? 2 : 0)) : 0;
+    ulong key        = (ulong)target;
     SgPipeline pip;
     if (try known = state.pipelines.get(key)) {
         pip = known;
     } else {
-        if (!state.clear_shader.id) state.clear_shader = make_program(shaders::clear_rect_shader_desc(sg::query_backend()));
+        if (!state.clear_shader.id) state.clear_shader = make_program(
+            shaders::clear_rect_shader_desc(sg::query_backend())
+        );
         SgPipelineDesc desc = {
             .shader = state.clear_shader,
             .depth = { .write_enabled = true, .compare = ALWAYS },
@@ -820,7 +824,10 @@ fn void clear_rect(Renderer* r, float[4] rgba) @local {
             desc.depth.pixel_format = DEPTH;
             if (rt.mrt) {
                 desc.color_count = 1 + MRT_COUNT;
-                for (int i = 0; i < MRT_COUNT; i++) desc.colors[i + 1] = { .pixel_format = mrt_format(i), .write_mask = NONE };
+                for (int i = 0; i < MRT_COUNT; i++) desc.colors[i + 1] = {
+                    .pixel_format = mrt_format(i),
+                    .write_mask = NONE
+                };
             }
         }
         pip = sg::make_pipeline(&desc);
@@ -848,8 +855,8 @@ fn void window_drawn() @local {
 
 // Allocates or resizes the internal offscreen target used for multi-pass windowed frames.
 fn RenderTarget* ensure_window_rt(Renderer* r) @local {
-    int w = math::max(sapp::width(), 1);
-    int h = math::max(sapp::height(), 1);
+    int w       = math::max(sapp::width(), 1);
+    int h       = math::max(sapp::height(), 1);
     int samples = r.sample_count > 1 ? 4 : 1;
     if (!state.window_rt) {
         state.window_rt = render_target(w, h, samples, RGBA8);
@@ -908,10 +915,14 @@ fn void Renderer.clear(&self) {
     }
     defer self.render_target = saved_rt;
     bool first = first_pass(self.render_target);
-    Vector3 c = clear_value(self, self.clear_color);
+    Vector3 c  = clear_value(self, self.clear_color);
     SgPass pass = {
         .action = {
-            .colors[0] = { .load_action = CLEAR, .store_action = STORE, .clear_value = { c.x, c.y, c.z, self.clear_alpha } },
+            .colors[0] = {
+                .load_action = CLEAR,
+                .store_action = STORE,
+                .clear_value = { c.x, c.y, c.z, self.clear_alpha }
+            },
             .depth = { .load_action = CLEAR, .store_action = STORE, .clear_value = 1 },
         },
         .label = "drie-clear",
@@ -1068,13 +1079,26 @@ fn void Renderer.say_waiting(&self) {
     Mesh* m = self.info.waiting_mesh;
     if (!self.info.waiting || !m || !m.material) return;
     NodeBuild* b = node_build_of(m.material);
-    io::eprintfn("drie: %d draws waiting; one is mesh '%s', %d triangles, why %d, node build %s",
-        self.info.waiting, m.name, m.geometry ? m.geometry.vertex_count() : 0, self.info.waiting_why, b ? "yes" : "no");
+    io::eprintfn(
+        "drie: %d draws waiting; one is mesh '%s', %d triangles, why %d, node build %s",
+        self.info.waiting,
+        m.name,
+        m.geometry ? m.geometry.vertex_count() : 0,
+        self.info.waiting_why,
+        b ? "yes" : "no"
+    );
     if (!b || !b.programs.is_initialized()) return;
     io::eprintfn("  node build busy_now %s epoch %d/%d", b.busy_now, b.busy_epoch, node_epoch);
     b.programs.@each(; KeyWords words, MaterialProgram* mp) {
-        io::eprintfn("  program %x%032x: job %d compiling %s, depth %s, pipelines made %d", words.hi, words.lo, mp.program.job,
-                     mp.program.compiling(), mp.depth ? (mp.depth.compiling() ? "compiling" : "made") : "none", mp.pipelines.len());
+        io::eprintfn(
+            "  program %x%032x: job %d compiling %s, depth %s, pipelines made %d",
+            words.hi,
+            words.lo,
+            mp.program.job,
+            mp.program.compiling(),
+            mp.depth ? (mp.depth.compiling() ? "compiling" : "made") : "none",
+            mp.pipelines.len()
+        );
     };
 }
 
@@ -1093,7 +1117,8 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera) {
         PerspectiveCamera* pc = (PerspectiveCamera*)camera;
         RenderTarget* rt      = self.render_target;
         pc.aspect = self.viewport[2] > 0 && self.viewport[3] > 0 ? (float)self.viewport[2] / self.viewport[3]
-            : rt ? (float)rt.width / rt.height : sapp::widthf() / sapp::heightf();
+            : rt ? (float)rt.width / rt.height
+            : sapp::widthf() / sapp::heightf();
     }
     ulong pt = profile::start();
     if (!camera.custom_projection) camera.update_projection_matrix();
@@ -1107,9 +1132,9 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera) {
     Mat4 steady_view_proj = view_proj;
     Vector3 camera_pos    = camera.matrix_world.get_position();
     // Preserve outer camera uniforms across nested renders (such as Reflector passes).
-    Mat4 outer_view = state.node_view;
-    Mat4 outer_proj = state.node_proj;
-    Vector3 outer_camera = state.node_camera;
+    Mat4 outer_view       = state.node_view;
+    Mat4 outer_proj       = state.node_proj;
+    Vector3 outer_camera  = state.node_camera;
     defer {
         state.node_view = outer_view;
         state.node_proj = outer_proj;
@@ -1120,7 +1145,7 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera) {
     state.node_view = camera.matrix_world_inverse;
     state.node_proj = camera.projection_matrix;
     state.node_camera = camera_pos;
-    Mat4 view_proj_rel    = relative_view_proj(camera, camera_pos);
+    Mat4 view_proj_rel = relative_view_proj(camera, camera_pos);
     state.motion_jitter = { };
     if (camera.jitter != { }) {
         // Apply post-projection clip-space jitter (`x' = x + s * w`) for TAA.
@@ -1195,9 +1220,15 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera) {
     pt = profile::start();
     state.fog_view = ready(state.white).view;
     if (fog_volume_wanted(scene.fog, camera, self.prof_no_fog_scatter)) {
-        RenderTarget* rt     = self.render_target;
-        FogShadowViews views = { state.shadow_view, state.atlas_view, state.sun_view, state.shadow_sampler,
-                                 lights_gpu.cookie ? lights_gpu.cookie.view : ready(state.white).view, clamp_sampler() };
+        RenderTarget* rt = self.render_target;
+        FogShadowViews views = {
+            state.shadow_view,
+            state.atlas_view,
+            state.sun_view,
+            state.shadow_sampler,
+            lights_gpu.cookie ? lights_gpu.cookie.view : ready(state.white).view,
+            clamp_sampler()
+        };
         state.fog_view = update_fog_volume(
             scene,
             camera,
@@ -1233,8 +1264,9 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera) {
     // Multi-pass windowed frames route into `state.window_rt` so MSAA LOAD/STORE is preserved
     // and presented once in present_window_rt() at frame end.
     RenderTarget* saved_window_rt = self.render_target;
-    if (!saved_window_rt && state.in_frame && (state.window_rt_used || !self.auto_clear || self.scissor_test
-        || (scene.radiance && scene.radiance.sparse))) {
+    if (!saved_window_rt && state.in_frame
+        && (state.window_rt_used || !self.auto_clear || self.scissor_test
+            || (scene.radiance && scene.radiance.sparse))) {
         self.render_target = ensure_window_rt(self);
         state.window_rt_used = true;
     }
@@ -1262,8 +1294,8 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera) {
         pass.swapchain = sglue::swapchain();
     }
     bool clears = self.auto_clear || (scene.background && !scene.background_texture);
-    bool whole = clears && !self.scissor_test;
-    bool first = first_pass(self.render_target);
+    bool whole  = clears && !self.scissor_test;
+    bool first  = first_pass(self.render_target);
     if (!whole) keep_pass(&pass, first, self.render_target);
     if (split) {
         // Preserve color/MRT attachments across copy_for_transmission() split passes.
@@ -1339,7 +1371,11 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera) {
         SgLoadAction light_load = self.scissor_test ? SgLoadAction.CLEAR : SgLoadAction.DONTCARE;
         SgPass light_pass = {
             .action = {
-                .colors[0] = { .load_action = light_load, .store_action = STORE, .clear_value = { clear.x, clear.y, clear.z, scene.background ? 1.0f : self.clear_alpha } },
+                .colors[0] = {
+                    .load_action = light_load,
+                    .store_action = STORE,
+                    .clear_value = { clear.x, clear.y, clear.z, scene.background ? 1.0f : self.clear_alpha }
+                },
             },
             .attachments = { .colors[0] = rt.color_view },
             .label = "drie-deferred-light",
@@ -1352,7 +1388,15 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera) {
         }
         profile::begin_pass(&light_pass);
         apply_view_rect(self);
-        draw_deferred_lighting(self, scene, camera, view_proj_rel, &fs, clear, scene.background ? 1.0f : self.clear_alpha);
+        draw_deferred_lighting(
+            self,
+            scene,
+            camera,
+            view_proj_rel,
+            &fs,
+            clear,
+            scene.background ? 1.0f : self.clear_alpha
+        );
         sg::end_pass();
         profile::stop("render: deferred light", pt);
         pt = profile::start();
@@ -1369,7 +1413,10 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera) {
 
     // 6. Main forward pass: depth prepass, background, opaque, fog backdrop, glass, transparent, overlays.
     profile::begin_pass(&pass);
-    if (!use_deferred && !whole && clears) clear_rect(self, { clear.x, clear.y, clear.z, scene.background ? 1.0f : self.clear_alpha });
+    if (!use_deferred && !whole && clears) clear_rect(
+        self,
+        { clear.x, clear.y, clear.z, scene.background ? 1.0f : self.clear_alpha }
+    );
     apply_view_rect(self);
     if (prepass) {
         foreach (&item : state.opaque) {
@@ -1417,7 +1464,7 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera) {
         foreach (&item : state.opaque) {
             if (!refracts(item)) continue;
             Material* mat = item.mesh.material;
-            Side side = mat.side;
+            Side side     = mat.side;
             if (backs && side == DOUBLE_SIDE) mat.side = FRONT_SIDE;
             draw_item(item, view_proj_rel, &fs, mat.wireframe || has_holes(item) ? CUT : SOLID);
             mat.side = side;
@@ -1428,7 +1475,7 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera) {
     if (!self.prof_no_transparent) {
         foreach (&item : state.transparent) {
             Material* mat = item.mesh.material;
-            Side side = mat.side;
+            Side side     = mat.side;
             // Back faces of double-sided transmissive meshes were already drawn in the split block.
             if (split && backs && side == DOUBLE_SIDE && refracts(item)) mat.side = FRONT_SIDE;
             // Without split, render double-sided glass back-then-front so near reflections stay on top.
@@ -1446,8 +1493,9 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera) {
     profile::stop("render: main transparent", pt);
 
     // 7. Sparse RC fallback on forward/MSAA MRT targets and swapchain commit handoff.
-    if (!use_deferred && scene.radiance && scene.radiance.sparse && !self.reflecting
-        && self.render_target && self.render_target.depth_texture.id && self.render_target.normal_texture.id) {
+    if (!use_deferred && scene.radiance && scene.radiance.sparse && !self.reflecting && self.render_target
+        && self.render_target.depth_texture.id
+        && self.render_target.normal_texture.id) {
         if (!state.gb_sampler.id) {
             state.gb_sampler = sg::make_sampler(
                 &&{ .min_filter = NEAREST, .mag_filter = NEAREST, .wrap_u = CLAMP_TO_EDGE, .wrap_v = CLAMP_TO_EDGE }

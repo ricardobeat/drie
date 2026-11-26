@@ -335,7 +335,11 @@ fn void BufferGeometry.upload(&self) {
     if (!self.indices.len() || !self.vertices.len()) return;
     if (self.bounds_radius == 0) self.compute_bounding_sphere();
     self.index_count = (uint)self.indices.len();
-    SgBufferUsage dyn = { .vertex_buffer = true, .copy_dst = self.dynamic && !self.gpu_vertices, .storage_buffer = self.gpu_vertices };
+    SgBufferUsage dyn = {
+        .vertex_buffer = true,
+        .copy_dst = self.dynamic && !self.gpu_vertices,
+        .storage_buffer = self.gpu_vertices
+    };
     usz vbytes = (usz)self.vertices.len() * float::size;
     self.vbuf = sg::make_buffer(&&{ .usage = dyn, .data = { .ptr = self.vertices.entries, .size = vbytes } });
     self.ibuf = sg::make_buffer(
@@ -345,12 +349,16 @@ fn void BufferGeometry.upload(&self) {
         }
     );
     if ((usz)self.uv1.len() >= (usz)self.vertex_count() * 2) {
-        self.uv1buf = sg::make_buffer(&&{ .data = { .ptr = self.uv1.entries, .size = (usz)self.vertex_count() * 2 * float::size } });
+        self.uv1buf = sg::make_buffer(
+            &&{ .data = { .ptr = self.uv1.entries, .size = (usz)self.vertex_count() * 2 * float::size } }
+        );
     }
-    usz tbytes = (usz)self.vertex_count() * 4 * float::size;
+    usz tbytes    = (usz)self.vertex_count() * 4 * float::size;
     bool tangents = (usz)self.tangents.len() >= (usz)self.vertex_count() * 4;
     if (tangents) {
-        self.tangent_buf = sg::make_buffer(&&{ .usage = dyn, .data = { .ptr = self.tangents.entries, .size = tbytes } });
+        self.tangent_buf = sg::make_buffer(
+            &&{ .usage = dyn, .data = { .ptr = self.tangents.entries, .size = tbytes } }
+        );
     }
     if (self.dynamic && self.gpu_vertices) {
         self.prev_vbuf = sg::make_buffer(&&{ .usage = dyn, .data = { .ptr = self.vertices.entries, .size = vbytes } });
@@ -420,8 +428,8 @@ fn SgView BufferGeometry.gpu_vertices_target(&self) {
 fn usz BufferGeometry.update_vertices(&self) {
     if (!self.needs_update || !self.uploaded || !self.vbuf.id || self.gpu_vertices) return 0;
     if (self.updated_frame == state.frame + 1) return 0;
-    usz vbytes = (usz)self.vertices.len() * float::size;
-    usz tbytes = self.tangent_buf.id ? (usz)self.vertex_count() * 4 * float::size : 0;
+    usz vbytes    = (usz)self.vertices.len() * float::size;
+    usz tbytes    = self.tangent_buf.id ? (usz)self.vertex_count() * 4 * float::size : 0;
     bool tangents = (usz)self.tangents.len() >= (usz)self.vertex_count() * 4;
     if (vbytes != sg::query_buffer_size(self.vbuf) || tangents != (tbytes != 0)) {
         // Vertex count or tangent layout changed; rebuild buffers on the next draw.
@@ -435,15 +443,22 @@ fn usz BufferGeometry.update_vertices(&self) {
     SgBuffer older = self.prev_vbuf;
     self.prev_vbuf = self.vbuf;
     self.vbuf = older;
-    sg::write_buffer_transient(&&{ .src.data = { .ptr = self.vertices.entries, .size = vbytes }, .dst.buffer = self.staging });
+    sg::write_buffer_transient(
+        &&{ .src.data = { .ptr = self.vertices.entries, .size = vbytes }, .dst.buffer = self.staging }
+    );
     if (tbytes) {
         sg::write_buffer_transient(
-            &&{ .src.data = { .ptr = self.tangents.entries, .size = tbytes }, .dst = { .buffer = self.staging, .offset = vbytes } }
+            &&{
+                .src.data = { .ptr = self.tangents.entries, .size = tbytes },
+                .dst = { .buffer = self.staging, .offset = vbytes }
+            }
         );
     }
     sg::copy_buffer_to_buffer(&&{ .src.buffer = self.staging, .dst.buffer = self.vbuf, .size = vbytes });
     if (tbytes) {
-        sg::copy_buffer_to_buffer(&&{ .src = { .buffer = self.staging, .offset = vbytes }, .dst.buffer = self.tangent_buf, .size = tbytes });
+        sg::copy_buffer_to_buffer(
+            &&{ .src = { .buffer = self.staging, .offset = vbytes }, .dst.buffer = self.tangent_buf, .size = tbytes }
+        );
     }
     return vbytes + tbytes;
 }

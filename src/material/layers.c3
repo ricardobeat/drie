@@ -363,17 +363,19 @@ fn Node gi_texel(
 // fading over the outermost half cell; matching shaders/shader_core.glsl's rc_irradiance). Blends
 // the 8 surrounding probes while rejecting occluded probes and probes behind the surface plane.
 fn Node[2] rc_irradiance(Node n, Node world) @private {
-    Node corner = fs_in("rc_min");
-    Node size   = fs_in("rc_size");
-    Node light  = nodes::variable(nodes::vec3(0));
-    Node fade   = nodes::variable(nodes::num(0));
-    Node[2] dense = rc_irradiance_dense(n, world, corner, size);
+    Node corner    = fs_in("rc_min");
+    Node size      = fs_in("rc_size");
+    Node light     = nodes::variable(nodes::vec3(0));
+    Node fade      = nodes::variable(nodes::num(0));
+    Node[2] dense  = rc_irradiance_dense(n, world, corner, size);
     Node[2] sparse = rc_irradiance_sparse(n, world, corner, size);
-    Node run = nodes::block(light, fade, nodes::if_then(
-        size.x().less_than(nodes::num(-0.5f)),
-        nodes::block(light.assign(sparse[0]), fade.assign(sparse[1])),
-        nodes::block(light.assign(dense[0]), fade.assign(dense[1]))
-    ));
+    Node run = nodes::block(light, fade, nodes::if_then(size.x()
+        .less_than(
+            nodes::num(-0.5f)
+        ), nodes::block(
+            light.assign(sparse[0]),
+            fade.assign(sparse[1])
+        ), nodes::block(light.assign(dense[0]), fade.assign(dense[1]))));
     return { nodes::seq(run, light), fade };
 }
 
@@ -394,15 +396,15 @@ fn Node[2] rc_irradiance_sparse(Node n, Node world, Node corner, Node size) @pri
         nodes::convert(nodes::shift_right(nodes::convert(size.y(), INT), nodes::int_(9)), FLOAT),
         size.z()
     );
-    Node cell  = (world - corner.xyz()) / spacing;
-    Node bedge = nodes::min(cell, dims - cell);
-    Node bfade = nodes::clamp(nodes::min(bedge.x(), nodes::min(bedge.y(), bedge.z())) * 2.0f, 0, 1);
+    Node cell     = (world - corner.xyz()) / spacing;
+    Node bedge    = nodes::min(cell, dims - cell);
+    Node bfade    = nodes::clamp(nodes::min(bedge.x(), nodes::min(bedge.y(), bedge.z())) * 2.0f, 0, 1);
     // (half a cell out along the normal: the sheet of probes the kernels place sits in the
     // first cell off the surface, which a wall as thick as a cell would hide)
-    Node out   = world + n * (spacing * 0.5f);
-    Node g     = out / spacing - 0.5f;
-    Node base  = nodes::convert(nodes::floor(g), IVEC3);
-    Node f     = g - nodes::convert(base, VEC3);
+    Node out      = world + n * (spacing * 0.5f);
+    Node g        = out / spacing - 0.5f;
+    Node base     = nodes::convert(nodes::floor(g), IVEC3);
+    Node f        = g - nodes::convert(base, VEC3);
     Node sum      = nodes::variable(nodes::vec3(0));
     Node wsum     = nodes::variable(nodes::num(0));
     Node sum_any  = nodes::variable(nodes::vec3(0));
@@ -420,14 +422,16 @@ fn Node[2] rc_irradiance_sparse(Node n, Node world, Node corner, Node size) @pri
         nodes::convert(nodes::bit_and(nodes::shift_right(k, nodes::int_(1)), nodes::int_(1)), FLOAT),
         nodes::convert(nodes::bit_and(nodes::shift_right(k, nodes::int_(2)), nodes::int_(1)), FLOAT)
     );
-    Node c = base + nodes::convert(o, IVEC3);
+    Node c         = base + nodes::convert(o, IVEC3);
     // one of the 8 probes: its 6 faces, and how much of them this surface takes
     Node probe_pos = (nodes::convert(c, VEC3) + 0.5f) * spacing;
     Node front     = nodes::smoothstep(spacing * -0.35f, spacing * 0.25f, nodes::dot(probe_pos - world, n));
     // the anchor the kernels keep in the entry's w (rc_sparse_anchor): which way the surface
     // the probe was made for faces, so a wall takes none of the light of the room behind it
-    Node code = nodes::convert(nodes::bit_and(nodes::shift_right(nodes::as_uint(entry.w()), nodes::uint_(16)),
-                                              nodes::uint_(7u)), INT);
+    Node code = nodes::convert(
+        nodes::bit_and(nodes::shift_right(nodes::as_uint(entry.w()), nodes::uint_(16)), nodes::uint_(7u)),
+        INT
+    );
     Node a    = code - nodes::int_(1);
     Node axis = nodes::shift_right(a, nodes::int_(1));
     Node pick = nodes::vec3(
@@ -435,20 +439,22 @@ fn Node[2] rc_irradiance_sparse(Node n, Node world, Node corner, Node size) @pri
         nodes::select(axis.equal(nodes::int_(1)), 1.0f, 0.0f),
         nodes::select(axis.equal(nodes::int_(2)), 1.0f, 0.0f)
     );
-    Node against = nodes::dot(world - probe_pos, pick)
-        * nodes::select(nodes::bit_and(a, nodes::int_(1)).equal(nodes::int_(0)), 1.0f, -1.0f);
+    Node against = nodes::dot(world - probe_pos, pick) * nodes::select(nodes::bit_and(a, nodes::int_(1))
+        .equal(nodes::int_(0)), 1.0f, -1.0f);
     Node trust = nodes::select(
         code.equal(nodes::int_(0)),
         nodes::num(1),
         nodes::smoothstep(spacing * -1.5f, spacing * -0.9f, against)
     );
-    Node w3 = nodes::mix(nodes::vec3(1) - f, f, o);
-    Node w  = w3.x() * w3.y() * w3.z() * ex.w();
-    Node faces = ex.xyz() * nn.x() + node_storage(shaders::VIEW_RC_PROBES, VEC4, at + side.y()).xyz() * nn.y()
-        + node_storage(shaders::VIEW_RC_PROBES, VEC4, at + side.z()).xyz() * nn.z();
+    Node w3    = nodes::mix(nodes::vec3(1) - f, f, o);
+    Node w     = w3.x() * w3.y() * w3.z() * ex.w();
+    Node faces = ex.xyz() * nn.x() + node_storage(shaders::VIEW_RC_PROBES, VEC4, at + side.y())
+        .xyz() * nn.y() + node_storage(shaders::VIEW_RC_PROBES, VEC4, at + side.z()).xyz() * nn.z();
     Node[11] body_stmts;
     body_stmts[:10] = rc_sparse_lookup(c, 0, hash_cap, entry, slot)[..];
-    body_stmts[10] = nodes::if_then(slot.greater_than_equal(nodes::int_(0)), nodes::block(
+    body_stmts[10] = nodes::if_then(
+        slot.greater_than_equal(nodes::int_(0)),
+        nodes::block(
             at.assign(hash_cap + slot * nodes::int_(6)),
             ex.assign(node_storage(shaders::VIEW_RC_PROBES, VEC4, at + side.x())),
             e3.assign(faces),
@@ -456,31 +462,52 @@ fn Node[2] rc_irradiance_sparse(Node n, Node world, Node corner, Node size) @pri
             wsum.assign(wsum + w * front * trust),
             sum_any.assign(sum_any + e3 * w),
             wsum_any.assign(wsum_any + w)
-        ));
-    Node body = drie::node_block(&body_stmts);
+        )
+    );
+    Node body        = drie::node_block(&body_stmts);
     Node fallback    = sum_any / wsum_any;
     Node primary     = nodes::select(wsum.greater_than(nodes::num(1e-5f)), sum / wsum, fallback);
     Node trust_front = nodes::clamp(wsum / nodes::max(wsum_any * 0.25f, 1e-5f), 0, 1);
     // the level 1 probe: where its 6 faces are is in its entry's x
-    Node c1 = nodes::convert(nodes::floor(out / (spacing * 2.0f)), IVEC3);
+    Node c1          = nodes::convert(nodes::floor(out / (spacing * 2.0f)), IVEC3);
     Node[12] level1_stmts;
     level1_stmts[:10] = rc_sparse_lookup(c1, 1, hash_cap, entry, slot)[..];
     level1_stmts[10] = at.assign(nodes::convert(nodes::as_uint(entry.x()), INT));
-    level1_stmts[11] = nodes::if_then(nodes::logical_and(slot.greater_than_equal(nodes::int_(0)), at.greater_than(nodes::int_(0))), nodes::block(
-        ex.assign(node_storage(shaders::VIEW_RC_PROBES, VEC4, at + side.x())),
-        fade.assign(nodes::num(1)),
-        light.assign(faces * size.w())
-    ));
+    level1_stmts[11] = nodes::if_then(
+        nodes::logical_and(slot.greater_than_equal(nodes::int_(0)), at.greater_than(nodes::int_(0))),
+        nodes::block(
+            ex.assign(node_storage(shaders::VIEW_RC_PROBES, VEC4, at + side.x())),
+            fade.assign(nodes::num(1)),
+            light.assign(faces * size.w())
+        )
+    );
     Node level1 = drie::node_block(&level1_stmts);
     Node run = nodes::block(
-        sum, wsum, sum_any, wsum_any, light, fade, entry, slot, at, ex, e3,
-        nodes::if_then(bfade.greater_than(nodes::num(0)), nodes::block(
-            nodes::loop(k, nodes::int_(0), nodes::int_(8), body),
-            nodes::if_then(wsum_any.greater_than(nodes::num(1e-5f)), nodes::block(
-                fade.assign(nodes::clamp(wsum_any * 4.0f, 0, 1) * bfade),
-                light.assign(nodes::mix(fallback, primary, trust_front) * size.w())
-            ), level1)
-        ))
+        sum,
+        wsum,
+        sum_any,
+        wsum_any,
+        light,
+        fade,
+        entry,
+        slot,
+        at,
+        ex,
+        e3,
+        nodes::if_then(
+            bfade.greater_than(nodes::num(0)),
+            nodes::block(
+                nodes::loop(k, nodes::int_(0), nodes::int_(8), body),
+                nodes::if_then(
+                    wsum_any.greater_than(nodes::num(1e-5f)),
+                    nodes::block(
+                        fade.assign(nodes::clamp(wsum_any * 4.0f, 0, 1) * bfade),
+                        light.assign(nodes::mix(fallback, primary, trust_front) * size.w())
+                    ),
+                    level1
+                )
+            )
+        )
     );
     return { nodes::seq(run, light), fade };
 }
@@ -514,18 +541,19 @@ fn Node[10] rc_sparse_lookup(Node c, uint level, Node hash_cap, Node entry, Node
         h.assign(nodes::bit_xor(h, nodes::shift_right(h, nodes::uint_(15)))),
         h.assign(h * nodes::uint_(0x846ca68bu)),
         idx.assign(nodes::bit_and(nodes::bit_xor(h, nodes::shift_right(h, nodes::uint_(16))), hmask)),
-        nodes::loop_while(stepn.less_than(nodes::uint_(32)), nodes::block(
-            e.assign(node_storage(shaders::VIEW_RC_PROBES, VEC4, idx)),
-            nodes::if_then(nodes::as_uint(e.y()).equal(nodes::uint_(0u)), nodes::block(nodes::break_())),
-            nodes::if_then(nodes::as_uint(e.y()).equal(key), nodes::block(
+        nodes::loop_while(
+            stepn.less_than(nodes::uint_(32)),
+            nodes::block(
+                e.assign(node_storage(shaders::VIEW_RC_PROBES, VEC4, idx)),
+                nodes::if_then(nodes::as_uint(e.y())
+        .equal(nodes::uint_(0u)), nodes::block(nodes::break_())), nodes::if_then(nodes::as_uint(e.y())
+            .equal(
+                key
+            ), nodes::block(
                 entry.assign(e),
                 slot.assign(nodes::convert(nodes::as_uint(e.z()), INT)),
                 nodes::break_()
-            )),
-            idx.assign(nodes::bit_and(idx + nodes::uint_(1), hmask)),
-            stepn.assign(stepn + nodes::uint_(1))
-        ))
-    };
+            )), idx.assign(nodes::bit_and(idx + nodes::uint_(1), hmask)), stepn.assign(stepn + nodes::uint_(1)))) };
 }
 
 fn Node[2] rc_irradiance_dense(Node n, Node world, Node corner, Node size) @private {
@@ -569,7 +597,7 @@ fn Node[2] rc_irradiance_dense(Node n, Node world, Node corner, Node size) @priv
         sum_any.assign(sum_any + e * w),
         wsum_any.assign(wsum_any + w)
     );
-    Node probes      = nodes::if_then(
+    Node probes = nodes::if_then(
         fade.greater_than(nodes::num(0)),
         nodes::block(nodes::loop(k, nodes::int_(0), nodes::int_(8), body))
     );
@@ -600,23 +628,23 @@ fn Node planar_reflection(Node n, Node v, Node rough, Node world, Node frag, int
     Node ndc    = clip.xy() / nodes::max(clip.w(), 1e-4f);
     ndc = nodes::select(fs_in("ssr_params", FLOAT, 3)
         .greater_than(nodes::num(0.5f)), nodes::vec2(ndc.x(), ndc.y().negate()), ndc);
-    Node uv     = ndc * 0.5f + 0.5f;
-    Node edge   = nodes::min(uv, nodes::vec2(1) - uv);
-    Node found  = nodes::select(clip.w()
+    Node uv   = ndc * 0.5f + 0.5f;
+    Node edge = nodes::min(uv, nodes::vec2(1) - uv);
+    Node found = nodes::select(clip.w()
         .greater_than(nodes::num(0)), nodes::smoothstep(-0.02f, 0.03f, nodes::min(edge.x(), edge.y())), 0.0f);
-    Node size   = nodes::convert(ssr_texture(shaders::VIEW_TEX_EXT0 + slot, SIZE, nodes::int_(0)), VEC2);
+    Node size = nodes::convert(ssr_texture(shaders::VIEW_TEX_EXT0 + slot, SIZE, nodes::int_(0)), VEC2);
     Node spread = rough * rough * params.z();
     Node radius = nodes::vec2(spread * size.y() / size.x(), spread);
-    Node turn   = frame_noise(frag) * (2.0f * (float)math::PI);
-    Node sum    = nodes::variable(nodes::vec3(0));
-    Node k      = nodes::loop_index(INT);
-    Node a      = turn + nodes::convert(k, FLOAT) * 2.39996f;
-    Node at     = uv + nodes::vec2(
+    Node turn = frame_noise(frag) * (2.0f * (float)math::PI);
+    Node sum = nodes::variable(nodes::vec3(0));
+    Node k = nodes::loop_index(INT);
+    Node a = turn + nodes::convert(k, FLOAT) * 2.39996f;
+    Node at = uv + nodes::vec2(
         nodes::cos(a),
         nodes::sin(a)
     ) * radius * nodes::sqrt((nodes::convert(k, FLOAT) + 0.5f) / 8.0f);
-    Node tap    = nodes::min(ssr_texture(shaders::VIEW_TEX_EXT0 + slot, LEVEL, at, nodes::num(0)).xyz(), nodes::vec3(64));
-    Node taps   = nodes::loop(k, nodes::int_(0), nodes::int_(8), nodes::block(sum.assign(sum + tap)));
+    Node tap = nodes::min(ssr_texture(shaders::VIEW_TEX_EXT0 + slot, LEVEL, at, nodes::num(0)).xyz(), nodes::vec3(64));
+    Node taps = nodes::loop(k, nodes::int_(0), nodes::int_(8), nodes::block(sum.assign(sum + tap)));
     return nodes::seq(nodes::block(sum, taps), nodes::vec4(sum / 8.0f, found));
 }
 
@@ -639,13 +667,13 @@ fn Node ssr_project(Node p) @local {
 // The last frame's distance from the camera's plane at uv: the depth source's (green), or its
 // back faces' (red of ssr_back).
 fn Node ssr_depth_at(int view, Node uv, bool back = false) @local {
-    Node size  = ssr_texture(view, SIZE, nodes::int_(0));
+    Node size = ssr_texture(view, SIZE, nodes::int_(0));
     Node texel = nodes::clamp(
         nodes::convert(uv * nodes::convert(size, VEC2), IVEC2),
         nodes::convert(nodes::int_(0), IVEC2),
         size - nodes::int_(1)
     );
-    Node c     = ssr_texture(view, FETCH, texel, nodes::int_(0));
+    Node c = ssr_texture(view, FETCH, texel, nodes::int_(0));
     return back ? c.x() : c.y();
 }
 
@@ -794,11 +822,11 @@ fn Node ssr_march(Node n, Node geo_n, Node v, Node rough, Node world, Node frag)
     // far over white)
     Node lin    = shading::srgb_to_linear(c.xyz());
     lin = lin / nodes::max(max3(lin) * -0.7f + 1.0f, 0.3f);
-    Node toned  = lin * (c.w().one_minus() * 5.0f + 1.0f) / nodes::max(fs_in("camera_pos", FLOAT, 3), 0.05f);
-    Node tap    = nodes::select(fs_in("output_params", FLOAT, 1)
+    Node toned = lin * (c.w().one_minus() * 5.0f + 1.0f) / nodes::max(fs_in("camera_pos", FLOAT, 3), 0.05f);
+    Node tap = nodes::select(fs_in("output_params", FLOAT, 1)
         .greater_than(nodes::num(0.5f)), nodes::min(c.xyz(), nodes::vec3(64)), toned);
     Node gather = nodes::loop(j, nodes::int_(0), nodes::int_(8), nodes::block(sum.assign(sum + tap)));
-    Node seen   = nodes::if_then(
+    Node seen = nodes::if_then(
         hit.greater_than(nodes::num(0)),
         nodes::block(sum, gather, node_return(nodes::vec4(sum / 8.0f, found)))
     );
@@ -832,8 +860,8 @@ fn Node ssr_march(Node n, Node geo_n, Node v, Node rough, Node world, Node frag)
 // a = transmittance (matching shaders/shader_core.glsl's fog_volume_at). Interpolates between
 // the two froxel depth slices straddling `p` (the camera plane starts at transmittance 1).
 fn Node fog_volume_at(Node p) @private {
-    Node clip   = fs_in("cluster_view_proj", MAT4) * nodes::vec4(p, 1);
-    Node uv     = nodes::clamp(
+    Node clip = fs_in("cluster_view_proj", MAT4) * nodes::vec4(p, 1);
+    Node uv = nodes::clamp(
         clip.xy() / nodes::max(nodes::abs(clip.w()), 1e-6f) * 0.5f + 0.5f,
         nodes::vec2(0),
         nodes::vec2(1)
@@ -847,19 +875,19 @@ fn Node fog_volume_at(Node p) @private {
         -1.0f,
         nodes::clamp(nodes::log(depth / sl.x()) * sl.y() - 1.0f, nodes::num(-1), slices - 1.0f)
     );
-    Node k    = nodes::floor(s);
-    Node f    = s - k;
+    Node k = nodes::floor(s);
+    Node f = s - k;
     Node size = nodes::convert(
         node_sample(SIZE, shaders::VIEW_FOG_VOLUME, shaders::SMP_SSR_SMP, TEX_2D, nodes::int_(0)),
         VEC2
     );
     Node cell = nodes::clamp(uv * grid.xy(), nodes::vec2(0.5f), grid.xy() - 0.5f);
-    Node a    = nodes::select(
+    Node a = nodes::select(
         k.greater_than_equal(nodes::num(0)),
         fog_slice(k, grid, cell, size),
         nodes::vec4(0, 0, 0, 1)
     );
-    Node b    = fog_slice(nodes::min(k + 1.0f, slices - 1.0f), grid, cell, size);
+    Node b = fog_slice(nodes::min(k + 1.0f, slices - 1.0f), grid, cell, size);
     return nodes::mix(a, b, f);
 }
 
@@ -923,15 +951,15 @@ fn Node fog_glow(
 // (`depth` long): all of them, not the fragment's cluster's, the glow being along the whole
 // ray.
 fn Node fog_lights_glow(MaterialKey key, Node ray, Node depth) @private {
-    int fn_id    = -1;
-    Node counts  =  fs_in("counts");
-    Node glow    =  nodes::variable(nodes::vec3(0));
-    Node i       =  nodes::loop_index(UINT);
-    Node at      =  i * nodes::uint_(4);
-    Node pos     =  node_storage(shaders::VIEW_POINT_LIGHTS, VEC4, at);
-    Node color   =  node_storage(shaders::VIEW_POINT_LIGHTS, VEC4, at + nodes::uint_(1));
-    Node params  =  node_storage(shaders::VIEW_POINT_LIGHTS, VEC4, at + nodes::uint_(3));
-    Node point   =  color.xyz() * fog_glow(
+    int fn_id   = -1;
+    Node counts =  fs_in("counts");
+    Node glow   =  nodes::variable(nodes::vec3(0));
+    Node i      =  nodes::loop_index(UINT);
+    Node at     =  i * nodes::uint_(4);
+    Node pos    =  node_storage(shaders::VIEW_POINT_LIGHTS, VEC4, at);
+    Node color  =  node_storage(shaders::VIEW_POINT_LIGHTS, VEC4, at + nodes::uint_(1));
+    Node params =  node_storage(shaders::VIEW_POINT_LIGHTS, VEC4, at + nodes::uint_(3));
+    Node point  =  color.xyz() * fog_glow(
         &fn_id,
         key,
         pos.xyz(),
@@ -941,19 +969,19 @@ fn Node fog_lights_glow(MaterialKey key, Node ray, Node depth) @private {
         nodes::vec4(0),
         nodes::num(-2)
     );
-    Node points  =  nodes::loop(
+    Node points = nodes::loop(
         i,
         nodes::uint_(0),
         nodes::convert(counts.y(), UINT),
         nodes::block(glow.assign(glow + point))
     );
-    Node j       =  nodes::loop_index(UINT);
-    Node sat     =  j * nodes::uint_(5);
-    Node spos    =  node_storage(shaders::VIEW_SPOT_LIGHTS, VEC4, sat);
-    Node dir     =  node_storage(shaders::VIEW_SPOT_LIGHTS, VEC4, sat + nodes::uint_(1));
-    Node scolor  =  node_storage(shaders::VIEW_SPOT_LIGHTS, VEC4, sat + nodes::uint_(2));
-    Node sparams =  node_storage(shaders::VIEW_SPOT_LIGHTS, VEC4, sat + nodes::uint_(3));
-    Node spot    =  scolor.xyz() * sparams.w() * fog_glow(
+    Node j       = nodes::loop_index(UINT);
+    Node sat     = j * nodes::uint_(5);
+    Node spos    = node_storage(shaders::VIEW_SPOT_LIGHTS, VEC4, sat);
+    Node dir     = node_storage(shaders::VIEW_SPOT_LIGHTS, VEC4, sat + nodes::uint_(1));
+    Node scolor  = node_storage(shaders::VIEW_SPOT_LIGHTS, VEC4, sat + nodes::uint_(2));
+    Node sparams = node_storage(shaders::VIEW_SPOT_LIGHTS, VEC4, sat + nodes::uint_(3));
+    Node spot    = scolor.xyz() * sparams.w() * fog_glow(
         &fn_id,
         key,
         spos.xyz(),
@@ -1003,7 +1031,7 @@ fn Node sun_in_fog(ShadowFns* shadow, Node from, Node to, Node sigma, Node frag)
                 .greater_than(nodes::num(0)), c.y()
                     .less_than(nodes::num(1))), nodes::logical_and(c.z()
                         .less_than(nodes::num(1)), c.z().greater_than(nodes::num(0)))));
-    Node look    = nodes::if_then(
+    Node look = nodes::if_then(
         inside,
         nodes::block(
             seen.assign(nodes::mix(nodes::num(1), tap, nodes::clamp(nodes::min(edge.x(), edge.y()) * 10.0f, 0, 1)))
