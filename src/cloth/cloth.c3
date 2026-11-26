@@ -3,7 +3,7 @@
 // pin tethers, spatial-hash self-collision, and swept sphere/capsule/box/plane colliders with
 // optional two-way impulse coupling. Points are stored relative to `origin` for precision far from
 // world zero, and every run is deterministic.
-// 
+//
 //   Cloth* c = cloth::grid(24, 36, { -0.6, 2.4, 0 }, { 1.2, 0, 0 }, { 0, -2.4, 0 });
 //   c.pin_row(0);
 //   scene.add(c.make_mesh(drie::mesh_standard_material(color: 0x8a1010, side: DOUBLE_SIDE)));

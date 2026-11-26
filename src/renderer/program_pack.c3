@@ -69,7 +69,7 @@ fn String pack_target() @local {
 // Loads a binary program pack from `data` (owned in `mem` for the lifetime of the run) and
 // returns the number of indexed entries (0 on invalid input, freeing `data`). May be called
 // before or after GPU setup; target compatibility is verified on first shader lookup.
-// 
+//
 // Binary format (little-endian):
 //   "drie-programs 1\n"                  16 bytes
 //   target                               16 bytes, zero-padded (e.g. "metal-macos")

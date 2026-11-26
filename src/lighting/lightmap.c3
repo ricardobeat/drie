@@ -11,14 +11,14 @@ import std::collections::list, std::math;
 import sokol;
 
 // Progressive UV-space lightmap baker that blends samples across frames into ping-pong maps.
-// 
+//
 //   ProgressiveLightMap* plm = drie::progressive_lightmap(renderer, 1024);
 //   plm.scene.add(light);
 //   Object3D*[2] objects = { floor, box };
 //   plm.add_objects(&objects);
 //   // Each frame before render(): jitter or move lights, then:
 //   plm.update(camera, blend_window: 100);
-// 
+//
 // Updates alternate between the two targets while meshes stay bound to `texture(1)`, so visible
 // lighting advances every second `update()` call.
 struct ProgressiveLightMap {

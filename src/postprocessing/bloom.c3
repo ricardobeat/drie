@@ -13,10 +13,10 @@ import sokol, drie;
 
 // Progressive downsample/upsample bloom pass (`shaders/bloom.glsl`, after Call of Duty/Unreal
 // bloom) operating in place on a linear HDR `RenderTarget`.
-// 
+//
 //   UnrealBloomPass* bloom = postprocessing::unreal_bloom_pass(strength: 0.05, threshold: 0);
 //   bloom.render(hdr_target);
-// 
+//
 // With `threshold == 0`, all brightness levels contribute proportionally (use low `strength`,
 // around `0.02..0.1`); a positive threshold restricts bloom to brighter highlights.
 struct UnrealBloomPass {
@@ -119,7 +119,7 @@ fn void UnrealBloomPass.dispose(&self) {
 
 // Screen-space lens ghosts and halo (`shaders/flare.glsl`) rendered at quarter resolution from a
 // blurred bright image and additively composited onto the HDR target.
-// 
+//
 //   LensFlarePass* flare = postprocessing::lens_flare_pass();
 //   bloom.render(hdr_target);
 //   flare.render(hdr_target, bloom.mips[3]);

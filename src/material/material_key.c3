@@ -1,5 +1,5 @@
 // Material specialization keys, generated program caching, and node-material builtin bindings.
-// 
+//
 // MaterialKey packs every feature flag that alters shader code into 32 bytes (two uint128 words):
 // bits 0..88 hold boolean and enum feature fields matching shaders/shader_core.glsl, and bits
 // 192..254 hold 3-bit shared texture slot indices (`slot + 1`, 0 = absent) for 21 MAP_* roles

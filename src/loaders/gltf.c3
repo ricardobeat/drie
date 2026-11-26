@@ -4,7 +4,7 @@
 // `KHR_texture_transform`, `KHR_materials_unlit`, and volume/transmission/specular/clearcoat/sheen/
 // iridescence/anisotropy/emissive_strength extensions. Skins, animations, morph targets, cameras,
 // lights, Draco/meshopt compression, and `KHR_texture_basisu` are not implemented.
-// 
+//
 //   GltfModel* model = loaders::load_gltf("assets/models/tree.glb")!!;
 //   scene.add(model.scene);
 module drie::loaders;

@@ -1,6 +1,6 @@
 // Shadow lookup node-function builders matching shaders/shader_core.glsl's `light_shadow_of`,
 // `dir_shadow_in`, `dir_tile_shadow`, and PCF/PCSS/VSM taps.
-// 
+//
 // Each function ID in `ShadowFns` starts at -1 and emits its helper function once per program.
 // `VIEW_SPOT_SHADOWS` packs 7 Vec4 rows per `GpuSpotShadow` (4 matrix columns, params, rect,
 // soft); atlas tile lookups clamp UVs half a texel inward to prevent neighbor bleeding, and

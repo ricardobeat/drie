@@ -1,7 +1,7 @@
 // Whole-program node IR (`ProgramGraph`, `ShaderProgram`, `NodeFunc`), engine node constructors
 // (`node_input`, `node_storage`, `node_sample`, `node_attribute`, `node_system`, `node_matrix`,
 // `node_bind`, `node_return`), dataflow analysis (`ProgramGen`), sokol descriptors, and cache I/O.
-// 
+//
 // `NODE_USER_HEADER` (13) reserves rows 0..12 of `NodeSource.USER` for view/projection/model
 // matrices and camera/time before user uniforms; `NODE_USER_VIEW` (64) separates custom node
 // textures from engine view slots. `ProgramGen` numbers locals in emission order, stamps var and

@@ -12,10 +12,10 @@ import sokol, drie;
 // ---- BokehPass
 
 // Thin-lens depth-of-field pass with optional autofocus and highlight bokeh scattering.
-// 
+//
 //   BokehPass* dof = postprocessing::bokeh_pass(focus: 3, aperture: 6, maxblur: 16);
 //   dof.render(dof_rt, scene_rt.texture, ao.ao_target.texture);
-// 
+//
 // Circle of confusion at distance `z` (m) is `aperture / focus * |1 - focus / z|` pixels,
 // clamped to `maxblur`.
 struct BokehPass {

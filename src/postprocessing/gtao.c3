@@ -12,13 +12,13 @@ import sokol, drie;
 // ---- GTAOPass
 
 // Screen-space ground-truth ambient occlusion pass over an MRT `RenderTarget`.
-// 
+//
 //   GTAOPass* ao = postprocessing::gtao_pass(camera);
 //   ao.radius = 0.5;
 //   renderer.set_render_target(scene_rt);
 //   renderer.render(scene, camera);
 //   ao.render(scene_rt); // darkens scene_rt where occluded
-// 
+//
 // `ao_target` keeps occlusion (R), linear camera-plane distance in meters (G), and `n.v` (B)
 // until the next call, for downstream passes such as `BokehPass`.
 struct GTAOPass {

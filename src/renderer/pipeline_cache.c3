@@ -138,7 +138,7 @@ fn void PipelineWarmup.start_generated(&self, ShaderProgram* p, SgPipelineDesc* 
 //                                         Render pipeline (`<program>` -1 for non-node materials,
 //                                         `<target_samples>` 0 for the window).
 //   H <key> <program>                     Shadow-map pipeline.
-// 
+//
 // With `include_loaded` (default true), merges records loaded via load_pipeline_cache() so saving
 // after a warmed run preserves entries that hit the cache without being built from scratch.
 fn String Renderer.pipeline_cache(&self, Allocator a, bool include_loaded = true) {

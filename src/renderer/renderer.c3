@@ -1226,8 +1226,9 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera) {
             state.atlas_view,
             state.sun_view,
             state.shadow_sampler,
-            lights_gpu.cookie ? lights_gpu.cookie.view : ready(state.white)
-            .view, state.clamp_sampler };
+            lights_gpu.cookie ? lights_gpu.cookie.view : ready(state.white).view,
+            state.clamp_sampler
+        };
         state.fog_view = update_fog_volume(
             scene,
             camera,

@@ -1,6 +1,6 @@
 // Full-screen fade transitions drawn on top of the frame by `ui::draw()`. Advance `screen_fade`
 // with `update(dt)` every frame; set `custom = true` to apply `level` in your own shader instead.
-// 
+//
 //   transitions::screen_fade.out(0.6, &restart);  // fade to black, then call restart()
 //   transitions::screen_fade.in(0.4);             // fade back to the scene
 //   transitions::screen_fade.update(dt);

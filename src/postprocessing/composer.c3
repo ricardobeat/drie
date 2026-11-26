@@ -180,13 +180,13 @@ struct Pass {
 }
 
 // Fullscreen or procedural-draw shader pass caching bindings, uniforms, and per-target pipelines.
-// 
+//
 //   ShaderPass* blur = postprocessing::shader_pass(blur_shader_desc(sg::query_backend()), "blur");
 //   blur.set_texture(VIEW_SRC, scene_target.texture);
 //   blur.set_sampler(SMP_SMP, postprocessing::linear_sampler());
 //   blur.set_uniforms(UB_BLUR_PARAMS, &params);
 //   blur.render(blurred); // RenderTarget*, or null for the window
-// 
+//
 // Vertex shaders generate the fullscreen triangle from `gl_VertexIndex` without a vertex buffer:
 //   vec2 p = vec2((gl_VertexIndex << 1) & 2, gl_VertexIndex & 2);
 //   gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
@@ -423,12 +423,12 @@ fn void PingPong.set_size(&self, int width, int height) {
 
 // Sequential post-processing chain ping-ponging two single-sample buffers (`RGBA16F` linear by
 // default; `RGBA8` triggers inline tone mapping during scene rendering).
-// 
+//
 //   EffectComposer* composer = postprocessing::effect_composer(renderer);
 //   composer.add_pass(postprocessing::render_pass(scene, camera));
 //   composer.add_pass(my_effect);
 //   composer.add_pass(postprocessing::output_pass(renderer));
-// 
+//
 // Pipelines with non-linear data flow or persistent history can drive `ShaderPass`, `RenderTarget`,
 // and `PingPong` directly instead.
 struct EffectComposer {

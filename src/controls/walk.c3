@@ -1,7 +1,7 @@
 // First-person walk controller: mouse look (pointer locked on first update; Esc releases, click
 // re-locks) with WASD horizontal movement and E/Q vertical movement. Look angles and velocity
 // follow input on exponential springs without overshoot. Call `update(dt)` once per frame.
-// 
+//
 //   import drie::controls;
 //   WalkControls* c = controls::walk_controls(camera, { 1, 2, -3 });
 //   c.bounded = true;

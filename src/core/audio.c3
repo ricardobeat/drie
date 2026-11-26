@@ -7,7 +7,7 @@ module drie;
 import std::math;
 
 // Listener position and orientation used to pan `PositionalAudio` sources.
-// 
+//
 //   AudioListener ears;
 //   ears.set(camera.position, yaw);                       // or ears.set_from(camera)
 //   PositionalAudio click = { .position = at, .ref_distance = 8 };

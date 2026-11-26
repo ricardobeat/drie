@@ -1,6 +1,6 @@
 // Physical material layer BRDFs, volume transmission, indirect lighting (irradiance volumes and
 // dense/sparse radiance cascades), planar/SSR reflections, and volumetric fog/shafts as nodes.
-// 
+//
 // Helper shader functions (`eval_iridescence`, `transmission_*`, `screen_reflection`, `fog_glow`)
 // are emitted once per program through `int* fn_id` caches initialized to -1. Screen-space UVs
 // flip Y when `ssr_params.w > 0.5` (Metal/HLSL top-left origin vs GLSL bottom-left). Sparse

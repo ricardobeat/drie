@@ -3,7 +3,7 @@
 // fixed-point spatial-hash self-collision, multi-panel sheets (`panels()`), two-way dynamic body
 // coupling (up to `BODIES` spheres/capsules with fixed-latency readback), and direct GPU vertex
 // buffer writes (`BufferGeometry.gpu_vertices`) with zero per-frame vertex readback.
-// 
+//
 //   GpuCloth* c = gpu_cloth::grid(200, 200, { -1.5, 2, -1.5 }, { 3, 0, 0 }, { 0, 0, 3 }, 1.4);
 //   c.floor_y = 0;
 //   scene.add(c.make_mesh(drie::mesh_standard_material(color: 0xd8d0c0, side: DOUBLE_SIDE)));
@@ -454,9 +454,7 @@ fn void GpuCloth.free(&self) {
     }
     self.shapes.free();
     foreach (b : (StorageBuffer*[17]) { self.pos, self.prev, self.vel, self.start, self.acc, self.rest_buf, self.pins,
-        self
-            .link_buf, self
-                .bend_buf, self.tether_buf, self.collider_buf, self.cells, self.sums, self.ids, self.push, self.bodies,
+        self.link_buf, self.bend_buf, self.tether_buf, self.collider_buf, self.cells, self.sums, self.ids, self.push, self.bodies,
         self.partials }) {
         if (!b) continue;
         b.dispose();

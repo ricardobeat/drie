@@ -47,13 +47,13 @@ const int RC_KERNEL_TRACE     = 16;
 const int RC_KERNEL_GATHER    = 32;
 
 // World-space Radiance Cascades volume for real-time bounced indirect lighting and emissive glow.
-// 
+//
 //   RadianceCascades* rc = drie::radiance_cascades(room_min, room_max);
 //   rc.voxelize(scene);
 //   scene.radiance = rc;
 //   // Each frame before render() (dense mode):
 //   rc.update(scene);
-// 
+//
 // Cascade 0 places probes at `spacing` meters with `base_directions`^2 rays over `interval`
 // meters; each coarser level doubles spacing, quadruples angular resolution, and quadruples ray
 // length. Rays march through a 4x-resolution voxel copy of solid meshes and blend temporally

@@ -31,7 +31,7 @@ struct GradeSettings {
 }
 
 // Stateful HDR color grader and cached 3D LUT consumed by `OutputPass.grade`.
-// 
+//
 //   ColorGrade* grade = postprocessing::color_grade();
 //   grade.temperature = 15;
 //   grade.contrast = 1.1;

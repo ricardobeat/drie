@@ -2,7 +2,7 @@
 // buttons whose pressed bits merge into `input::gamepad().held`. Enabled from startup on iOS and
 // Android, or upon the first touch event elsewhere; positions are in points (`pixels / dpi_scale`),
 // and `ui::draw()` renders the overlay.
-// 
+//
 //   TouchControls* touch = input::touch_controls();
 //   touch.add_button(input::PAD_NORTH, "LAMP", 70, 150);
 //   walk(touch.stick_x, touch.stick_y);

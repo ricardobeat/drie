@@ -1,7 +1,7 @@
 // `drie::shading` node-graph shading library mirroring shaders/shader_core.glsl and
 // shaders/tonemapping.glsl: wind sway, UV slot transforms, hex tiling, equirectangular env
 // sampling, octahedral normal packing, analytic fog, tone mapping, and depth packing.
-// 
+//
 // `uv_rel` stores 2 Vec4 rows per map slot (0 = normal, 1 = ARM, 2..7 = `tex_ext0..5`), with
 // `r0.w > 0.5` selecting `uv1` and `r1.w` encoding software wrap modes (`0` = sampler default,
 // `1 + s + 3*t` for repeat/clamp/mirror). Hex tiling skips patches with weight `<= HEX_SKIP`
