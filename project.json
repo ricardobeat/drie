@@ -51,7 +51,7 @@
                 "platform/cgltf.c",
                 "platform/web.c"
             ],
-            "cflags": "-O2 -DNDEBUG"
+            "cflags": "-O2 -DNDEBUG --use-port=emdawnwebgpu"
         }
     }
 }

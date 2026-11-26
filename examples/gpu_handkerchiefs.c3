@@ -13,7 +13,7 @@ import std::io, std::math, std::collections::list;
 
 const int W = 1280;
 const int H = 720;
-const float RENDER_SCALE = 0.7f;
+float render_scale = env::EMSCRIPTEN ? 1.0f : 0.7f;
 const int HANDKERCHIEFS = 64;
 const int GRID = 21;
 const float SIZE = 0.4f;
@@ -147,7 +147,7 @@ fn void spawn() {
     int k = pick_handkerchief();
     if (k < 0) return;
     Handkerchief* h = &handkerchiefs[k];
-    Vector3 center = { (rand() * 2 - 1) * AREA, SPAWN_HEIGHT + rand() * 1.2f, (rand() * 2 - 1) * AREA };
+    Vector3 center = { (rand() + rand() - 1) * AREA, SPAWN_HEIGHT + rand() * 1.2f, (rand() + rand() - 1) * AREA };
     float ax = (rand() * 2 - 1) * 1.2f;
     float ay = rand() * 6.3f;
     float az = (rand() * 2 - 1) * 1.2f;
@@ -399,8 +399,8 @@ fn void build_scene() {
     haze.noise_amount = 0.55f;
     haze.noise_scale = 0.5f;
     haze.noise_wind = { 0.06f, 0.015f, 0.03f };
-    haze.resolution = 0.25f;
-    haze.slices = 128;
+    haze.resolution = env::EMSCRIPTEN ? 0.125f : 0.25f;
+    haze.slices = env::EMSCRIPTEN ? 64 : 128;
     scene.fog = haze;
 
     sky = objects::sky();
@@ -428,24 +428,34 @@ fn void build_scene() {
     sun.shadow_extent = 10;
     scene.add(sun);
     scene.add(sun.target);
+    if (env::EMSCRIPTEN) {
+        SpotLight* lamp = drie::spot_light(0xffe6c4, 60.0f, 12.0f, 0.6f, 0.5f, 2.0f);
+        lamp.position = { 0, CEILING - 0.1f, 0 };
+        lamp.target.position = { 0, 0, 0 };
+        lamp.cast_shadow = true;
+        scene.add(lamp);
+        scene.add(lamp.target);
+    }
 
     Opening[2] side_windows = { { -2.6f, -1.6f, 1.3f, 3.9f }, { 0.9f, 1.9f, 1.3f, 3.9f } };
     Opening[2] back_holes = { { -3.4f, -2.0f, 0, 2.6f }, { 2.0f, 3.0f, 1.5f, 3.9f } };
-    MeshStandardMaterial* stone_look = surface("old_stone_wall", 2, 0.06f);
-    cell = 0.025f;
+    bool displace = !env::EMSCRIPTEN;
+    MeshStandardMaterial* stone_look = surface("old_stone_wall", 2, displace ? 0.06f : 0);
+    MeshStandardMaterial* pebbles = surface("multicolored_pebble_floor", 2, displace ? 0.025f : 0);
+    cell = displace ? 0.025f : 1e9;
     Mesh* stone = solid(hall(&side_windows, &back_holes), stone_look);
-    stone.cast_shadow = false;
-    cell = 0.06f;
-    Mesh* stone_shadow = solid(hall(&side_windows, &back_holes), stone_look);
-    stone_shadow.shadow_only = true;
-
-    MeshStandardMaterial* pebbles = surface("multicolored_pebble_floor", 2, 0.025f);
-    cell = 0.025f;
     Mesh* floor = solid(ground(), pebbles);
-    floor.cast_shadow = false;
-    cell = 0.06f;
-    Mesh* floor_shadow = solid(ground(), pebbles);
-    floor_shadow.shadow_only = true;
+    Mesh* stone_shadow = stone;
+    Mesh* floor_shadow = floor;
+    if (displace) {
+        stone.cast_shadow = false;
+        floor.cast_shadow = false;
+        cell = 0.06f;
+        stone_shadow = solid(hall(&side_windows, &back_holes), stone_look);
+        stone_shadow.shadow_only = true;
+        floor_shadow = solid(ground(), pebbles);
+        floor_shadow.shadow_only = true;
+    }
     io::printfn("room: %d vertices, its shadow %d", (stone.geometry.vertices.len() + floor.geometry.vertices.len()) / drie::FLOATS_PER_VERTEX,
                 (stone_shadow.geometry.vertices.len() + floor_shadow.geometry.vertices.len()) / drie::FLOATS_PER_VERTEX);
 
@@ -473,7 +483,7 @@ fn void build_scene() {
         scene.radiance = gi;
     }
 
-    camera = drie::perspective_camera(55, (float)W / H, 0.05f, 2000);
+    camera = drie::perspective_camera(55, (float)W / H, 0.05f, env::EMSCRIPTEN ? 60 : 2000);
     camera.position = START_EYE;
     camera.look_at_vec(START_AT);
 }
@@ -482,8 +492,8 @@ String off = "";
 DirectionalLight* sun;
 
 fn void render_frame(RenderTarget* target) {
-    int w = math::max((int)((target ? target.width : sapp::width()) * RENDER_SCALE), 1);
-    int h = math::max((int)((target ? target.height : sapp::height()) * RENDER_SCALE), 1);
+    int w = math::max((int)((target ? target.width : sapp::width()) * render_scale), 1);
+    int h = math::max((int)((target ? target.height : sapp::height()) * render_scale), 1);
     if (!scene_rt) {
         scene_rt = drie::render_target(w, h, 1, RGBA16F, mrt: true);
         taa = postprocessing::taa_pass();
@@ -513,14 +523,15 @@ fn void render_frame(RenderTarget* target) {
     }
     sky.follow(camera.get_world_position(), camera.far);
     if (!off.contains("rc") && !env::EMSCRIPTEN) scene.radiance.update(scene);
-    taa.jitter(camera);
+    bool use_taa = !off.contains("taa");
+    if (use_taa) taa.jitter(camera);
     renderer.set_render_target(scene_rt);
     renderer.render(scene, camera);
     if (!off.contains("ao")) ao.render(scene_rt);
     if (!off.contains("bloom")) bloom.render(scene_rt);
     if (!off.contains("flare")) flare.render(scene_rt, bloom.mips[3]);
-    taa.render(scene_rt);
-    output.set_source(taa.texture());
+    if (use_taa) taa.render(scene_rt);
+    output.set_source(use_taa ? taa.texture() : scene_rt.texture);
     output.render(target);
     if (!target) drie::commit();
 }
@@ -540,9 +551,20 @@ fn void animate(double time) {
     float dt = last_time < 0 ? 0 : math::min(now - last_time, 0.1f);
     last_time = now;
     controls.update(dt);
+    ulong t = profile::start();
     step(dt);
+    profile::stop("step", t);
+    t = profile::start();
     render_frame(null);
+    profile::stop("render_frame", t);
+    if (profile::enabled && ++profiled == 120) {
+        profile::report(profiled);
+        profile::reset();
+        profiled = 0;
+    }
 }
+
+int profiled;
 
 fn void hud() {
     ui::setup();
@@ -577,6 +599,8 @@ fn int main(String[] args) {
             case "--off": if (i + 1 < args.len) off = args[++i];
             case "--time": if (i + 1 < args.len) at = (float)args[++i].to_double()!!;
             case "--gpu-time": gpu_time = true;
+            case "--profile": profile::enabled = true;
+            case "--scale": if (i + 1 < args.len) render_scale = (float)args[++i].to_double()!!;
             default: io::eprintfn("unknown option %s", args[i]);
         }
     }

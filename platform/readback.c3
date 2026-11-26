@@ -44,7 +44,11 @@ fn bool track(SgBuffer buf, CInt slot)
         SgMtlBufferInfo info = sg::mtl_query_buffer_info(buf);
         return track_native(info.buf[info.active_slot], slot, sg::mtl_command_queue());
     $else
-        return track_native(sg::d3d11_query_buffer_info(buf).buf, slot, sg::d3d11_device_context());
+        $if env::EMSCRIPTEN:
+            return track_native(sg::wgpu_query_buffer_info(buf).buf, slot, sg::wgpu_queue());
+        $else
+            return track_native(sg::d3d11_query_buffer_info(buf).buf, slot, sg::d3d11_device_context());
+        $endif
     $endif
 }
 
