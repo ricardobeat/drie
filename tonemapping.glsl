@@ -172,3 +172,19 @@ vec3 encode_for_display(vec3 srgb, int display) {
     return display == DISPLAY_HDR ? p3 : linear_to_srgb(max(p3, vec3(0.0)));
 }
 @end
+
+// The log shaper of the color grading's LUT (grade.glsl, output.glsl)
+@block grade_shaper
+// the log shaper: GRADE_LOW stops under middle grey to GRADE_LOW + GRADE_RANGE over it, 0..1
+const float GRADE_GREY = 0.18;
+const float GRADE_LOW = 10.0;
+const float GRADE_RANGE = 17.0;
+
+vec3 grade_shape(vec3 c) {
+    return clamp((log2(max(c, vec3(1e-10)) / GRADE_GREY) + GRADE_LOW) / GRADE_RANGE, 0.0, 1.0);
+}
+
+vec3 grade_unshape(vec3 s) {
+    return GRADE_GREY * exp2(s * GRADE_RANGE - GRADE_LOW);
+}
+@end
