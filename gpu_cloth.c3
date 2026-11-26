@@ -13,6 +13,15 @@
 //   - the points stay on the GPU: gc_write_cs writes the mesh's positions and normals into its
 //     vertex buffer (BufferGeometry.gpu_vertices); nothing is copied either way per frame.
 //
+//   - two-way coupling: a sphere or capsule with a mass (set_collider_mass, up to BODIES of
+//     them) shares each push with the point by their inverse masses, at every substep, and goes
+//     on at the velocity the pushes left it (a body: an offset from where it was moved, and a
+//     change of velocity, kept on the GPU). The pushes on it are summed in a fixed order, a tree
+//     per group of points and the groups in turn. The CPU learns of them a frame or two later
+//     (an async readback): collider_shift() and collider_impulse() give what has arrived, to
+//     apply to the body, and the GPU takes off what the CPU applies, so the two agree.
+//     make_collider_mesh draws a body where the GPU has it, so it meets the cloth on screen.
+//
 // The air pushes on each triangle as in Cloth (wind, gust, drag); a point's force is gathered
 // from the triangles around it. Not here: from_fine's detail grid, moved()/mark() (the points
 // are not on the CPU), the cloth's own bounds (make_mesh gives the mesh a sphere the cloth is
@@ -35,6 +44,13 @@ const int MAX_STEPS = 4;
 const float JUMP = 1.0f;
 const uint NONE  = 0xffffffff;
 const int GROUP  = 128;
+// colliders with a mass (gc_collide_bodies_cs's GC_BODIES)
+const int BODIES = 8;
+// the readbacks of the bodies in flight, and how many updates late the CPU hears of them
+const int RING = 4;
+const int LATENCY = 2;
+// the corrections remembered (more than a readback can be late)
+const int LOG = 16;
 
 enum ColliderKind : char {
     SPHERE,
@@ -54,6 +70,32 @@ struct Collider {
     Vector3 half;
     Vector3[3] from_axes;
     Vector3[3] axes;
+    // 1 / its mass (kg); 0: kinematic. A collider with a mass has a body (-1: none).
+    float inv_mass;
+    int body;
+    // put somewhere new (place_collider): its body starts over at the next update
+    bool restart;
+    // what the last update found the cloth did to it (collider_shift, collider_impulse)
+    Vector3 shift;
+    Vector3 dv;
+}
+
+// A mesh drawn where a collider is, its vertices written on the GPU (make_collider_mesh).
+struct Shape {
+    int collider;
+    Mesh* mesh;
+    StorageBuffer* template;
+    int count;
+    float radius;
+}
+
+// What the CPU was told to apply to the bodies at the end of an update: its index, the steps
+// taken by then, and per body the offset and the change of velocity.
+struct Applied {
+    long update;
+    ulong steps;
+    Vector3[BODIES] off;
+    Vector3[BODIES] dv;
 }
 
 // A run of links of one kind and color, solved in one dispatch.
@@ -78,6 +120,10 @@ struct Kernels {
     ComputePass* fill;
     ComputePass* repel;
     ComputePass* collide;
+    ComputePass* collide_bodies;
+    ComputePass* bodies;
+    ComputePass* shape;
+    ComputePass* damp;
     ComputePass* write;
 }
 
@@ -110,6 +156,9 @@ struct GpuCloth {
     float bend_compliance;
     float tether_slack;
     float damping;
+    // of the difference in velocity between neighbours, the share lost each step (0..1): stills
+    // the quick small wobbles and leaves the swing to `damping`
+    float internal_damping;
     Vector3 gravity;
     Vector3 wind;
     float gust;
@@ -154,6 +203,21 @@ struct GpuCloth {
     int table;
     // the readback slot of read_points (-1: none yet)
     int read_slot;
+
+    // the bodies (colliders with a mass): their state on the GPU, the partial sums of the pushes
+    // on them, the readback slots, the corrections told to the CPU, and the update each body
+    // last started over at
+    int body_count;
+    StorageBuffer* bodies;
+    StorageBuffer* partials;
+    int[RING] ring_slot;
+    Applied[LOG] applied;
+    int applied_at;
+    long applied_through;
+    long[BODIES] body_reset;
+    // updates so far
+    long updates;
+    List{Shape} shapes;
 }
 
 fn uint GpuCloth.index(&self, int col, int row) @inline => (uint)(row * self.cols + col);
@@ -204,6 +268,10 @@ fn GpuCloth* from_positions(int cols, int rows, Vector3[] rest, float mass = 0.4
     c.self_friction = 0.2f;
     c.self_every = 1;
     c.read_slot = -1;
+    c.shapes.allocator = mem;
+    c.applied_through = -1;
+    for (int k = 0; k < RING; k++) c.ring_slot[k] = -1;
+    for (int k = 0; k < LOG; k++) c.applied[k].update = -1;
     c.origin = rest[0];
     float w = (float)n / math::max(mass, 1e-6f);
     for (sz i = 0; i < n; i++) {
@@ -275,8 +343,14 @@ fn void GpuCloth.free(&self) {
     self.links.free();
     self.batches.free();
     self.colliders.free();
-    foreach (b : (StorageBuffer*[14]) { self.pos, self.prev, self.vel, self.start, self.acc, self.rest_buf, self.pins,
-        self.link_buf, self.tether_buf, self.collider_buf, self.cells, self.sums, self.ids, self.push }) {
+    foreach (sh : self.shapes) {
+        sh.template.dispose();
+        free(sh.template);
+    }
+    self.shapes.free();
+    foreach (b : (StorageBuffer*[16]) { self.pos, self.prev, self.vel, self.start, self.acc, self.rest_buf, self.pins,
+        self.link_buf, self.tether_buf, self.collider_buf, self.cells, self.sums, self.ids, self.push, self.bodies,
+        self.partials }) {
         if (!b) continue;
         b.dispose();
         free(b);
@@ -308,24 +382,25 @@ fn void GpuCloth.move_pin(&self, uint i, Vector3 to) {
     self.pins_dirty = true;
 }
 
-// Puts every point back where it is at rest, still.
+// Puts every point back where it is at rest, still, and the bodies where they are moved to.
 fn void GpuCloth.reset(&self) {
     self.state_dirty = true;
     self.accumulator = 0;
     self.time = 0;
-    self.steps = 0;
+    foreach (&r : self.body_reset) *r = self.updates;
+    foreach (&k : self.colliders) k.restart = k.body >= 0;
 }
 
 fn int GpuCloth.add_sphere(&self, Vector3 center, float radius) {
     center -= self.origin;
-    self.colliders.push({ .kind = SPHERE, .radius = radius, .from_a = center, .from_b = center, .a = center, .b = center, .active = true });
+    self.colliders.push({ .kind = SPHERE, .radius = radius, .from_a = center, .from_b = center, .a = center, .b = center, .active = true, .body = -1 });
     return (int)self.colliders.len() - 1;
 }
 
 fn int GpuCloth.add_capsule(&self, Vector3 a, Vector3 b, float radius) {
     a -= self.origin;
     b -= self.origin;
-    self.colliders.push({ .kind = CAPSULE, .radius = radius, .from_a = a, .from_b = b, .a = a, .b = b, .active = true });
+    self.colliders.push({ .kind = CAPSULE, .radius = radius, .from_a = a, .from_b = b, .a = a, .b = b, .active = true, .body = -1 });
     return (int)self.colliders.len() - 1;
 }
 
@@ -334,7 +409,7 @@ fn Vector3 column(drie::Mat4 m, int i) @local => { m[i][0], m[i][1], m[i][2] };
 // A box of half size `half`, placed by `placement` (centered on its origin, its axes along the
 // matrix's columns; their length is left out).
 fn int GpuCloth.add_box(&self, Vector3 half, drie::Mat4 placement) {
-    Collider k = { .kind = BOX, .half = half, .active = true };
+    Collider k = { .kind = BOX, .half = half, .active = true, .body = -1 };
     k.a = column(placement, 3) - self.origin;
     for (int i = 0; i < 3; i++) k.axes[i] = column(placement, i).normalize();
     k.from_a = k.a;
@@ -346,7 +421,7 @@ fn int GpuCloth.add_box(&self, Vector3 half, drie::Mat4 placement) {
 // A plane through `point`: the points stay on the side `normal` faces (thickness away).
 fn int GpuCloth.add_plane(&self, Vector3 point, Vector3 normal) {
     point -= self.origin;
-    Collider k = { .kind = PLANE, .a = point, .from_a = point, .active = true };
+    Collider k = { .kind = PLANE, .a = point, .from_a = point, .active = true, .body = -1 };
     k.axes[0] = normal.normalize();
     k.from_axes = k.axes;
     self.colliders.push(k);
@@ -384,6 +459,80 @@ fn void GpuCloth.move_box(&self, int id, drie::Mat4 placement) {
 }
 
 fn void GpuCloth.set_collider_active(&self, int id, bool active) => self.colliders[id].active = active;
+
+// Gives a sphere or capsule a mass (kg; 0: kinematic, it goes where it is moved whatever the
+// cloth does): each push then moves the point and the collider apart by their inverse masses,
+// at every substep, and the collider goes on at the velocity the pushes left it. After each
+// update(), move the body it stands for by collider_shift() and change its velocity by
+// -collider_impulse() / its mass. Up to BODIES colliders have a mass; false past them.
+fn bool GpuCloth.set_collider_mass(&self, int id, float kg) {
+    Collider* k = &self.colliders[id];
+    if (k.kind == BOX || k.kind == PLANE) return false;
+    if (kg <= 0) {
+        k.inv_mass = 0;
+        return true;
+    }
+    if (k.body < 0) {
+        if (self.body_count >= BODIES) return false;
+        k.body = self.body_count++;
+        self.body_reset[k.body] = self.updates;
+        k.restart = true;
+    }
+    k.inv_mass = 1 / kg;
+    return true;
+}
+
+// How far the cloth has pushed collider `id` (with a mass) off the path it was moved along, as
+// far as the CPU has heard in the last update(): add it to the body's place.
+fn Vector3 GpuCloth.collider_shift(&self, int id) => self.colliders[id].shift;
+
+// The momentum (kg m/s) the cloth has taken from collider `id` (with a mass), as far as the CPU
+// has heard in the last update(): take it off the body (velocity -= impulse / mass).
+fn Vector3 GpuCloth.collider_impulse(&self, int id) {
+    Collider* k = &self.colliders[id];
+    return k.inv_mass > 0 ? -k.dv / k.inv_mass : (Vector3) { 0, 0, 0 };
+}
+
+// Puts a sphere or capsule there (b is ignored for a sphere), not swept from where it was; a
+// body starts over, still, what the cloth did to it before forgotten.
+fn void GpuCloth.place_collider(&self, int id, Vector3 a, Vector3 b = { 0, 0, 0 }) {
+    Collider* k = &self.colliders[id];
+    a -= self.origin;
+    b -= self.origin;
+    if (k.kind == SPHERE) b = a;
+    k.from_a = a;
+    k.from_b = b;
+    k.a = a;
+    k.b = b;
+    if (k.body >= 0) {
+        k.restart = true;
+        self.body_reset[k.body] = self.updates;
+    }
+}
+
+// A mesh drawn where collider `id` is: `shape` (its vertices around the collider's center, as
+// a sphere_geometry is) moved there on the GPU at every update. A collider with a mass is drawn
+// where the cloth has pushed it, before the CPU hears of it, so it meets the cloth on screen.
+// Its matrix is the identity.
+fn Mesh* GpuCloth.make_collider_mesh(&self, int id, BufferGeometry* shape, Material* material = null) {
+    BufferGeometry* g = drie::buffer_geometry();
+    g.dynamic = true;
+    g.gpu_vertices = true;
+    foreach (f : shape.vertices) g.vertices.push(f);
+    foreach (i : shape.indices) g.indices.push(i);
+    int count = (int)shape.vertex_count();
+    float radius = 0;
+    for (int i = 0; i < count; i++) radius = math::max(radius, shape.get_position((uint)i).length());
+    StorageBuffer* t = drie::storage_buffer(16, label: "gpu-cloth-shape");
+    t.write(shape.vertices.entries, (sz)shape.vertices.len() * float::size);
+    Mesh* m = drie::mesh(g, material);
+    m.matrix_auto_update = false;
+    m.matrix_world_auto_update = false;
+    m.matrix = drie::mat4_identity();
+    m.matrix_world = drie::mat4_identity();
+    self.shapes.push({ id, m, t, count, radius });
+    return m;
+}
 
 // Each free point's nearest pin along the cloth at rest (Dijkstra over the grid's neighbours,
 // diagonals too, with a binary heap), and how far it is.
@@ -554,6 +703,10 @@ fn void make_kernels() @local {
     k.fill = drie::compute_pass(shaders::gc_fill_shader_desc(be), "gpu-cloth-fill");
     k.repel = drie::compute_pass(shaders::gc_self_shader_desc(be), "gpu-cloth-self");
     k.collide = drie::compute_pass(shaders::gc_collide_shader_desc(be), "gpu-cloth-collide");
+    k.collide_bodies = drie::compute_pass(shaders::gc_collide_bodies_shader_desc(be), "gpu-cloth-collide-bodies");
+    k.bodies = drie::compute_pass(shaders::gc_bodies_shader_desc(be), "gpu-cloth-bodies");
+    k.shape = drie::compute_pass(shaders::gc_shape_shader_desc(be), "gpu-cloth-shape");
+    k.damp = drie::compute_pass(shaders::gc_damp_shader_desc(be), "gpu-cloth-damp");
     k.write = drie::compute_pass(shaders::gc_write_shader_desc(be), "gpu-cloth-write");
     kernels = k;
 }
@@ -582,6 +735,8 @@ fn void GpuCloth.sync(&self) {
         self.sums = drie::storage_buffer(1024 * 4, label: "gpu-cloth-sums");
         self.ids = drie::storage_buffer((sz)n * 4, label: "gpu-cloth-ids");
         self.push = drie::storage_buffer(vec4s, label: "gpu-cloth-push");
+        self.bodies = drie::storage_buffer(BODIES * shaders::GcBody::size, label: "gpu-cloth-bodies");
+        self.partials = drie::storage_buffer((sz)((n + GROUP - 1) / GROUP) * BODIES * 16, label: "gpu-cloth-partials");
     }
     if (self.state_dirty) {
         self.state_dirty = false;
@@ -599,6 +754,8 @@ fn void GpuCloth.sync(&self) {
         foreach (&d : data) *d = { 0, 0, 0, 0 };
         self.vel.write(data.ptr, vec4s);
         self.acc.write(data.ptr, vec4s);
+        shaders::GcBody[BODIES] still;
+        self.bodies.write(&still, BODIES * shaders::GcBody::size);
     }
     if (self.tethers_dirty) {
         self.build_tethers();
@@ -620,7 +777,10 @@ fn void GpuCloth.write_colliders(&self) {
     defer free(data);
     foreach (i, k : self.colliders) {
         data[i] = {
-            .info = { (float)(int)k.kind, k.radius, k.active ? 1 : 0, 0 },
+            .info = { (float)(int)k.kind, k.radius, k.active ? 1 : 0, (float)k.body },
+            .mass = { k.inv_mass, k.restart ? 1 : 0, 0, 0 },
+            .corr_off = v4(k.shift),
+            .corr_dv = v4(k.dv),
             .from_a = v4(k.from_a),
             .a = v4(k.a),
             .from_b = v4(k.from_b),
@@ -680,6 +840,22 @@ fn void GpuCloth.bind(&self) {
     k.collide.set_buffer(shaders::VIEW_GC_COLL_PINS, self.pins);
     k.collide.set_buffer(shaders::VIEW_GC_COLL_PUSH, self.push);
     k.collide.set_buffer(shaders::VIEW_GC_COLL_COLLIDERS, self.collider_buf);
+    k.collide_bodies.set_buffer(shaders::VIEW_GC_COLLB_POS, self.pos);
+    k.collide_bodies.set_buffer(shaders::VIEW_GC_COLLB_PREV, self.prev);
+    k.collide_bodies.set_buffer(shaders::VIEW_GC_COLLB_VEL, self.vel);
+    k.collide_bodies.set_buffer(shaders::VIEW_GC_COLLB_PINS, self.pins);
+    k.collide_bodies.set_buffer(shaders::VIEW_GC_COLLB_PUSH, self.push);
+    k.collide_bodies.set_buffer(shaders::VIEW_GC_COLLB_COLLIDERS, self.collider_buf);
+    k.collide_bodies.set_buffer(shaders::VIEW_GC_COLLB_BODIES, self.bodies);
+    k.collide_bodies.set_buffer(shaders::VIEW_GC_COLLB_PARTIALS, self.partials);
+    k.bodies.set_buffer(shaders::VIEW_GC_BOD_COLLIDERS, self.collider_buf);
+    k.bodies.set_buffer(shaders::VIEW_GC_BOD_BODIES, self.bodies);
+    k.bodies.set_buffer(shaders::VIEW_GC_BOD_PARTIALS, self.partials);
+    k.shape.set_buffer(shaders::VIEW_GC_SHAPE_COLLIDERS, self.collider_buf);
+    k.shape.set_buffer(shaders::VIEW_GC_SHAPE_BODIES, self.bodies);
+    k.damp.set_buffer(shaders::VIEW_GC_DAMP_VEL, self.vel);
+    k.damp.set_buffer(shaders::VIEW_GC_DAMP_LINKS, self.link_buf);
+    k.damp.set_buffer(shaders::VIEW_GC_DAMP_PINS, self.pins);
     k.write.set_buffer(shaders::VIEW_GC_WRITE_POS, self.pos);
     k.write.set_buffer(shaders::VIEW_GC_WRITE_START, self.start);
 }
@@ -711,6 +887,50 @@ fn void dispatch(ComputePass* k, shaders::GcParams* u, int threads, int group = 
     k.dispatch((threads + group - 1) / group);
 }
 
+// gc_bodies_cs in `mode`, a thread per collider.
+fn void GpuCloth.dispatch_bodies(&self, int mode, shaders::GcParams* params) {
+    shaders::GcParams u = *params;
+    u.gc_mode[3] = (float)mode;
+    dispatch(kernels.bodies, &u, (int)self.colliders.len(), 32);
+}
+
+// What the CPU learns of the bodies at the start of an update: the state at the end of the
+// update LATENCY before (read back, waiting if the GPU has not got there: it rarely has not, a
+// frame in flight being waited for anyway), carried on to the end of this one (`until` steps)
+// and less what the CPU was told to apply since, each carried on the same way. The colliders'
+// shift and dv are set to it; the GPU takes it off at this update's end. A fixed latency, not
+// whatever has arrived: the same calls give the same result whatever the GPU's pace.
+fn void GpuCloth.hear_bodies(&self, ulong until) {
+    foreach (&k : self.colliders) {
+        k.shift = { 0, 0, 0 };
+        k.dv = { 0, 0, 0 };
+    }
+    if (!self.body_count) return;
+    long heard = self.updates - LATENCY;
+    if (heard < 0 || heard <= self.applied_through) return;
+    int slot = self.ring_slot[(int)(heard % RING)];
+    shaders::GcBody[BODIES] newest;
+    if (slot < 0 || !drie::read_back(slot, &newest, (sz)shaders::GcBody[BODIES]::size, wait: true)) return;
+    // (a readback copies the buffer when the GPU gets to it: the mark says which update's end)
+    if ((long)newest[0].mark.x != heard) return;
+    self.applied_through = heard;
+    ulong heard_steps = (ulong)newest[0].mark.y;
+    foreach (&k : self.colliders) {
+        int b = k.body;
+        if (b < 0 || heard < self.body_reset[b]) continue;
+        Vector3 off = { newest[b].off.x, newest[b].off.y, newest[b].off.z };
+        Vector3 dv = { newest[b].dv.x, newest[b].dv.y, newest[b].dv.z };
+        off += dv * ((float)(until - heard_steps) * STEP);
+        foreach (&a : self.applied) {
+            if (a.update <= heard || a.update < self.body_reset[b]) continue;
+            off -= a.off[b] + a.dv[b] * ((float)(until - a.steps) * STEP);
+            dv -= a.dv[b];
+        }
+        k.shift = off;
+        k.dv = dv;
+    }
+}
+
 // One fixed step, its colliders going from `from` to `until` (0..1) of their way.
 fn void GpuCloth.step_once(&self, float from, float until) {
     Kernels* k = kernels;
@@ -718,6 +938,7 @@ fn void GpuCloth.step_once(&self, float from, float until) {
     shaders::GcParams u = self.params(from, from);
     dispatch(k.begin, &u, n);
     dispatch(k.forces, &u, n);
+    if (self.body_count) self.dispatch_bodies(1, &u);
     float h = STEP / self.substeps;
     float[3] alpha = { self.stretch_compliance / (h * h), self.shear_compliance / (h * h), self.bend_compliance / (h * h) };
     int blocks = (self.table + 1 + 1023) / 1024;
@@ -748,7 +969,22 @@ fn void GpuCloth.step_once(&self, float from, float until) {
         } else {
             u.gc_sweep[3] = 0;
         }
-        dispatch(k.collide, &u, n);
+        if (self.body_count) {
+            dispatch(k.collide_bodies, &u, n);
+            self.dispatch_bodies(0, &u);
+        } else {
+            dispatch(k.collide, &u, n);
+        }
+    }
+    if (self.internal_damping > 0) {
+        u = self.params(until, until);
+        u.gc_mode[0] = self.internal_damping;
+        foreach (b : self.batches) {
+            if (b.kind != 0) continue;
+            u.gc_range[0] = (int)b.first;
+            u.gc_range[1] = (int)b.count;
+            dispatch(k.damp, &u, (int)b.count);
+        }
     }
     self.time += STEP;
     self.steps++;
@@ -767,28 +1003,68 @@ fn int GpuCloth.update(&self, float dt) {
     } else {
         self.accumulator -= n * STEP;
     }
+    ulong until = self.steps + (ulong)n;
     self.sync();
-    if (n > 0) self.write_colliders();
+    self.hear_bodies(until);
+    if (n > 0 || self.body_count) self.write_colliders();
     SgView target;
     if (self.mesh) target = self.mesh.geometry.gpu_vertices_target();
     self.bind();
     drie::begin_compute("drie-gpu-cloth");
+    shaders::GcParams u = self.params(1, 1);
+    if (self.body_count) self.dispatch_bodies(3, &u);
     for (int s = 0; s < n; s++) self.step_once((float)s / n, (float)(s + 1) / n);
+    u = self.params(1, 1);
+    u.gc_origin[3] = self.accumulator / STEP;
     if (target.id) {
         kernels.write.set_view(shaders::VIEW_GC_WRITE_VERTS, target);
-        shaders::GcParams u = self.params(1, 1);
-        u.gc_origin[3] = self.accumulator / STEP;
         dispatch(kernels.write, &u, (int)self.count());
     }
-    drie::end_compute();
-    // (without a step, the colliders' move waits for the next one)
-    if (n > 0) {
+    foreach (sh : self.shapes) {
+        Collider* c = &self.colliders[sh.collider];
+        BufferGeometry* g = sh.mesh.geometry;
+        g.bounds_center = self.origin + c.a;
+        g.bounds_radius = sh.radius + JUMP;
+        SgView v = g.gpu_vertices_target();
+        if (!v.id) continue;
+        kernels.shape.set_buffer(shaders::VIEW_GC_SHAPE_TEMPLATE, sh.template);
+        kernels.shape.set_view(shaders::VIEW_GC_SHAPE_VERTS, v);
+        shaders::GcParams su = u;
+        su.gc_range[0] = sh.collider;
+        su.gc_range[1] = sh.count;
+        dispatch(kernels.shape, &su, sh.count);
+    }
+    if (self.body_count) {
+        shaders::GcParams mark = u;
+        mark.gc_mode = { (float)self.updates, (float)until, 0, 0 };
+        self.dispatch_bodies(2, &mark);
+        int k = (int)(self.updates % RING);
+        if (self.ring_slot[k] < 0) self.ring_slot[k] = drie::readback_slot();
+        if (self.ring_slot[k] >= 0) self.bodies.track(self.ring_slot[k]);
+        Applied* a = &self.applied[self.applied_at];
+        self.applied_at = (self.applied_at + 1) % LOG;
+        a.update = self.updates;
+        a.steps = until;
         foreach (&c : self.colliders) {
+            if (c.body < 0) continue;
+            a.off[c.body] = c.shift;
+            a.dv[c.body] = c.dv;
+        }
+    }
+    drie::end_compute();
+    // (without a step, the colliders' move waits for the next one; a body's from where the CPU
+    // will put it)
+    foreach (&c : self.colliders) {
+        if (n > 0) {
             c.from_a = c.a;
             c.from_b = c.b;
             c.from_axes = c.axes;
         }
+        c.from_a += c.shift;
+        c.from_b += c.shift;
+        c.restart = false;
     }
+    self.updates++;
     return n;
 }
 

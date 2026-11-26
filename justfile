@@ -44,7 +44,7 @@ test name *args:
 # build and run an example program (examples/): `just example nodes`
 example name *args:
     {{c_libs}}
-    c3c run {{target}} {{macos}} --libdir {{libdir}} --sources examples/{{name}}.c3 -- {{args}}
+    c3c run {{target}} -O2 {{macos}} --libdir {{libdir}} --sources examples/{{name}}.c3 -- {{args}}
 
 # regenerate generated/cgltf.c3, the binding of cgltf (third_party/cgltf/cgltf.h), with
 # bindgen.c3l: `just bindgen=path bindings` for another checkout of it
