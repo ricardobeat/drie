@@ -41,8 +41,10 @@ layout(binding=0) uniform gc_params {
     vec4 gc_gust;      // x = gust, y = time, z = width, w = height of the cloth at rest
     vec4 gc_self;      // x = 1 / hash cell size, y = self-collision stiffness, z = tether slack,
                        //   w = self-collision friction
-    vec4 gc_mode;      // w = gc_bodies_cs's mode (xy: the update and its steps), x = gc_damp_cs's share
-    ivec4 gc_grid;     // x = columns of a panel (y: the first column of gc_write_cs's)
+    vec4 gc_mode;      // w = gc_bodies_cs's mode (xy: the update and its steps), x = gc_damp_cs's share,
+                       //   y = lift (gc_forces_cs: of the drag)
+    ivec4 gc_grid;     // x = columns of a panel (y: the first column of gc_write_cs's, z: its
+                       //   vertices to a cell's side)
 };
 
 struct gc_point {
@@ -93,7 +95,8 @@ struct gc_push {
 // the others where it is going; x and y: a box's first two axes (a plane's normal is x)
 struct gc_collider {
     vec4 info;      // x = kind, y = radius, z = 1: active, w = its body (-1: none, kinematic)
-    vec4 mass;      // x = 1 / its mass, y = 1: its body starts over (put somewhere new)
+    vec4 mass;      // x = 1 / its mass, y = 1: its body starts over (put somewhere new),
+                    // z = its friction (-1: the cloth's)
     vec4 corr_off;  // what the CPU takes off its body's offset and velocity at the update's end
     vec4 corr_dv;
     vec4 from_a;
@@ -186,7 +189,22 @@ vec3 gc_air(int a, int b, int d, int c, int r) {
     if (len2 < 1e-12) return vec3(0.0);
     vec3 air = gc_wind.xyz * (1.0 + gc_gust.x * gc_gust_at(c, r));
     vec3 rel = air - (vel[a].p.xyz + vel[b].p.xyz + vel[d].p.xyz) * (1.0 / 3.0);
-    return cr * (gc_wind.w * dot(cr, rel) / sqrt(len2));
+    float area2 = sqrt(len2);
+    vec3 n = cr / area2;
+    float into = dot(n, rel);
+    vec3 f = n * (gc_wind.w * area2 * into);
+    // lift: across the flow, in the plane of the flow and the normal, as sin 2θ of the angle
+    // the triangle meets the flow at
+    float speed2 = dot(rel, rel);
+    if (gc_mode.y > 0.0 && speed2 > 1e-8) {
+        vec3 side = n * speed2 - rel * into;
+        float side_len = length(side);
+        if (side_len > 1e-8) {
+            float along = length(rel - n * into);
+            f += side * (gc_mode.y * gc_wind.w * area2 * into * along / (sqrt(speed2) * side_len));
+        }
+    }
+    return f;
 }
 
 void main() {
@@ -536,12 +554,20 @@ void main() {
 
 // What the collide kernels share: `colliders` is declared before it.
 @block gc_collide_fns
-// friction: of the move from q (where the point was a substep ago) to out along the surface
-// (normal n), keep 1 - friction
-vec3 gc_rub(vec3 out_p, vec3 q, vec3 n) {
+// the friction of the collider being looked at (set by the collide kernels' loops)
+float gc_fr;
+
+// Friction for a point pushed out of a collider from p to out_p (normal n), on its move along
+// the surface over the substep (from q, where it was a substep ago): taken off whole while it
+// is under gc_fr times how far the push went (static: it stays put), and past that by that much
+// or gc_fr of it, whichever is more (sliding, slowed)
+vec3 gc_rub(vec3 out_p, vec3 p, vec3 q, vec3 n) {
     vec3 moved = out_p - q;
     vec3 along = moved - n * dot(moved, n);
-    return out_p - along * gc_step.w;
+    float slide = length(along);
+    float hold = gc_fr * max(dot(out_p - p, n), 0.0);
+    if (slide <= hold) return out_p - along;
+    return out_p - along * max(hold / slide, gc_fr);
 }
 
 // a box's center and axes at t of its way
@@ -592,7 +618,7 @@ vec3 gc_box(gc_collider k, vec3 p, vec3 q, float th) {
     }
     l[face] = side * h[face];
     vec3 out_p = c + ax[0] * l.x + ax[1] * l.y + ax[2] * l.z;
-    return gc_rub(out_p, q, ax[face] * side);
+    return gc_rub(out_p, p, q, ax[face] * side);
 }
 
 // out of a sphere or capsule (the segment a..b, r with the thickness; was_a..was_b a substep
@@ -614,14 +640,14 @@ vec3 gc_round(vec3 p, vec3 q, vec3 a, vec3 b, vec3 was_a, vec3 was_b, float r) {
     if (wab2 > 1e-12) qa = was_a + wab * clamp(dot(q - was_a, wab) / wab2, 0.0, 1.0);
     vec3 e = q - qa;
     if (dot(e, e) >= r * r * 0.25 && dot(e, n) < 0.0) n = normalize(e);
-    return gc_rub(c + n * r, q, n);
+    return gc_rub(c + n * r, p, q, n);
 }
 
 vec3 gc_plane(gc_collider k, vec3 p, vec3 q, float th) {
     vec3 n = k.x.xyz;
     vec3 o = mix(k.from_a.xyz, k.a.xyz, gc_sweep.x);
     float d = dot(p - o, n) - th;
-    return d < 0.0 ? gc_rub(p - n * d, q, n) : p;
+    return d < 0.0 ? gc_rub(p - n * d, p, q, n) : p;
 }
 
 vec3 gc_floor(vec3 p, vec3 q) {
@@ -658,6 +684,7 @@ void main() {
     for (int c = 0; c < gc_range.z; c++) {
         gc_collider k = colliders[c];
         if (k.info.z == 0.0) continue;
+        gc_fr = k.mass.z < 0.0 ? gc_step.w : k.mass.z;
         int kind = int(k.info.x);
         if (kind == 2) {
             p = gc_box(k, p, q, th);
@@ -704,6 +731,7 @@ void main() {
         for (int c = 0; c < gc_range.z; c++) {
             gc_collider k = colliders[c];
             if (k.info.z == 0.0) continue;
+            gc_fr = k.mass.z < 0.0 ? gc_step.w : k.mass.z;
             int kind = int(k.info.x);
             if (kind == 2) {
                 p = gc_box(k, p, q, th);
@@ -849,25 +877,57 @@ vec3 gc_shown(int i) {
     return s + (pos[i].p.xyz - s) * gc_origin.w;
 }
 
+vec4 gc_cr(float t) {
+    float t2 = t * t;
+    float t3 = t2 * t;
+    return vec4(-0.5 * t3 + t2 - 0.5 * t, 1.5 * t3 - 2.5 * t2 + 1.0, -1.5 * t3 + 2.0 * t2 + 0.5 * t, 0.5 * t3 - 0.5 * t2);
+}
+
+vec4 gc_cr_slope(float t) {
+    float t2 = t * t;
+    return vec4(-1.5 * t2 + 2.0 * t - 0.5, 4.5 * t2 - 5.0 * t, -4.5 * t2 + 4.0 * t + 0.5, 1.5 * t2 - t);
+}
+
+// vertex i of the mesh of the panel from column gc_grid.y, gc_grid.z vertices to a cell's side:
+// on the Catmull-Rom surface through the points (through each point, smooth between them), its
+// normal from the surface's slopes
 void main() {
     int i = int(gl_GlobalInvocationID.x);
     int cols = gc_counts.y;
     int rows = gc_counts.z;
     int w = gc_grid.x;
-    if (i >= w * rows) return;
-    // vertex i of the mesh of the panel from column gc_grid.y: the point at column gc_grid.y + k
-    // of row r
-    int k = i % w;
-    int r = i / w;
-    int row = r * cols + gc_grid.y;
-    // the normal from the neighbours across and down (the side cross(across, -down) faces)
-    vec3 du = gc_shown(row + min(k + 1, w - 1)) - gc_shown(row + max(k - 1, 0));
-    vec3 dv = gc_shown(max(r - 1, 0) * cols + gc_grid.y + k) - gc_shown(min(r + 1, rows - 1) * cols + gc_grid.y + k);
-    vec3 n = cross(du, dv);
+    int d = gc_grid.z;
+    int fw = (w - 1) * d + 1;
+    int fh = (rows - 1) * d + 1;
+    if (i >= fw * fh) return;
+    int fk = i % fw;
+    int fr = i / fw;
+    int k0 = min(fk / d, w - 2);
+    int r0 = min(fr / d, rows - 2);
+    float tu = float(fk - k0 * d) / float(d);
+    float tv = float(fr - r0 * d) / float(d);
+    vec4 bu = gc_cr(tu);
+    vec4 bv = gc_cr(tv);
+    vec4 su = gc_cr_slope(tu);
+    vec4 sv = gc_cr_slope(tv);
+    vec3 p = vec3(0.0);
+    vec3 du = vec3(0.0);
+    vec3 dv = vec3(0.0);
+    for (int y = 0; y < 4; y++) {
+        int r = clamp(r0 - 1 + y, 0, rows - 1);
+        for (int x = 0; x < 4; x++) {
+            int k = clamp(k0 - 1 + x, 0, w - 1);
+            vec3 q = gc_shown(r * cols + gc_grid.y + k);
+            p += q * (bu[x] * bv[y]);
+            du += q * (su[x] * bv[y]);
+            dv += q * (bu[x] * sv[y]);
+        }
+    }
+    // (the side cross(across, -down) faces)
+    vec3 n = cross(du, -dv);
     float len = length(n);
     n = len > 1e-12 ? n / len : vec3(0.0, 0.0, 1.0);
-    vec3 p = gc_origin.xyz + gc_shown(row + k);
-    verts[i].a = vec4(p, n.x);
+    verts[i].a = vec4(gc_origin.xyz + p, n.x);
     vec4 b = verts[i].b;
     verts[i].b = vec4(n.y, n.z, b.z, b.w);
 }

@@ -3,8 +3,11 @@
 // floor, where it settles in folds that lie on each other (self-collision) instead of passing
 // through. The points never leave the GPU: the kernels write the sheet's vertex buffer.
 //
-//   just example cloth_furniture                   in a window (drag to orbit, R drops it again)
-//   just example cloth_furniture --png out.png     one frame, headless, at --time t (default 6 s)
+//   just example cloth_furniture                   in a window (drag to orbit, R drops it again,
+//                                                  B switches the bend between DISTANCE and SIGNED)
+//   just example cloth_furniture --png out.png     one frame, headless, at --time t (default 6 s),
+//                                                  --bend signed|distance, --bend-compliance c
+//                                                  (after --bend)
 //
 // Headless, --hash prints a hash of the points at that time (two runs give the same one) and
 // --gpu-time the GPU time of the cloth's pass per frame.
@@ -12,6 +15,7 @@ module cloth_furniture_example;
 import drie, drie::gpu_cloth, drie::ui, drie::controls, drie::readback, drie::png, drie::gpu_timer, sokol;
 import std::io, std::math;
 
+const float SIGNED_BEND = 20;
 const int W = 1280;
 const int H = 720;
 const int COLS = 200;
@@ -30,8 +34,10 @@ Material* wood;
 
 // ---- the furniture: each piece a collider and a mesh where it is
 
+fn float friction_of(Material* m) => m == fabric ? 0.8f : m == wood ? 0.35f : 0.2f;
+
 fn void box(Vector3 center, Vector3 half, Material* m) {
-    sheet.add_box(half, drie::mat4_compose(center, { 0, 0, 0 }, { 1, 1, 1 }));
+    sheet.set_collider_friction(sheet.add_box(half, drie::mat4_compose(center, { 0, 0, 0 }, { 1, 1, 1 })), friction_of(m));
     Mesh* mesh = drie::mesh(drie::box_geometry(half.x * 2, half.y * 2, half.z * 2), m);
     mesh.position = center;
     mesh.cast_shadow = true;
@@ -41,7 +47,7 @@ fn void box(Vector3 center, Vector3 half, Material* m) {
 
 // A capsule from a to b, along one of the axes.
 fn void capsule(Vector3 a, Vector3 b, float radius, Material* m) {
-    sheet.add_capsule(a, b, radius);
+    sheet.set_collider_friction(sheet.add_capsule(a, b, radius), friction_of(m));
     Vector3 d = b - a;
     Mesh* body = drie::mesh(drie::cylinder_geometry(radius, radius, d.length(), 24), m);
     body.position = (a + b) * 0.5f;
@@ -60,7 +66,7 @@ fn void capsule(Vector3 a, Vector3 b, float radius, Material* m) {
 }
 
 fn void ball(Vector3 center, float radius, Material* m) {
-    sheet.add_sphere(center, radius);
+    sheet.set_collider_friction(sheet.add_sphere(center, radius), friction_of(m));
     Mesh* mesh = drie::mesh(drie::sphere_geometry(radius, 32, 16), m);
     mesh.position = center;
     mesh.cast_shadow = true;
@@ -92,6 +98,19 @@ fn void furniture() {
 }
 
 // The sheet, flat and a little turned and tilted, above everything.
+BendModel bend = DISTANCE;
+float distance_bend = 0.05f;
+float signed_bend = SIGNED_BEND;
+
+fn void apply_bend() {
+    sheet.bend_model = bend;
+    sheet.bend_compliance = bend == SIGNED ? signed_bend : distance_bend;
+}
+
+uint drop_seed = 1;
+
+fn void drop() => sheet.reset_scattered(drop_seed);
+
 fn void make_sheet() {
     float turn = 0.1f;
     Vector3 across = { math::cos(turn) * SIZE, 0, -math::sin(turn) * SIZE };
@@ -105,10 +124,9 @@ fn void make_sheet() {
     sheet.friction = 0.5f;
     sheet.self_distance = spacing;
     sheet.self_every = 2;
-    sheet.stretch_compliance = 0;
+    sheet.stretch_compliance = 2e-5f;
     sheet.shear_compliance = 2e-4f;
-    sheet.bend_model = DISTANCE;
-    sheet.bend_compliance = 0.05f;
+    apply_bend();
     sheet.damping = 0.4f;
     sheet.drag = 0.4f;
 }
@@ -146,6 +164,7 @@ fn void build_scene() {
     scene.add(left);
 
     make_sheet();
+    drop();
     furniture();
     Material* linen = drie::mesh_standard_material(color: 0xe6dfd0, roughness: 0.85, side: DOUBLE_SIDE);
     Mesh* m = sheet.make_mesh(linen);
@@ -153,23 +172,152 @@ fn void build_scene() {
     m.receive_shadow = true;
     scene.add(m);
 
+    sheet.watch_points();
+    seen = mem::new_array(Vector3, sheet.count());
+    Material* brass = drie::mesh_standard_material(color: 0xc8a050, roughness: 0.35, metalness: 1);
+    foreach (i, &h : handles) {
+        h.point = sheet.index(i % 2 == 0 ? 0 : COLS - 1, i < 2 ? 0 : ROWS - 1);
+        h.mesh = drie::mesh(drie::sphere_geometry(HANDLE_RADIUS, 20, 10), brass);
+        h.mesh.cast_shadow = true;
+        h.mesh.position = sheet.origin + sheet.rest[h.point];
+        scene.add(h.mesh);
+    }
+
     camera = drie::perspective_camera(45, (float)W / H, 0.1f, 100);
     camera.position = { 2.9f, 2.4f, 3.6f };
     camera.look_at_vec({ 0.05f, 0.45f, -0.2f });
+}
+
+const float HANDLE_RADIUS = 0.04f;
+
+struct Handle {
+    uint point;
+    Mesh* mesh;
+}
+
+Handle[4] handles;
+Vector3[] seen;
+int grabbed = -1;
+Vector3 grab_normal;
+Vector3 grab_at;
+Vector3 grab_target;
+Vector3 grab_pos;
+Vector3 grab_vel;
+float slack;
+
+fn Ray mouse_ray(float x, float y) {
+    Raycaster r = drie::raycaster();
+    r.set_from_camera({ 2 * x / sapp::widthf() - 1, 1 - 2 * y / sapp::heightf() }, camera);
+    return r.ray;
+}
+
+fn int pick_handle(float x, float y) {
+    Ray ray = mouse_ray(x, y);
+    int best = -1;
+    float best_t = 1e30f;
+    foreach (i, h : handles) {
+        Vector3 c = h.mesh.position;
+        float t = (c - ray.origin).dot(ray.direction);
+        if (t < 0) continue;
+        if ((ray.at(t) - c).length() < HANDLE_RADIUS * 2.5f && t < best_t) {
+            best_t = t;
+            best = (int)i;
+        }
+    }
+    return best;
+}
+
+fn void drag_to(float x, float y) {
+    Ray ray = mouse_ray(x, y);
+    float den = ray.direction.dot(grab_normal);
+    if (math::abs(den) < 1e-5f) return;
+    float t = (grab_at - ray.origin).dot(grab_normal) / den;
+    if (t < 0) return;
+    Vector3 to = ray.at(t);
+    to.y = math::max(to.y, 0.02f);
+    grab_target = to;
+}
+
+const float GRAB_STIFFNESS = 120;
+const float GRAB_DAMPING = 18;
+const float GRAB_MAX_SPEED = 3;
+
+fn void follow_mouse(float dt) {
+    if (grabbed < 0) return;
+    Vector3 accel = (grab_target - grab_pos) * GRAB_STIFFNESS - grab_vel * GRAB_DAMPING;
+    grab_vel += accel * dt;
+    float speed = grab_vel.length();
+    if (speed > GRAB_MAX_SPEED) grab_vel = grab_vel * (GRAB_MAX_SPEED / speed);
+    grab_pos += grab_vel * dt;
+    grab_pos.y = math::max(grab_pos.y, 0.02f);
+    Handle* h = &handles[grabbed];
+    sheet.move_pin(h.point, grab_pos);
+    h.mesh.position = grab_pos;
+}
+
+fn void release() {
+    if (grabbed < 0) return;
+    sheet.unpin(handles[grabbed].point);
+    sheet.tether_slack = slack;
+    grabbed = -1;
+    controls.enabled = true;
+}
+
+fn void on_mouse(Event* e) {
+    switch (e.type) {
+        case MOUSE_DOWN:
+            if (e.mouse_button != LEFT) return;
+            int i = pick_handle(e.mouse_x, e.mouse_y);
+            if (i < 0) return;
+            grabbed = i;
+            controls.enabled = false;
+            grab_at = handles[i].mesh.position;
+            grab_normal = (camera.position - grab_at).normalize();
+            grab_target = grab_at;
+            grab_pos = grab_at;
+            grab_vel = { 0, 0, 0 };
+            slack = sheet.tether_slack;
+            sheet.tether_slack = slack + 0.05f;
+            sheet.pin(handles[i].point);
+            sheet.move_pin(handles[i].point, grab_at);
+        case MOUSE_MOVE:
+            if (grabbed >= 0) drag_to(e.mouse_x, e.mouse_y);
+        case MOUSE_UP:
+            if (e.mouse_button == LEFT) release();
+        default:
+    }
 }
 
 fn void animate(double time) {
     double t = (double)renderer.time;
     float dt = last_time < 0 ? 1.0f / 60 : (float)(t - last_time);
     last_time = t;
+    follow_mouse(math::min(dt, 0.1f));
     sheet.update(math::min(dt, 0.1f));
+    if (sheet.seen_points(seen)) {
+        foreach (i, h : handles) {
+            if ((int)i != grabbed) h.mesh.position = seen[h.point];
+        }
+    }
     controls.update();
     renderer.render(scene, camera);
 }
 
 fn void on_key(Event* e) {
+    on_mouse(e);
     if (e.type != KEY_DOWN || e.key_repeat) return;
-    if (e.key_code == R) sheet.reset();
+    if (e.key_code == R) {
+        release();
+        drop_seed++;
+        drop();
+    }
+    if (e.key_code == B) {
+        bend = bend == SIGNED ? DISTANCE : SIGNED;
+        apply_bend();
+        release();
+        drop_seed++;
+        drop();
+    }
 }
 
 fn void hud() {
@@ -186,7 +334,8 @@ fn void hud() {
         if (gpu_timer::enabled) {
             sdtx::puts(string::tformat("cloth pass %.2f ms on the GPU\n", gpu_timer::last_ms("drie-gpu-cloth")).zstr_tcopy());
         }
-        sdtx::puts("R: drop it again\n");
+        sdtx::puts(string::tformat("bend: %s (compliance %g)\n", bend == SIGNED ? "SIGNED" : "DISTANCE", sheet.bend_compliance).zstr_tcopy());
+        sdtx::puts("drag a corner's handle to pull the sheet   R: drop it again   B: switch the bend and drop it again\n");
     };
     sdtx::draw();
 }
@@ -200,6 +349,16 @@ fn int main(String[] args) {
         switch (args[i]) {
             case "--png": if (i + 1 < args.len) png_path = args[++i];
             case "--time": if (i + 1 < args.len) at = (float)args[++i].to_double()!!;
+            case "--bend": if (i + 1 < args.len) bend = args[++i] == "signed" ? SIGNED : DISTANCE;
+            case "--bend-compliance":
+                if (i + 1 < args.len) {
+                    float v = (float)args[++i].to_double()!!;
+                    if (bend == SIGNED) {
+                        signed_bend = v;
+                    } else {
+                        distance_bend = v;
+                    }
+                }
             case "--hash": hash = true;
             case "--gpu-time": gpu_time = true;
             default: io::eprintfn("unknown option %s", args[i]);
@@ -230,6 +389,11 @@ fn int main(String[] args) {
         if (gpu_time && f == frames - 120) gpu_timer::reset();
     }
     io::printfn("simulated %.2f s (%d frames) in %.0f ms of wall time", at, frames, stm::ms(stm::since(began)));
+    if (sheet.read_points(seen)) {
+        foreach (i, h : handles) {
+            if ((int)i != grabbed) h.mesh.position = seen[h.point];
+        }
+    }
     if (gpu_time) {
         gpu_timer::poll();
         gpu_timer::report();
