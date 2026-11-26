@@ -28,6 +28,10 @@ struct StorageBuffer {
     // also bound as an indirect argument buffer (dispatch_indirect)
     bool indirect;
     ZString label;
+    // (a CPU-written buffer's contents last one frame: the last ones written, and the frame they
+    // were written in, for renew)
+    char[] kept;
+    ulong written;
 }
 
 fn StorageBuffer* storage_buffer(sz size, bool cpu_write = false, bool vertex = false, ZString label = "drie-storage", bool indirect = false) {
@@ -60,6 +64,19 @@ fn void StorageBuffer.write(&self, void* data, sz bytes) {
     self.ensure(bytes);
     if (!bytes) return;
     sg::write_buffer_transient(&&{ .src.data = { .ptr = data, .size = (usz)bytes }, .dst.buffer = self.buffer });
+    if (self.kept.len != bytes) {
+        if (self.kept.ptr) mem::free(self.kept.ptr);
+        self.kept = mem::new_array(char, bytes);
+    }
+    if (data != self.kept.ptr) mem::copy(self.kept.ptr, data, bytes);
+    self.written = sapp::frame_count();
+}
+
+// Writes a CPU-written buffer's last contents again if this frame hasn't written it, for a
+// buffer whose data changes seldom but which the GPU reads every frame. (Call it outside a pass.)
+fn void StorageBuffer.renew(&self) {
+    if (!self.cpu_write || !self.kept.len || self.written == sapp::frame_count()) return;
+    self.write(self.kept.ptr, self.kept.len);
 }
 
 fn void StorageBuffer.create(&self, usz size, void* data, usz bytes = 0) {
@@ -88,6 +105,8 @@ fn void StorageBuffer.create(&self, usz size, void* data, usz bytes = 0) {
 }
 
 fn void StorageBuffer.dispose(&self) {
+    if (self.kept.ptr) mem::free(self.kept.ptr);
+    self.kept = { };
     if (self.view.id) sg::destroy_view(self.view);
     if (self.buffer.id) sg::destroy_buffer(self.buffer);
     self.view = { };

@@ -6,6 +6,11 @@
 @ctype mat4 Mat4
 @ctype vec4 Vec4
 
+// (the lighting pass reads the depth through tex_transmission's slot: a depth image, which
+// WebGPU binds only where the texture isn't filtered)
+@image_sample_type tex_transmission unfilterable_float
+@sampler_type transmission_smp nonfiltering
+
 @include tonemapping.glsl
 @include shader_core.glsl
 

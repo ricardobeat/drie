@@ -283,7 +283,7 @@ struct NodeData {
 List{NodeData} node_graph @local;
 
 fn NodeData* node_data(Node n) {
-    if (n.id == 0 || n.id > node_graph.len()) abort("drie: nodes: not a node (%d)", n.id);
+    if (n.id == 0 || (sz)n.id > node_graph.len()) abort("drie: nodes: not a node (%d)", n.id);
     return &node_graph[(sz)n.id - 1];
 }
 
@@ -302,7 +302,7 @@ fn uint node_count() => (uint)node_graph.len();
 // what building a program needed and nothing else holds. The nodes before it never read the
 // ones after.
 fn void node_release(uint mark) {
-    while (node_graph.len() > mark) node_graph.remove_last();
+    while (node_graph.len() > (sz)mark) node_graph.remove_last();
     release_funcs(mark);
 }
 
@@ -723,6 +723,7 @@ enum NodeLang : char {
     GLSL,
     MSL,
     HLSL,
+    WGSL,
 }
 
 const int NODE_TEXTURES = 6;

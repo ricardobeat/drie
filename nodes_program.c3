@@ -1,6 +1,6 @@
 // Whole programs printed from node graphs, as three's WebGPU renderer prints TSL into WGSL: a
 // vertex graph (the clip position, with the statements before it) and up to four fragment
-// outputs become the program's Metal, HLSL or GLSL source, holding only what the graphs reach,
+// outputs become the program's Metal, HLSL, GLSL or WGSL source, holding only what the graphs reach,
 // and its sokol description (ShaderProgram.desc), made at runtime.
 //
 // The graphs read the engine through nodes of their own:
@@ -375,6 +375,7 @@ fn void ProgramGen.line(&self, String format, args...) {
 }
 
 fn String ProgramGen.type_name(&self, NodeType t) {
+    if (self.lang == WGSL) return wgsl_type(t);
     bool glsl = self.lang == GLSL;
     switch (t) {
         case FLOAT: return "float";
@@ -394,6 +395,40 @@ fn String ProgramGen.type_name(&self, NodeType t) {
         case MAT4: return glsl ? "mat4" : "float4x4";
         case MAT3: return glsl ? "mat3" : "float3x3";
     }
+}
+
+fn String wgsl_type(NodeType t) @local {
+    switch (t) {
+        case FLOAT: return "f32";
+        case BOOL: return "bool";
+        case INT: return "i32";
+        case UINT: return "u32";
+        case VOID: return "void";
+        case VEC2: return "vec2f";
+        case VEC3: return "vec3f";
+        case VEC4: return "vec4f";
+        case IVEC2: return "vec2i";
+        case IVEC3: return "vec3i";
+        case IVEC4: return "vec4i";
+        case UVEC2: return "vec2u";
+        case UVEC3: return "vec3u";
+        case UVEC4: return "vec4u";
+        case MAT4: return "mat4x4f";
+        case MAT3: return "mat3x3f";
+    }
+}
+
+// A declaration of `name`, a `t` that is `value`: a variable (`var`, assigned again later) or a
+// value (WGSL's `let`).
+fn String ProgramGen.decl(&self, NodeType t, String name, String value, bool mutable = false) {
+    if (self.lang == WGSL) return string::tformat("%s %s: %s = %s;", mutable ? "var" : "let", name, self.type_name(t), value);
+    return string::tformat("%s %s = %s;", self.type_name(t), name, value);
+}
+
+// c ? x : y (WGSL has no ?: operator: select, of both already worked out)
+fn String ProgramGen.choose(&self, String c, String x, String y) {
+    if (self.lang == WGSL) return string::tformat("select(%s, %s, %s)", y, x, c);
+    return string::tformat("(%s ? %s : %s)", c, x, y);
 }
 
 fn String scalar_zero(NodeScalar s) @local {
@@ -454,7 +489,7 @@ fn String ProgramGen.convert(&self, String x, NodeType from, NodeType to) {
     int f = components(from);
     int t = components(to);
     if (st == BOOL) return string::tformat("(%s != %s)", f == 1 ? x : string::tformat("%s.x", x), scalar_zero(sf));
-    if (sf == BOOL) return self.convert(string::tformat("(%s ? %s : %s)", x, scalar_one(st), scalar_zero(st)), type_of(st, 1), to);
+    if (sf == BOOL) return self.convert(self.choose(x, scalar_one(st), scalar_zero(st)), type_of(st, 1), to);
     if (f != t) {
         NodeType mid = type_of(sf, t);
         String z = scalar_zero(sf);
@@ -485,6 +520,15 @@ fn String ProgramGen.mat_mul(&self, String a, String b) {
 }
 
 fn String ProgramGen.fn_name(&self, NodeFn f) {
+    if (self.lang == WGSL) {
+        switch (f) {
+            case INVERSESQRT: return "inverseSqrt";
+            case DFDX: return "dpdx";
+            case DFDY: return "dpdy";
+            case FACEFORWARD: return "faceForward";
+            default: break;
+        }
+    }
     switch (f) {
         case INVERSESQRT: return self.lang == GLSL ? "inversesqrt" : "rsqrt";
         case FRACT: return self.lang == HLSL ? "frac" : "fract";
@@ -548,7 +592,7 @@ fn uint[] ProgramGen.vars_of(&self, Node n) {
             for (sz i = count; i < reads.len; i++) {
                 if (reads[i] && !assigns[i]) k++;
             }
-            r = mem::temp_array(uint, k);
+            r = mem::temp_array(uint, (sz)k);
             k = 0;
             for (sz i = count; i < reads.len; i++) {
                 if (reads[i] && !assigns[i]) r[k++] = (uint)i;
@@ -758,8 +802,16 @@ fn void ProgramGen.statement(&self, Node s) {
         case ASSIGN:
             Node target = { d.args[0] };
             String value = self.value_as({ d.args[1] }, target.type());
-            self.line("%s = %s;", self.lvalue(target), value);
             NodeData* t = node_data(target);
+            if (self.lang == WGSL && t.op != VAR && t.count > 1) {
+                // (WGSL assigns one component at a time)
+                String v = self.emit({ t.args[0] });
+                String w = string::tformat("w%d", ++self.body.locals);
+                self.line("let %s = %s;", w, value);
+                for (int i = 0; i < t.count; i++) self.line("%s.%c = %s.%c;", v, t.swizzle[i], w, "xyzw"[i]);
+            } else {
+                self.line("%s = %s;", self.lvalue(target), value);
+            }
             self.assigned(t.op == VAR ? target.id : t.args[0]);
         case IF:
             String cond = self.value_as({ d.args[0] }, BOOL);
@@ -779,9 +831,9 @@ fn void ProgramGen.statement(&self, Node s) {
             bool[] seen = mem::temp_array(bool, (sz)self.nodes + 1);
             self.assigns_in(d.args[3], seen);
             if (how == WHILE) {
-                self.line("for (;;) {");
+                self.line(self.lang == WGSL ? "loop {" : "for (;;) {");
                 self.open_scope();
-                self.line("if (!%s) break;", self.value_as({ d.args[2] }, BOOL));
+                self.line(self.lang == WGSL ? "if (!%s) { break; }" : "if (!%s) break;", self.value_as({ d.args[2] }, BOOL));
             } else {
                 Node index = { d.args[0] };
                 NodeType t = index.type();
@@ -792,8 +844,13 @@ fn void ProgramGen.statement(&self, Node s) {
                 b.scope = (uint)b.scope_open.len();
                 self.assigned(index.id);
                 String i = self.mark(index);
-                self.line("for (%s %s = %s; %s %s %s; %s%s) {", self.type_name(t), i, from, i, ops[how.ordinal], to, i,
-                          how.ordinal < 2 ? "++" : "--");
+                if (self.lang == WGSL) {
+                    self.line("for (var %s: %s = %s; %s %s %s; %s%s) {", i, self.type_name(t), from, i, ops[how.ordinal], to, i,
+                              how.ordinal < 2 ? "++" : "--");
+                } else {
+                    self.line("for (%s %s = %s; %s %s %s; %s%s) {", self.type_name(t), i, from, i, ops[how.ordinal], to, i,
+                              how.ordinal < 2 ? "++" : "--");
+                }
                 b.indent++;
             }
             self.statements(d.args[3]);
@@ -837,7 +894,7 @@ fn void ProgramGen.hoist_shared(&self, uint a, uint b) {
     self.reads_in(a, in, 1, assigned);
     self.reads_in(b, in, 2, assigned);
     char[] can = mem::temp_array(char, count);
-    for (uint i = 1; i < count; i++) {
+    for (uint i = 1; (sz)i < count; i++) {
         if (in[i] == 3 && self.hoistable({ i }, can, assigned) && !self.printed({ i })) self.emit({ i });
     }
 }
@@ -1096,9 +1153,11 @@ fn String ProgramGen.sample(&self, Node n, NodeData* d) {
     int s = self.sampler(d.res[1], kind == TEX_DEPTH);
     String t = string::tformat("t%d", v);
     String smp = string::tformat("s%d", s);
-    String ts = self.lang == GLSL ? self.pair(v, s) : "";
+    // (WGSL's pairs: none in its source, but sokol checks each sampler is in one)
+    String ts = self.lang == GLSL || self.lang == WGSL ? self.pair(v, s) : "";
     bool vol = kind == TEX_3D || kind == TEX_ARRAY;
     NodeType ct = vol ? VEC3 : VEC2;
+    if (self.lang == WGSL) return self.wgsl_sample(d, how, kind, t, smp, vol, ct);
     switch (how) {
         case SAMPLE:
         case LEVEL:
@@ -1128,6 +1187,7 @@ fn String ProgramGen.sample(&self, Node n, NodeData* d) {
             String c = self.value_as({ d.args[0] }, vol ? IVEC3 : IVEC2);
             String l = d.args[1] ? self.value_as({ d.args[1] }, INT) : "0";
             switch (self.lang) {
+                case WGSL: unreachable("drie: WGSL is printed on its own path");
                 case GLSL: return string::tformat("texelFetch(%s, %s, %s)", ts, c, l);
                 case HLSL: return string::tformat("%s.Load(%s(%s, %s))", t, vol ? "int4" : "int3", c, l);
                 case MSL:
@@ -1137,6 +1197,7 @@ fn String ProgramGen.sample(&self, Node n, NodeData* d) {
         case SIZE:
             String l = d.args[0] ? self.value_as({ d.args[0] }, INT) : "0";
             switch (self.lang) {
+                case WGSL: unreachable("drie: WGSL is printed on its own path");
                 case GLSL: return string::tformat("textureSize(%s, %s)", ts, l);
                 case MSL:
                     String w = string::tformat("int(%s.get_width(uint(%s)))", t, l);
@@ -1156,6 +1217,7 @@ fn String ProgramGen.sample(&self, Node n, NodeData* d) {
             }
         case LEVELS:
             switch (self.lang) {
+                case WGSL: unreachable("drie: WGSL is printed on its own path");
                 case GLSL: return string::tformat("textureQueryLevels(%s)", ts);
                 case MSL: return string::tformat("int(%s.get_num_mip_levels())", t);
                 case HLSL:
@@ -1168,10 +1230,53 @@ fn String ProgramGen.sample(&self, Node n, NodeData* d) {
             String c = self.value_as({ d.args[0] }, VEC2);
             String z = self.value_as({ d.args[1] }, FLOAT);
             switch (self.lang) {
+                case WGSL: unreachable("drie: WGSL is printed on its own path");
                 case GLSL: return string::tformat("texture(%s, vec3(%s, %s))", ts, c, z);
                 case HLSL: return string::tformat("%s.SampleCmpLevelZero(%s, %s, %s)", t, smp, c, z);
                 case MSL: return string::tformat("%s.sample_compare(%s, %s, %s)", t, smp, c, z);
             }
+    }
+}
+
+fn String ProgramGen.wgsl_sample(&self, NodeData* d, NodeSampling how, NodeTextureKind kind, String t, String smp, bool vol, NodeType ct) {
+    // (an array's layer: its coordinates' z, rounded)
+    bool array = kind == TEX_ARRAY;
+    bool vertex = self.stage == VERTEX;
+    switch (how) {
+        case SAMPLE:
+        case LEVEL:
+        case GRAD:
+            String c = self.value_as({ d.args[0] }, ct);
+            String at = array ? string::tformat("%s.xy, i32(round(%s.z))", c, c) : c;
+            switch (how) {
+                case LEVEL:
+                    return string::tformat("textureSampleLevel(%s, %s, %s, %s)", t, smp, at, self.value_as({ d.args[1] }, FLOAT));
+                case GRAD:
+                    NodeType gt = kind == TEX_3D ? VEC3 : VEC2;
+                    return string::tformat("textureSampleGrad(%s, %s, %s, %s, %s)", t, smp, at, self.value_as({ d.args[1] }, gt),
+                                           self.value_as({ d.args[2] }, gt));
+                default:
+                    // (the vertex stage has no derivatives: its first level)
+                    if (vertex) return string::tformat("textureSampleLevel(%s, %s, %s, 0.0)", t, smp, at);
+                    return string::tformat("textureSample(%s, %s, %s)", t, smp, at);
+            }
+        case FETCH:
+            String c = self.value_as({ d.args[0] }, vol ? IVEC3 : IVEC2);
+            String l = d.args[1] ? self.value_as({ d.args[1] }, INT) : "0";
+            if (array) return string::tformat("textureLoad(%s, %s.xy, %s.z, %s)", t, c, c, l);
+            return string::tformat("textureLoad(%s, %s, %s)", t, c, l);
+        case SIZE:
+            String l = d.args[0] ? self.value_as({ d.args[0] }, INT) : "0";
+            if (kind == TEX_3D) return string::tformat("vec3i(textureDimensions(%s, u32(%s)))", t, l);
+            if (array) return string::tformat("vec3i(vec2i(textureDimensions(%s, u32(%s))), i32(textureNumLayers(%s)))", t, l, t);
+            return string::tformat("vec2i(textureDimensions(%s, u32(%s)))", t, l);
+        case LEVELS:
+            return string::tformat("i32(textureNumLevels(%s))", t);
+        case COMPARE:
+            String c = self.value_as({ d.args[0] }, VEC2);
+            String z = self.value_as({ d.args[1] }, FLOAT);
+            if (vertex) return string::tformat("textureSampleCompareLevel(%s, %s, %s, %s)", t, smp, c, z);
+            return string::tformat("textureSampleCompare(%s, %s, %s, %s)", t, smp, c, z);
     }
 }
 
@@ -1304,6 +1409,15 @@ fn FuncDone* ProgramGen.func(&self, int f) {
     foreach (v : b.views) done.views.push(v);
     foreach (s : b.samplers) done.samplers.push(s);
     DString sig = dstring::temp();
+    if (self.lang == WGSL) {
+        sig.appendf("fn %s(", fd.name);
+        for (int i = 0; i < fd.count; i++) sig.appendf("%sp%d: %s", i ? ", " : "", i, self.type_name(fd.params[i]));
+        sig.append(fd.ret == VOID ? ") {\n" : string::tformat(") -> %s {\n", self.type_name(fd.ret)));
+        self.funcs.append(sig.str_view());
+        self.funcs.append(b.out.str_view());
+        self.funcs.append("}\n\n");
+        return done;
+    }
     if (self.lang == MSL) sig.append("static inline ");
     sig.appendf("%s %s(", self.type_name(fd.ret), fd.name);
     for (int i = 0; i < fd.count; i++) sig.appendf("%s%s p%d", i ? ", " : "", self.type_name(fd.params[i]), i);
@@ -1412,7 +1526,7 @@ fn String ProgramGen.emit(&self, Node n) {
         case VAR:
             String init = d.args[0] ? self.value_as({ d.args[0] }, d.type) : self.zero(d.type);
             String v = self.mark(n);
-            self.line("%s %s = %s;", self.type_name(d.type), v, init);
+            self.line("%s", self.decl(d.type, v, init, true));
             return v;
         case SEQ:
             // (printed again where its variables are still declared: they start again from
@@ -1479,8 +1593,7 @@ fn String ProgramGen.emit(&self, Node n) {
         case CALL:
             e = self.call(&d);
         case SELECT:
-            e = string::tformat("(%s ? %s : %s)", self.value_as({ d.args[0] }, BOOL), self.value_as({ d.args[1] }, d.type),
-                                self.value_as({ d.args[2] }, d.type));
+            e = self.choose(self.value_as({ d.args[0] }, BOOL), self.value_as({ d.args[1] }, d.type), self.value_as({ d.args[2] }, d.type));
         case SWIZZLE:
             Node a = { d.args[0] };
             String s = (String)d.swizzle[:d.count];
@@ -1505,6 +1618,7 @@ fn String ProgramGen.emit(&self, Node n) {
                     case GLSL: e = string::tformat("mat3(%s)", m);
                     case HLSL: e = string::tformat("((float3x3)%s)", m);
                     case MSL: e = string::tformat("float3x3(%s[0].xyz, %s[1].xyz, %s[2].xyz)", m, m, m);
+                    case WGSL: e = string::tformat("mat3x3f(%s[0].xyz, %s[1].xyz, %s[2].xyz)", m, m, m);
                 }
             } else {
                 e = self.value_as(a, d.type);
@@ -1532,7 +1646,7 @@ fn String ProgramGen.emit(&self, Node n) {
         }
     }
     String name = self.mark(n);
-    self.line("%s %s = %s;", self.type_name(d.type), name, e);
+    self.line("%s", self.decl(d.type, name, e));
     b.exprs[key] = { n.id, b.serial[n.id] };
     return name;
 }
@@ -1572,6 +1686,9 @@ fn String ProgramGen.binary(&self, NodeData* d) {
             String x = self.value_as(a, type_of(s, components(ta) == 1 ? 1 : components(d.type)));
             String y = self.value_as(b, type_of(s, components(tb) == 1 ? 1 : components(d.type)));
             if (op == REM && s == FLOAT) return string::tformat("(%s - %s * floor(%s / %s))", x, y, x, y);
+            if (self.lang == WGSL && (op == SHL || op == SHR)) {
+                y = self.value_as(b, type_of(UINT, components(tb) == 1 ? 1 : components(d.type)));
+            }
             return string::tformat("(%s %s %s)", x, ops[op.ordinal], y);
         case LT:
         case LE:
@@ -1625,10 +1742,12 @@ fn String ProgramGen.call(&self, NodeData* d) {
             return string::tformat("faceforward(%s, %s, %s)", self.value_as(a, t), self.value_as(b, t), self.value_as(c, t));
         case BITS_AS_UINT:
             if (self.lang == GLSL) return string::tformat("floatBitsToUint(%s)", self.value_as(a, type_of(FLOAT, components(t))));
+            if (self.lang == WGSL) return string::tformat("bitcast<%s>(%s)", self.type_name(t), self.value_as(a, type_of(FLOAT, components(t))));
             if (self.lang == MSL) return string::tformat("as_type<%s>(%s)", self.type_name(t), self.value_as(a, type_of(FLOAT, components(t))));
             return string::tformat("asuint(%s)", self.value_as(a, type_of(FLOAT, components(t))));
         case BITS_AS_FLOAT:
             if (self.lang == GLSL) return string::tformat("uintBitsToFloat(%s)", self.value_as(a, type_of(UINT, components(t))));
+            if (self.lang == WGSL) return string::tformat("bitcast<%s>(%s)", self.type_name(t), self.value_as(a, type_of(UINT, components(t))));
             if (self.lang == MSL) return string::tformat("as_type<%s>(%s)", self.type_name(t), self.value_as(a, type_of(UINT, components(t))));
             return string::tformat("asfloat(%s)", self.value_as(a, type_of(UINT, components(t))));
         case FWIDTH:
@@ -1718,6 +1837,7 @@ fn String varying_qualifier(NodeLang lang, NodeType t) @local {
         case GLSL: return "flat ";
         case HLSL: return "nointerpolation ";
         case MSL: return "";
+        case WGSL: return "@interpolate(flat) ";
     }
 }
 
@@ -1729,9 +1849,28 @@ fn String ProgramGen.msl_header(&self) {
 fn String ProgramGen.resource_decls(&self) {
     ShaderProgram* p = self.p;
     DString s = dstring::temp();
+    if (self.lang == WGSL) {
+        foreach (i, v : p.views) {
+            if (v.stage != self.stage) continue;
+            if (v.storage) {
+                String[*] elems = { "vec4f", "vec4u", "u32" };
+                int e = v.elem == VEC4 ? 0 : (v.elem == UVEC4 ? 1 : 2);
+                s.appendf("@group(1) @binding(%d) var<storage, read> b%d: array<%s>;\n", wgsl_view_binding((int)i), i, elems[e]);
+            } else {
+                String[*] types = { "texture_2d<f32>", "texture_3d<f32>", "texture_2d_array<f32>", "texture_depth_2d" };
+                s.appendf("@group(1) @binding(%d) var t%d: %s;\n", wgsl_view_binding((int)i), i, types[v.kind.ordinal]);
+            }
+        }
+        foreach (i, sm : p.samplers) {
+            if (sm.stage != self.stage) continue;
+            s.appendf("@group(1) @binding(%d) var s%d: %s;\n", wgsl_sampler_binding((int)i), i, sm.compare ? "sampler_comparison" : "sampler");
+        }
+        return s.str_view();
+    }
     foreach (i, v : p.views) {
         if (v.stage != self.stage) continue;
         switch (self.lang) {
+            case WGSL: unreachable("drie: WGSL is printed on its own path");
             case MSL:
                 s.appendf(", %s %s%d [[%s(%d)]]", msl_view_type(&v), v.storage ? "b" : "t", i, v.storage ? "buffer" : "texture", v.msl);
             case HLSL:
@@ -1752,6 +1891,7 @@ fn String ProgramGen.resource_decls(&self) {
     foreach (i, sm : p.samplers) {
         if (sm.stage != self.stage) continue;
         switch (self.lang) {
+            case WGSL: unreachable("drie: WGSL is printed on its own path");
             case MSL: s.appendf(", sampler s%d [[sampler(%d)]]", i, sm.msl);
             case HLSL: s.appendf("%s s%d : register(s%d);\n", sm.compare ? "SamplerComparisonState" : "SamplerState", i, sm.msl);
             case GLSL: break;
@@ -1768,6 +1908,10 @@ fn String ProgramGen.resource_decls(&self) {
     return s.str_view();
 }
 
+// WGSL's bindings, in sokol's group 1 (views and samplers) and group 0 (the uniform blocks)
+fn int wgsl_view_binding(int i) @local => i;
+fn int wgsl_sampler_binding(int i) @local => 64 + i;
+
 fn String ProgramGen.block_decl(&self) {
     int rows = self.p.block_rows[self.stage.ordinal];
     if (!rows) return "";
@@ -1776,6 +1920,7 @@ fn String ProgramGen.block_decl(&self) {
         case MSL: return string::tformat(", constant float4* %s [[buffer(%d)]]", name, self.stage.ordinal);
         case HLSL: return string::tformat("cbuffer %s_block : register(b0) {\n    float4 %s[%d];\n};\n", name, name, rows);
         case GLSL: return string::tformat("uniform vec4 %s[%d];\n", name, rows);
+        case WGSL: return string::tformat("@group(0) @binding(%d) var<uniform> %s: array<vec4f, %d>;\n", self.stage.ordinal, name, rows);
     }
 }
 
@@ -1783,6 +1928,32 @@ fn String ProgramGen.vertex_source(&self) {
     ShaderProgram* p = self.p;
     DString s = dstring::temp();
     switch (self.lang) {
+        case WGSL:
+            s.append(self.block_decl());
+            s.append(self.resource_decls());
+            bool vin = self.instance_id || self.vertex_id;
+            foreach (t : p.attrs) if (t != VOID) vin = true;
+            if (vin) {
+                s.append("\nstruct VIn {\n");
+                foreach (i, t : p.attrs) {
+                    if (t != VOID) s.appendf("    @location(%d) a%d: %s,\n", i, i, self.type_name(t));
+                }
+                if (self.instance_id) s.append("    @builtin(instance_index) iid: u32,\n");
+                if (self.vertex_id) s.append("    @builtin(vertex_index) vid: u32,\n");
+                s.append("};\n");
+            }
+            s.append("\nstruct VOut {\n");
+            foreach (i, n : p.varyings) {
+                NodeType t = carried(n.type());
+                s.appendf("    @location(%d) %sv%d: %s,\n", i, varying_qualifier(WGSL, t), i, self.type_name(t));
+            }
+            // (invariant: the depth prepass's pipeline and the EQUAL-tested one after it compute
+            // the same depth from the same vertex function)
+            s.append("    @builtin(position) @invariant pos: vec4f,\n};\n\n");
+            s.append(self.funcs.str_view());
+            s.appendf("@vertex fn main(%s) -> VOut {\n    var vout: VOut;\n", vin ? "vin: VIn" : "");
+            s.append(self.body.out.str_view());
+            s.append("    return vout;\n}\n");
         case MSL:
             s.append(self.msl_header());
             bool attrs;
@@ -1853,6 +2024,37 @@ fn String ProgramGen.fragment_source(&self) {
     DString s = dstring::temp();
     bool input = p.varyings.len() > 0 || self.frag_coord;
     switch (self.lang) {
+        case WGSL:
+            // (textures are sampled inside ifs whose condition differs between neighbouring
+            // pixels: their derivatives there are what the other backends make of them too)
+            s.append("diagnostic(off, derivative_uniformity);\n\n");
+            s.append(self.block_decl());
+            s.append(self.resource_decls());
+            bool fin = input || self.front_facing;
+            if (fin) {
+                s.append("\nstruct FIn {\n");
+                foreach (i, n : p.varyings) {
+                    NodeType t = carried(n.type());
+                    s.appendf("    @location(%d) %sv%d: %s,\n", i, varying_qualifier(WGSL, t), i, self.type_name(t));
+                }
+                if (self.frag_coord) s.append("    @builtin(position) fc: vec4f,\n");
+                if (self.front_facing) s.append("    @builtin(front_facing) ff: bool,\n");
+                s.append("};\n");
+            }
+            bool fout = p.colors || p.depth_out;
+            if (fout) {
+                s.append("\nstruct FOut {\n");
+                for (int i = 0; i < p.colors; i++) s.appendf("    @location(%d) c%d: vec4f,\n", i, i);
+                if (p.depth_out) s.append("    @builtin(frag_depth) depth: f32,\n");
+                s.append("};\n");
+            }
+            s.append("\n");
+            s.append(self.funcs.str_view());
+            s.appendf("@fragment fn main(%s)%s {\n", fin ? "fin: FIn" : "", fout ? " -> FOut" : "");
+            if (fout) s.append("    var fout: FOut;\n");
+            s.append(self.body.out.str_view());
+            if (fout) s.append("    return fout;\n");
+            s.append("}\n");
         case MSL:
             s.append(self.msl_header());
             if (input) {
@@ -1944,6 +2146,7 @@ fn SgShaderDesc ShaderProgram.desc(&self) {
             d.vertex_func.d3d11_target = "vs_5_0";
             d.fragment_func.d3d11_target = "ps_5_0";
         case GLSL:
+        case WGSL:
             d.vertex_func.entry = "main";
             d.fragment_func.entry = "main";
     }
@@ -1962,6 +2165,7 @@ fn SgShaderDesc ShaderProgram.desc(&self) {
         b.layout = SgUniformLayout.STD140;
         b.msl_buffer_n = (char)st;
         b.hlsl_register_b_n = 0;
+        b.wgsl_group0_binding_n = (char)st;
         b.glsl_uniforms[0].type = SgUniformType.FLOAT4;
         b.glsl_uniforms[0].array_count = (ushort)self.block_rows[st];
         b.glsl_uniforms[0].glsl_name = st == 0 ? "vu" : "fu";
@@ -1975,6 +2179,7 @@ fn SgShaderDesc ShaderProgram.desc(&self) {
             b.msl_buffer_n = (char)v.msl;
             b.hlsl_register_t_n = (char)v.hlsl;
             b.glsl_binding_n = (char)v.glsl;
+            b.wgsl_group1_binding_n = (char)wgsl_view_binding((int)i);
         } else {
             SgShaderTextureView* t = &d.views[i].texture;
             t.stage = sg_stage(v.stage);
@@ -1987,6 +2192,7 @@ fn SgShaderDesc ShaderProgram.desc(&self) {
             t.sample_type = v.kind == TEX_DEPTH ? SgImageSampleType.DEPTH : SgImageSampleType.FLOAT;
             t.msl_texture_n = (char)v.msl;
             t.hlsl_register_t_n = (char)v.hlsl;
+            t.wgsl_group1_binding_n = (char)wgsl_view_binding((int)i);
         }
     }
     if (self.samplers.len() > 14) abort("drie: a program uses more than 14 samplers");
@@ -1995,6 +2201,7 @@ fn SgShaderDesc ShaderProgram.desc(&self) {
         d.samplers[i].sampler_type = s.compare ? SgSamplerType.COMPARISON : SgSamplerType.FILTERING;
         d.samplers[i].msl_sampler_n = (char)s.msl;
         d.samplers[i].hlsl_register_s_n = (char)s.msl;
+        d.samplers[i].wgsl_group1_binding_n = (char)wgsl_sampler_binding((int)i);
     }
     // (GLSL's combined samplers; the other backends take any view with any sampler)
     foreach (i, pr : self.pairs) {
@@ -2189,6 +2396,7 @@ fn NodeLang backend_lang() {
         case METAL_MACOS:
         case METAL_SIMULATOR: return MSL;
         case D3D11: return HLSL;
-        default: abort("drie: generated programs need the GL, Metal or D3D11 backend");
+        case WGPU: return WGSL;
+        default: abort("drie: generated programs need the GL, Metal, D3D11 or WebGPU backend");
     }
 }

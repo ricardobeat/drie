@@ -611,9 +611,9 @@ fn void Cloth.build_tethers(&self) {
     self.tethers_dirty = false;
     self.tethers.clear();
     uint n       = self.count();
-    float[] dist = mem::new_array(float, n);
-    uint[] from  = mem::new_array(uint, n);
-    bool[] done  = mem::new_array(bool, n);
+    float[] dist = mem::new_array(float, (sz)n);
+    uint[] from  = mem::new_array(uint, (sz)n);
+    bool[] done  = mem::new_array(bool, (sz)n);
     defer {
         free(dist);
         free(from);

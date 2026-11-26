@@ -102,6 +102,10 @@
                 "pthread",
                 "m"
             ]
+        },
+        "emscripten": {
+            "cflags-override": "-O2 -DNDEBUG -DIMPL -DSOKOL_WGPU --use-port=emdawnwebgpu",
+            "linked-libraries": []
         }
     }
 }

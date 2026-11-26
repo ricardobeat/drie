@@ -96,14 +96,11 @@ layout(binding=0) readonly buffer cull_jobs { cull_job jobs[]; };
 struct cull_plane {
     vec4 plane;
 };
-struct cull_row {
-    vec4 row;
-};
 struct cull_index {
     uint index;
 };
 layout(binding=1) readonly buffer cull_planes { cull_plane planes[]; };
-layout(binding=2) readonly buffer cull_instances { cull_row rows[]; };
+layout(binding=2) readonly buffer cull_instances { cull_plane rows[]; };
 layout(binding=3) buffer cull_visible { cull_index visible[]; };
 layout(binding=4) buffer cull_counts { cull_index counts[]; };
 
@@ -112,9 +109,9 @@ shared uint cull_scan[256];
 
 bool cull_keep(cull_job job, uint i) {
     uint s = (job.range.x + i) * 3;
-    vec4 r0 = rows[s].row;
-    vec4 r1 = rows[s + 1].row;
-    vec4 r2 = rows[s + 2].row;
+    vec4 r0 = rows[s].plane;
+    vec4 r1 = rows[s + 1].plane;
+    vec4 r2 = rows[s + 2].plane;
     vec4 c = vec4(job.sphere.xyz, 1.0);
     vec4 lc = vec4(dot(r0, c), dot(r1, c), dot(r2, c), 1.0);
     vec3 wc = vec3(dot(job.m0, lc), dot(job.m1, lc), dot(job.m2, lc));

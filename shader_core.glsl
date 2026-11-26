@@ -784,6 +784,12 @@ vec3 g_hex_w;
 
 float toon_gradient(float ndl);
 
+// modf for x >= 0, without the GLSL instruction WGSL has no form of
+float split_whole(float x, out float whole) {
+    whole = floor(x);
+    return x - whole;
+}
+
 // three's packDepthToRGBA, packDepthToRGB and packDepthToRG, or 1 - z as a gray (packing 0).
 vec4 pack_depth(float v, int packing, float alpha) {
     if (packing == 0) return vec4(vec3(1.0 - v), alpha);
@@ -791,17 +797,17 @@ vec4 pack_depth(float v, int packing, float alpha) {
     if (v >= 1.0) return packing == 3 ? vec4(1.0, 1.0, 0.0, 1.0) : vec4(1.0);
     float vuf;
     if (packing == 3) {
-        float gf = modf(v * 256.0, vuf);
+        float gf = split_whole(v * 256.0, vuf);
         return vec4(vuf / 255.0, gf, 0.0, 1.0);
     }
     if (packing == 2) {
-        float bf = modf(v * 65536.0, vuf);
-        float gf = modf(vuf / 256.0, vuf);
+        float bf = split_whole(v * 65536.0, vuf);
+        float gf = split_whole(vuf / 256.0, vuf);
         return vec4(vuf / 255.0, gf * 256.0 / 255.0, bf, 1.0);
     }
-    float af = modf(v * 16777216.0, vuf);
-    float bf = modf(vuf / 256.0, vuf);
-    float gf = modf(vuf / 256.0, vuf);
+    float af = split_whole(v * 16777216.0, vuf);
+    float bf = split_whole(vuf / 256.0, vuf);
+    float gf = split_whole(vuf / 256.0, vuf);
     return vec4(vuf / 255.0, gf * 256.0 / 255.0, bf * 256.0 / 255.0, af);
 }
 
@@ -1254,7 +1260,7 @@ float contact_shadow(vec3 l, float len, vec3 geo_n, float intensity) {
         vec2 uv = ndc.xy * 0.5 + 0.5;
         if (d_screen_info.z > 0.5) uv.y = 1.0 - uv.y;
         ivec2 tc = ivec2(uv / d_screen_info.xy);
-        float raw = texelFetch(sampler2D(tex_transmission, tex_smp), tc, 0).r;
+        float raw = texelFetch(sampler2D(tex_transmission, transmission_smp), tc, 0).r;
         if (raw >= 1.0) continue;
         vec4 q = d_inv_view_proj * vec4(ndc.xy, d_view_origin.w > 0.5 ? raw : raw * 2.0 - 1.0, 1.0);
         float here = length(p - eye);
@@ -1444,8 +1450,8 @@ float dir_shadow(vec3 n, vec3 l) {
 // How much of the fog between the camera and here the directional light reaches, 0..1:
 // marched through its shadow map, each step weighted by how much of the fog's light it gives
 // (`sigma`: the fog's density along this ray). Beyond the map's reach the fog counts as lit.
-float sun_in_fog(vec3 from, vec3 to, float sigma) {
-    vec3 ray = to - from;
+float sun_in_fog(vec3 start, vec3 to, float sigma) {
+    vec3 ray = to - start;
     float len = length(ray);
     const float REACH = 70.0;
     const int STEPS = 14;
@@ -1457,7 +1463,7 @@ float sun_in_fog(vec3 from, vec3 to, float sigma) {
         float s1 = span * (float(i) + 1.0) / float(STEPS);
         float s = span * (float(i) + jitter) / float(STEPS);
         float next = exp(-sigma * s1);
-        vec3 at = from + ray * (s / max(len, 1e-4));
+        vec3 at = start + ray * (s / max(len, 1e-4));
         int k = sun_cascade(dot(at - camera_pos.xyz, dir_cascade_fwd.xyz));
         vec3 c = (dir_shadow_mat[max(k, 0)] * vec4(at, 1.0)).xyz;
         float seen = 1.0;
@@ -2419,7 +2425,7 @@ vec3 refracted_light(vec3 n, vec3 v, vec3 world_pos, float rough, vec3 diffuse_c
 void main() {
 #ifdef DEFERRED_LIGHT
     ivec2 tc = ivec2(gl_FragCoord.xy);
-    float raw_d = texelFetch(sampler2D(tex_transmission, tex_smp), tc, 0).r;
+    float raw_d = texelFetch(sampler2D(tex_transmission, transmission_smp), tc, 0).r;
     if (raw_d >= 1.0) {
         frag_color = d_clear_color;
 #ifdef MRT

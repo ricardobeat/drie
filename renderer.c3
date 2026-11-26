@@ -923,7 +923,7 @@ fn void Renderer.set_animation_loop(&self, AnimationLoop cb) {
             .width = self.width,
             .height = self.height,
             .sample_count = self.sample_count,
-            .high_dpi = true,
+            .high_dpi = !env::EMSCRIPTEN, // (in a browser, one pixel per CSS pixel: a Retina canvas costs 4x the pixels)
             .hdr = self.hdr_window || self.hdr_output,
             .fullscreen = self.fullscreen,
             .window_title = (ZString)self.title.zstr_tcopy(),
@@ -2286,6 +2286,14 @@ struct CasterWalk @private {
 fn bool caster_animated(Mesh* m) @local {
     Material* mat = m.material;
     return mat.sway > 0 || mat.position_node.id != 0 || m.morph_targets > 0;
+}
+
+// A bilinear sampler, clamped to the edge (made at first use).
+fn SgSampler clamp_sampler() @local {
+    if (!state.clamp_sampler.id) {
+        state.clamp_sampler = sg::make_sampler(&&{ .min_filter = LINEAR, .mag_filter = LINEAR, .wrap_u = CLAMP_TO_EDGE, .wrap_v = CLAMP_TO_EDGE });
+    }
+    return state.clamp_sampler;
 }
 
 // Whether a caster moved in the last frames.
@@ -3737,11 +3745,11 @@ fn SgBuffer displacement_heights(Mesh* m) @local {
     }
     if (m.displacement_buf.id && m.displacement_key == key) return m.displacement_buf;
     if (m.displacement_buf.id) sg::destroy_buffer(m.displacement_buf);
-    float[] heights = mem::new_array(float, (usz)math::max(n, 1u));
+    float[] heights = mem::new_array(float, (sz)math::max(n, 1u));
     defer free(heights);
     for (uint v = 0; v < n; v++) {
-        float u0 = g.vertices[(usz)v * FLOATS_PER_VERTEX + 6];
-        float v0 = g.vertices[(usz)v * FLOATS_PER_VERTEX + 7];
+        float u0 = g.vertices[(sz)v * FLOATS_PER_VERTEX + 6];
+        float v0 = g.vertices[(sz)v * FLOATS_PER_VERTEX + 7];
         Vector2 at = { rows[0].x * u0 + rows[0].y * v0 + rows[0].z, rows[1].x * u0 + rows[1].y * v0 + rows[1].z };
         heights[v] = image.red_at(at);
     }
@@ -3788,7 +3796,7 @@ fn SgBuffer zeros(uint vertices) @local {
     if (state.zeros.id && state.zeros_vertices >= vertices) return state.zeros;
     if (state.zeros.id) sg::destroy_buffer(state.zeros);
     uint n = math::max(vertices, 1024u, state.zeros_vertices * 2);
-    float[] zero = mem::new_array(float, (usz)n * 4);
+    float[] zero = mem::new_array(float, (sz)n * 4);
     defer free(zero);
     state.zeros = sg::make_buffer(
         &&{ .data = { .ptr = zero.ptr, .size = (usz)n * 4 * float::size }, .label = "drie-zeros" }
@@ -3802,7 +3810,7 @@ fn SgBuffer whites(uint instances) @local {
     if (state.whites.id && state.whites_count >= instances) return state.whites;
     if (state.whites.id) sg::destroy_buffer(state.whites);
     uint n = math::max(instances, 1024u, state.whites_count * 2);
-    float[] white = mem::new_array(float, (usz)n * 3);
+    float[] white = mem::new_array(float, (sz)n * 3);
     defer free(white);
     white[..] = 1;
     state.whites = sg::make_buffer(
@@ -4484,16 +4492,6 @@ fn void draw_deferred_lighting(
     sg::apply_pipeline(state.deferred_pipelines[pidx]);
 
     Texture* none = ready(state.white);
-    if (!state.clamp_sampler.id) {
-        state.clamp_sampler = sg::make_sampler(
-            &&{
-                .min_filter = LINEAR,
-                .mag_filter = LINEAR,
-                .wrap_u = CLAMP_TO_EDGE,
-                .wrap_v = CLAMP_TO_EDGE,
-            }
-        );
-    }
     if (!state.no_probes.id) {
         char[4] white = { 255, 255, 255, 255 };
         state.no_probes_image = sg::make_image(
@@ -4531,7 +4529,7 @@ fn void draw_deferred_lighting(
     bind.views[shaders::VIEW_SSR_BACK] = ssr && r.ssr_back.id ? r.ssr_back : none.view;
     // SpotLight.map (shader_core.glsl's light_cookies)
     bind.views[shaders::VIEW_LIGHT_COOKIES] = lights_gpu.cookie ? lights_gpu.cookie.view : none.view;
-    bind.samplers[shaders::SMP_SSR_SMP] = state.clamp_sampler;
+    bind.samplers[shaders::SMP_SSR_SMP] = clamp_sampler();
     bind.views[shaders::VIEW_TEX_GI] = state.gi_view;
     bind.views[shaders::VIEW_RC_PROBES] = state.radiance_view;
     bind.samplers[shaders::SMP_GI_SMP] = state.irradiance.sampler;
@@ -4681,17 +4679,7 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     // the spot lights' SpotLight.map (shader_core.glsl's light_cookies; a Reflector's picture is
     // in one of the material's map slots, see reflector_slot)
     bind.views[shaders::VIEW_LIGHT_COOKIES] = lights_gpu.cookie ? lights_gpu.cookie.view : ready(state.white).view;
-    if (!state.clamp_sampler.id) {
-        state.clamp_sampler = sg::make_sampler(
-            &&{
-                .min_filter = LINEAR,
-                .mag_filter = LINEAR,
-                .wrap_u = CLAMP_TO_EDGE,
-                .wrap_v = CLAMP_TO_EDGE,
-            }
-        );
-    }
-    bind.samplers[shaders::SMP_SSR_SMP] = state.clamp_sampler;
+    bind.samplers[shaders::SMP_SSR_SMP] = clamp_sampler();
     // what a transmission material refracts (its own draw leaves the picture alone: the
     // picture of the opaque scene is made before the glass is drawn, see copy_for_transmission
     // and render_transmission)
@@ -5826,7 +5814,7 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera) {
     if (fog_volume_wanted(scene.fog, camera, self.prof_no_fog_scatter)) {
         RenderTarget* rt     = self.render_target;
         FogShadowViews views = { state.shadow_view, state.atlas_view, state.sun_view, state.shadow_sampler,
-                                 lights_gpu.cookie ? lights_gpu.cookie.view : ready(state.white).view, state.clamp_sampler };
+                                 lights_gpu.cookie ? lights_gpu.cookie.view : ready(state.white).view, clamp_sampler() };
         state.fog_view = update_fog_volume(
             scene,
             camera,
@@ -6167,7 +6155,7 @@ fn void draw_bake_seams(SgPixelFormat format, SgView prev, int width, int height
     sg::apply_pipeline(*pip);
     SgBindings bind;
     bind.views[shaders::VIEW_LM_PREV] = prev;
-    bind.samplers[shaders::SMP_LM_SMP] = state.clamp_sampler;
+    bind.samplers[shaders::SMP_LM_SMP] = clamp_sampler();
     sg::apply_bindings(&bind);
     shaders::LmParams p = { .lm_size = { 1.0f / width, 1.0f / height, 0.5f / width, 0 } };
     sg::apply_uniforms(shaders::UB_LM_PARAMS, &&{ .ptr = &p, .size = shaders::LmParams::size });
@@ -6240,16 +6228,6 @@ fn void Renderer.render_bake(
     fs.cull_min.w = 0;
     fs.bake_params = { 1, 1 / math::max(blend_window, 1e-6f), 0, 0 };
     state.fog_view = ready(state.white).view;
-    if (!state.clamp_sampler.id) {
-        state.clamp_sampler = sg::make_sampler(
-            &&{
-                .min_filter = LINEAR,
-                .mag_filter = LINEAR,
-                .wrap_u = CLAMP_TO_EDGE,
-                .wrap_v = CLAMP_TO_EDGE,
-            }
-        );
-    }
 
     profile::begin_pass(
         &&{
