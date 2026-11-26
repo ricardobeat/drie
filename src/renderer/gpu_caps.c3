@@ -7,36 +7,33 @@ module drie;
 import std::io, std::os::env, sokol;
 
 // Compute kernel tier selected at GPU initialization.
-enum ComputeTier : char
-{
-    PORTABLE,    // sokol-shdc GLSL kernels only: 32-bit int atomics, shared memory, no subgroups.
-    METAL_FAST,  // Metal Apple7+ with MSL 3.0+: device atomic_float and simdgroup reductions.
+enum ComputeTier : char {
+    PORTABLE,   // sokol-shdc GLSL kernels only: 32-bit int atomics, shared memory, no subgroups.
+    METAL_FAST, // Metal Apple7+ with MSL 3.0+: device atomic_float and simdgroup reductions.
 }
 
 // Queried GPU backend features and compute limits, populated by query_gpu_caps().
-struct GpuCaps
-{
-    ComputeTier tier;                   // Active compute tier (METAL_FAST or PORTABLE).
-    SgBackend backend;                  // Active sokol graphics backend.
-    String name;                        // Device name reported by the backend, if available.
-    int apple_family;                   // Highest MTLGPUFamilyAppleN on Metal (0 elsewhere).
-    int msl_major;                      // Maximum MSL major version supported by this OS (0 elsewhere).
-    int msl_minor;                      // Maximum MSL minor version supported by this OS.
-    bool metal3;                        // True when the device supports Metal 3.
-    bool metal4;                        // True when the device supports Metal 4.
-    bool unified_memory;                // True when CPU and GPU share unified memory.
-    bool float_atomics;                 // Device-memory atomic_float support (Apple7+, MSL 3.0+).
-    bool threadgroup_float_atomics;     // Threadgroup-memory atomic_float support (MSL 4.1+).
-    bool simd_reductions;               // simd_sum / simd_min / simd_max support (Apple7+).
-    bool simd_permute;                  // simd_shuffle and quad-shuffle support (Apple6+).
-    bool atomic64_minmax;               // 64-bit atomic min/max without CAS (Apple9+, Apple8 macOS).
-    uint max_threadgroup_memory;        // Maximum threadgroup (shared) memory per kernel, in bytes.
-    uint max_threads_per_threadgroup;   // Maximum threads per threadgroup.
-    bool forced_portable;               // True when DRIE_COMPUTE=portable overrode the tier.
+struct GpuCaps {
+    ComputeTier tier; // Active compute tier (METAL_FAST or PORTABLE).
+    SgBackend backend; // Active sokol graphics backend.
+    String name; // Device name reported by the backend, if available.
+    int apple_family; // Highest MTLGPUFamilyAppleN on Metal (0 elsewhere).
+    int msl_major; // Maximum MSL major version supported by this OS (0 elsewhere).
+    int msl_minor; // Maximum MSL minor version supported by this OS.
+    bool metal3; // True when the device supports Metal 3.
+    bool metal4; // True when the device supports Metal 4.
+    bool unified_memory; // True when CPU and GPU share unified memory.
+    bool float_atomics; // Device-memory atomic_float support (Apple7+, MSL 3.0+).
+    bool threadgroup_float_atomics; // Threadgroup-memory atomic_float support (MSL 4.1+).
+    bool simd_reductions; // simd_sum / simd_min / simd_max support (Apple7+).
+    bool simd_permute; // simd_shuffle and quad-shuffle support (Apple6+).
+    bool atomic64_minmax; // 64-bit atomic min/max without CAS (Apple9+, Apple8 macOS).
+    uint max_threadgroup_memory; // Maximum threadgroup (shared) memory per kernel, in bytes.
+    uint max_threads_per_threadgroup; // Maximum threads per threadgroup.
+    bool forced_portable; // True when DRIE_COMPUTE=portable overrode the tier.
 }
 
-struct GpucapsMetal @local
-{
+struct GpucapsMetal @local {
     CInt apple_family;
     CInt msl_major;
     CInt msl_minor;
@@ -119,10 +116,27 @@ fn String backend_name(SgBackend b) @local {
 fn void GpuCaps.print(&self) {
     io::printf("drie: gpu %s, %s", self.name.len ? self.name : "(unnamed)", backend_name(self.backend));
     if (self.apple_family) {
-        io::printf(", Apple%d, MSL %d.%d%s%s", self.apple_family, self.msl_major, self.msl_minor, self.metal3 ? ", Metal3" : "", self.metal4 ? ", Metal4" : "");
-        io::printf(", float atomics %s (threadgroup %s), simd reductions %s, simd permute %s, 64-bit min/max %s",
-            self.float_atomics ? "yes" : "no", self.threadgroup_float_atomics ? "yes" : "no", self.simd_reductions ? "yes" : "no",
-            self.simd_permute ? "yes" : "no", self.atomic64_minmax ? "yes" : "no");
+        io::printf(
+            ", Apple%d, MSL %d.%d%s%s",
+            self.apple_family,
+            self.msl_major,
+            self.msl_minor,
+            self.metal3 ? ", Metal3" : "",
+            self.metal4 ? ", Metal4" : ""
+        );
+        io::printf(
+            ", float atomics %s (threadgroup %s), simd reductions %s, simd permute %s, 64-bit min/max %s",
+            self.float_atomics ? "yes" : "no",
+            self.threadgroup_float_atomics ? "yes" : "no",
+            self.simd_reductions ? "yes" : "no",
+            self.simd_permute ? "yes" : "no",
+            self.atomic64_minmax ? "yes" : "no"
+        );
     }
-    io::printfn(", %d B shared, compute tier %s%s", self.max_threadgroup_memory, self.tier, self.forced_portable ? " (DRIE_COMPUTE=portable)" : "");
+    io::printfn(
+        ", %d B shared, compute tier %s%s",
+        self.max_threadgroup_memory,
+        self.tier,
+        self.forced_portable ? " (DRIE_COMPUTE=portable)" : ""
+    );
 }

@@ -65,10 +65,15 @@ fn Texture*? GltfReader.image(&self, CgltfTexture* tex, ColorSpace space) {
         if (!comma) return GLTF_INVALID~;
         String b64 = uri[comma + 8..];
         sz padding = b64.ends_with("==") ? 2 : b64.ends_with("=") ? 1 : 0;
-        sz size = b64.len / 4 * 3 - padding;
+        sz size    = b64.len / 4 * 3 - padding;
         void* bytes;
         CgltfOptions options;
-        if (cgltf::load_buffer_base64(&options, (usz)size, (CChar*)b64.ptr, &bytes) != cgltf::RESULT_SUCCESS) return GLTF_INVALID~;
+        if (cgltf::load_buffer_base64(
+            &options,
+            (usz)size,
+            (CChar*)b64.ptr,
+            &bytes
+        ) != cgltf::RESULT_SUCCESS) return GLTF_INVALID~;
         defer libc::free(bytes);
         t = drie::decode_texture(((char*)bytes)[:size], space, flip_y: false)!;
     } else {
@@ -103,7 +108,7 @@ fn Wrapping wrapping(CgltfWrapMode mode) @local {
 fn Texture*? GltfReader.texture(&self, CgltfTextureView* view, ColorSpace space) {
     if (!view.texture) return null;
     Texture* shown = self.image(view.texture, space)!;
-    int channel = view.has_transform && view.transform.has_texcoord ? view.transform.texcoord : view.texcoord;
+    int channel    = view.has_transform && view.transform.has_texcoord ? view.transform.texcoord : view.texcoord;
     if (!view.has_transform && channel == 0) return shown;
     // (drie's geometries have two uv sets)
     if (channel > 1) return null;
@@ -132,7 +137,7 @@ fn Color linear_color(float r, float g, float b) @local {
 // Converts a glTF material into a `MeshBasicMaterial` (if unlit) or `MeshStandardMaterial`.
 fn Material*? GltfReader.material(&self, CgltfMaterial* m) {
     CgltfPbrMetallicRoughness* pbr = &m.pbr_metallic_roughness;
-    float[4] base = m.has_pbr_metallic_roughness ? pbr.base_color_factor : { 1, 1, 1, 1 };
+    float[4] base                  = m.has_pbr_metallic_roughness ? pbr.base_color_factor : { 1, 1, 1, 1 };
     if (m.unlit) {
         // KHR_materials_unlit: its color as it is, as three's MeshBasicMaterial
         MeshBasicMaterial* basic = drie::mesh_basic_material(
@@ -186,7 +191,11 @@ fn Material*? GltfReader.material(&self, CgltfMaterial* m) {
         mat.thickness_map = self.texture(&vol.thickness_texture, NO_COLOR_SPACE)!;
         // (cgltf's "infinitely far" is FLT_MAX; drie's is 0)
         mat.attenuation_distance = vol.attenuation_distance < 1e30f ? vol.attenuation_distance : 0;
-        mat.attenuation_color = linear_color(vol.attenuation_color[0], vol.attenuation_color[1], vol.attenuation_color[2]);
+        mat.attenuation_color = linear_color(
+            vol.attenuation_color[0],
+            vol.attenuation_color[1],
+            vol.attenuation_color[2]
+        );
     }
     if (m.has_ior) mat.ior = m.ior.ior;
     // the strength and color of its reflections where it isn't metal
@@ -259,7 +268,7 @@ fn Material* GltfReader.untangented_material(&self, sz index) {
 // applied), `components` per element; empty for none. Free with mem::free.
 fn float[] floats(CgltfAccessor* a, usz components) @local {
     if (!a) return { };
-    usz n = cgltf::num_components(a.type);
+    usz n       = cgltf::num_components(a.type);
     float[] all = mem::new_array(float, (sz)(a.count * n));
     cgltf::accessor_unpack_floats(a, all.ptr, all.len);
     if (n == components) return all;
@@ -281,11 +290,11 @@ fn BufferGeometry* primitive_geometry(CgltfPrimitive* p) @local {
     }
     CgltfAccessor* position = (CgltfAccessor*)cgltf::find_accessor(p, cgltf::ATTRIBUTE_TYPE_POSITION, 0);
     if (!position) return null;
-    float[] pos = floats(position, 3);
-    float[] nrm = floats((CgltfAccessor*)cgltf::find_accessor(p, cgltf::ATTRIBUTE_TYPE_NORMAL, 0), 3);
-    float[] uv = floats((CgltfAccessor*)cgltf::find_accessor(p, cgltf::ATTRIBUTE_TYPE_TEXCOORD, 0), 2);
-    float[] uv1 = floats((CgltfAccessor*)cgltf::find_accessor(p, cgltf::ATTRIBUTE_TYPE_TEXCOORD, 1), 2);
-    float[] color = floats((CgltfAccessor*)cgltf::find_accessor(p, cgltf::ATTRIBUTE_TYPE_COLOR, 0), 3);
+    float[] pos      = floats(position, 3);
+    float[] nrm      = floats((CgltfAccessor*)cgltf::find_accessor(p, cgltf::ATTRIBUTE_TYPE_NORMAL, 0), 3);
+    float[] uv       = floats((CgltfAccessor*)cgltf::find_accessor(p, cgltf::ATTRIBUTE_TYPE_TEXCOORD, 0), 2);
+    float[] uv1      = floats((CgltfAccessor*)cgltf::find_accessor(p, cgltf::ATTRIBUTE_TYPE_TEXCOORD, 1), 2);
+    float[] color    = floats((CgltfAccessor*)cgltf::find_accessor(p, cgltf::ATTRIBUTE_TYPE_COLOR, 0), 3);
     float[] tangents = floats((CgltfAccessor*)cgltf::find_accessor(p, cgltf::ATTRIBUTE_TYPE_TANGENT, 0), 4);
     defer {
         mem::free(tangents.ptr);
@@ -309,7 +318,7 @@ fn BufferGeometry* primitive_geometry(CgltfPrimitive* p) @local {
     if (uv1.len) foreach (f : uv1) g.uv1.push(f);
     if (tangents.len) foreach (f : tangents) g.tangents.push(f);
     if (p.indices) {
-        usz n = p.indices.count;
+        usz n      = p.indices.count;
         uint[] idx = mem::new_array(uint, (sz)n);
         defer mem::free(idx.ptr);
         // (one at a time where cgltf can't unpack them all: sparse indices)

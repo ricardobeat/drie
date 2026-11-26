@@ -122,7 +122,12 @@ fn void BokehPass.render(&self, RenderTarget* target, SgView color, SgView depth
     BokehParams p = {
         .size = { w, h, (float)(self.frame % 64), drie::depth_zero_to_one() ? 1 : 0 },
         .tune = { self.taps, self.aperture, self.maxblur, self.scatter ? 1 : 0 },
-        .focus = { self.focus > 1e-3f ? self.focus : 1e-3f, self.focus_speed, self.autofocus ? 1 : 0, self.reset ? 1 : 0 },
+        .focus = {
+            self.focus > 1e-3f ? self.focus : 1e-3f,
+            self.focus_speed,
+            self.autofocus ? 1 : 0,
+            self.reset ? 1 : 0
+        },
         .range = { self.focus_min, self.focus_max, 0, 0 },
     };
     self.frame++;

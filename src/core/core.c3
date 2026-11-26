@@ -598,10 +598,10 @@ fn void Mesh.set_morph_weights(&self, float[] weights, int target_count, int ins
         self.morph_weights_uploaded = false;
         return;
     }
-    int rows = instance_count > 0 ? instance_count : 1;
-    int stride_v4 = (target_count + 3) / 4;
+    int rows       = instance_count > 0 ? instance_count : 1;
+    int stride_v4  = (target_count + 3) / 4;
     int gpu_stride = instance_count > 0 ? stride_v4 : 0;
-    sz total = (sz)(1 + rows * stride_v4) * 4;
+    sz total       = (sz)(1 + rows * stride_v4) * 4;
     self.morph_weights.reserve(total);
     self.morph_weights.push((float)target_count);
     self.morph_weights.push((float)vertex_count);

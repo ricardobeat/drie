@@ -36,7 +36,7 @@ fn Node bool_(bool b) {
 
 // A linear color from sRGB hex, as three's color(0xff8800).
 fn Node color(Color c) {
-    Vector3 l = drie::color_to_linear(c);
+    Vector3 l   = drie::color_to_linear(c);
     float[16] v = { [0] = l.x, [1] = l.y, [2] = l.z };
     return drie::node_const(VEC3, v);
 }
@@ -96,7 +96,10 @@ fn Node uniform_matrix(Mat4 m) {
 
 // ---- Builtins and textures
 
-fn Node builtin(NodeBuiltin b, NodeType t) @local => drie::add_node({ .op = BUILTIN, .type = t, .kind = (char)b.ordinal });
+fn Node builtin(
+    NodeBuiltin b,
+    NodeType t
+) @local => drie::add_node({ .op = BUILTIN, .type = t, .kind = (char)b.ordinal });
 
 // Primary UV coordinate (`vec2`).
 fn Node uv() => builtin(UV, VEC2);
@@ -181,7 +184,9 @@ fn Node texture(Texture* t, Node at = { }, Node level = { }) {
 // (three's texture().grad()).
 fn Node texture_grad(Texture* t, Node uv, Node dx, Node dy) {
     if (!t) abort("drie: nodes::texture_grad of no texture");
-    return drie::add_node({ .op = TEXTURE, .type = VEC4, .texture = t, .kind = 2, .count = 3, .args = { uv.id, dx.id, dy.id, 0 } });
+    return drie::add_node(
+        { .op = TEXTURE, .type = VEC4, .texture = t, .kind = 2, .count = 3, .args = { uv.id, dx.id, dy.id, 0 } }
+    );
 }
 
 // The size of `t`'s largest level in texels, a vec2 (three's textureSize).
@@ -226,7 +231,9 @@ fn Node logical_not(Node a) => drie::add_node({ .op = NOT, .type = BOOL, .count 
 macro Node select(Node cond, a, b) {
     Node x = to_node(a);
     Node y = to_node(b);
-    return drie::add_node({ .op = SELECT, .type = drie::wider(x.type(), y.type()), .count = 3, .args = { cond.id, x.id, y.id, 0 } });
+    return drie::add_node(
+        { .op = SELECT, .type = drie::wider(x.type(), y.type()), .count = 3, .args = { cond.id, x.id, y.id, 0 } }
+    );
 }
 
 // `x` as another type (TSL's convert: vec3 -> vec4 adds a w of 1, a float fills a vector)
@@ -351,7 +358,9 @@ macro Node shift_left(a, b) => drie::node_binary(SHL, to_node(a), to_node(b));
 // Bitwise right shift `a >> b` on integer nodes.
 macro Node shift_right(a, b) => drie::node_binary(SHR, to_node(a), to_node(b));
 // Bitwise complement `~a` on integer nodes.
-fn Node bit_not(Node a) => drie::add_node({ .op = NOT, .type = a.type(), .kind = 1, .count = 1, .args = { a.id, 0, 0, 0 } });
+fn Node bit_not(
+    Node a
+) => drie::add_node({ .op = NOT, .type = a.type(), .kind = 1, .count = 1, .args = { a.id, 0, 0, 0 } });
 // Boolean exclusive-OR `a != b`.
 fn Node logical_xor(Node a, Node b) => drie::node_binary(XOR, a, b);
 
@@ -380,7 +389,13 @@ fn Node if_then(Node cond, Node then, Node otherwise = { }) => drie::node_if(con
 
 // `index` from `from` while below `to` (or as `cond` says), by 1 (-1 for GT and GE).
 macro Node loop(Node index, from, to, Node body, NodeLoop cond = LT) {
-    return drie::node_loop(cond, index, drie::node_convert(to_node(from), index.type()), drie::node_convert(to_node(to), index.type()), body);
+    return drie::node_loop(
+        cond,
+        index,
+        drie::node_convert(to_node(from), index.type()),
+        drie::node_convert(to_node(to), index.type()),
+        body
+    );
 }
 
 // The block, while `cond` holds.
@@ -416,10 +431,13 @@ fn Node seq(Node block, Node value = { }) => drie::node_seq(block, value);
 //   Node p = hash.param(0);
 //   hash.returns(nodes::fract(nodes::sin(nodes::dot(p, nodes::vec2(127.1f, 311.7f))) * 43758.5453f));
 //   Node n = hash.call(nodes::uv() * 8) + hash.call(nodes::uv() * 8 + 1);
-fn NodeFunction function(String name, NodeType ret, NodeType... params) {
+fn NodeFunction function(String name, NodeType ret, NodeType ...params) {
     if (!name.len) abort("drie: nodes: a function needs a name");
     foreach (c : name) {
-        if (!c.is_alnum() && c != '_') abort("drie: nodes: '%s' is not a function's name (letters, digits and _)", name);
+        if (!c.is_alnum() && c != '_') abort(
+            "drie: nodes: '%s' is not a function's name (letters, digits and _)",
+            name
+        );
     }
     return { drie::node_func(string::tformat("fn_%s", name), ret, params, true) };
 }

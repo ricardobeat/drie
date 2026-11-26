@@ -78,7 +78,7 @@ fn void TAAPass.jitter(&self, Camera* camera, bool on = true) {
 // Reprojects `history` with `target.velocity_texture` and blends in `target.texture` (or
 // optional post-processed `color`, such as `BokehPass` output sharing `target`'s motion vectors).
 // Aborts if `target` was created without `mrt = true`.
-fn void TAAPass.render(&self, RenderTarget* target, SgView color = {}) {
+fn void TAAPass.render(&self, RenderTarget* target, SgView color = { }) {
     if (!target.mrt) abort("drie: TAAPass needs a target with MRT (for its motion vectors)");
     int w = self.width > 0 ? self.width : target.width;
     int h = self.height > 0 ? self.height : target.height;
@@ -88,7 +88,7 @@ fn void TAAPass.render(&self, RenderTarget* target, SgView color = {}) {
         self.history.set_size(w, h);
         self.reset = true;
     }
-    bool up = w != target.width || h != target.height;
+    bool up       = w != target.width || h != target.height;
     // Convert clip-space Y-up jitter to texture-space row direction (flipped on top-down backends).
     Vector2 shift = { self.shift.x, drie::depth_zero_to_one() ? -self.shift.y : self.shift.y };
     ShaderPass* r = &self.resolve;

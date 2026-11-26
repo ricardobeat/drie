@@ -11,35 +11,35 @@ import sokol;
 
 // ---- Cluster grid and bounds
 
-const int CLUSTER_X      = 16;                                // Screen-space cluster tiles horizontally.
-const int CLUSTER_Y      = 9;                                 // Screen-space cluster tiles vertically.
-const int CLUSTER_Z      = 24;                                // Exponential view-depth cluster slices.
+const int CLUSTER_X      = 16;                               // Screen-space cluster tiles horizontally.
+const int CLUSTER_Y      = 9;                                // Screen-space cluster tiles vertically.
+const int CLUSTER_Z      = 24;                               // Exponential view-depth cluster slices.
 const int CLUSTER_COUNT  = CLUSTER_X * CLUSTER_Y * CLUSTER_Z; // Total clusters in the froxel grid.
-// Minimum depth (meters) where exponential slicing begins; closer fragments map to slice 0.
+                                                             // Minimum depth (meters) where exponential slicing begins; closer fragments map to slice 0.
 const float CLUSTER_NEAR = 0.1f;
 
 // Camera frustum parameters for light clustering; matches cluster_of() in shaders/shader.glsl.
 struct ClusterGrid {
-    Mat4 view;          // World space to camera view space (looking down -Z).
-    Mat4 projection;    // Camera view space to clip space.
-    float near;         // Depth (m) where slice 0 starts (>= CLUSTER_NEAR).
-    float far;          // Depth (m) where the last slice ends.
-    float log_scale;    // CLUSTER_Z / ln(far / near).
+    Mat4 view; // World space to camera view space (looking down -Z).
+    Mat4 projection; // Camera view space to clip space.
+    float near; // Depth (m) where slice 0 starts (>= CLUSTER_NEAR).
+    float far; // Depth (m) where the last slice ends.
+    float log_scale; // CLUSTER_Z / ln(far / near).
 }
 
 // World-space bounding sphere of a light's reach; `radius < 0` means unbounded, `0` skips it.
 struct LightBounds {
-    Vector3 center;     // World-space sphere center.
-    float radius;       // Reach radius in meters (< 0 unbounded, 0 inactive).
+    Vector3 center; // World-space sphere center.
+    float radius; // Reach radius in meters (< 0 unbounded, 0 inactive).
 }
 
 // Destination buffers for ClusterAssignFn: each cluster lists its point lights, then spot lights.
 struct ClusterOutput {
-    List{GpuLightCluster}* clusters;   // CPU output: per-cluster offset and light counts.
-    List{GpuLightIndex}* indices;      // CPU output: flat list of light buffer indices.
-    StorageBuffer* gpu_clusters;       // GPU compute output: per-cluster offset and counts.
-    StorageBuffer* gpu_indices;        // GPU compute output: flat light index buffer.
-    StorageBuffer* gpu_ranges;         // Transient CPU-to-GPU input: per-light cluster AABBs.
+    List{GpuLightCluster}* clusters; // CPU output: per-cluster offset and light counts.
+    List{GpuLightIndex}* indices; // CPU output: flat list of light buffer indices.
+    StorageBuffer* gpu_clusters; // GPU compute output: per-cluster offset and counts.
+    StorageBuffer* gpu_indices; // GPU compute output: flat light index buffer.
+    StorageBuffer* gpu_ranges; // Transient CPU-to-GPU input: per-light cluster AABBs.
 }
 
 // Callback that assigns point and spot lights (indexed by slice position) into clusters.
@@ -323,20 +323,20 @@ struct LightData @private {
     List{LightBounds} spot_bounds;
     List{GpuLightCluster} clusters;
     List{GpuLightIndex} indices;
-    bool sized;           // True when any point/spot light has non-zero radius or tube length.
-    bool tubes;           // True when any point light is a tube light (length > 0).
-    bool point_shadows;   // True when any point or rect area light has atlas cube shadows.
-    bool spot_shadows;    // True when any spot light casts shadows.
-    bool dir_tiles;       // True when any secondary directional light uses an atlas tile.
-    bool soft_shadows;    // True when any shadowed light uses PCSS (softness > 0).
-    Texture* cookie;      // Active SpotLight.map projection texture for this frame, or null.
-    List{LightBufferSet*} sets;  // Per-render buffer sets rotated within a frame.
+    bool sized; // True when any point/spot light has non-zero radius or tube length.
+    bool tubes; // True when any point light is a tube light (length > 0).
+    bool point_shadows; // True when any point or rect area light has atlas cube shadows.
+    bool spot_shadows; // True when any spot light casts shadows.
+    bool dir_tiles; // True when any secondary directional light uses an atlas tile.
+    bool soft_shadows; // True when any shadowed light uses PCSS (softness > 0).
+    Texture* cookie; // Active SpotLight.map projection texture for this frame, or null.
+    List{LightBufferSet*} sets; // Per-render buffer sets rotated within a frame.
     int used;
     uint frame;
     bool warned;
     LightBufferSet* current;
-    int checks;           // Renderer.check_compute: cluster grids verified.
-    int check_failures;   // Renderer.check_compute: cluster grids with mismatches.
+    int checks; // Renderer.check_compute: cluster grids verified.
+    int check_failures; // Renderer.check_compute: cluster grids with mismatches.
 }
 
 LightData lights_gpu @private;

@@ -25,29 +25,24 @@ fn void clear_atlas_tile() @private {
                 .shader = engine_program(true),
                 .index_type = UINT32,
                 .cull_mode = NONE,
-                .layout = vertex_layout(
-                    {
-                        shaders::ATTR_SHADOW_POSITION,
-                        shaders::ATTR_SHADOW_NORMAL,
-                        shaders::ATTR_SHADOW_UV,
-                        shaders::ATTR_SHADOW_COLOR0,
-                        shaders::ATTR_SHADOW_UV1,
-                        -1,
-                        shaders::ATTR_SHADOW_INST0,
-                        shaders::ATTR_SHADOW_INST1,
-                        shaders::ATTR_SHADOW_INST2,
-                        shaders::ATTR_SHADOW_HEIGHT,
-                        -1,
-                        -1
-                    }
-                ),
-                .depth = { .pixel_format = ATLAS_FORMAT, .write_enabled = true, .compare = ALWAYS },
-                .color_count = 0,
-                .colors[0].pixel_format = NONE,
-                .sample_count = 1,
-                .label = "drie-atlas-tile-clear",
-            }
-        );
+                .layout = vertex_layout({
+            shaders::ATTR_SHADOW_POSITION,
+            shaders::ATTR_SHADOW_NORMAL,
+            shaders::ATTR_SHADOW_UV,
+            shaders::ATTR_SHADOW_COLOR0,
+            shaders::ATTR_SHADOW_UV1,
+            -1,
+            shaders::ATTR_SHADOW_INST0,
+            shaders::ATTR_SHADOW_INST1,
+            shaders::ATTR_SHADOW_INST2,
+            shaders::ATTR_SHADOW_HEIGHT,
+            -1,
+            -1
+        }), .depth = {
+            .pixel_format = ATLAS_FORMAT,
+            .write_enabled = true,
+            .compare = ALWAYS
+        }, .color_count = 0, .colors[0].pixel_format = NONE, .sample_count = 1, .label = "drie-atlas-tile-clear", });
         state.tile_quad = plane_geometry(2, 2);
     }
     BufferGeometry* g = state.tile_quad;
@@ -143,23 +138,47 @@ fn void ensure_sun_map(int size) @local {
 
 // Ensures the shadow atlas texture is `width` x `height`, preserving existing texels at (0, 0).
 fn void ensure_shadow_atlas(int width, int height) @private {
-    grow_depth(&state.atlas_image, &state.atlas_attachment, &state.atlas_view, &state.atlas_width, &state.atlas_height, width, height);
+    grow_depth(
+        &state.atlas_image,
+        &state.atlas_attachment,
+        &state.atlas_view,
+        &state.atlas_width,
+        &state.atlas_height,
+        width,
+        height
+    );
 }
 
 // Ensures the static caster cache texture is `width` x `height`, preserving existing texels at (0, 0).
 fn void ensure_atlas_cache(int width, int height) @private {
-    grow_depth(&state.cache_image, &state.cache_attachment, &state.cache_view, &state.cache_width, &state.cache_height, width, height);
+    grow_depth(
+        &state.cache_image,
+        &state.cache_attachment,
+        &state.cache_view,
+        &state.cache_width,
+        &state.cache_height,
+        width,
+        height
+    );
 }
 
 // Reallocates a DEPTH16 texture to `width` x `height` and copies overlapping texels from the
 // existing texture into the top-left corner via copy_depth().
-fn void grow_depth(SgImage* image, SgView* attachment, SgView* view, int* cur_width, int* cur_height, int width, int height) @local {
+fn void grow_depth(
+    SgImage* image,
+    SgView* attachment,
+    SgView* view,
+    int* cur_width,
+    int* cur_height,
+    int width,
+    int height
+) @local {
     if (*cur_width == width && *cur_height == height) return;
-    SgImage old_image = *image;
+    SgImage old_image     = *image;
     SgView old_attachment = *attachment;
-    SgView old_view = *view;
-    int old_width = *cur_width;
-    int old_height = *cur_height;
+    SgView old_view       = *view;
+    int old_width         = *cur_width;
+    int old_height        = *cur_height;
     *cur_width = width;
     *cur_height = height;
     *image = sg::make_image(
@@ -339,10 +358,24 @@ fn LightShadow* light_shadow(Light* l) @private {
 fn bool casts_cube(Light* l) @private => l.light_type == POINT || l.light_type == RECT_AREA;
 
 // Basis directions (+X, -X, +Y, -Y, +Z, -Z) for the 6 faces of a point light shadow cube.
-const Vector3[6] CUBE_FORWARD @local = { { 1, 0, 0 }, { -1, 0, 0 }, { 0, 1, 0 }, { 0, -1, 0 }, { 0, 0, 1 }, { 0, 0, -1 } };
-const Vector3[6] CUBE_UP @local = { { 0, 1, 0 }, { 0, 1, 0 }, { 0, 0, -1 }, { 0, 0, 1 }, { 0, 1, 0 }, { 0, 1, 0 } };
+const Vector3[6] CUBE_FORWARD @local = {
+    { 1, 0, 0 },
+    { -1, 0, 0 },
+    { 0, 1, 0 },
+    { 0, -1, 0 },
+    { 0, 0, 1 },
+    { 0, 0, -1 }
+};
+const Vector3[6] CUBE_UP @local      = {
+    { 0, 1, 0 },
+    { 0, 1, 0 },
+    { 0, 0, -1 },
+    { 0, 0, 1 },
+    { 0, 1, 0 },
+    { 0, 1, 0 }
+};
 // Slightly wider than 90 degrees so PCF taps near a face edge remain inside the tile.
-const float POINT_SHADOW_FOV @local = 96;
+const float POINT_SHADOW_FOV @local  = 96;
 
 fn float point_shadow_far(Light* l) @private {
     LightShadow* sh = light_shadow(l);
@@ -357,8 +390,14 @@ fn Mat4 point_shadow_view_proj(Light* l, int face, bool relative = false) @local
     Mat4 world  = mat4_look_at(pos, pos + CUBE_FORWARD[face], CUBE_UP[face], true);
     world[3] = { pos.x, pos.y, pos.z, 1 };
     if (relative) world[3] = { 0, 0, 0, 1 };
-    Mat4 proj = mat4_perspective(POINT_SHADOW_FOV, 1, math::max(light_shadow(l).near, 0.01f), point_shadow_far(l), 1,
-                                 depth_zero_to_one());
+    Mat4 proj = mat4_perspective(
+        POINT_SHADOW_FOV,
+        1,
+        math::max(light_shadow(l).near, 0.01f),
+        point_shadow_far(l),
+        1,
+        depth_zero_to_one()
+    );
     return proj.mul(world.invert());
 }
 
@@ -367,12 +406,12 @@ fn Mat4 point_shadow_view_proj(Light* l, int face, bool relative = false) @local
 const float RECT_SIDE_BEHIND @local = 0.1f;
 
 fn Mat4 rect_shadow_view_proj(Light* l, int face, bool relative = false) @local {
-    Mat4 m = l.matrix_world;
-    Vector3 x = ((Vector3) { m[0][0], m[0][1], m[0][2] }).normalize();
-    Vector3 y = ((Vector3) { m[1][0], m[1][1], m[1][2] }).normalize();
+    Mat4 m        =  l.matrix_world;
+    Vector3 x     =  ((Vector3) { m[0][0], m[0][1], m[0][2] }).normalize();
+    Vector3 y     =  ((Vector3) { m[1][0], m[1][1], m[1][2] }).normalize();
     Vector3 front = -((Vector3) { m[2][0], m[2][1], m[2][2] }).normalize();
-    Vector3 dir = front;
-    Vector3 up = y;
+    Vector3 dir   =  front;
+    Vector3 up    =  y;
     switch (face) {
         case 1: dir = x; up = front;
         case 2: dir = -x; up = front;
@@ -382,11 +421,17 @@ fn Mat4 rect_shadow_view_proj(Light* l, int face, bool relative = false) @local 
     Vector3 pos = m.get_position();
     Mat4 world  = mat4_look_at(pos, pos + dir, up, true);
     world[3] = relative ? (Vec4) { 0, 0, 0, 1 } : (Vec4) { pos.x, pos.y, pos.z, 1 };
-    Mat4 proj = mat4_perspective(POINT_SHADOW_FOV, 1, math::max(light_shadow(l).near, 0.01f), point_shadow_far(l), 1,
-                                 depth_zero_to_one());
+    Mat4 proj = mat4_perspective(
+        POINT_SHADOW_FOV,
+        1,
+        math::max(light_shadow(l).near, 0.01f),
+        point_shadow_far(l),
+        1,
+        depth_zero_to_one()
+    );
     if (face > 0) {
         // Asymmetric vertical frustum from -RECT_SIDE_BEHIND up to the front face corner.
-        float top = math::tan(POINT_SHADOW_FOV * DEG2RAD * 0.5f);
+        float top    =  math::tan(POINT_SHADOW_FOV * DEG2RAD * 0.5f);
         float bottom = -RECT_SIDE_BEHIND;
         proj[1][1] = 2 / (top - bottom);
         proj[2][1] = (top + bottom) / (top - bottom);
@@ -396,7 +441,8 @@ fn Mat4 rect_shadow_view_proj(Light* l, int face, bool relative = false) @local 
 
 // Dispatches to rect_shadow_view_proj() or point_shadow_view_proj() for face `face`.
 fn Mat4 cube_view_proj(Light* l, int face, bool relative = false) @local {
-    return l.light_type == RECT_AREA ? rect_shadow_view_proj(l, face, relative) : point_shadow_view_proj(l, face, relative);
+    return l.light_type == RECT_AREA ? rect_shadow_view_proj(l, face, relative)
+        : point_shadow_view_proj(l, face, relative);
 }
 
 // View-projection matrix for an atlas light (spot frustum, cube face, or directional box).
@@ -532,8 +578,7 @@ fn void draw_sun_shadow(DirectionalLight* sun) @local {
     int tile      = shadow_map_size(sun.shadow.map_size);
     bool top_left = depth_zero_to_one();
     profile::begin_pass(
-        &&{
-            // Store depth explicitly so the main and deferred passes can sample the shadow map.
+        &&{ // Store depth explicitly so the main and deferred passes can sample the shadow map.
             .action = { .depth = { .load_action = CLEAR, .store_action = STORE, .clear_value = 1 } },
             .attachments = { .depth_stencil = state.sun_attachment },
             .label = "drie-sun-cascades",
@@ -641,7 +686,7 @@ fn void cube_shadows(Light* l, Vec4* shadow, LightData* g, bool vsm) @private {
     }
 }
 
-bool cookie_told @local;  // Guards the one-time warning when multiple SpotLight.map textures appear.
+bool cookie_told @local; // Guards the one-time warning when multiple SpotLight.map textures appear.
 
 // Packs `sl.map` (spot cookie projection) and its rotated cone-scaled UV axes into `gs`. All
 // cookies in a frame must share one texture (atlas sub-rects via `map_rect`).
@@ -652,7 +697,9 @@ fn void spot_map(SpotLight* sl, GpuSpotLight* gs, LightData* g) @private {
     if (t == state.white || !t.view.id) return;
     if (!g.cookie) g.cookie = t;
     if (g.cookie != t) {
-        if (!cookie_told) io::eprintfn("drie: spot lights with different maps in one frame: only the first map is used; put them on one texture and pick each light's part with map_rect");
+        if (!cookie_told) io::eprintfn(
+            "drie: spot lights with different maps in one frame: only the first map is used; put them on one texture and pick each light's part with map_rect"
+        );
         cookie_told = true;
         return;
     }
@@ -662,11 +709,11 @@ fn void spot_map(SpotLight* sl, GpuSpotLight* gs, LightData* g) @private {
     Vector3 up  = math::abs(dir.y) > 0.99f ? (Vector3) { 1, 0, 0 } : (Vector3) { 0, 1, 0 };
     Vector3 u   = dir.cross(up).normalize();
     Vector3 v   = u.cross(dir);
-    float c = math::cos(sl.map_rotation);
-    float s = math::sin(sl.map_rotation);
-    Vector3 ru = u * c + v * s;
-    Vector3 rv = v * c - u * s;
-    float k = 1.0f / math::tan(clamp(sl.angle, 0.01f, PI / 2 - 0.01f));
+    float c     = math::cos(sl.map_rotation);
+    float s     = math::sin(sl.map_rotation);
+    Vector3 ru  = u * c + v * s;
+    Vector3 rv  = v * c - u * s;
+    float k     = 1.0f / math::tan(clamp(sl.angle, 0.01f, PI / 2 - 0.01f));
     ru = ru * k;
     rv = rv * k;
     float size = (float)math::max(t.width, 1) * rect[2];
@@ -676,7 +723,9 @@ fn void spot_map(SpotLight* sl, GpuSpotLight* gs, LightData* g) @private {
 }
 
 // Far clip distance for a spot light's shadow frustum.
-fn float spot_shadow_far(SpotLight* sl) @private => sl.shadow.far > 0 ? sl.shadow.far : (sl.distance > 0 ? sl.distance : 50.0f);
+fn float spot_shadow_far(
+    SpotLight* sl
+) @private => sl.shadow.far > 0 ? sl.shadow.far : (sl.distance > 0 ? sl.distance : 50.0f);
 
 // View-projection matrix for a spot light's shadow map (`relative`: translates light to origin).
 fn Mat4 shadow_view_proj(SpotLight* sl, bool relative = false) @private {
@@ -731,8 +780,7 @@ fn SpotLight* prepare_and_draw_shadows(Scene* scene, Camera* camera, bool bake =
 
     if (caster && shadows) {
         profile::begin_pass(
-            &&{
-                // Store depth explicitly so the main and deferred passes can sample the spot map.
+            &&{ // Store depth explicitly so the main and deferred passes can sample the spot map.
                 .action = { .depth = { .load_action = CLEAR, .store_action = STORE, .clear_value = 1 } },
                 .attachments = { .depth_stencil = state.shadow_attachment },
                 .label = "drie-spot-shadow",
@@ -779,7 +827,9 @@ fn void note_atlas_info() @local {
     usz pixels = (usz)info.atlas_width * (usz)info.atlas_height;
     info.atlas_bytes = (pixels + (usz)state.cache_width * (usz)state.cache_height) * 2;
     // Include VSM moment image plus scratch blur target when active.
-    if (state.vsm_atlas.width) info.atlas_bytes += (usz)state.vsm_atlas.width * (usz)state.vsm_atlas.height * (usz)(state.vsm_format == RG32F ? 16 : 8);
+    if (state.vsm_atlas.width) info.atlas_bytes += (usz)state.vsm_atlas.width * (usz)state.vsm_atlas.height
+        * (usz)(state.vsm_format == RG32F ? 16
+        : 8);
     info.atlas_lights = 0;
     foreach (&s : state.atlas_slots) {
         if (s.size && s.seen == state.frame) info.atlas_lights++;

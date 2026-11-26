@@ -277,8 +277,13 @@ fn Texture* load_texture(String path, ColorSpace color_space = SRGB_COLOR_SPACE,
 // Loads RGB from `path` and copies the red channel of same-sized `alpha_path` into alpha
 // (useful for pairing two JPEGs instead of one RGBA PNG; set `alpha_is_data` for non-coverage
 // data). Missing or size-mismatched `alpha_path` logs and leaves alpha opaque.
-fn Texture* load_texture_alpha(String path, String alpha_path, ColorSpace color_space = SRGB_COLOR_SPACE, bool flip_y = true) {
-    Texture* t = load_texture(path, color_space, flip_y);
+fn Texture* load_texture_alpha(
+    String path,
+    String alpha_path,
+    ColorSpace color_space = SRGB_COLOR_SPACE,
+    bool flip_y = true
+) {
+    Texture* t   = load_texture(path, color_space, flip_y);
     char[]? data = file::load(mem, alpha_path);
     if (catch err = data) {
         io::eprintfn("drie: cannot read texture '%s'", alpha_path);
@@ -335,7 +340,10 @@ fn char[] downsample(char[] src, int w, int h, int nw, int nh, bool plain_alpha 
             uint alpha_sum;
             if (plain_alpha) {
                 for (int j = 0; j < 2; j++) {
-                    for (int i = 0; i < 2; i++) alpha_sum += src[((sz)math::min(y * 2 + j, h - 1) * w + math::min(x * 2 + i, w - 1)) * 4 + 3];
+                    for (int i = 0; i < 2; i++) alpha_sum += src[((sz)math::min(
+                        y * 2 + j,
+                        h - 1
+                    ) * w + math::min(x * 2 + i, w - 1)) * 4 + 3];
                 }
             }
             d[3] = (char)(plain_alpha ? alpha_sum / 4 : asum / 4);
@@ -355,14 +363,18 @@ fn float alpha_coverage_of(char[] px, int w, int h, float cut, float scale) @loc
 // Bisects an alpha scale on `level` so its pass rate at `cut` matches the top mip level.
 fn void keep_coverage(char[] level, int w, int h, char[] top, int tw, int th, float cut) @local {
     float want = alpha_coverage_of(top, tw, th, cut, 1);
-    float lo = 0;
-    float hi = 8;
+    float lo   = 0;
+    float hi   = 8;
     for (int i = 0; i < 12; i++) {
         float mid = (lo + hi) / 2;
-        if (alpha_coverage_of(level, w, h, cut, mid) < want) { lo = mid; } else { hi = mid; }
+        if (alpha_coverage_of(level, w, h, cut, mid) < want) {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
     }
     float scale = (lo + hi) / 2;
-    sz n = (sz)w * h;
+    sz n        = (sz)w * h;
     for (sz i = 0; i < n; i++) level[i * 4 + 3] = (char)math::min((float)level[i * 4 + 3] * scale + 0.5f, 255.0f);
 }
 
@@ -595,11 +607,11 @@ fn void Texture.upload(&self) {
     };
     self.image = sg::make_image(&desc);
     self.view = sg::make_view(&&{ .texture = { .image = self.image } });
-    MinFilter f = self.min_filter;
-    bool nearest_min = f == NEAREST || f == NEAREST_MIPMAP_NEAREST || f == NEAREST_MIPMAP_LINEAR;
+    MinFilter f        = self.min_filter;
+    bool nearest_min   = f == NEAREST || f == NEAREST_MIPMAP_NEAREST || f == NEAREST_MIPMAP_LINEAR;
     bool nearest_level = f == NEAREST_MIPMAP_NEAREST || f == LINEAR_MIPMAP_NEAREST || self.prepared_levels == 1;
     // Enable anisotropic filtering only when min, mag, and mip filters are all linear.
-    bool anisotropic = self.prepared_levels > 1 && !nearest_min && !nearest_level && !self.nearest;
+    bool anisotropic   = self.prepared_levels > 1 && !nearest_min && !nearest_level && !self.nearest;
     self.sampler = sg::make_sampler(
         &&{
             .min_filter = nearest_min ? SgFilter.NEAREST : SgFilter.LINEAR,
@@ -650,7 +662,15 @@ fn void Texture.prepare(&self) {
             int nw = math::max(w / 2, 1);
             int nh = math::max(h / 2, 1);
             levels[count] = downsample(levels[count - 1], w, h, nw, nh, self.alpha_is_data);
-            if (self.alpha_coverage > 0 && !self.alpha_is_data) keep_coverage(levels[count], nw, nh, levels[0], self.width, self.height, self.alpha_coverage);
+            if (self.alpha_coverage > 0 && !self.alpha_is_data) keep_coverage(
+                levels[count],
+                nw,
+                nh,
+                levels[0],
+                self.width,
+                self.height,
+                self.alpha_coverage
+            );
             w = nw;
             h = nh;
             count++;
@@ -697,17 +717,17 @@ fn void Texture.prepare(&self) {
 fn float Texture.red_at(&self, Vector2 uv) {
     if (self.source) return self.source.red_at(uv);
     if (!self.keep_pixels || self.preparing.load() != 2 || !self.pixels.len) return 0;
-    float x = wrap_coord(uv.x, self.wrap_s) * self.width - 0.5f;
-    float y = wrap_coord(uv.y, self.wrap_t) * self.height - 0.5f;
-    int x0 = (int)math::floor(x);
-    int y0 = (int)math::floor(y);
+    float x  = wrap_coord(uv.x, self.wrap_s) * self.width - 0.5f;
+    float y  = wrap_coord(uv.y, self.wrap_t) * self.height - 0.5f;
+    int x0   = (int)math::floor(x);
+    int y0   = (int)math::floor(y);
     float fx = x - x0;
     float fy = y - y0;
-    float r = 0;
+    float r  = 0;
     for (int j = 0; j < 2; j++) {
         for (int i = 0; i < 2; i++) {
-            int px = wrap_texel(x0 + i, self.width, self.wrap_s);
-            int py = wrap_texel(y0 + j, self.height, self.wrap_t);
+            int px  = wrap_texel(x0 + i, self.width, self.wrap_s);
+            int py  = wrap_texel(y0 + j, self.height, self.wrap_t);
             float c = self.pixels[((sz)py * self.width + px) * 4] / 255.0f;
             if (self.color_space == SRGB_COLOR_SPACE) c = srgb_to_linear(c);
             r += c * (i == 0 ? 1 - fx : fx) * (j == 0 ? 1 - fy : fy);
@@ -806,13 +826,13 @@ fn Vector3 EnvLight.irradiance(&self, Vector3 n) {
 // Folds the separated `sun` back into 9 band-2 SH irradiance coefficients (in `sh_basis` order)
 // using the clamped-cosine Legendre weights (`1/4`, `1/2`, `5/16`).
 fn Vector3[9] EnvLight.harmonics(&self) {
-    Vector3[9] e = self.sh;
-    Vector3 l = self.sun_dir;
-    Vector3 s = self.sun;
+    Vector3[9] e   = self.sh;
+    Vector3 l      = self.sun_dir;
+    Vector3 s      = self.sun;
     // Project `s * (1/4 + 1/2 cos + 5/16 * (3 cos^2 - 1) / 2)` into the 9 basis polynomials.
     const float C2 = 0.46875f;
-    float flat = (l.x * l.x + l.y * l.y) / 2;
-    float zz = (l.z * l.z - flat) / 3;
+    float flat     = (l.x * l.x + l.y * l.y) / 2;
+    float zz       = (l.z * l.z - flat) / 3;
     e[0] += s * (0.09375f + C2 * (flat + zz));
     e[1] += s * (0.5f * l.y);
     e[2] += s * (0.5f * l.z);
@@ -874,7 +894,7 @@ fn EnvLight env_light(float[] floats, char[] bytes, int w, int h, bool srgb) {
                 float a = math::acos(math::clamp(env_dir(x, y, w, h).dot(peak_dir), -1.0f, 1.0f));
                 if (a < SUN_RADIUS || a > 2 * SUN_RADIUS) continue;
                 float o = env_omega(y, w, h);
-                sz i = ((sz)y * w + x) * 4;
+                sz i    = ((sz)y * w + x) * 4;
                 around += (Vector3) { px[i], px[i + 1], px[i + 2] } * o;
                 around_w += o;
             }
@@ -1000,15 +1020,15 @@ fn Texture* cube_texture(float[][6] floats, char[][6] bytes, int size, bool srgb
     float[256] lut;
     for (int i = 0; i < 256; i++) lut[i] = srgb ? srgb_to_linear(i / 255.0f) : i / 255.0f;
     bool byte_faces = bytes[0].len != 0;
-    int w = min(size * 4, 4096);
-    int h = w / 2;
-    float[] px = mem::new_array(float, (sz)w * h * 4);
+    int w           = min(size * 4, 4096);
+    int h           = w / 2;
+    float[] px      = mem::new_array(float, (sz)w * h * 4);
     defer mem::free(px.ptr);
     for (int y = 0; y < h; y++) {
         // Equirectangular convention: v = 0 straight up (+Y), u = 0.5 toward +X (see `shading::env_uv`).
         float theta = ((float)y + 0.5f) / h * (float)math::PI;
-        float st = math::sin(theta);
-        float ct = math::cos(theta);
+        float st    = math::sin(theta);
+        float ct    = math::cos(theta);
         for (int x = 0; x < w; x++) {
             float phi = (((float)x + 0.5f) / w - 0.5f) * 2 * (float)math::PI;
             // Mirror X to match cube environment map orientation.
@@ -1035,18 +1055,18 @@ fn Texture* cube_texture(float[][6] floats, char[][6] bytes, int size, bool srgb
                 tc = -d.y;
                 ma = a.z;
             }
-            float s = ((sc / ma + 1) * 0.5f) * size - 0.5f;
-            float t = ((tc / ma + 1) * 0.5f) * size - 0.5f;
-            int s0 = (int)math::floor(s);
-            int t0 = (int)math::floor(t);
+            float s  = ((sc / ma + 1) * 0.5f) * size - 0.5f;
+            float t  = ((tc / ma + 1) * 0.5f) * size - 0.5f;
+            int s0   = (int)math::floor(s);
+            int t0   = (int)math::floor(t);
             float fs = s - s0;
             float ft = t - t0;
-            sz o = ((sz)y * w + x) * 4;
+            sz o     = ((sz)y * w + x) * 4;
             for (int k = 0; k < 4; k++) {
-                int si = math::clamp(s0 + (k & 1), 0, size - 1);
-                int ti = math::clamp(t0 + (k >> 1), 0, size - 1);
+                int si   = math::clamp(s0 + (k & 1), 0, size - 1);
+                int ti   = math::clamp(t0 + (k >> 1), 0, size - 1);
                 float wk = ((k & 1) != 0 ? fs : 1 - fs) * ((k >> 1) != 0 ? ft : 1 - ft);
-                sz i = ((sz)ti * size + si) * 4;
+                sz i     = ((sz)ti * size + si) * 4;
                 if (byte_faces) {
                     for (int c = 0; c < 3; c++) px[o + c] += lut[bytes[face][i + c]] * wk;
                 } else {

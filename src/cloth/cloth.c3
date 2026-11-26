@@ -17,16 +17,16 @@ const float STEP       = 1.0f / 60;
 const int MAX_STEPS    = 4;
 const float FAR @local = 1e30f;
 // Displacement threshold (m) above which a collider teleports rather than sweeping through cloth.
-const float JUMP = 1.0f;
+const float JUMP       = 1.0f;
 // Minimum point displacement (0.1 mm) required before `write_mesh()` re-uploads vertex data.
-const float STILL = 1e-4f;
+const float STILL      = 1e-4f;
 
 // Geometric primitive type for a `Collider`.
 enum ColliderKind : char {
-    SPHERE, // Sphere centered at `a` with `radius`.
+    SPHERE,  // Sphere centered at `a` with `radius`.
     CAPSULE, // Capsule segment `a..b` with `radius`.
-    BOX, // Oriented box centered at `a` with half-extents `half` along `axes`.
-    PLANE, // Half-space through `a` keeping points on the side facing `axes[0]`.
+    BOX,     // Oriented box centered at `a` with half-extents `half` along `axes`.
+    PLANE,   // Half-space through `a` keeping points on the side facing `axes[0]`.
 }
 
 // Swept collision primitive (sphere, capsule, oriented box, or plane) with optional dynamic mass.
@@ -254,14 +254,28 @@ fn Cloth* from_positions(int cols, int rows, Vector3[] rest, float mass = 0.4f) 
     for (int phase = 0; phase < 9; phase++) {
         for (int r = phase / 3; r < rows; r += 3) {
             for (int k = 1 + phase % 3; k + 1 < cols; k += 3) {
-                c.add_bend(c.index(k - 1, r), c.index(k, r), c.index(k + 1, r), c.index(k, math::max(r - 1, 0)), c.index(k, math::min(r + 1, rows - 1)), 1);
+                c.add_bend(
+                    c.index(k - 1, r),
+                    c.index(k, r),
+                    c.index(k + 1, r),
+                    c.index(k, math::max(r - 1, 0)),
+                    c.index(k, math::min(r + 1, rows - 1)),
+                    1
+                );
             }
         }
     }
     for (int phase = 0; phase < 9; phase++) {
         for (int r = 1 + phase % 3; r + 1 < rows; r += 3) {
             for (int k = phase / 3; k < cols; k += 3) {
-                c.add_bend(c.index(k, r - 1), c.index(k, r), c.index(k, r + 1), c.index(math::max(k - 1, 0), r), c.index(math::min(k + 1, cols - 1), r), -1);
+                c.add_bend(
+                    c.index(k, r - 1),
+                    c.index(k, r),
+                    c.index(k, r + 1),
+                    c.index(math::max(k - 1, 0), r),
+                    c.index(math::min(k + 1, cols - 1), r),
+                    -1
+                );
             }
         }
     }
@@ -303,7 +317,7 @@ fn Cloth* from_fine(int cols, int rows, Vector3[] rest, int step_cols, int step_
     cl.detail = d;
     for (int r = 0; r < rows; r++) {
         for (int c = 0; c < cols; c++) {
-            Frame f = cl.frame_at(cl.pos, d.col_cell[c], d.col_t[c], d.row_cell[r], d.row_s[r]);
+            Frame f   = cl.frame_at(cl.pos, d.col_cell[c], d.col_t[c], d.row_cell[r], d.row_s[r]);
             Vector3 o = rest[r * cols + c] - cl.origin - f.at;
             Vector3 n = grid_normal(rest, cols, rows, c, r);
             d.offset[r * cols + c] = { o.dot(f.u), o.dot(f.v), o.dot(f.n) };
@@ -325,7 +339,7 @@ fn Vector3 grid_normal(Vector3[] p, int cols, int rows, int c, int r) @local {
 // The fine lines (columns or rows) the coarse grid keeps: every `step`-th, and the last.
 fn int[] coarse_lines(int count, int step) @local {
     step = math::max(step, 1);
-    int n = (count - 1 + step - 1) / step + 1;
+    int n       = (count - 1 + step - 1) / step + 1;
     int[] lines = mem::new_array(int, n);
     for (int k = 0; k < n; k++) lines[k] = math::min(k * step, count - 1);
     return lines;
@@ -349,17 +363,17 @@ struct Frame {
 // The bilinear patch of cell (c, r) of the points `p` at (t, s): the place and an orthonormal
 // frame, u across, n out of the cloth (the side make_mesh's normals face) and v = n x u.
 fn Frame Cloth.frame_at(&self, Vector3[] p, int c, float t, int r, float s) {
-    Vector3 p00 = p[self.index(c, r)];
-    Vector3 p10 = p[self.index(c + 1, r)];
-    Vector3 p01 = p[self.index(c, r + 1)];
-    Vector3 p11 = p[self.index(c + 1, r + 1)];
-    Vector3 top = p00 + (p10 - p00) * t;
+    Vector3 p00    = p[self.index(c, r)];
+    Vector3 p10    = p[self.index(c + 1, r)];
+    Vector3 p01    = p[self.index(c, r + 1)];
+    Vector3 p11    = p[self.index(c + 1, r + 1)];
+    Vector3 top    = p00 + (p10 - p00) * t;
     Vector3 bottom = p01 + (p11 - p01) * t;
-    Vector3 du = (p10 - p00) * (1 - s) + (p11 - p01) * s;
-    Vector3 dv = top - bottom;
-    Vector3 n = du.cross(dv);
-    float nl = n.length();
-    float ul = du.length();
+    Vector3 du     = (p10 - p00) * (1 - s) + (p11 - p01) * s;
+    Vector3 dv     = top - bottom;
+    Vector3 n      = du.cross(dv);
+    float nl       = n.length();
+    float ul       = du.length();
     Frame f;
     f.at = top + (bottom - top) * s;
     f.u = ul > 1e-9f ? du / ul : (Vector3) { 1, 0, 0 };
@@ -494,7 +508,17 @@ fn void Cloth.wake(&self) {
 // Registers a sphere collider at world `center` with `radius` and returns its collider ID.
 fn int Cloth.add_sphere(&self, Vector3 center, float radius) {
     center -= self.origin;
-    self.colliders.push({ .kind = SPHERE, .radius = radius, .from_a = center, .from_b = center, .a = center, .b = center, .active = true });
+    self.colliders.push(
+        {
+            .kind = SPHERE,
+            .radius = radius,
+            .from_a = center,
+            .from_b = center,
+            .a = center,
+            .b = center,
+            .active = true
+        }
+    );
     return (int)self.colliders.len() - 1;
 }
 
@@ -502,7 +526,9 @@ fn int Cloth.add_sphere(&self, Vector3 center, float radius) {
 fn int Cloth.add_capsule(&self, Vector3 a, Vector3 b, float radius) {
     a -= self.origin;
     b -= self.origin;
-    self.colliders.push({ .kind = CAPSULE, .radius = radius, .from_a = a, .from_b = b, .a = a, .b = b, .active = true });
+    self.colliders.push(
+        { .kind = CAPSULE, .radius = radius, .from_a = a, .from_b = b, .a = a, .b = b, .active = true }
+    );
     return (int)self.colliders.len() - 1;
 }
 
@@ -550,7 +576,7 @@ fn int Cloth.add_plane(&self, Vector3 point, Vector3 normal) {
 // there.
 fn void Cloth.move_box(&self, int id, drie::Mat4 placement) {
     Collider* k = &self.colliders[id];
-    Vector3 a = column(placement, 3) - self.origin;
+    Vector3 a   = column(placement, 3) - self.origin;
     Vector3[3] axes;
     for (int i = 0; i < 3; i++) axes[i] = column(placement, i).normalize();
     bool turned = axes[0].dot(k.from_axes[0]) < 0.5f || axes[1].dot(k.from_axes[1]) < 0.5f;
@@ -587,9 +613,9 @@ fn void Cloth.set_collider_active(&self, int id, bool active) => self.colliders[
 // one. Returns the steps taken.
 fn int Cloth.update(&self, float dt) {
     foreach (&k : self.colliders) {
-        k.impulse = {};
-        k.shift = {};
-        k.dv = {};
+        k.impulse = { };
+        k.shift = { };
+        k.dv = { };
     }
     if (self.asleep) {
         foreach (&k : self.colliders) {
@@ -645,7 +671,8 @@ fn bool Cloth.near(&self, Collider* k) {
     Vector3 r  = { k.radius, k.radius, k.radius };
     Vector3 lo = math::min(math::min(k.a, k.b), math::min(k.from_a, k.from_b)) - r;
     Vector3 hi = math::max(math::max(k.a, k.b), math::max(k.from_a, k.from_b)) + r;
-    return lo.x <= self.hi.x && lo.y <= self.hi.y && lo.z <= self.hi.z && hi.x >= self.lo.x && hi.y >= self.lo.y && hi.z >= self.lo.z;
+    return lo.x <= self.hi.x && lo.y <= self.hi.y && lo.z <= self.hi.z && hi.x >= self.lo.x && hi.y >= self.lo.y
+        && hi.z >= self.lo.z;
 }
 
 struct UpdateJob @local {
@@ -683,7 +710,7 @@ fn void update_all(Cloth*[] cloths, float dt) {
         if (a.self_distance <= 0) continue;
         foreach (j, b : cloths) {
             if (i == j || b.self_distance <= 0) continue;
-            float d = math::max(a.self_distance, b.self_distance);
+            float d     = math::max(a.self_distance, b.self_distance);
             Vector3 alo = a.origin + a.lo;
             Vector3 ahi = a.origin + a.hi;
             Vector3 blo = b.origin + b.lo;
@@ -782,16 +809,16 @@ fn uint self_hash(int x, int y, int z, uint mask) @local @inline {
 // round it, by their inverse masses. Only points: a fold thinner than self_distance that
 // crosses a cell of the cloth between them in one substep goes through.
 fn void Cloth.collide_self(&self) {
-    uint n     = self.count();
-    Vector3* p = self.pos.ptr;
-    Vector3* r = self.rest.ptr;
-    float* w   = self.inv_mass.ptr;
-    float d    = self.self_distance;
+    uint n      = self.count();
+    Vector3* p  = self.pos.ptr;
+    Vector3* r  = self.rest.ptr;
+    float* w    = self.inv_mass.ptr;
+    float d     = self.self_distance;
     float inv_d = 1 / d;
-    uint mask  = build_hash(p, n, d, &self.self_bucket, &self.self_order, &self.self_start);
+    uint mask   = build_hash(p, n, d, &self.self_bucket, &self.self_order, &self.self_start);
     uint* order = self.self_order.ptr;
     uint* start = self.self_start.ptr;
-    float d2 = d * d;
+    float d2    = d * d;
     // each pair once: a point's own bucket (the points after it there) and the 13 cells on
     // one side of it
     for (uint i = 0; i < n; i++) {
@@ -833,7 +860,7 @@ fn uint build_hash(Vector3* p, uint n, float d, uint[]* bucket_arr, uint[]* orde
         free(*bucket_arr);
         free(*order_arr);
         *bucket_arr = mem::new_array(uint, (sz)n);
-        *order_arr  = mem::new_array(uint, (sz)n);
+        *order_arr = mem::new_array(uint, (sz)n);
     }
     if (start_arr.len != (sz)size + 1) {
         free(*start_arr);
@@ -845,7 +872,12 @@ fn uint build_hash(Vector3* p, uint n, float d, uint[]* bucket_arr, uint[]* orde
     float inv_d  = 1 / d;
     for (uint k = 0; k <= size; k++) start[k] = 0;
     for (uint i = 0; i < n; i++) {
-        uint b    = self_hash((int)math::floor(p[i].x * inv_d), (int)math::floor(p[i].y * inv_d), (int)math::floor(p[i].z * inv_d), mask);
+        uint b = self_hash(
+            (int)math::floor(p[i].x * inv_d),
+            (int)math::floor(p[i].y * inv_d),
+            (int)math::floor(p[i].z * inv_d),
+            mask
+        );
         bucket[i] = b;
         start[b + 1]++;
     }
@@ -860,25 +892,27 @@ fn uint build_hash(Vector3* p, uint n, float d, uint[]* bucket_arr, uint[]* orde
 // snapshot), to self_distance: each cloth moves its own points half the way, and the other
 // does the same from its side in its own update.
 fn void Cloth.collide_other(&self, Cloth* other) {
-    uint n      = self.count();
-    Vector3* p  = self.pos.ptr;
-    float* w    = self.inv_mass.ptr;
-    float d     = self.self_distance;
-    float d2    = d * d;
-    float inv_d = 1 / d;
-    Vector3* o  = other.snap.ptr;
-    uint* order = other.snap_order.ptr;
-    uint* start = other.snap_start.ptr;
-    uint mask   = other.snap_mask;
+    uint n       = self.count();
+    Vector3* p   = self.pos.ptr;
+    float* w     = self.inv_mass.ptr;
+    float d      = self.self_distance;
+    float d2     = d * d;
+    float inv_d  = 1 / d;
+    Vector3* o   = other.snap.ptr;
+    uint* order  = other.snap_order.ptr;
+    uint* start  = other.snap_start.ptr;
+    uint mask    = other.snap_mask;
     // (the snapshot is hashed in cells of the other's self_distance: look as far as this one's)
-    float od    = other.self_distance;
-    int reach   = (int)math::ceil(d / od);
+    float od     = other.self_distance;
+    int reach    = (int)math::ceil(d / od);
     float inv_od = 1 / od;
     for (uint i = 0; i < n; i++) {
         if (w[i] == 0) continue;
         Vector3 at = self.origin + p[i];
-        if (at.x < other.lo.x + other.origin.x - d || at.y < other.lo.y + other.origin.y - d || at.z < other.lo.z + other.origin.z - d) continue;
-        if (at.x > other.hi.x + other.origin.x + d || at.y > other.hi.y + other.origin.y + d || at.z > other.hi.z + other.origin.z + d) continue;
+        if (at.x < other.lo.x + other.origin.x - d || at.y < other.lo.y + other.origin.y - d
+            || at.z < other.lo.z + other.origin.z - d) continue;
+        if (at.x > other.hi.x + other.origin.x + d || at.y > other.hi.y + other.origin.y + d
+            || at.z > other.hi.z + other.origin.z + d) continue;
         int cx = (int)math::floor(at.x * inv_od);
         int cy = (int)math::floor(at.y * inv_od);
         int cz = (int)math::floor(at.z * inv_od);
@@ -953,17 +987,17 @@ fn void solve_bends(Vector3* p, float* w, List{Bend}* bends) @local {
         Vector3 nn = (e.yzx * f.zxy - e.zxy * f.yzx) * b.s;
         float n2   = dot(nn, nn);
         if (n2 < 1e-24f) continue;
-        float inv2 = 1 / n2;
-        Vector3 n  = nn * math::sqrt(inv2);
-        Vector3 dv = p[b.a] + p[b.b] - p[b.m] * 2;
-        float c    = dot(dv, n) - b.rest;
-        float ef   = dot(e, f);
-        float de   = dot(dv, e);
-        float df   = dot(dv, f);
-        float ge   = (df * ef - de * dot(f, f)) * inv2;
-        float gf   = (de * ef - df * dot(e, e)) * inv2;
-        float ga   = 1 - ge;
-        float gb   = 1 + ge;
+        float inv2 =  1 / n2;
+        Vector3 n  =  nn * math::sqrt(inv2);
+        Vector3 dv =  p[b.a] + p[b.b] - p[b.m] * 2;
+        float c    =  dot(dv, n) - b.rest;
+        float ef   =  dot(e, f);
+        float de   =  dot(dv, e);
+        float df   =  dot(dv, f);
+        float ge   =  (df * ef - de * dot(f, f)) * inv2;
+        float gf   =  (de * ef - df * dot(e, e)) * inv2;
+        float ga   =  1 - ge;
+        float gb   =  1 + ge;
         float gm   = -2;
         float gc   = -gf;
         // (at an edge c or d is m)
@@ -1130,13 +1164,13 @@ fn float gust_at(Cloth* c, int col, int row) @local @inline {
 // Pushes the points out of the colliders (placed at `t` of their way; at `t_prev` the substep
 // before) and above the floor.
 fn void Cloth.collide(&self, float t, float t_prev = 0) {
-    uint n     = self.count();
-    Vector3* p = self.pos.ptr;
-    Vector3* q = self.prev.ptr;
-    float* w   = self.inv_mass.ptr;
+    uint n        = self.count();
+    Vector3* p    = self.pos.ptr;
+    Vector3* q    = self.prev.ptr;
+    float* w      = self.inv_mass.ptr;
     // over the substep's length: a push's velocity
-    float h     = STEP / self.substeps;
-    float inv_h = 1 / h;
+    float h       = STEP / self.substeps;
+    float inv_h   = 1 / h;
     Vector3 min_p = { FAR, FAR, FAR };
     Vector3 max_p = { -FAR, -FAR, -FAR };
     for (uint i = 0; i < n; i++) {
@@ -1159,14 +1193,14 @@ fn void Cloth.collide(&self, float t, float t_prev = 0) {
         }
         // carried on by the velocity the pushes gave it
         k.shift += k.dv * h;
-        Vector3 a  = k.from_a + (k.a - k.from_a) * t + k.shift;
-        Vector3 b  = k.from_b + (k.b - k.from_b) * t + k.shift;
-        float r    = k.radius + self.thickness;
+        Vector3 a      = k.from_a + (k.a - k.from_a) * t + k.shift;
+        Vector3 b      = k.from_b + (k.b - k.from_b) * t + k.shift;
+        float r        = k.radius + self.thickness;
         // the box around it, for a cheap test first
-        Vector3 lo = math::min(a, b) - (Vector3) { r, r, r };
-        Vector3 hi = math::max(a, b) + (Vector3) { r, r, r };
-        Vector3 ab = b - a;
-        float ab2  = ab.dot(ab);
+        Vector3 lo     = math::min(a, b) - (Vector3) { r, r, r };
+        Vector3 hi     = math::max(a, b) + (Vector3) { r, r, r };
+        Vector3 ab     = b - a;
+        float ab2      = ab.dot(ab);
         Vector3 was_a  = k.from_a + (k.a - k.from_a) * t_prev + k.shift - k.dv * h;
         Vector3 was_ab = (k.from_b - k.from_a) + (k.b - k.from_b - k.a + k.from_a) * t_prev;
         float was_ab2  = was_ab.dot(was_ab);
@@ -1179,11 +1213,11 @@ fn void Cloth.collide(&self, float t, float t_prev = 0) {
             Vector3 d = pi - c;
             float d2  = d.dot(d);
             if (d2 >= r * r) continue;
-            float len     = math::sqrt(d2);
-            Vector3 nrm   = len > 1e-6f ? d / len : (Vector3) { 0, 0, 1 };
+            float len   = math::sqrt(d2);
+            Vector3 nrm = len > 1e-6f ? d / len : (Vector3) { 0, 0, 1 };
             // a point the collider has overtaken within the substep (it is past the axis, on
             // the far side from where it was a substep ago) goes back out the side it was on
-            Vector3 qa = was_a;
+            Vector3 qa  = was_a;
             if (was_ab2 > 1e-12f) qa = was_a + was_ab * clamp((q[i] - was_a).dot(was_ab) / was_ab2, 0, 1);
             Vector3 e = q[i] - qa;
             if (e.dot(e) >= r * r * 0.25f && e.dot(nrm) < 0) nrm = e.normalize();
@@ -1230,10 +1264,10 @@ fn Vector3 box_at(Collider* k, float t, Vector3[3]* axes) @local {
 // substep ago was outside of, in the box as it was then (the nearest face for a point that was
 // already in). So a thin box (a door) moving or met edge on sends no point out the far side.
 fn void Cloth.collide_box(&self, Collider* k, float t, float t_prev) {
-    uint n     = self.count();
-    Vector3* p = self.pos.ptr;
-    Vector3* q = self.prev.ptr;
-    float* w   = self.inv_mass.ptr;
+    uint n        = self.count();
+    Vector3* p    = self.pos.ptr;
+    Vector3* q    = self.prev.ptr;
+    float* w      = self.inv_mass.ptr;
     Vector3[3] ax;
     Vector3[3] was_ax;
     Vector3 c     = box_at(k, t, &ax);
@@ -1251,11 +1285,11 @@ fn void Cloth.collide_box(&self, Collider* k, float t, float t_prev) {
         Vector3 d = pi - c;
         Vector3 l = { d.dot(ax[0]), d.dot(ax[1]), d.dot(ax[2]) };
         if (math::abs(l.x) >= h.x || math::abs(l.y) >= h.y || math::abs(l.z) >= h.z) continue;
-        Vector3 e = q[i] - was_c;
-        Vector3 was = { e.dot(was_ax[0]), e.dot(was_ax[1]), e.dot(was_ax[2]) };
-        int face = -1;
+        Vector3 e   =  q[i] - was_c;
+        Vector3 was =  { e.dot(was_ax[0]), e.dot(was_ax[1]), e.dot(was_ax[2]) };
+        int face    = -1;
         float side;
-        float least = FAR;
+        float least =  FAR;
         for (int j = 0; j < 3; j++) {
             if (math::abs(was[j]) < h[j]) continue;
             float depth = h[j] - math::abs(l[j]);
@@ -1338,9 +1372,9 @@ fn void Cloth.mark(&self) {
 // in the scene). Use a DOUBLE_SIDE material to see both faces. Its uvs are in meters along the
 // cloth at rest: u across from the first column, v up from the top row (negative below it).
 fn Mesh* Cloth.make_mesh(&self, Material* material = null) {
-    int cols = self.detail ? self.detail.cols : self.cols;
-    int rows = self.detail ? self.detail.rows : self.rows;
-    Vector3[] rest = self.detail ? self.detail.rest : self.rest;
+    int cols          = self.detail ? self.detail.cols : self.cols;
+    int rows          = self.detail ? self.detail.rows : self.rows;
+    Vector3[] rest    = self.detail ? self.detail.rest : self.rest;
     BufferGeometry* g = drie::buffer_geometry();
     g.dynamic = true;
     float[] down = mem::new_array(float, cols);
@@ -1403,13 +1437,13 @@ fn void Cloth.write_mesh(&self, float alpha) {
         if (!moved) return;
     }
     self.drawn[..] = self.shown[..];
-    BufferGeometry* g =  self.mesh.geometry;
+    BufferGeometry* g = self.mesh.geometry;
     g.vertices_changed();
-    float* v          =  g.vertices.entries;
-    Vector3 lo        =  { FAR, FAR, FAR };
-    Vector3 hi        = -lo;
-    int cols          =  self.cols;
-    int rows          =  self.rows;
+    float* v   =  g.vertices.entries;
+    Vector3 lo =  { FAR, FAR, FAR };
+    Vector3 hi = -lo;
+    int cols   =  self.cols;
+    int rows   =  self.rows;
     if (self.detail) {
         // (frame_at's frame, worked out a row of a cell at a time: along a row the cell's u
         // does not change, and its v changes linearly)
@@ -1417,10 +1451,10 @@ fn void Cloth.write_mesh(&self, float alpha) {
         cols = d.cols;
         rows = d.rows;
         Vector3[] p = self.shown;
-        int cc = self.cols;
+        int cc      = self.cols;
         for (int r = 0; r < rows; r++) {
-            int rc  = d.row_cell[r];
-            float s = d.row_s[r];
+            int rc   =  d.row_cell[r];
+            float s  =  d.row_s[r];
             int cell = -1;
             Vector3 left;
             Vector3 du;
@@ -1465,7 +1499,7 @@ fn void Cloth.write_mesh(&self, float alpha) {
     } else {
         foreach (i, at : self.shown) {
             Vector3 p = self.origin + at;
-            float* w = v + (usz)i * drie::FLOATS_PER_VERTEX;
+            float* w  = v + (usz)i * drie::FLOATS_PER_VERTEX;
             w[0] = p.x;
             w[1] = p.y;
             w[2] = p.z;

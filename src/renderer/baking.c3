@@ -15,7 +15,7 @@ import sokol, drie::readback, drie::nodes;
 // buffer, no face culling (UV unwrap winding varies), and no blending.
 fn SgPipeline gen_bake_pipeline(MaterialProgram* gen, SgPixelFormat format) @private {
     // Bit 63 keeps bake keys disjoint from get_pipeline() keys on the same MaterialProgram.
-    ulong key = 1ul << 63 | (ulong)(uint)format;
+    ulong key         = 1ul << 63 | (ulong)(uint)format;
     SgPipeline? found = gen.pipelines[key];
     if (try found) return found;
     SgPipeline pip = sg::make_pipeline(
@@ -23,28 +23,20 @@ fn SgPipeline gen_bake_pipeline(MaterialProgram* gen, SgPixelFormat format) @pri
             .shader = gen.program.make(),
             .index_type = UINT32,
             .cull_mode = NONE,
-            .layout = vertex_layout(
-                {
-                    shaders::ATTR_THREE_POSITION,
-                    shaders::ATTR_THREE_NORMAL,
-                    shaders::ATTR_THREE_UV,
-                    shaders::ATTR_THREE_COLOR0,
-                    shaders::ATTR_THREE_UV1,
-                    -1,
-                    shaders::ATTR_THREE_INST0,
-                    shaders::ATTR_THREE_INST1,
-                    shaders::ATTR_THREE_INST2,
-                    shaders::ATTR_THREE_HEIGHT,
-                    shaders::ATTR_THREE_INSTANCE_COLOR,
-                    -1
-                }
-            ),
-            .depth.pixel_format = NONE,
-            .colors[0].pixel_format = format,
-            .sample_count = 1,
-            .label = "drie-bake",
-        }
-    );
+            .layout = vertex_layout({
+        shaders::ATTR_THREE_POSITION,
+        shaders::ATTR_THREE_NORMAL,
+        shaders::ATTR_THREE_UV,
+        shaders::ATTR_THREE_COLOR0,
+        shaders::ATTR_THREE_UV1,
+        -1,
+        shaders::ATTR_THREE_INST0,
+        shaders::ATTR_THREE_INST1,
+        shaders::ATTR_THREE_INST2,
+        shaders::ATTR_THREE_HEIGHT,
+        shaders::ATTR_THREE_INSTANCE_COLOR,
+        -1
+    }), .depth.pixel_format = NONE, .colors[0].pixel_format = format, .sample_count = 1, .label = "drie-bake", });
     gen.pipelines[key] = pip;
     return pip;
 }
@@ -99,18 +91,18 @@ fn void Renderer.render_bake(
     bool seams = true
 ) {
     if (!state.gfx_ready) return;
-    RenderInfo info          = self.info;
-    bool motion              = state.motion;
-    Scene* scene             = state.scene;
+    RenderInfo info                                   = self.info;
+    bool motion                                       = state.motion;
+    Scene* scene                                      = state.scene;
     IrradianceVolume*[MAX_IRRADIANCE_VOLUMES] volumes = state.gi_volumes;
-    int volume_count         = state.gi_count;
-    IrradianceVolume* volume = state.irradiance;
-    SgView gi_view           = state.gi_view;
-    SgView radiance          = state.radiance_view;
-    SgView fog               = state.fog_view;
-    SgView probes            = state.probes_view;
-    SgSampler probes_sampler = state.probes_sampler;
-    DirectionalLight* sun    = state.sun_caster;
+    int volume_count                                  = state.gi_count;
+    IrradianceVolume* volume                          = state.irradiance;
+    SgView gi_view                                    = state.gi_view;
+    SgView radiance                                   = state.radiance_view;
+    SgView fog                                        = state.fog_view;
+    SgView probes                                     = state.probes_view;
+    SgSampler probes_sampler                          = state.probes_sampler;
+    DirectionalLight* sun                             = state.sun_caster;
     state.motion = false;
 
     if (!camera.custom_projection) camera.update_projection_matrix();
@@ -189,19 +181,26 @@ alias EnvDistanceFn = fn float(Vector3 origin, Vector3 dir);
 // (`face_size` pixels each, `near`..`far`) per probe and integrating cosine-weighted radiance
 // along +/-X, +/-Y, +/-Z. With `bounces > 0`, runs extra passes with `v` illuminating the scene
 // (the initial direct pass excludes `v` even if attached to `scene`).
-fn void Renderer.bake_irradiance(&self, Scene* scene, IrradianceVolume* v, int face_size = 8, float near = 0.1,
-                                 float far = 100, int bounces = 0) {
-    Vector3[6] fwd = { { 1, 0, 0 }, { -1, 0, 0 }, { 0, 1, 0 }, { 0, -1, 0 }, { 0, 0, 1 }, { 0, 0, -1 } };
-    Vector3[6] ups = { { 0, 1, 0 }, { 0, 1, 0 }, { 0, 0, -1 }, { 0, 0, 1 }, { 0, 1, 0 }, { 0, 1, 0 } };
-    int fs = math::max(face_size, 1);
+fn void Renderer.bake_irradiance(
+    &self,
+    Scene* scene,
+    IrradianceVolume* v,
+    int face_size = 8,
+    float near = 0.1,
+    float far = 100,
+    int bounces = 0
+) {
+    Vector3[6] fwd         = { { 1, 0, 0 }, { -1, 0, 0 }, { 0, 1, 0 }, { 0, -1, 0 }, { 0, 0, 1 }, { 0, 0, -1 } };
+    Vector3[6] ups         = { { 0, 1, 0 }, { 0, 1, 0 }, { 0, 0, -1 }, { 0, 0, 1 }, { 0, 1, 0 }, { 0, 1, 0 } };
+    int fs                 = math::max(face_size, 1);
     // Pack all six linear HDR faces side by side into a single strip for one readback per probe.
-    RenderTarget* rt = render_target(fs * 6, fs, 1, SgPixelFormat.RGBA16F);
+    RenderTarget* rt       = render_target(fs * 6, fs, 1, SgPixelFormat.RGBA16F);
     PerspectiveCamera* cam = perspective_camera(90, 1, near, far);
-    ushort[] pixels = mem::new_array(ushort, (sz)fs * 6 * fs * 4);
-    float[] baked = mem::new_array(float, v.data.len);
+    ushort[] pixels        = mem::new_array(ushort, (sz)fs * 6 * fs * 4);
+    float[] baked          = mem::new_array(float, v.data.len);
     // Precompute unit direction and solid angle per cubemap texel.
-    Vector3[] dirs = mem::new_array(Vector3, (sz)fs * fs * 6);
-    float[] solid = mem::new_array(float, (sz)fs * fs);
+    Vector3[] dirs         = mem::new_array(Vector3, (sz)fs * fs * 6);
+    float[] solid          = mem::new_array(float, (sz)fs * fs);
     defer {
         free(pixels);
         free(baked);
@@ -215,9 +214,9 @@ fn void Renderer.bake_irradiance(&self, Scene* scene, IrradianceVolume* v, int f
         Vector3 right = fwd[i].cross(ups[i]);
         for (int sy = 0; sy < fs; sy++) {
             for (int sx = 0; sx < fs; sx++) {
-                float fx = ((float)sx + 0.5f) / fs * 2 - 1;
+                float fx  = ((float)sx + 0.5f) / fs * 2 - 1;
                 // Row 0 of read_image() is the top of the face.
-                float fy = 1 - ((float)sy + 0.5f) / fs * 2;
+                float fy  = 1 - ((float)sy + 0.5f) / fs * 2;
                 Vector3 d = fwd[i] + right * fx + ups[i] * fy;
                 dirs[((sz)i * fs + sy) * fs + sx] = d.normalize();
                 float r2 = 1 + fx * fx + fy * fy;
@@ -227,11 +226,11 @@ fn void Renderer.bake_irradiance(&self, Scene* scene, IrradianceVolume* v, int f
     }
 
     RenderTarget* prev_target = self.render_target;
-    bool prev_auto_aspect = self.auto_aspect;
-    bool prev_auto_clear = self.auto_clear;
-    bool prev_scissor_test = self.scissor_test;
-    int[4] prev_viewport = self.viewport;
-    int[4] prev_scissor = self.scissor;
+    bool prev_auto_aspect     = self.auto_aspect;
+    bool prev_auto_clear      = self.auto_clear;
+    bool prev_scissor_test    = self.scissor_test;
+    int[4] prev_viewport      = self.viewport;
+    int[4] prev_scissor       = self.scissor;
     self.auto_aspect = false;
     self.auto_clear = true;
     self.scissor_test = true;
@@ -260,9 +259,13 @@ fn void Renderer.bake_irradiance(&self, Scene* scene, IrradianceVolume* v, int f
                         for (int sy = 0; sy < fs; sy++) {
                             for (int sx = 0; sx < fs; sx++) {
                                 sz p = ((sz)sy * fs * 6 + (sz)i * fs + sx) * 4;
-                                Vector3 light = { half_to_float(pixels[p]), half_to_float(pixels[p + 1]), half_to_float(pixels[p + 2]) };
+                                Vector3 light = {
+                                    half_to_float(pixels[p]),
+                                    half_to_float(pixels[p + 1]),
+                                    half_to_float(pixels[p + 2])
+                                };
                                 Vector3 d = dirs[((sz)i * fs + sy) * fs + sx];
-                                float w = solid[(sz)sy * fs + sx];
+                                float w   = solid[(sz)sy * fs + sx];
                                 // Accumulate cosine-weighted irradiance along each positive/negative axis.
                                 for (int a = 0; a < 3; a++) {
                                     float c = d[a];
@@ -407,22 +410,28 @@ struct EnvTarget @private {
 // environment Texture (`width` x `width / 2`) on the GPU; node graphs read the unit ray direction
 // from `normal_geometry`. Pass an existing texture in `into` to update it in place. With `diffuse`,
 // also renders a 64x32 pass and reads it back synchronously to compute `Texture.env_light` SH.
-fn Texture* Renderer.render_environment(&self, Material* material, Texture* into = null, int width = 512, bool diffuse = true) {
+fn Texture* Renderer.render_environment(
+    &self,
+    Material* material,
+    Texture* into = null,
+    int width = 512,
+    bool diffuse = true
+) {
     width = math::max(width & ~1, 8);
     int height = width / 2;
     if (!state.env_scene) {
-        const int COLS = 128;
-        const int ROWS = 64;
+        const int COLS    = 128;
+        const int ROWS    = 64;
         // Align row 0 (zenith, phi = 0) with top of texture memory on [0,1] depth backends.
-        float up = depth_zero_to_one() ? 1 : -1;
+        float up          = depth_zero_to_one() ? 1 : -1;
         BufferGeometry* g = mem::new(BufferGeometry);
         for (int j = 0; j <= ROWS; j++) {
             for (int i = 0; i <= COLS; i++) {
-                float u = (float)i / COLS;
-                float v = (float)j / ROWS;
+                float u     = (float)i / COLS;
+                float v     = (float)j / ROWS;
                 float theta = (u - 0.5f) * 2 * PI;
-                float phi = v * PI;
-                Vector3 d = { math::cos(theta) * math::sin(phi), math::cos(phi), math::sin(theta) * math::sin(phi) };
+                float phi   = v * PI;
+                Vector3 d   = { math::cos(theta) * math::sin(phi), math::cos(phi), math::sin(theta) * math::sin(phi) };
                 g.add_vertex({ u * 2 - 1, up * (1 - 2 * v), 0 }, d, { u, 1 - v });
             }
         }
@@ -473,7 +482,12 @@ fn Texture* Renderer.render_environment(&self, Material* material, Texture* into
     }
     if (!et) {
         Texture* t = mem::new(Texture);
-        *t = { .color_space = NO_COLOR_SPACE, .repeat = { 1, 1 }, .generate_mipmaps = true, .min_filter = LINEAR_MIPMAP_LINEAR };
+        *t = {
+            .color_space = NO_COLOR_SPACE,
+            .repeat = { 1, 1 },
+            .generate_mipmaps = true,
+            .min_filter = LINEAR_MIPMAP_LINEAR
+        };
         state.env_targets.push({ .texture = t });
         et = &state.env_targets[state.env_targets.len() - 1];
     }
@@ -505,7 +519,9 @@ fn Texture* Renderer.render_environment(&self, Material* material, Texture* into
             }
         );
         for (int i = 0; i < levels; i++) {
-            et.level_views[i] = sg::make_view(&&{ .texture = { .image = t.image, .mip_levels = { .base = i, .count = 1 } } });
+            et.level_views[i] = sg::make_view(
+                &&{ .texture = { .image = t.image, .mip_levels = { .base = i, .count = 1 } } }
+            );
             et.attachments[i] = sg::make_view(&&{ .color_attachment = { .image = t.image, .mip_level = i } });
         }
         et.levels = levels;
@@ -514,10 +530,10 @@ fn Texture* Renderer.render_environment(&self, Material* material, Texture* into
     }
 
     RenderTarget* prev_target = self.render_target;
-    bool prev_auto = self.auto_aspect;
-    bool prev_auto_clear = self.auto_clear;
-    bool prev_scissor_test = self.scissor_test;
-    int[4] prev_viewport = self.viewport;
+    bool prev_auto            = self.auto_aspect;
+    bool prev_auto_clear      = self.auto_clear;
+    bool prev_scissor_test    = self.scissor_test;
+    int[4] prev_viewport      = self.viewport;
     self.auto_aspect = false;
     self.auto_clear = true;
     self.scissor_test = false;
@@ -549,7 +565,7 @@ fn Texture* Renderer.render_environment(&self, Material* material, Texture* into
 // Forward directions (+X, -X, +Y, -Y, +Z, -Z) for render_probe() cubemap capture.
 const Vector3[6] PROBE_AHEAD = { { 1, 0, 0 }, { -1, 0, 0 }, { 0, 1, 0 }, { 0, -1, 0 }, { 0, 0, 1 }, { 0, 0, -1 } };
 // Up vectors matching PROBE_AHEAD for render_probe() cubemap capture.
-const Vector3[6] PROBE_UP = { { 0, 1, 0 }, { 0, 1, 0 }, { 0, 0, -1 }, { 0, 0, 1 }, { 0, 1, 0 }, { 0, 1, 0 } };
+const Vector3[6] PROBE_UP    = { { 0, 1, 0 }, { 0, 1, 0 }, { 0, 0, -1 }, { 0, 0, 1 }, { 0, 1, 0 }, { 0, 1, 0 } };
 
 // Renders `scene` into 6 linear RGBA16F cubemap faces (`face_size` px, 4x MSAA) from `position`
 // and resamples them on the GPU into an equirectangular environment map (`4 * face_size` wide).
@@ -574,10 +590,10 @@ fn Texture* Renderer.render_probe(
     cam.far = far;
     cam.update_projection_matrix();
     RenderTarget* prev_target = self.render_target;
-    bool prev_auto = self.auto_aspect;
-    bool prev_auto_clear = self.auto_clear;
-    bool prev_scissor_test = self.scissor_test;
-    int[4] prev_viewport = self.viewport;
+    bool prev_auto            = self.auto_aspect;
+    bool prev_auto_clear      = self.auto_clear;
+    bool prev_scissor_test    = self.scissor_test;
+    int[4] prev_viewport      = self.viewport;
     self.auto_aspect = false;
     self.auto_clear = true;
     self.scissor_test = false;
@@ -607,26 +623,26 @@ fn Node vec3_node(Vector3 v) @local => node_const(VEC3, { v.x, v.y, v.z, 0, 0, 0
 // Builds the node material that selects the dominant cubemap face from `normal_geometry` and
 // samples `state.probe_faces` at mip 0 for render_probe().
 fn MeshBasicMaterial* probe_resample() @private {
-    Node d = nodes::normal_geometry();
-    Node a = node_call(ABS, d);
-    Node zero = nodes::num(0);
+    Node d     = nodes::normal_geometry();
+    Node a     = node_call(ABS, d);
+    Node zero  = nodes::num(0);
     float flip = depth_zero_to_one() ? 1 : -1;
     Node[6] seen;
     for (int i = 0; i < 6; i++) {
         Vector3 ahead = PROBE_AHEAD[i];
-        Vector3 up = PROBE_UP[i];
+        Vector3 up    = PROBE_UP[i];
         Vector3 right = ahead.cross(up);
-        Node along = node_call(MAX, node_call(DOT, d, vec3_node(ahead)), nodes::num(1e-4f));
-        Node x = node_call(DOT, d, vec3_node(right)) / along;
-        Node y = node_call(DOT, d, vec3_node(up)) / along;
-        Node uv = node_join({ x * 0.5f + 0.5f, y * (-0.5f * flip) + 0.5f }, VEC2);
+        Node along    = node_call(MAX, node_call(DOT, d, vec3_node(ahead)), nodes::num(1e-4f));
+        Node x        = node_call(DOT, d, vec3_node(right)) / along;
+        Node y        = node_call(DOT, d, vec3_node(up)) / along;
+        Node uv       = node_join({ x * 0.5f + 0.5f, y * (-0.5f * flip) + 0.5f }, VEC2);
         seen[i] = nodes::texture(state.probe_faces[i].as_map(), uv, zero).xyz();
     }
-    Node along_x = node_binary(GE, a.x(), node_call(MAX, a.y(), a.z()));
-    Node along_y = node_binary(GE, a.y(), a.z());
-    Node on_x = nodes::select(node_binary(GT, d.x(), zero), seen[0], seen[1]);
-    Node on_y = nodes::select(node_binary(GT, d.y(), zero), seen[2], seen[3]);
-    Node on_z = nodes::select(node_binary(GT, d.z(), zero), seen[4], seen[5]);
+    Node along_x         = node_binary(GE, a.x(), node_call(MAX, a.y(), a.z()));
+    Node along_y         = node_binary(GE, a.y(), a.z());
+    Node on_x            = nodes::select(node_binary(GT, d.x(), zero), seen[0], seen[1]);
+    Node on_y            = nodes::select(node_binary(GT, d.y(), zero), seen[2], seen[3]);
+    Node on_z            = nodes::select(node_binary(GT, d.z(), zero), seen[4], seen[5]);
     MeshBasicMaterial* m = mesh_basic_material(fog: false);
     m.color_node = nodes::select(along_x, on_x, nodes::select(along_y, on_y, on_z));
     return m;

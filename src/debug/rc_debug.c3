@@ -1610,7 +1610,6 @@ fn RcStats stats(RadianceCascades* rc) {
     uint now = (uint)((rc.frame - 1) % 4096) + 1u;
 
 
-
     {
         int eff          = s.levels;
         int total_meta   = rc.split_pbase[eff - 1] + rc.split_cap[eff - 1];

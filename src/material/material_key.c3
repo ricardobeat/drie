@@ -35,78 +35,78 @@ macro Node vs_in($name, NodeType t = VEC4, int comp = 0, int k = 0) => node_inpu
 // Feature bits and shared map slots (`tex_ext0..5`, stored as `slot + 1`, 0 = absent) for each
 // map role in shaders/shader_core.glsl (`MAP_*`).
 bitstruct MaterialKey : char[32] {
-    char type : 0..3;            // MaterialType's ordinal
-    bool mrt : 4;                // a target with MRT: normal, motion and indirect light too
-    bool cut : 5;                // DrawKind.CUT: the program may cut holes
-    bool cull_box : 6;           // Renderer.cull_box
-    bool dash : 7;               // a dashed line
-    bool dither : 8;             // an LOD's cross-fade
-    bool screen : 9;             // Material.screen_target
-    bool tint : 10;              // the vertex colors tint the color (not baked light)
-    bool vertex_alpha : 11;      // the vertex colors' alpha
+    char type : 0..3; // MaterialType's ordinal
+    bool mrt : 4; // a target with MRT: normal, motion and indirect light too
+    bool cut : 5; // DrawKind.CUT: the program may cut holes
+    bool cull_box : 6; // Renderer.cull_box
+    bool dash : 7; // a dashed line
+    bool dither : 8; // an LOD's cross-fade
+    bool screen : 9; // Material.screen_target
+    bool tint : 10; // the vertex colors tint the color (not baked light)
+    bool vertex_alpha : 11; // the vertex colors' alpha
     bool foliage : 12;
     bool map : 13;
     bool alpha_test : 14;
-    bool background : 15;        // the scene's background
-    bool env_combine : 16;       // three's envMap on a basic, lambert or phong material
+    bool background : 15; // the scene's background
+    bool env_combine : 16; // three's envMap on a basic, lambert or phong material
     bool vertex_occlusion : 17;
     bool premultiplied : 18;
-    char fog : 19..20;           // the fog's mode (0: none)
+    char fog : 19..20; // the fog's mode (0: none)
     bool fog_box : 21;
     bool fog_height : 22;
     bool fog_sun : 23;
-    bool display_fog : 24;       // Renderer.display_fog
-    bool linear : 25;            // linear light out (a half-float target)
-    char tone : 26..28;          // ToneMapping's ordinal (0 when linear or not tone mapped)
-    char display : 29..30;       // the window's colors (DISPLAY_*)
-    bool gpu_cull : 31;          // instances culled on the GPU
+    bool display_fog : 24; // Renderer.display_fog
+    bool linear : 25; // linear light out (a half-float target)
+    char tone : 26..28; // ToneMapping's ordinal (0 when linear or not tone mapped)
+    char display : 29..30; // the window's colors (DISPLAY_*)
+    bool gpu_cull : 31; // instances culled on the GPU
     bool displacement : 32;
     bool sway : 33;
     bool outline : 34;
-    bool motion : 35;            // motion vectors (with mrt)
-    bool dir_lights : 36;        // the render's light kinds (lit materials)
+    bool motion : 35; // motion vectors (with mrt)
+    bool dir_lights : 36; // the render's light kinds (lit materials)
     bool point_lights : 37;
     bool spot_lights : 38;
-    bool channels : 39;          // Material.light_channels: lights of some channels only
-    bool map_emissive : 40;      // Material.map_emissive
-    bool baked : 41;             // the vertex colors are baked light (Material.vertex_light)
+    bool channels : 39; // Material.light_channels: lights of some channels only
+    bool map_emissive : 40; // Material.map_emissive
+    bool baked : 41; // the vertex colors are baked light (Material.vertex_light)
     bool normal_map : 42;
-    bool tangents : 43;          // the tangent frame from the vertex tangents
-    bool env_light : 44;         // a standard material's environment: its light from all around;
-    bool env_reflect : 45;       // the reflection of its environment (its map or the probes),
-    bool env_box : 46;           //   box projected
-    bool toon_nearest : 47;      // the toon material's gradient map read nearest
-    bool shadows : 48;           // it receives the render's shadows:
-    bool vsm : 49;               //   VSM's,
-    bool soft_shadows : 50;      //   from sources with a size (PCSS),
-    bool sun_shadow : 51;        //   the sun's (the directional light's with cascades),
-    bool dir_tiles : 52;         //   other directional lights' (a tile of the atlas),
-    bool point_shadows : 53;     //   point lights',
-    bool spot_shadows : 54;      //   spot lights'
-    bool debug_cascades : 55;    // renderer.debug_cascades: the sun's cascades tinted
-    bool arm_ao : 56;            // tex_arm holds the ambient occlusion (red),
-    bool arm_rough : 57;         //   the roughness (green),
-    bool arm_metal : 58;         //   the metalness (blue)
-    bool sized : 59;             // point or spot lights with a size, seen in a standard material's highlights
-    bool tubes : 60;             // point lights with a length (tubes)
-    bool rect_lights : 61;       // RectAreaLights (on a standard material)
-    bool parallax : 62;          // Material.parallax_map (a standard material's)
-    bool clearcoat : 63;         // the physical material's layers: a clear coat,
-    bool sheen : 64;             //   a sheen,
-    bool iridescence : 65;       //   a thin film's rainbow,
-    bool anisotropy : 66;        //   highlights drawn out along a direction,
-    bool transmission : 67;      //   the picture behind it refracted through its volume
-    bool probes : 68;            // it mirrors the scene's reflection probes (Material.env_probes)
-    bool gi : 69;                // the scene's irradiance volumes (lit materials),
-    bool rc : 70;                //   its radiance cascades
-    bool ssr : 71;               // screen-space reflections (Material.ssr)
-    bool reflector : 72;         // a planar Reflector's picture (Material.reflector)
-    bool glass : 73;             // Material.glass: its reflections stay however clear it is
-    bool hex : 74;               // Material.hex_tiling
-    bool defocus : 75;           // Material.defocus: the maps blurred by the lens's
-    bool fog_volume : 76;        // the fog's froxel volume (in place of its analytic fog),
-    bool fog_glow : 77;          //   its lights' glow,
-    bool fog_shafts : 78;        //   its light shafts (the sun's shadow in it)
+    bool tangents : 43; // the tangent frame from the vertex tangents
+    bool env_light : 44; // a standard material's environment: its light from all around;
+    bool env_reflect : 45; // the reflection of its environment (its map or the probes),
+    bool env_box : 46; // box projected
+    bool toon_nearest : 47; // the toon material's gradient map read nearest
+    bool shadows : 48; // it receives the render's shadows:
+    bool vsm : 49; // VSM's,
+    bool soft_shadows : 50; // from sources with a size (PCSS),
+    bool sun_shadow : 51; // the sun's (the directional light's with cascades),
+    bool dir_tiles : 52; // other directional lights' (a tile of the atlas),
+    bool point_shadows : 53; // point lights',
+    bool spot_shadows : 54; // spot lights'
+    bool debug_cascades : 55; // renderer.debug_cascades: the sun's cascades tinted
+    bool arm_ao : 56; // tex_arm holds the ambient occlusion (red),
+    bool arm_rough : 57; // the roughness (green),
+    bool arm_metal : 58; // the metalness (blue)
+    bool sized : 59; // point or spot lights with a size, seen in a standard material's highlights
+    bool tubes : 60; // point lights with a length (tubes)
+    bool rect_lights : 61; // RectAreaLights (on a standard material)
+    bool parallax : 62; // Material.parallax_map (a standard material's)
+    bool clearcoat : 63; // the physical material's layers: a clear coat,
+    bool sheen : 64; // a sheen,
+    bool iridescence : 65; // a thin film's rainbow,
+    bool anisotropy : 66; // highlights drawn out along a direction,
+    bool transmission : 67; // the picture behind it refracted through its volume
+    bool probes : 68; // it mirrors the scene's reflection probes (Material.env_probes)
+    bool gi : 69; // the scene's irradiance volumes (lit materials),
+    bool rc : 70; // its radiance cascades
+    bool ssr : 71; // screen-space reflections (Material.ssr)
+    bool reflector : 72; // a planar Reflector's picture (Material.reflector)
+    bool glass : 73; // Material.glass: its reflections stay however clear it is
+    bool hex : 74; // Material.hex_tiling
+    bool defocus : 75; // Material.defocus: the maps blurred by the lens's
+    bool fog_volume : 76; // the fog's froxel volume (in place of its analytic fog),
+    bool fog_glow : 77; // its lights' glow,
+    bool fog_shafts : 78; // its light shafts (the sun's shadow in it)
     char depth_packing : 79..80; // a depth material's Material.depth_packing
     // DrawKind.PRETESTED: drawn where the depth prepass has drawn it, which cuts its holes
     // (the alpha test's, the LOD cross-fade's: those bits say which); its program comes with
@@ -116,12 +116,12 @@ bitstruct MaterialKey : char[32] {
     // sway, and for the alpha test's cut-out alpha_test, map and MAP_ALPHA's slot (1: one);
     // a node material's nodes and foliage too
     bool shadow : 82;
-    bool bake : 83;              // light map sample (src/lighting/lightmap.c3): drawn at uv1, blended in
+    bool bake : 83; // light map sample (src/lighting/lightmap.c3): drawn at uv1, blended in
     // a node material's (its *_node graphs in the program): found through its NodeBuild
     // (NodeBuild.programs), which the key alone doesn't name
     bool nodes : 84;
-    bool morph : 85;             // GPU morph targets (BufferGeometry.morph_view + Mesh.morph_weights_view)
-    bool flat_shading : 86;      // flat face normals via screen-space derivatives (Material.flat_shading)
+    bool morph : 85; // GPU morph targets (BufferGeometry.morph_view + Mesh.morph_weights_view)
+    bool flat_shading : 86; // flat face normals via screen-space derivatives (Material.flat_shading)
     // Deferred G-buffer program (gbuffer_key): writes surface data into the four targets read by
     // the deferred lighting pass (shaders/shader_core.glsl's GBUFFER), without direct lights.
     bool gbuffer : 87;
@@ -131,56 +131,56 @@ bitstruct MaterialKey : char[32] {
 }
 
 // Logical view ID for the GPU morph delta buffer (between engine slots < 32 and NODE_USER_VIEW).
-const int VIEW_MORPH_DELTAS = 32;
+const int VIEW_MORPH_DELTAS  = 32;
 // Logical view ID for the GPU morph weight buffer (between engine slots < 32 and NODE_USER_VIEW).
 const int VIEW_MORPH_WEIGHTS = 33;
 
 // Shared map role for ambient occlusion (shaders/shader_core.glsl's MAP_AO).
-const int MAP_AO = 0;
+const int MAP_AO                    = 0;
 // Shared map role for KHR_materials_specular color tint.
-const int MAP_SPECULAR_COLOR = 1;
+const int MAP_SPECULAR_COLOR        = 1;
 // Shared map role for KHR_materials_specular intensity.
-const int MAP_SPECULAR_INTENSITY = 2;
+const int MAP_SPECULAR_INTENSITY    = 2;
 // Shared map role for KHR_materials_transmission factor.
-const int MAP_TRANSMISSION = 3;
+const int MAP_TRANSMISSION          = 3;
 // Shared map role for transmission volume thickness.
-const int MAP_THICKNESS = 4;
+const int MAP_THICKNESS             = 4;
 // Shared map role for KHR_materials_iridescence strength.
-const int MAP_IRIDESCENCE = 5;
+const int MAP_IRIDESCENCE           = 5;
 // Shared map role for iridescence thin-film thickness.
 const int MAP_IRIDESCENCE_THICKNESS = 6;
 // Shared map role for clearcoat strength.
-const int MAP_CLEARCOAT = 7;
+const int MAP_CLEARCOAT             = 7;
 // Shared map role for clearcoat roughness.
-const int MAP_CLEARCOAT_ROUGHNESS = 8;
+const int MAP_CLEARCOAT_ROUGHNESS   = 8;
 // Shared map role for clearcoat tangent-space normals.
-const int MAP_CLEARCOAT_NORMAL = 9;
+const int MAP_CLEARCOAT_NORMAL      = 9;
 // Shared map role for sheen color tint.
-const int MAP_SHEEN_COLOR = 10;
+const int MAP_SHEEN_COLOR           = 10;
 // Shared map role for sheen roughness.
-const int MAP_SHEEN_ROUGHNESS = 11;
+const int MAP_SHEEN_ROUGHNESS       = 11;
 // Shared map role for alpha opacity (green channel).
-const int MAP_ALPHA = 12;
+const int MAP_ALPHA                 = 12;
 // Shared map role for emissive color.
-const int MAP_EMISSIVE = 13;
+const int MAP_EMISSIVE              = 13;
 // Shared map role for baked lightmap irradiance.
-const int MAP_LIGHT = 14;
+const int MAP_LIGHT                 = 14;
 // Shared map role for anisotropy direction and strength.
-const int MAP_ANISOTROPY = 15;
+const int MAP_ANISOTROPY            = 15;
 // Reserved map role for Material.custom_map (read via a dedicated node view, not a shared slot).
-const int MAP_CUSTOM = 16;
+const int MAP_CUSTOM                = 16;
 // Shared map role for lens focus depth (Material.defocus).
-const int MAP_FOCUS = 17;
+const int MAP_FOCUS                 = 17;
 // Shared map role for Phong specular and classic env_combine reflectivity.
-const int MAP_SPECULAR = 18;
+const int MAP_SPECULAR              = 18;
 // Shared map role for MeshMatcapMaterial sphere lookup.
-const int MAP_MATCAP = 19;
+const int MAP_MATCAP                = 19;
 // Shared map role for MeshToonMaterial lighting gradient.
-const int MAP_GRADIENT = 20;
+const int MAP_GRADIENT              = 20;
 // Shared map role for height-based bump perturbation.
-const int MAP_BUMP = 21;
+const int MAP_BUMP                  = 21;
 // Total number of shared map roles.
-const int MAP_ROLES = 22;
+const int MAP_ROLES                 = 22;
 
 // The key as two words: bits 0..127, and 128..255.
 struct KeyWords @private {
@@ -206,7 +206,7 @@ fn int MaterialKey.slot(self, int role) {
 // Stores shared map slot (`1..6`, or `0` for none) for `role` in the key's high word.
 fn void MaterialKey.set_slot(&self, int role, int slot) {
     if (role == MAP_CUSTOM) return;
-    int at = map_role_bit(role);
+    int at     = map_role_bit(role);
     KeyWords w = bitcast(*self, KeyWords);
     w.hi = (w.hi & ~((uint128)7 << at)) | ((uint128)(slot & 7) << at);
     *self = bitcast(w, MaterialKey);
@@ -240,7 +240,14 @@ fn void program_signature(DString* out, ShaderProgram* p) @local {
     for (int st = 0; st < 2; st++) {
         foreach (r : p.rows[st]) out.appendf("r%d %d %d %d %d;", st, r.source.ordinal, r.row, r.count, r.at);
     }
-    foreach (v : p.views) out.appendf("v%d %d %d %d %d;", v.stage.ordinal, v.source, v.storage, v.kind.ordinal, v.elem.ordinal);
+    foreach (v : p.views) out.appendf(
+        "v%d %d %d %d %d;",
+        v.stage.ordinal,
+        v.source,
+        v.storage,
+        v.kind.ordinal,
+        v.elem.ordinal
+    );
     foreach (sm : p.samplers) out.appendf("s%d %d %d;", sm.stage.ordinal, sm.source, sm.compare);
 }
 
@@ -264,7 +271,7 @@ fn ulong hash64(String s) @local {
 // with the builds that print the same.
 fn MaterialProgram* material_program(MaterialKey key, NodeBuild* build = null) @private {
     // (a node material's: printed for each build, made once for the builds that print the same)
-    KeyWords words = bitcast(key, KeyWords);
+    KeyWords words                             = bitcast(key, KeyWords);
     HashMap{KeyWords, MaterialProgram*}* cache = &material_programs;
     if (key.nodes) {
         if (!build) abort("drie: a node material's program without its build");
@@ -290,7 +297,8 @@ fn MaterialProgram* material_program(MaterialKey key, NodeBuild* build = null) @
     // timing a cold start)
     if (try salt = env::tget_var("DRIE_PROGRAM_SALT")) {
         float far = 1e7f + (float)(salt.hash() & 0xffff);
-        Node off = nodes::select(node_system(FRAG_COORD).x().greater_than(nodes::num(far)), nodes::num(1e-20f), nodes::num(0));
+        Node off = nodes::select(node_system(FRAG_COORD).x()
+            .greater_than(nodes::num(far)), nodes::num(1e-20f), nodes::num(0));
         if (graph.colors[0].id) graph.colors[0] = graph.colors[0] + nodes::vec4(off, 0, 0, 0);
         if (key.prepassed) prepass.colors[0] = prepass.colors[0] + nodes::vec4(off, 0, 0, 0);
     }
@@ -317,7 +325,15 @@ fn MaterialProgram* material_program(MaterialKey key, NodeBuild* build = null) @
     cache.set(words, mp);
     // (DRIE_TRACE_PROGRAMS: each program printed as it is built)
     if (try env::tget_var("DRIE_TRACE_PROGRAMS")) {
-        io::eprintfn("drie: program %x%032x: vs %d B, fs %d B\n%s\n%s", words.hi, words.lo, mp.program.vs.len, mp.program.fs.len, mp.program.vs, mp.program.fs);
+        io::eprintfn(
+            "drie: program %x%032x: vs %d B, fs %d B\n%s\n%s",
+            words.hi,
+            words.lo,
+            mp.program.vs.len,
+            mp.program.fs.len,
+            mp.program.vs,
+            mp.program.fs
+        );
         if (mp.depth) io::eprintfn("drie: its depth prepass: fs %d B\n%s", mp.depth.fs.len, mp.depth.fs);
     }
     return mp;
@@ -325,8 +341,15 @@ fn MaterialProgram* material_program(MaterialKey key, NodeBuild* build = null) @
 
 int wgsl_dumped @local;
 
-fn void dump_wgsl(String dir, ProgramGraph* graph, ProgramGraph* prepass, bool prepassed, NodeBuild* build, Node[NodeBuiltin::len]* vbind,
-                  Node[NodeBuiltin::len]* fbind) @local {
+fn void dump_wgsl(
+    String dir,
+    ProgramGraph* graph,
+    ProgramGraph* prepass,
+    bool prepassed,
+    NodeBuild* build,
+    Node[NodeBuiltin::len]* vbind,
+    Node[NodeBuiltin::len]* fbind
+) @local {
     ProgramGraph g = *graph;
     g.varyings_from = null;
     ShaderProgram*[2] ps;
@@ -355,7 +378,7 @@ fn MaterialProgram* share_material_program(MaterialProgram* mp) @private {
     @pool() {
         // (not by its key: keys that differ in what the program doesn't print share it)
         String sig = material_signature(mp);
-        ulong h = hash64(sig);
+        ulong h    = hash64(sig);
         if (!node_material_programs.is_initialized()) node_material_programs.init(mem);
         MaterialProgram*? shared = node_material_programs[h];
         if (try shared && material_signature(shared) == sig) {
@@ -374,8 +397,13 @@ fn MaterialProgram* share_material_program(MaterialProgram* mp) @private {
 
 // The bindings of the classic slots (shaders::VIEW_*, SMP_*) as `p` takes them; a node
 // material's textures (NODE_USER_VIEW + k) from `user` (its NodeBuild.textures' views).
-fn SgBindings program_bindings(ShaderProgram* p, SgBindings* classic, SgView[] user = { },
-                               SgView morph_deltas = { }, SgView morph_weights = { }) @private {
+fn SgBindings program_bindings(
+    ShaderProgram* p,
+    SgBindings* classic,
+    SgView[] user = { },
+    SgView morph_deltas = { },
+    SgView morph_weights = { }
+) @private {
     SgBindings b = {
         .vertex_buffers = classic.vertex_buffers,
         .vertex_buffer_offsets = classic.vertex_buffer_offsets,
@@ -401,8 +429,14 @@ fn SgBindings program_bindings(ShaderProgram* p, SgBindings* classic, SgView[] u
 
 // Applies `p`'s uniform block for stage `st`, gathered from the engine's (a shadow program's
 // fragment stage: from `sfs`) and a node material's USER block (`user`, see user_block).
-fn void apply_program_uniforms(ShaderProgram* p, ProgramStage st, VsParams* vs, FsParams* fs, ShadowFsParams* sfs = null,
-                               Vec4[] user = { }) @private {
+fn void apply_program_uniforms(
+    ShaderProgram* p,
+    ProgramStage st,
+    VsParams* vs,
+    FsParams* fs,
+    ShadowFsParams* sfs = null,
+    Vec4[] user = { }
+) @private {
     int rows = p.block_rows[st.ordinal];
     if (!rows) return;
     void*[NodeSource::len] src;
@@ -503,15 +537,17 @@ fn void fragment_binds(VertexValues* vtx, Node[NodeBuiltin::len]* b, Node v_uv, 
 // with NORMAL_WORLD bound to facing vertex normal `n`. Cut-out statements (mask_node discard,
 // plus color_node/opacity_node evaluation when NodeBuild.cuts is set) are appended to `holes`.
 fn void user_color(NodeBuild* build, Node n, Node* rgb, Node* a, Node[] holes, int* count) @private {
-    Node mask = build.slots[8];
-    Node color = build.slots[0];
+    Node mask    = build.slots[8];
+    Node color   = build.slots[0];
     Node opacity = build.slots[1];
     // (MATERIAL_COLOR: the color and opacity as they come to this step)
-    Node own = nodes::vec4(*rgb, *a);
+    Node own     = nodes::vec4(*rgb, *a);
     if (mask.id) {
         if (mask.type() != BOOL) abort("drie: mask_node is a bool");
-        holes[(*count)++] = nodes::if_then(nodes::logical_not(bound(mask, { rebind(NORMAL_WORLD, n), rebind(NORMAL_GEOMETRY, n) })),
-                                           nodes::block(nodes::discard()));
+        holes[(*count)++] = nodes::if_then(
+            nodes::logical_not(bound(mask, { rebind(NORMAL_WORLD, n), rebind(NORMAL_GEOMETRY, n) })),
+            nodes::block(nodes::discard())
+        );
     }
     if (color.id) {
         Node c = bound(color, { rebind(NORMAL_WORLD, n), rebind(NORMAL_GEOMETRY, n), rebind(MATERIAL_COLOR, own) });
@@ -524,7 +560,10 @@ fn void user_color(NodeBuild* build, Node n, Node* rgb, Node* a, Node[] holes, i
         }
     }
     if (opacity.id) {
-        Node o = bound(nodes::convert(opacity, FLOAT), { rebind(NORMAL_WORLD, n), rebind(NORMAL_GEOMETRY, n), rebind(MATERIAL_COLOR, own) });
+        Node o = bound(
+            nodes::convert(opacity, FLOAT),
+            { rebind(NORMAL_WORLD, n), rebind(NORMAL_GEOMETRY, n), rebind(MATERIAL_COLOR, own) }
+        );
         if (build.cuts) holes[(*count)++] = drie::node_eval(o);
         *a = o;
     }

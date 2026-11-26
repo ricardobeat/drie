@@ -53,7 +53,14 @@ struct RtTraceDesc {
 // Returns non-zero when the active graphics backend supports hardware ray tracing.
 extern fn CInt sg_rt_supported() @cname("sg_rt_supported");
 // Builds or refits (when `id != 0`) a bottom-level acceleration structure from mesh buffers.
-extern fn CInt sg_rt_geometry(CInt id, SgBuffer vbuf, CInt stride, CInt vertex_count, SgBuffer ibuf, CInt index_count) @cname("sg_rt_geometry");
+extern fn CInt sg_rt_geometry(
+    CInt id,
+    SgBuffer vbuf,
+    CInt stride,
+    CInt vertex_count,
+    SgBuffer ibuf,
+    CInt index_count
+) @cname("sg_rt_geometry");
 // Destroys a bottom-level acceleration structure returned by `sg_rt_geometry()`.
 extern fn void sg_rt_geometry_free(CInt id) @cname("sg_rt_geometry_free");
 // Traces and denoises rect-area shadow visibility for the current G-Buffer; returns non-zero on success.
@@ -62,11 +69,11 @@ extern fn CInt sg_rt_trace(RtTraceDesc* desc) @cname("sg_rt_trace");
 // ---- Configuration & state
 
 // Maximum number of ray-traced rect area lights packed into one RGBA visibility mask.
-const int RT_MAX_LIGHTS = 4;
+const int RT_MAX_LIGHTS           = 4;
 // Maximum shadow-map resolution for a ray-traced light (used only for forward fallback passes).
-const int RT_MAP_SIZE = 256;
+const int RT_MAP_SIZE             = 256;
 // Number of frames an unused geometry retains its cached acceleration structure.
-const uint RT_KEEP_FRAMES @local = 240;
+const uint RT_KEEP_FRAMES @local  = 240;
 // Upper bound on shadow-caster instances submitted per frame (including instanced meshes).
 const int RT_MAX_INSTANCES @local = 65536;
 
@@ -109,7 +116,9 @@ fn bool rt_supported() @private {
 }
 
 // Returns true when the renderer will ray-trace rect area light shadows in the current render.
-fn bool Renderer.traces_rays(&self) => self.ray_traced_shadows && self.deferred && !state.bake.on && !self.reflecting && rt_supported();
+fn bool Renderer.traces_rays(
+    &self
+) => self.ray_traced_shadows && self.deferred && !state.bake.on && !self.reflecting && rt_supported();
 
 // ---- Per-frame tracing
 
@@ -175,7 +184,7 @@ fn void rt_add_instance(Mat4 m, CInt geometry) @local {
 // Returns the acceleration-structure handle for `g`, building or refitting when vertices update.
 fn CInt rt_geometry(BufferGeometry* g) @local {
     if (!g.uploaded || !g.vbuf.id || !g.ibuf.id || g.index_count < 3) return 0;
-    ulong key = (ulong)(uptr)g;
+    ulong key        = (ulong)(uptr)g;
     RtGeometry* have = rts.geometries.get_ref(key) ?? null;
     if (have && have.version == g.version && have.upload_version == g.upload_version) {
         have.used = state.frame;
@@ -184,7 +193,14 @@ fn CInt rt_geometry(BufferGeometry* g) @local {
     // Reallocated GPU buffers require a fresh structure; updated vertices on the same buffers refit.
     CInt id = have && have.upload_version == g.upload_version ? have.id : 0;
     if (have && !id) sg_rt_geometry_free(have.id);
-    id = sg_rt_geometry(id, g.vbuf, (CInt)(FLOATS_PER_VERTEX * float::size), (CInt)g.vertex_count(), g.ibuf, (CInt)g.index_count);
+    id = sg_rt_geometry(
+        id,
+        g.vbuf,
+        (CInt)(FLOATS_PER_VERTEX * float::size),
+        (CInt)g.vertex_count(),
+        g.ibuf,
+        (CInt)g.index_count
+    );
     if (!id) return 0;
     rts.geometries[key] = { id, g.version, g.upload_version, state.frame };
     return id;
@@ -193,18 +209,19 @@ fn CInt rt_geometry(BufferGeometry* g) @local {
 fn void rt_walk(Object3D* obj) @local {
     if (!obj.visible) return;
     if (obj.kind == MESH) {
-        Mesh* m = (Mesh*)obj;
+        Mesh* m           = (Mesh*)obj;
         BufferGeometry* g = m.geometry;
-        bool caster = g && m.material && m.material.visible && m.cast_shadow && !m.material.transparent && !m.is_line()
+        bool caster       = g && m.material && m.material.visible && m.cast_shadow && !m.material.transparent
+            && !m.is_line()
             && m.billboard == NO_BILLBOARD;
-        CInt id = caster ? rt_geometry(g) : 0;
+        CInt id           = caster ? rt_geometry(g) : 0;
         if (id) {
             sz n = m.instance_data.len() > 0 ? (sz)m.instance_count : 0;
             if (!n) {
                 rt_add_instance(m.matrix_world, id);
             } else {
                 for (sz i = 0; i < n; i++) {
-                    float* d = &m.instance_data[i * 12];
+                    float* d  = &m.instance_data[i * 12];
                     Mat4 inst = mat4_identity();
                     for (int r = 0; r < 3; r++) {
                         for (int c = 0; c < 4; c++) inst[c][r] = d[r * 4 + c];
@@ -219,7 +236,15 @@ fn void rt_walk(Object3D* obj) @local {
 
 // Traces and denoises the visibility mask for this render's ray-traced lights between the
 // G-Buffer pass (`depth`, `normal`, `width` x `height`) and the deferred lighting pass.
-fn void rt_trace(Scene* scene, Camera* camera, Mat4 view_proj_rel, SgImage depth, SgImage normal, int width, int height) @private {
+fn void rt_trace(
+    Scene* scene,
+    Camera* camera,
+    Mat4 view_proj_rel,
+    SgImage depth,
+    SgImage normal,
+    int width,
+    int height
+) @private {
     if (!rts.count) return;
     if (!rts.geometries.allocator) {
         rts.geometries.init(mem);
@@ -241,10 +266,10 @@ fn void rt_trace(Scene* scene, Camera* camera, Mat4 view_proj_rel, SgImage depth
         }
     };
     Vector3 eye = camera.matrix_world.get_position();
-    bool reset = rts.camera != camera;
-    Mat4 inv = view_proj_rel.invert();
-    bool zo = depth_zero_to_one();
-    float p11 = math::abs(camera.projection_matrix[1][1]);
+    bool reset  = rts.camera != camera;
+    Mat4 inv    = view_proj_rel.invert();
+    bool zo     = depth_zero_to_one();
+    float p11   = math::abs(camera.projection_matrix[1][1]);
     RtTraceDesc d = {
         .depth = depth,
         .normal = normal,

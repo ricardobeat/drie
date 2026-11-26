@@ -67,7 +67,8 @@ fn void collect(
             if (m.shadow_only && !shadow_pass) break;
             // Exclude a Reflector's own mirror meshes when rendering its reflection texture.
             if (state.renderer.reflecting && m.material.reflector == state.renderer.reflecting) break;
-            if (shadow_pass && (!m.cast_shadow || m.material.transparent || m.is_line() || m.billboard != NO_BILLBOARD)) break;
+            if (shadow_pass
+                && (!m.cast_shadow || m.material.transparent || m.is_line() || m.billboard != NO_BILLBOARD)) break;
             if (shadow_pass && state.skip_instanced && m.instance_data.len() > 0) break;
             BufferGeometry* g = m.geometry;
             if (!g.uploaded && g.indices.len() == 0) break;
@@ -265,7 +266,11 @@ fn FsParams build_light_params(Scene* scene, Camera* camera, SpotLight* caster) 
                     p.dir_cascade_fwd.w = clamp(d.shadow.intensity, 0, 1);
                     p.shadow_ext.x = d.shadow.bias;
                 }
-                GpuDirLight gd = { .dir = { ...dir, 0 }, .color = { ...c, 0 }, .shadow = { -1, 1, (float)l.channels, d.shadow.contact_length } };
+                GpuDirLight gd = {
+                    .dir = { ...dir, 0 },
+                    .color = { ...c, 0 },
+                    .shadow = { -1, 1, (float)l.channels, d.shadow.contact_length }
+                };
                 // Secondary shadowed directional lights use a single atlas tile (dir_tile_shadow).
                 AtlasMap* am = d != state.sun_caster && atlas_has_shadow(d) ? atlas_map_of(d) : null;
                 if (am) {
@@ -274,7 +279,12 @@ fn FsParams build_light_params(Scene* scene, Camera* camera, SpotLight* caster) 
                     sh.params = { 3, d.shadow.normal_bias, atlas_texel(am), vsm ? d.shadow.bias : d.shadow.radius };
                     sh.rect = atlas_rect(am);
                     float fade = atlas_slot_of(d).fade;
-                    gd.shadow = { (float)g.shadows.len(), clamp(d.shadow.intensity, 0, 1) * fade, (float)l.channels, d.shadow.contact_length };
+                    gd.shadow = {
+                        (float)g.shadows.len(),
+                        clamp(d.shadow.intensity, 0, 1) * fade,
+                        (float)l.channels,
+                        d.shadow.contact_length
+                    };
                     g.shadows.push(sh);
                     g.dir_tiles = true;
                 }
@@ -285,9 +295,9 @@ fn FsParams build_light_params(Scene* scene, Camera* camera, SpotLight* caster) 
                 // Tube lights pack half-extent vector along local +X into `params.yzw`.
                 Vector3 half;
                 if (pl.length > 0) {
-                    Mat4 m = l.matrix_world;
+                    Mat4 m    = l.matrix_world;
                     Vector3 x = { m[0][0], m[0][1], m[0][2] };
-                    float xl = x.length();
+                    float xl  = x.length();
                     if (xl > 0) half = x * (pl.length * 0.5f / xl);
                 }
                 GpuPointLight gp = {
@@ -369,7 +379,12 @@ fn FsParams build_light_params(Scene* scene, Camera* camera, SpotLight* caster) 
                     sh.soft = { sl.shadow.softness, math::max(sl.shadow.near, 0.01f), far, zo ? width : -width };
                     if (am) sh.rect = atlas_rect(am);
                     float fade = am ? atlas_slot_of(sl).fade : 1;
-                    gs.shadow = { (float)g.shadows.len(), clamp(sl.shadow.intensity, 0, 1) * fade, (float)l.channels, sl.shadow.contact_length };
+                    gs.shadow = {
+                        (float)g.shadows.len(),
+                        clamp(sl.shadow.intensity, 0, 1) * fade,
+                        (float)l.channels,
+                        sl.shadow.contact_length
+                    };
                     g.spot_shadows = true;
                     if (sl.shadow.softness > 0) g.soft_shadows = true;
                     g.shadows.push(sh);
@@ -392,7 +407,7 @@ fn FsParams build_light_params(Scene* scene, Camera* camera, SpotLight* caster) 
     g.upload(&grid, r.assign_clusters, r.check_compute);
     p.counts = { ndir, npoint, nspot, nrect };
     Vector3 atlas = gi_atlas_size();
-    float x0 = 0;
+    float x0      = 0;
     for (int i = 0; i < state.gi_count; i++) {
         IrradianceVolume* v = state.gi_volumes[i];
         Vector3 size        = v.max - v.min;
@@ -421,8 +436,12 @@ fn FsParams build_light_params(Scene* scene, Camera* camera, SpotLight* caster) 
         RadianceCascades* rc = scene.radiance;
         p.rc_min = { ...rc.min, rc.spacing };
         // Sparse RC signals hash mode via negative x (-hash_cap), packing nx | (ny << 9) in y.
-        p.rc_size = rc.sparse
-            ? (Vec4) { -(float)rc.hash_cap, (float)(rc.nx | (rc.ny << 9)), (float)rc.nz, rc.intensity }
+        p.rc_size = rc.sparse ? (Vec4) {
+            -(float)rc.hash_cap,
+            (float)(rc.nx | (rc.ny << 9)),
+            (float)rc.nz,
+            rc.intensity
+        }
             : (Vec4) { rc.nx, rc.ny, rc.nz, rc.intensity };
     }
     if (scene.fog) {
@@ -475,8 +494,8 @@ fn Texture* uv_base(Material* mat) @local => mat.map ?: (mat.normal_map ?: mat.a
 // Computes a 2x3 affine UV transform matrix (repeat, rotation around `center`, offset) as two Vec4 rows.
 fn Vec4[2] uv_rows(Texture* t) @local {
     if (!t) return { { 1, 0, 0, 0 }, { 0, 1, 0, 0 } };
-    float c = math::cos(t.rotation);
-    float s = math::sin(t.rotation);
+    float c   = math::cos(t.rotation);
+    float s   = math::sin(t.rotation);
     Vector2 k = t.center;
     return {
         { t.repeat.x * c, t.repeat.x * s, -t.repeat.x * (c * k.x + s * k.y) + k.x + t.offset.x, 0 },
@@ -489,21 +508,23 @@ fn Vec4[2] uv_transform(Material* mat) @local => uv_rows(uv_base(mat));
 // Packs vertex displacement scale, bias, and active flag (`z == 1` when CPU heights are ready).
 fn Vec4 displacement_params(Material* mat) @local {
     Texture* t = mat.displacement_map;
-    bool read = t && t.keep_pixels && t.preparing.load() == 2;
+    bool read  = t && t.keep_pixels && t.preparing.load() == 2;
     return { mat.displacement_scale, mat.displacement_bias, read ? 1 : 0, 0 };
 }
 
 // Samples `mat.displacement_map` at each vertex UV into a cached per-mesh float vertex buffer,
 // rebuilding when geometry upload version, map pointer, or UV transform changes.
 fn SgBuffer displacement_heights(Mesh* m) @local {
-    Texture* t = m.material.displacement_map;
+    Texture* t        = m.material.displacement_map;
     BufferGeometry* g = m.geometry;
-    uint n = g.vertex_count();
+    uint n            = g.vertex_count();
     if (!t) return zeros(n);
     if (!t.keep_pixels) {
         Texture* image = t.source ?: t;
         if (image.preparing.load() == 2) {
-            if (!image.keep_pixels) io::eprintfn("drie: a displacement map was uploaded before it was one: it has no pixels to read");
+            if (!image.keep_pixels) io::eprintfn(
+                "drie: a displacement map was uploaded before it was one: it has no pixels to read"
+            );
         }
         t.keep_pixels = true;
         image.keep_pixels = true;
@@ -511,7 +532,7 @@ fn SgBuffer displacement_heights(Mesh* m) @local {
     Texture* image = t.source ?: t;
     if (image.preparing.load() != 2) image.prepare();
     Vec4[2] rows = uv_rows(t);
-    ulong key = (ulong)(uptr)t * 31 + g.upload_version;
+    ulong key    = (ulong)(uptr)t * 31 + g.upload_version;
     for (int i = 0; i < 2; i++) {
         for (int k = 0; k < 3; k++) key = key * 1000003 + bitcast(rows[i][k], uint);
     }
@@ -520,12 +541,14 @@ fn SgBuffer displacement_heights(Mesh* m) @local {
     float[] heights = mem::new_array(float, (sz)math::max(n, 1u));
     defer free(heights);
     for (uint v = 0; v < n; v++) {
-        float u0 = g.vertices[(sz)v * FLOATS_PER_VERTEX + 6];
-        float v0 = g.vertices[(sz)v * FLOATS_PER_VERTEX + 7];
+        float u0   = g.vertices[(sz)v * FLOATS_PER_VERTEX + 6];
+        float v0   = g.vertices[(sz)v * FLOATS_PER_VERTEX + 7];
         Vector2 at = { rows[0].x * u0 + rows[0].y * v0 + rows[0].z, rows[1].x * u0 + rows[1].y * v0 + rows[1].z };
         heights[v] = image.red_at(at);
     }
-    m.displacement_buf = sg::make_buffer(&&{ .data = { .ptr = heights.ptr, .size = heights.len * float::size }, .label = "drie-displacement" });
+    m.displacement_buf = sg::make_buffer(
+        &&{ .data = { .ptr = heights.ptr, .size = heights.len * float::size }, .label = "drie-displacement" }
+    );
     m.displacement_key = key;
     return m.displacement_buf;
 }
@@ -548,10 +571,10 @@ fn Vec4[2] uv_relative(Texture* base, Texture* t) @local {
     float det = b[0].x * b[1].y - b[0].y * b[1].x;
     if (math::abs(det) < 1e-12) return m;
     // Invert the 2x3 base UV transform and compose `m * inverse(b)`.
-    float ia = b[1].y / det;
+    float ia =  b[1].y / det;
     float ib = -b[0].y / det;
     float ic = -b[1].x / det;
-    float id = b[0].x / det;
+    float id =  b[0].x / det;
     float ix = -(ia * b[0].z + ib * b[1].z);
     float iy = -(ic * b[0].z + id * b[1].z);
     return {
@@ -564,7 +587,7 @@ fn Vec4[2] uv_relative(Texture* base, Texture* t) @local {
 fn SgBuffer zeros(uint vertices) @private {
     if (state.zeros.id && state.zeros_vertices >= vertices) return state.zeros;
     if (state.zeros.id) sg::destroy_buffer(state.zeros);
-    uint n = math::max(vertices, 1024u, state.zeros_vertices * 2);
+    uint n       = math::max(vertices, 1024u, state.zeros_vertices * 2);
     float[] zero = mem::new_array(float, (sz)n * 4);
     defer free(zero);
     state.zeros = sg::make_buffer(
@@ -578,7 +601,7 @@ fn SgBuffer zeros(uint vertices) @private {
 fn SgBuffer whites(uint instances) @private {
     if (state.whites.id && state.whites_count >= instances) return state.whites;
     if (state.whites.id) sg::destroy_buffer(state.whites);
-    uint n = math::max(instances, 1024u, state.whites_count * 2);
+    uint n        = math::max(instances, 1024u, state.whites_count * 2);
     float[] white = mem::new_array(float, (sz)n * 3);
     defer free(white);
     white[..] = 1;
@@ -690,14 +713,14 @@ fn Mat4 relative_view_proj(Camera* camera, Vector3 origin) @private {
 // Returns `m.matrix_world`, or a camera-oriented billboard matrix matching `m.billboard`.
 fn Mat4 model_of(Mesh* m) @local {
     if (m.billboard == NO_BILLBOARD) return m.matrix_world;
-    Mat4 w = m.matrix_world;
-    Vector3 at = w.get_position();
-    float sx = ((Vector3){ w[0][0], w[0][1], w[0][2] }).length();
-    float sy = ((Vector3){ w[1][0], w[1][1], w[1][2] }).length();
-    Mat4 c = state.view_world;
-    Vector3 right = ((Vector3){ c[0][0], c[0][1], c[0][2] }).normalize();
-    Vector3 up = ((Vector3){ c[1][0], c[1][1], c[1][2] }).normalize();
-    Vector3 toward = ((Vector3){ c[2][0], c[2][1], c[2][2] }).normalize();
+    Mat4 w         = m.matrix_world;
+    Vector3 at     = w.get_position();
+    float sx       = ((Vector3) { w[0][0], w[0][1], w[0][2] }).length();
+    float sy       = ((Vector3) { w[1][0], w[1][1], w[1][2] }).length();
+    Mat4 c         = state.view_world;
+    Vector3 right  = ((Vector3) { c[0][0], c[0][1], c[0][2] }).normalize();
+    Vector3 up     = ((Vector3) { c[1][0], c[1][1], c[1][2] }).normalize();
+    Vector3 toward = ((Vector3) { c[2][0], c[2][1], c[2][2] }).normalize();
     if (m.billboard == FACING && m.billboard_fixed_size) {
         // Scale by view depth so the sprite maintains constant screen-space size.
         float depth = math::max((at - state.view_origin).dot(-toward), 0f);
@@ -710,9 +733,9 @@ fn Mat4 model_of(Mesh* m) @local {
     switch (m.billboard) {
         case UPRIGHT:
             Vector3 look = { state.view_origin.x - at.x, 0, state.view_origin.z - at.z };
-            az = look.length() > 1e-6 ? look.normalize() : (Vector3){ 0, 0, 1 };
-            ax = (Vector3){ az.z, 0, -az.x } * sx;
-            ay = (Vector3){ 0, sy, 0 };
+            az = look.length() > 1e-6 ? look.normalize() : (Vector3) { 0, 0, 1 };
+            ax = (Vector3) { az.z, 0, -az.x } * sx;
+            ay = (Vector3) { 0, sy, 0 };
         case KEEP_Y:
             ax = right * sx;
             ay = { w[1][0], w[1][1], w[1][2] };
@@ -725,9 +748,9 @@ fn Mat4 model_of(Mesh* m) @local {
             ax = (right * k + up * s) * sx;
             ay = (up * k - right * s) * sy;
     }
-    Vector2 shift = { m.billboard_center.x - 0.5f, m.billboard_center.y - 0.5f };
+    Vector2 shift  = { m.billboard_center.x - 0.5f, m.billboard_center.y - 0.5f };
     Vector3 origin = at - ax * shift.x - ay * shift.y;
-    Mat4 b = mat4_identity();
+    Mat4 b         = mat4_identity();
     b[0] = { ax.x, ax.y, ax.z, 0 };
     b[1] = { ay.x, ay.y, ay.z, 0 };
     b[2] = { az.x, az.y, az.z, 0 };
@@ -746,9 +769,7 @@ fn VsParams vs_params_of(DrawItem* item, Mat4 view_proj, bool normals = true) @p
         .view_origin = { ...state.view_origin, 0 },
         .model = model,
         .normal_mat = normals ? model.invert()
-        .transpose() : model, .uv_transform = uv_transform(
-            mat
-        ), .sway = sway_params(mat), };
+        .transpose() : model, .uv_transform = uv_transform(mat), .sway = sway_params(mat), };
     if (state.motion) {
         // Advance mesh transform history once per MRT motion frame.
         if (m.motion_frame != state.motion_frame) {
@@ -775,11 +796,11 @@ fn bool coated(Material* mat) @local => mat.clearcoat > 0 || mat.clearcoat_node.
 // Packs optional material maps (matching shader `MAP_*` role order) into the 6 shared `tex_ext0..5`
 // texture slots, deduplicating shared images and reserving top slots for node and Reflector maps.
 fn void material_slots(Material* mat, NodeBuild* nodes, Texture*[6]* slots, Vec4[6]* map_slots) @private {
-    bool standard = mat.type == STANDARD;
-    bool refracts = standard && mat.transmission > 0;
+    bool standard  = mat.type == STANDARD;
+    bool refracts  = standard && mat.transmission > 0;
     Renderer* lens = state.renderer;
-    bool defocus = mat.defocus && lens.focus_map && lens.focus_aperture > 0;
-    bool classic = mat.type == BASIC || mat.type == LAMBERT || mat.type == PHONG;
+    bool defocus   = mat.defocus && lens.focus_map && lens.focus_aperture > 0;
+    bool classic   = mat.type == BASIC || mat.type == LAMBERT || mat.type == PHONG;
     Texture*[22] roles = {
         standard && mat.ao_intensity != 0 ? mat.ao_map : null,
         standard ? mat.specular_color_map : null,
@@ -806,7 +827,7 @@ fn void material_slots(Material* mat, NodeBuild* nodes, Texture*[6]* slots, Vec4
     };
     int used;
     // Reserve upper `tex_ext` slots for node-material textures and any active Reflector texture.
-    int room = 6 - (nodes ? nodes.texture_count : 0);
+    int room          = 6 - (nodes ? nodes.texture_count : 0);
     Reflector* mirror = mirror_of(mat);
     if (mirror) room--;
     foreach (i, t : roles) {
@@ -839,14 +860,15 @@ fn int reflector_slot(int node_textures) => 5 - node_textures;
 
 // Builds the `MaterialKey` for a shadow-pass shader (`plain: true` omits node graphs during warmup).
 fn void shadow_key_of(DrawItem* item, MaterialKey* key, bool plain = false) @local {
-    Mesh* m = item.mesh;
+    Mesh* m       = item.mesh;
     Material* mat = m.material;
     m.geometry.upload_morph();
     m.upload_morph_weights();
     NodeBuild* build = plain ? null : node_build_of(mat);
     // A node graph's color step can cut alpha holes without a texture map.
-    bool node_cuts = build && build.cuts;
-    bool cut = (mat.map || mat.alpha_map || node_cuts) && mat.alpha_test > 0 && !state.renderer.prof_no_alpha_test;
+    bool node_cuts   = build && build.cuts;
+    bool cut         = (mat.map || mat.alpha_map || node_cuts) && mat.alpha_test > 0
+        && !state.renderer.prof_no_alpha_test;
     *key = {
         .shadow = true,
         .nodes = build != null,
@@ -862,39 +884,47 @@ fn void shadow_key_of(DrawItem* item, MaterialKey* key, bool plain = false) @loc
 }
 
 // Builds the full `MaterialKey` describing every shader feature required for `item` in this render.
-fn void material_key_of(DrawItem* item, DrawKind kind, FsParams* fs, Vec4[6]* map_slots, MaterialKey* key,
-                        bool gbuffer = false, bool plain = false) @private {
-    Mesh* m = item.mesh;
+fn void material_key_of(
+    DrawItem* item,
+    DrawKind kind,
+    FsParams* fs,
+    Vec4[6]* map_slots,
+    MaterialKey* key,
+    bool gbuffer = false,
+    bool plain = false
+) @private {
+    Mesh* m       = item.mesh;
     Material* mat = m.material;
-    Renderer* r = state.renderer;
+    Renderer* r   = state.renderer;
     m.geometry.upload_morph();
     m.upload_morph_weights();
     MaterialType type = mat.type;
-    bool lit = type == LAMBERT || type == PHONG || type == STANDARD || type == TOON;
-    bool standard = type == STANDARD;
-    float alpha_test = alpha_test_of(mat);
-    int fog = mat.fog ? (int)fs.fog_params.w : 0;
-    bool fog_volume = fog && fs.fog_grid.w > 0;
+    bool lit          = type == LAMBERT || type == PHONG || type == STANDARD || type == TOON;
+    bool standard     = type == STANDARD;
+    float alpha_test  = alpha_test_of(mat);
+    int fog           = mat.fog ? (int)fs.fog_params.w : 0;
+    bool fog_volume   = fog && fs.fog_grid.w > 0;
     // Analytic sun light shafts apply in exponential fog when volumetric fog is inactive.
-    bool shafts = !fog_volume && fog == 3 && fs.fog_sun_dir.w > 0 && fs.fog_sun_color.w > 0 && fs.dir_shadow_params.x > 0.5f;
-    Texture* env_map = mat.env_map;
-    Scene* scene = state.scene;
+    bool shafts       = !fog_volume && fog == 3 && fs.fog_sun_dir.w > 0 && fs.fog_sun_color.w > 0
+        && fs.dir_shadow_params.x > 0.5f;
+    Texture* env_map  = mat.env_map;
+    Scene* scene      = state.scene;
     if (!env_map && scene && scene.environment && standard) env_map = scene.environment;
     // Trigger upload so `has_env_sh` / `env_light` is populated before keying the shader.
     if (env_map) (void)ready(env_map);
     bool probes = !mat.env_map && mat.env_probes && state.probes_view.id;
     if (probes) env_map = null;
-    bool backdrop = m == state.background;
+    bool backdrop    = m == state.background;
     bool env_combine = mat.env_map && !backdrop && (type == BASIC || type == LAMBERT || type == PHONG);
     bool env_reflect = (env_map || probes) && (mat.glass || (type != LAMBERT && !backdrop && !env_combine));
 
     RenderTarget* rt = r.render_target;
-    bool cut = kind == CUT;
-    bool prepassed = kind == PRETESTED || kind == DEPTH;
-    bool holes = cut || prepassed;
-    bool vc = mat.vertex_colors;
-    bool shadows = lit && m.receive_shadow && (lights_gpu.shadows.len() > 0 || fs.dir_shadow_params.x > 0.5f);
-    bool linear = fs.output_params.x > 0.5f;
+    bool cut         = kind == CUT;
+    bool prepassed   = kind == PRETESTED || kind == DEPTH;
+    bool holes       = cut || prepassed;
+    bool vc          = mat.vertex_colors;
+    bool shadows     = lit && m.receive_shadow && (lights_gpu.shadows.len() > 0 || fs.dir_shadow_params.x > 0.5f);
+    bool linear      = fs.output_params.x > 0.5f;
     *key = {
         .type = (char)type,
         .mrt = rt && rt.mrt,
@@ -933,11 +963,11 @@ fn void material_key_of(DrawItem* item, DrawKind kind, FsParams* fs, Vec4[6]* ma
         .point_lights = lit && fs.counts.y > 0,
         .spot_lights = lit && fs.counts.z > 0,
         .channels = lit && mat.light_channels != 0,
-        .map_emissive = lit && mat.map_emissive,
-        // Material.vertex_light reads vertex colors even when `vertex_colors` is false.
+        .map_emissive = lit
+            && mat.map_emissive, // Material.vertex_light reads vertex colors even when `vertex_colors` is false.
         .baked = lit && mat.vertex_light > 0,
-        .normal_map = type != BASIC && mat.normal_map != null,
-        // gen_bake_pipeline() omits the tangent vertex attribute.
+        .normal_map = type != BASIC
+            && mat.normal_map != null, // gen_bake_pipeline() omits the tangent vertex attribute.
         .tangents = type != BASIC && !state.bake.on && uses_tangents(item),
         .depth_packing = type == DEPTH ? (char)mat.depth_packing.ordinal : 0,
         .env_light = standard && env_map && env_map.has_env_sh,
@@ -946,8 +976,8 @@ fn void material_key_of(DrawItem* item, DrawKind kind, FsParams* fs, Vec4[6]* ma
         .defocus = mat.defocus && r.focus_map && r.focus_aperture > 0,
         .hex = mat.hex_tiling > 0 && mat.alpha_test <= 0,
         .probes = probes,
-        .gi = lit && state.gi_count > 0,
-        // Lightmap baking reuses `ssr_color` for the previous lightmap accumulation texture.
+        .gi = lit
+            && state.gi_count > 0, // Lightmap baking reuses `ssr_color` for the previous lightmap accumulation texture.
         .ssr = !state.bake.on && !mat.glass && r.ssr_color.id && r.ssr_depth.id && mat.ssr > 0,
         .reflector = !mat.glass && mat.reflector && mat.reflector.rendered && mat.reflector.target,
         .rc = lit && fs.rc_size.w > 0,
@@ -970,13 +1000,15 @@ fn void material_key_of(DrawItem* item, DrawKind kind, FsParams* fs, Vec4[6]* ma
         .rect_lights = standard && fs.counts.w > 0,
         .parallax = standard && mat.parallax_map && mat.parallax_scale > 0,
         .clearcoat = standard && coated(mat),
-        .sheen = standard && mat.sheen > 0 && (mat.sheen_color.x > 0 || mat.sheen_color.y > 0 || mat.sheen_color.z > 0),
+        .sheen = standard && mat.sheen > 0
+            && (mat.sheen_color.x > 0 || mat.sheen_color.y > 0 || mat.sheen_color.z > 0),
         .iridescence = standard && mat.iridescence > 0,
         .anisotropy = standard && mat.anisotropy > 0,
         .transmission = standard && !mat.glass && mat.transmission > 0 && state.transmission_mips.id != 0,
         .arm_ao = (bool)mat.arm_map,
         .arm_rough = mat.arm_map || mat.roughness_map,
-        .arm_metal = mat.arm_map || (mat.metalness_map && (mat.roughness_map ?: mat.metalness_map) == mat.metalness_map),
+        .arm_metal = mat.arm_map
+            || (mat.metalness_map && (mat.roughness_map ?: mat.metalness_map) == mat.metalness_map),
     };
     for (int role = 0; role < MAP_ROLES; role++) {
         float slot = (*map_slots)[role / 4][role % 4];
@@ -1030,30 +1062,30 @@ fn MaterialKey gbuffer_key(MaterialKey full, bool motion) @local {
 // Renders a custom ShaderMaterial with its own vertex/fragment shaders, texture slots, and uniforms.
 fn void draw_shader_material(DrawItem* item, Mat4 view_proj, DrawKind kind) @local {
     if (kind == DEPTH || state.bake.on) return;
-    Mesh* m = item.mesh;
+    Mesh* m       = item.mesh;
     Material* mat = m.material;
     if (!mat.custom_shader) abort("drie: ShaderMaterial has no custom_shader");
-    BufferGeometry* g = m.geometry;
-    bool lines = draws_lines(item);
+    BufferGeometry* g   = m.geometry;
+    bool lines          = draws_lines(item);
     int elements;
-    SgBuffer indices = index_buffer_of(item, lines, &elements);
-    Renderer* r = state.renderer;
-    RenderTarget* rt = r.render_target;
-    bool mrt = rt && rt.mrt;
+    SgBuffer indices    = index_buffer_of(item, lines, &elements);
+    Renderer* r         = state.renderer;
+    RenderTarget* rt    = r.render_target;
+    bool mrt            = rt && rt.mrt;
     bool use_mrt_shader = mrt && mat.custom_shader_mrt != null;
-    SgShader* sh = use_mrt_shader ? &mat.custom_sg_shader_mrt : &mat.custom_sg_shader;
+    SgShader* sh        = use_mrt_shader ? &mat.custom_sg_shader_mrt : &mat.custom_sg_shader;
     if (!sh.id) {
-        ShaderDescFn f = use_mrt_shader ? mat.custom_shader_mrt : mat.custom_shader;
+        ShaderDescFn f     = use_mrt_shader ? mat.custom_shader_mrt : mat.custom_shader;
         SgShaderDesc sdesc = f(sg::query_backend());
         *sh = make_program(sdesc);
         if (!sh.id) abort("drie: ShaderMaterial failed to create shader");
     }
-    int target = rt ? (rt.samples > 1 ? 2 : 1) + (rt.mrt ? 4 : (rt.is_linear() ? 2 : 0)) : 0;
+    int target  = rt ? (rt.samples > 1 ? 2 : 1) + (rt.mrt ? 4 : (rt.is_linear() ? 2 : 0)) : 0;
     ulong blend = blend_key(mat);
-    int depth = (mat.depth_write ? 0 : 1) + (mat.depth_test ? 0 : 2);
-    ulong key = blend | (ulong)depth << 28 | (ulong)mat.side.ordinal << 33
-        | (ulong)(lines ? 1 : 0) << 35 | (ulong)target << 36
-        | (ulong)(mat.transparent ? 1 : 0) << 40 | (ulong)(use_mrt_shader ? 1 : 0) << 41;
+    int depth   = (mat.depth_write ? 0 : 1) + (mat.depth_test ? 0 : 2);
+    ulong key   = blend | (ulong)depth << 28 | (ulong)mat.side.ordinal << 33 | (ulong)(lines ? 1
+        : 0) << 35 | (ulong)target << 36 | (ulong)(mat.transparent ? 1
+            : 0) << 40 | (ulong)(use_mrt_shader ? 1 : 0) << 41;
     if (!mat.custom_pipelines.is_initialized()) mat.custom_pipelines.init(mem);
     SgPipeline pip;
     if (try found = mat.custom_pipelines[key]) {
@@ -1122,9 +1154,8 @@ fn void draw_shader_material(DrawItem* item, Mat4 view_proj, DrawKind kind) @loc
         .view_proj = view_proj,
         .view_origin = { ...state.view_origin, 0 },
         .model = model,
-        .normal_mat = model.invert().transpose(),
-        .camera_time = { ...state.node_camera, r.time },
-    };
+        .normal_mat = model.invert()
+        .transpose(), .camera_time = { ...state.node_camera, r.time }, };
     sg::apply_uniforms(0, &&{ .ptr = &vs, .size = ShaderMaterialVsParams::size });
     if (mat.custom_vs_uniforms && mat.custom_vs_uniforms_size > 0) {
         sg::apply_uniforms(mat.custom_vs_ub, &&{ .ptr = mat.custom_vs_uniforms, .size = mat.custom_vs_uniforms_size });
@@ -1139,9 +1170,15 @@ fn void draw_shader_material(DrawItem* item, Mat4 view_proj, DrawKind kind) @loc
 }
 
 // Submits a single mesh draw into the active forward, depth-prepass, G-Buffer, or bake pass.
-fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = CUT, bool deferred_gb = false) @private {
-    Mesh* m           = item.mesh;
-    Material* mat     = m.material;
+fn void draw_item(
+    DrawItem* item,
+    Mat4 view_proj,
+    FsParams* fs,
+    DrawKind kind = CUT,
+    bool deferred_gb = false
+) @private {
+    Mesh* m       = item.mesh;
+    Material* mat = m.material;
     if (mat.type == SHADER) {
         draw_shader_material(item, view_proj, kind);
         return;
@@ -1177,8 +1214,19 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
             continue;
         }
         pip = state.bake.on ? gen_bake_pipeline(gen, state.bake.format)
-            : get_pipeline(mat.side, mat.transparent, lines, r.render_target, alpha_test > 0, blend_key(mat), kind,
-                           mat.depth_test, mat.depth_write, deferred_gb, gen);
+            : get_pipeline(
+                mat.side,
+                mat.transparent,
+                lines,
+                r.render_target,
+                alpha_test > 0,
+                blend_key(mat),
+                kind,
+                mat.depth_test,
+                mat.depth_write,
+                deferred_gb,
+                gen
+            );
         if (pip.id) break;
         note_waiting(m, 3);
     }
@@ -1206,13 +1254,13 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
         arm_bits = (mat.roughness_map ? 2 : 0) | (mat.metalness_map == arm ? 4 : 0);
     }
     bind.views[shaders::VIEW_TEX_ARM] = ready(arm).view;
-    bool standard = mat.type == STANDARD;
+    bool standard  = mat.type == STANDARD;
     Renderer* lens = state.renderer;
-    bool defocus = mat.defocus && lens.focus_map && lens.focus_aperture > 0;
-    bool classic = mat.type == BASIC || mat.type == LAMBERT || mat.type == PHONG;
+    bool defocus   = mat.defocus && lens.focus_map && lens.focus_aperture > 0;
+    bool classic   = mat.type == BASIC || mat.type == LAMBERT || mat.type == PHONG;
     for (int k = 0; k < slots.len; k++) bind.views[shaders::VIEW_TEX_EXT0 + k] = ready(slots[k]).view;
     bool backdrop = m == state.background;
-    int ext_bits = backdrop ? 32 : 0;
+    int ext_bits  = backdrop ? 32 : 0;
     if (mat.refraction_model == PLANE) ext_bits |= 64;
     bind.views[shaders::VIEW_TEX_PARALLAX] = ready(mat.parallax_map).view;
     bool vsm = vsm_on();
@@ -1266,12 +1314,21 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     if (build) {
         for (int k = 0; k < build.texture_count; k++) own_textures[k] = build.texture(k);
     }
-    Texture* first = slots[0] ?: own_textures[0];
+    Texture* first  = slots[0] ?: own_textures[0];
     Texture* shared = mat.map ?: (mat.normal_map ?: (arm ?: (first ?: state.white)));
     // Prefer a repeating sampler when no color map is set so `slot_wrap` can clamp cleanly.
     if (!mat.map) {
         Texture*[8 + NODE_TEXTURES] maps;
-        maps[:8] = (Texture*[8]) { mat.normal_map, arm, slots[0], slots[1], slots[2], slots[3], slots[4], slots[5] }[..];
+        maps[:8] = (Texture*[8]) {
+            mat.normal_map,
+            arm,
+            slots[0],
+            slots[1],
+            slots[2],
+            slots[3],
+            slots[4],
+            slots[5]
+        }[..];
         maps[8:NODE_TEXTURES] = own_textures[..];
         foreach (t : maps) {
             if (t && t.uploaded && t.wrap_s == REPEAT_WRAPPING && t.wrap_t == REPEAT_WRAPPING) {
@@ -1300,7 +1357,13 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     bind.samplers[shaders::SMP_SHADOW_SMP] = state.shadow_sampler;
     if (vsm) bind.samplers[shaders::SMP_VSM_SMP] = state.vsm_sampler;
     lights_gpu.bind(&bind);
-    SgBindings own_bind = program_bindings(own, &bind, user_views(gen_build)[..], m.geometry.morph_view, m.morph_weights_view);
+    SgBindings own_bind = program_bindings(
+        own,
+        &bind,
+        user_views(gen_build)[..],
+        m.geometry.morph_view,
+        m.morph_weights_view
+    );
     sg::apply_bindings(&own_bind);
 
     // 3. Vertex uniforms.
@@ -1315,9 +1378,12 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
         : 0) | (mat.foliage ? 2
             : 0) | (m.receive_shadow ? 4
                 : 0) | (mat.glass ? 8
-                    : 0) | (mat.vertex_light > 0 ? 16 : 0) | (mat.screen_target ? 32 : 0) | (mat.map_emissive ? 64 : 0)
-        | (mat.vertex_occlusion && mat.vertex_colors ? 128 : 0) | (mat.premultiplied_alpha ? 256 : 0)
-        | (mat.tone_mapped ? 0 : 512) | (mat.flat_shading ? 1024 : 0);
+                    : 0) | (mat.vertex_light > 0 ? 16
+                        : 0) | (mat.screen_target ? 32
+                            : 0) | (mat.map_emissive ? 64
+                                : 0) | (mat.vertex_occlusion && mat.vertex_colors ? 128
+                                    : 0) | (mat.premultiplied_alpha ? 256
+                                        : 0) | (mat.tone_mapped ? 0 : 512) | (mat.flat_shading ? 1024 : 0);
     fs.color = { ...color_to_linear(mat.color) * (mat.color_scale > 0 ? mat.color_scale : 1), mat.opacity };
     fs.emissive = { ...color_to_linear(mat.emissive) * mat.emissive_intensity, mat.vertex_light };
     if (state.bake.on) {
@@ -1334,8 +1400,7 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     fs.parallax_params = {
         parallax ? mat.parallax_scale : 0,
         mat.parallax_distance > 0 ? mat.parallax_distance : 30,
-        mat.parallax_shadow,
-        // Disable hex tiling on alpha-tested materials so prepass and shadows stay consistent.
+        mat.parallax_shadow, // Disable hex tiling on alpha-tested materials so prepass and shadows stay consistent.
         mat.alpha_test > 0 ? 0 : mat.hex_tiling
     };
     if (m.is_line() && mat.dash_size > 0 && mat.gap_size > 0) {
@@ -1356,22 +1421,38 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
     float scale = 1;
     if (transmission) {
         Mat4 w = m.matrix_world;
-        scale = (((Vector3) { w[0][0], w[0][1], w[0][2] }).length() + ((Vector3) { w[1][0], w[1][1], w[1][2] }).length()
-            + ((Vector3) { w[2][0], w[2][1], w[2][2] }).length()) / 3;
+        scale = (((Vector3) {
+            w[0][0],
+            w[0][1],
+            w[0][2]
+        }).length() + ((Vector3) {
+            w[1][0],
+            w[1][1],
+            w[1][2]
+        }).length() + ((Vector3) { w[2][0], w[2][1], w[2][2] }).length()) / 3;
     }
     fs.ext_params = { (float)ext_bits, mat.ao_intensity, scale, (float)state.transmission_width };
     fs.map_slots = map_slots;
     fs.light_map_params = { mat.light_map_intensity, 0, 0, 0 };
-    fs.surface_params = { mat.bump_scale, mat.gradient_map && mat.gradient_map.nearest ? 1 : 0, mat.depth_packing.ordinal,
-                          (float)mat.light_channels };
+    fs.surface_params = {
+        mat.bump_scale,
+        mat.gradient_map && mat.gradient_map.nearest ? 1 : 0,
+        mat.depth_packing.ordinal,
+        (float)mat.light_channels
+    };
     if (classic && mat.env_map && !backdrop) {
-        fs.env_combine = { mat.reflectivity, (float)mat.combine.ordinal, mat.env_refraction ? mat.refraction_ratio : 0, 1 };
+        fs.env_combine = {
+            mat.reflectivity,
+            (float)mat.combine.ordinal,
+            mat.env_refraction ? mat.refraction_ratio : 0,
+            1
+        };
     } else {
         fs.env_combine = { };
     }
     fs.focus_params = { defocus ? state.renderer.focus_aperture : 0, state.renderer.focus_maxblur, 0, 0 };
     Texture* base = uv_base(mat);
-    Vec4[2] rel = uv_relative(base, mat.normal_map);
+    Vec4[2] rel   = uv_relative(base, mat.normal_map);
     fs.uv_rel[0:2] = rel[..];
     rel = uv_relative(base, arm);
     fs.uv_rel[2:2] = rel[..];
@@ -1386,12 +1467,18 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
         fs.uv_rel[5 + 2 * k].w = wrap_code(ready(slots[k]), shared);
     }
     fs.clearcoat_params = {
-        standard ? mat.clearcoat : 0, mat.clearcoat_roughness, mat.clearcoat_normal_scale.x, mat.clearcoat_normal_scale.y
+        standard ? mat.clearcoat : 0,
+        mat.clearcoat_roughness,
+        mat.clearcoat_normal_scale.x,
+        mat.clearcoat_normal_scale.y
     };
     Vector3 sheen = standard ? mat.sheen_color * mat.sheen : (Vector3) { 0, 0, 0 };
     fs.sheen_params = { ...sheen, mat.sheen_roughness };
     fs.iridescence_params = {
-        standard ? mat.iridescence : 0, mat.iridescence_ior, mat.iridescence_thickness_min, mat.iridescence_thickness_max
+        standard ? mat.iridescence : 0,
+        mat.iridescence_ior,
+        mat.iridescence_thickness_min,
+        mat.iridescence_thickness_max
     };
     float anisotropy = standard && mat.anisotropy > 0 ? mat.anisotropy : 0;
     fs.tangent_params = {
@@ -1431,9 +1518,9 @@ fn void draw_item(DrawItem* item, Mat4 view_proj, FsParams* fs, DrawKind kind = 
 
 // Submits a single shadow-caster draw with `light_vp` mapping `(world - origin)` into light clip space.
 fn void draw_shadow_item(DrawItem* item, Mat4 light_vp, Vector3 origin = { 0, 0, 0 }) @private {
-    Mesh* m       = item.mesh;
-    Material* mat = m.material;
-    Texture* map  = ready(mat.map);
+    Mesh* m          = item.mesh;
+    Material* mat    = m.material;
+    Texture* map     = ready(mat.map);
     NodeBuild* build = node_build_of(mat);
     MaterialKey key;
     shadow_key_of(item, &key);
@@ -1463,20 +1550,23 @@ fn void draw_shadow_item(DrawItem* item, Mat4 light_vp, Vector3 origin = { 0, 0,
     Texture* alpha_map = ready(mat.alpha_map);
     bind.views[shaders::VIEW_S_ALPHA] = alpha_map.view;
     bind.samplers[shaders::SMP_S_ALPHA_SMP] = alpha_map.sampler;
-    SgBindings own = program_bindings(gen.program, &bind, user_views(gen_build)[..], m.geometry.morph_view, m.morph_weights_view);
+    SgBindings own = program_bindings(
+        gen.program,
+        &bind,
+        user_views(gen_build)[..],
+        m.geometry.morph_view,
+        m.morph_weights_view
+    );
     sg::apply_bindings(&own);
     Vec4 d = displacement_params(mat);
     VsParams pv = {
         .view_proj = light_vp,
         .view_origin = { ...origin, 0 },
-        .model = m.matrix_world,
-        // Only node shadow graphs read normals; skip matrix inverse for plain casters.
-        .normal_mat = gen_build ? m.matrix_world.invert().transpose() : m.matrix_world,
-        .uv_transform = uv_transform(mat),
-        .sway = sway_params(mat),
-        .inst_cull = inst_cull,
-        .surface_vs = { 0, d.x, d.y, d.z },
-    };
+        .model = m.matrix_world, // Only node shadow graphs read normals; skip matrix inverse for plain casters.
+        .normal_mat = gen_build ? m.matrix_world.invert()
+        .transpose() : m.matrix_world, .uv_transform = uv_transform(
+            mat
+        ), .sway = sway_params(mat), .inst_cull = inst_cull, .surface_vs = { 0, d.x, d.y, d.z }, };
     ShadowFsParams sfs = {
         .s_params = { key.alpha_test ? mat.alpha_test : 0, mat.opacity, atlas_near, atlas_far },
         .s_alpha_uv = uv_relative(uv_base(mat), mat.alpha_map),
@@ -1493,7 +1583,7 @@ fn void draw_shadow_item(DrawItem* item, Mat4 light_vp, Vector3 origin = { 0, 0,
 // Populates vertex buffers 1..6 (instances, uv1, tangents, displacement heights, instance colors,
 // and previous-frame positions) on `bind` for `item`.
 fn void bind_instances(SgBindings* bind, DrawItem* item) @private {
-    Mesh* m = item.mesh;
+    Mesh* m           = item.mesh;
     BufferGeometry* g = m.geometry;
     bind.vertex_buffers[2] = g.uv1buf.id ? g.uv1buf : zeros(g.vertex_count());
     bind.vertex_buffers[3] = g.tangent_buf.id ? g.tangent_buf : zeros(g.vertex_count());
@@ -1582,7 +1672,9 @@ fn bool background_item(Scene* scene, Camera* camera, DrawItem* item) @private {
             hw = (oc.right - oc.left) * 0.5f / camera.zoom;
             hh = (oc.top - oc.bottom) * 0.5f / camera.zoom;
         }
-        m.matrix_world = camera.matrix_world.mul(mat4_compose({ cx, cy, -d }, { 0, 0, 0 }, { hw * 1.01f, hh * 1.01f, 1 }));
+        m.matrix_world = camera.matrix_world.mul(
+            mat4_compose({ cx, cy, -d }, { 0, 0, 0 }, { hw * 1.01f, hh * 1.01f, 1 })
+        );
     } else if (scene.background_texture && camera.camera_type == PERSPECTIVE) {
         if (!state.background) {
             MeshBasicMaterial* mat = mesh_basic_material(transparent: true, side: BACK_SIDE, fog: false);
@@ -1630,8 +1722,7 @@ fn void transmission_levels(int width, int height) @private {
             .usage = { .color_attachment = true },
             .width = width,
             .height = height,
-            .num_mipmaps = levels,
-            // Force sample_count = 1 so mipmaps are valid regardless of window MSAA.
+            .num_mipmaps = levels, // Force sample_count = 1 so mipmaps are valid regardless of window MSAA.
             .sample_count = 1,
             .pixel_format = RGBA16F,
             .label = "drie-transmission-mips",
@@ -1676,8 +1767,11 @@ fn void mip_pipeline() @private {
 
 fn void fill_transmission_levels(SgView source, int width, int height) @local {
     transmission_levels(width, height);
-    fill_levels(source, state.transmission_level_views[:state.transmission_levels],
-                state.transmission_level_attachments[:state.transmission_levels]);
+    fill_levels(
+        source,
+        state.transmission_level_views[:state.transmission_levels],
+        state.transmission_level_attachments[:state.transmission_levels]
+    );
 }
 
 // Generates a mipmap chain into `attachments` from `source`: level 0 copies `source`, and each
@@ -1701,7 +1795,10 @@ fn void fill_levels(SgView source, SgView[] views, SgView[] attachments) @privat
         bind.views[postprocessing::VIEW_OUTPUT_LUT] = postprocessing::empty_lut();
         bind.samplers[postprocessing::SMP_OUTPUT_SMP] = state.mip_sampler;
         sg::apply_bindings(&bind);
-        sg::apply_uniforms(postprocessing::UB_OUTPUT_PARAMS, &&{ .ptr = &p, .size = postprocessing::OutputParams::size });
+        sg::apply_uniforms(
+            postprocessing::UB_OUTPUT_PARAMS,
+            &&{ .ptr = &p, .size = postprocessing::OutputParams::size }
+        );
         sg::draw(0, 3, 1);
         sg::end_pass();
     }
@@ -1729,7 +1826,9 @@ fn void render_transmission(Renderer* r, Scene* scene, Camera* camera, Mat4 view
     for (int list = 0; list < 2; list++) {
         foreach (&item : list == 0 ? state.opaque : state.transparent) {
             Material* mat = item.mesh.material;
-            if (list == 0 && !refracts(item)) start_item_program(item, mat.wireframe || has_holes(item) ? CUT : SOLID, &tfs);
+            if (list == 0 && !refracts(
+                item
+            )) start_item_program(item, mat.wireframe || has_holes(item) ? CUT : SOLID, &tfs);
             if (refracts(item) && mat.side == DOUBLE_SIDE) {
                 mat.side = BACK_SIDE;
                 start_item_program(item, list == 0 && !mat.wireframe && !has_holes(item) ? SOLID : CUT, &tfs);
@@ -1740,7 +1839,11 @@ fn void render_transmission(Renderer* r, Scene* scene, Camera* camera, Mat4 view
     profile::begin_pass(
         &&{
             .action = {
-                .colors[0] = { .load_action = CLEAR, .store_action = STORE, .clear_value = { clear.x, clear.y, clear.z, 1 } },
+                .colors[0] = {
+                    .load_action = CLEAR,
+                    .store_action = STORE,
+                    .clear_value = { clear.x, clear.y, clear.z, 1 }
+                },
                 .depth = { .load_action = CLEAR, .store_action = STORE, .clear_value = 1 },
             },
             .attachments = state.transmission.attachments(),
@@ -1802,7 +1905,7 @@ fn void copy_for_transmission(Renderer* r, SgPass* pass) @private {
 
 // True when `item` has vertex tangents and uses a normal map, clearcoat normal map, or anisotropy.
 fn bool uses_tangents(DrawItem* item) @local {
-    Material* mat = item.mesh.material;
+    Material* mat     = item.mesh.material;
     BufferGeometry* g = item.mesh.geometry;
     if ((usz)g.tangents.len() < (usz)g.vertex_count() * 4) return false;
     return mat.normal_map || (mat.type == STANDARD && (mat.clearcoat_normal_map || mat.anisotropy != 0));
