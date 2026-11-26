@@ -4,16 +4,21 @@
 // still something the others land on. When every handkerchief is in use, the one dormant
 // longest goes back up to fall again.
 //
-//   just example gpu_hankies                  in a window (drag to orbit, scroll to zoom, WASD
-//                                             to walk, E and Q up and down)
-//   just example gpu_hankies --png out.png    one frame, headless, at --time t (default 20 s)
-module gpu_hankies_example;
+//   just example gpu_handkerchiefs                  in a window (the mouse looks round, WASD to
+//                                                   walk, E and Q up and down, Esc frees the mouse)
+//   just example gpu_handkerchiefs --png out.png    one frame, headless, at --time t (default 20 s)
+module gpu_handkerchiefs_example;
 import drie, drie::gpu_cloth, drie::objects, drie::postprocessing, drie::ui, drie::controls, drie::readback, drie::png, drie::gpu_timer, drie::profile, sokol;
 import std::io, std::math, std::collections::list;
 
 const int W = 1280;
 const int H = 720;
-const int HANKIES = 64;
+const float LOOK_SPEED = 0.002f;
+const float LOOK_SPRING = 18;
+const float WALK_SPEED = 2.5f;
+const float WALK_SPRING = 6;
+const float RENDER_SCALE = 0.7f;
+const int HANDKERCHIEFS = 64;
 const int GRID = 21;
 const float SIZE = 0.4f;
 const float MASS = 0.03f;
@@ -33,7 +38,7 @@ enum State : char {
     DORMANT,
 }
 
-struct Hanky {
+struct Handkerchief {
     State state;
     Mesh* mesh;
     int wait;
@@ -53,7 +58,7 @@ LensFlarePass* flare;
 TAAPass* taa;
 OutputPass* output;
 GpuCloth* cloth;
-Hanky[HANKIES] hankies;
+Handkerchief[HANDKERCHIEFS] handkerchiefs;
 Vector3[] seen;
 Vector3[] last_check;
 float spawn_clock;
@@ -73,7 +78,7 @@ fn float rand01(uint x) {
 
 fn float rand() => rand01(seed++ * 7919);
 
-fn uint point(int hanky, int c, int r) => cloth.index(hanky * GRID + c, r);
+fn uint point(int handkerchief, int c, int r) => cloth.index(handkerchief * GRID + c, r);
 
 fn Texture* tiled(String path, float repeat, ColorSpace space = SRGB_COLOR_SPACE) {
     Texture* t = drie::load_texture(path, space, flip_y: false);
@@ -84,10 +89,10 @@ fn Texture* tiled(String path, float repeat, ColorSpace space = SRGB_COLOR_SPACE
 }
 
 fn void make_cloth() {
-    cloth = gpu_cloth::panels(HANKIES, GRID, GRID, { 0, -50, 0 }, { SIZE, 0, 0 }, { 0, 0, SIZE }, { SIZE * 1.5f, 0, 0 }, mass: MASS);
+    cloth = gpu_cloth::panels(HANDKERCHIEFS, GRID, GRID, { 0, -50, 0 }, { SIZE, 0, 0 }, { 0, 0, SIZE }, { SIZE * 1.5f, 0, 0 }, mass: MASS);
     for (uint i = 0; i < cloth.count(); i++) cloth.pin(i);
     cloth.substeps = 8;
-    cloth.drag = 0.2f;
+    cloth.drag = 0.3f;
     cloth.lift = 0.5f;
     cloth.wind = { 0.8f, 0, 0.4f };
     cloth.gust = 1;
@@ -107,7 +112,7 @@ fn void make_cloth() {
     Texture* jersey = tiled("examples/textures/cotton_jersey_grey_diff.jpg", KNIT_REPEAT);
     Texture* jersey_normals = tiled("examples/textures/cotton_jersey_nor_gl.jpg", KNIT_REPEAT, NO_COLOR_SPACE);
     Texture* jersey_rough = tiled("examples/textures/cotton_jersey_rough.jpg", KNIT_REPEAT, NO_COLOR_SPACE);
-    foreach (i, &h : hankies) {
+    foreach (i, &h : handkerchiefs) {
         Color col = COLORS[i % COLORS.len];
         MeshStandardMaterial* m = drie::mesh_standard_material(color: col, roughness: 1, side: DOUBLE_SIDE);
         m.map = jersey;
@@ -125,13 +130,13 @@ fn void make_cloth() {
     cloth.set_bounds({ 0, SPAWN_HEIGHT / 2, 0 }, AREA * 2 + SPAWN_HEIGHT);
 }
 
-fn int pick_hanky() {
-    foreach (i, h : hankies) {
+fn int pick_handkerchief() {
+    foreach (i, h : handkerchiefs) {
         if (h.state == PARKED) return (int)i;
     }
     int oldest = -1;
-    foreach (i, h : hankies) {
-        if (h.state == DORMANT && (oldest < 0 || h.dormant_order < hankies[oldest].dormant_order)) oldest = (int)i;
+    foreach (i, h : handkerchiefs) {
+        if (h.state == DORMANT && (oldest < 0 || h.dormant_order < handkerchiefs[oldest].dormant_order)) oldest = (int)i;
     }
     return oldest;
 }
@@ -143,9 +148,9 @@ fn Vector3 turn(Vector3 p, float ax, float ay, float az) {
 }
 
 fn void spawn() {
-    int k = pick_hanky();
+    int k = pick_handkerchief();
     if (k < 0) return;
-    Hanky* h = &hankies[k];
+    Handkerchief* h = &handkerchiefs[k];
     Vector3 center = { (rand() * 2 - 1) * AREA, SPAWN_HEIGHT + rand() * 1.2f, (rand() * 2 - 1) * AREA };
     float ax = (rand() * 2 - 1) * 1.2f;
     float ay = rand() * 6.3f;
@@ -174,7 +179,7 @@ fn void let_go(int k) {
     for (int r = 0; r < GRID; r++) {
         for (int c = 0; c < GRID; c++) cloth.unpin(point(k, c, r));
     }
-    hankies[k].state = FALLING;
+    handkerchiefs[k].state = FALLING;
 }
 
 fn void put_to_sleep(int k) {
@@ -185,13 +190,13 @@ fn void put_to_sleep(int k) {
             cloth.move_pin(i, seen[i]);
         }
     }
-    hankies[k].state = DORMANT;
-    hankies[k].dormant_order = dormant_count++;
+    handkerchiefs[k].state = DORMANT;
+    handkerchiefs[k].dormant_order = dormant_count++;
 }
 
 fn void check_still() {
     if (!cloth.seen_points(seen)) return;
-    foreach (k, &h : hankies) {
+    foreach (k, &h : handkerchiefs) {
         if (h.state != FALLING) continue;
         float most = 0;
         for (int r = 0; r < GRID; r++) {
@@ -213,7 +218,7 @@ fn void step(float dt) {
         spawn();
     }
     int steps = cloth.update(dt);
-    foreach (k, &h : hankies) {
+    foreach (k, &h : handkerchiefs) {
         if (h.state != HELD) continue;
         h.wait -= steps;
         if (h.wait <= 0) let_go((int)k);
@@ -370,6 +375,23 @@ fn Mesh* solid(BufferGeometry* g, Material* m) {
     return mesh;
 }
 
+fn BufferGeometry* hall(Opening[] side_windows, Opening[] back_holes) {
+    BufferGeometry* g = drie::buffer_geometry();
+    wall(g, 0, 1, -ROOM, ROOM, side_windows);
+    wall(g, 1, -1, -ROOM - THICK, ROOM + THICK, back_holes);
+    wall(g, 0, -1, -ROOM, ROOM, { });
+    wall(g, 1, 1, -ROOM - THICK, ROOM + THICK, { });
+    block(g, { -3.4f, 0, -ROOM - THICK - 0.4f }, { -2.0f, 2.6f, -ROOM - THICK });
+    block(g, { -ROOM - THICK, CEILING, -ROOM - THICK }, { ROOM + THICK, CEILING + 0.4f, ROOM + THICK });
+    return g;
+}
+
+fn BufferGeometry* ground() {
+    BufferGeometry* g = drie::buffer_geometry();
+    block(g, { -ROOM - THICK - 0.4f, -0.3f, -ROOM - THICK - 0.4f }, { ROOM + THICK, 0, ROOM + THICK });
+    return g;
+}
+
 fn void build_scene() {
     scene = drie::scene();
     scene.background = 0xbcd4ec;
@@ -411,22 +433,25 @@ fn void build_scene() {
     scene.add(sun);
     scene.add(sun.target);
 
-    cell = 0.025f;
-    BufferGeometry* stone = drie::buffer_geometry();
     Opening[2] side_windows = { { -2.6f, -1.6f, 1.3f, 3.9f }, { 0.9f, 1.9f, 1.3f, 3.9f } };
-    wall(stone, 0, 1, -ROOM, ROOM, &side_windows);
     Opening[2] back_holes = { { -3.4f, -2.0f, 0, 2.6f }, { 2.0f, 3.0f, 1.5f, 3.9f } };
-    wall(stone, 1, -1, -ROOM - THICK, ROOM + THICK, &back_holes);
-    wall(stone, 0, -1, -ROOM, ROOM, { });
-    wall(stone, 1, 1, -ROOM - THICK, ROOM + THICK, { });
-    block(stone, { -3.4f, 0, -ROOM - THICK - 0.4f }, { -2.0f, 2.6f, -ROOM - THICK });
-    block(stone, { -ROOM - THICK, CEILING, -ROOM - THICK }, { ROOM + THICK, CEILING + 0.4f, ROOM + THICK });
-    solid(stone, surface("old_stone_wall", 2, 0.06f));
+    MeshStandardMaterial* stone_look = surface("old_stone_wall", 2, 0.06f);
+    cell = 0.025f;
+    Mesh* stone = solid(hall(&side_windows, &back_holes), stone_look);
+    stone.cast_shadow = false;
+    cell = 0.06f;
+    Mesh* stone_shadow = solid(hall(&side_windows, &back_holes), stone_look);
+    stone_shadow.shadow_only = true;
 
-    BufferGeometry* ground = drie::buffer_geometry();
-    block(ground, { -ROOM - THICK - 0.4f, -0.3f, -ROOM - THICK - 0.4f }, { ROOM + THICK, 0, ROOM + THICK });
-    solid(ground, surface("multicolored_pebble_floor", 2, 0.025f));
-    io::printfn("room: %d vertices", (stone.vertices.len() + ground.vertices.len()) / drie::FLOATS_PER_VERTEX);
+    MeshStandardMaterial* pebbles = surface("multicolored_pebble_floor", 2, 0.025f);
+    cell = 0.025f;
+    Mesh* floor = solid(ground(), pebbles);
+    floor.cast_shadow = false;
+    cell = 0.06f;
+    Mesh* floor_shadow = solid(ground(), pebbles);
+    floor_shadow.shadow_only = true;
+    io::printfn("room: %d vertices, its shadow %d", (stone.geometry.vertices.len() + floor.geometry.vertices.len()) / drie::FLOATS_PER_VERTEX,
+                (stone_shadow.geometry.vertices.len() + floor_shadow.geometry.vertices.len()) / drie::FLOATS_PER_VERTEX);
 
     cell = 1e9;
     BufferGeometry* metal = drie::buffer_geometry();
@@ -465,8 +490,8 @@ String off = "";
 DirectionalLight* sun;
 
 fn void render_frame(RenderTarget* target) {
-    int w = target ? target.width : math::max(sapp::width(), 1);
-    int h = target ? target.height : math::max(sapp::height(), 1);
+    int w = math::max((int)((target ? target.width : sapp::width()) * RENDER_SCALE), 1);
+    int h = math::max((int)((target ? target.height : sapp::height()) * RENDER_SCALE), 1);
     if (!scene_rt) {
         scene_rt = drie::render_target(w, h, 1, RGBA16F, mrt: true);
         taa = postprocessing::taa_pass();
@@ -512,7 +537,38 @@ float last_time = -1;
 
 bool[6] held;
 
+float yaw;
+float pitch;
+float want_yaw;
+float want_pitch;
+bool looking;
+
+fn void aim_from(Vector3 eye, Vector3 at) {
+    Vector3 d = (at - eye).normalize();
+    yaw = want_yaw = math::atan2(d.x, -d.z);
+    pitch = want_pitch = math::asin(d.y);
+}
+
+fn void look(float dt) {
+    if (!looking) {
+        sapp::lock_mouse(true);
+        looking = true;
+    }
+    float k = 1 - math::exp(-LOOK_SPRING * dt);
+    yaw += (want_yaw - yaw) * k;
+    pitch += (want_pitch - pitch) * k;
+    Vector3 d = { math::sin(yaw) * math::cos(pitch), math::sin(pitch), -math::cos(yaw) * math::cos(pitch) };
+    controls.target = camera.position + d;
+    camera.look_at_vec(controls.target);
+}
+
 fn void on_event(Event* e) {
+    if (e.type == MOUSE_MOVE && sapp::mouse_locked()) {
+        want_yaw += e.mouse_dx * LOOK_SPEED;
+        want_pitch = math::clamp(want_pitch - e.mouse_dy * LOOK_SPEED, -1.5f, 1.5f);
+        return;
+    }
+    if (e.type == MOUSE_DOWN) sapp::lock_mouse(true);
     if (e.type != KEY_DOWN && e.type != KEY_UP) return;
     bool down = e.type == KEY_DOWN;
     switch (e.key_code) {
@@ -522,12 +578,15 @@ fn void on_event(Event* e) {
         case D: held[3] = down;
         case E: held[4] = down;
         case Q: held[5] = down;
+        case ESCAPE: if (down) sapp::lock_mouse(false);
         case P:
             if (down) io::printfn("camera { %.2f, %.2f, %.2f } looking at { %.2f, %.2f, %.2f }", camera.position.x, camera.position.y,
                                   camera.position.z, controls.target.x, controls.target.y, controls.target.z);
         default:
     }
 }
+
+Vector3 walk_velocity;
 
 fn void walk(float dt) {
     Vector3 ahead = controls.target - camera.position;
@@ -542,10 +601,11 @@ fn void walk(float dt) {
     if (held[3]) move += right;
     if (held[4]) move.y += 1;
     if (held[5]) move.y -= 1;
-    if (move.length() < 1e-4f) return;
-    move = move.normalize() * (2.5f * dt);
-    camera.position += move;
-    controls.target += move;
+    Vector3 want = move.length() > 1e-4f ? move.normalize() * WALK_SPEED : (Vector3) { 0, 0, 0 };
+    walk_velocity += (want - walk_velocity) * (1 - math::exp(-WALK_SPRING * dt));
+    Vector3 step = walk_velocity * dt;
+    camera.position += step;
+    controls.target += step;
 }
 
 fn void animate(double time) {
@@ -553,9 +613,8 @@ fn void animate(double time) {
     float dt = last_time < 0 ? 0 : math::min(now - last_time, 0.1f);
     last_time = now;
     walk(dt);
-    controls.update();
     keep_inside(&camera.position, 0.25f);
-    keep_inside(&controls.target, 0.25f);
+    look(dt);
     step(dt);
     render_frame(null);
 }
@@ -570,12 +629,12 @@ fn void hud() {
     sdtx::color3f(0.9f, 0.88f, 0.82f);
     int falling;
     int dormant;
-    foreach (h : hankies) {
+    foreach (h : handkerchiefs) {
         if (h.state == FALLING || h.state == HELD) falling++;
         if (h.state == DORMANT) dormant++;
     }
     @pool() {
-        sdtx::puts(string::tformat("dropped %d   moving %d   dormant %d   (%d handkerchiefs)\n", dropped, falling, dormant, HANKIES).zstr_tcopy());
+        sdtx::puts(string::tformat("dropped %d   moving %d   dormant %d   (%d handkerchiefs)\n", dropped, falling, dormant, HANDKERCHIEFS).zstr_tcopy());
         if (gpu_timer::enabled) {
             sdtx::puts(string::tformat("cloth on the GPU: %.2f ms\n", gpu_timer::last_ms("drie-gpu-cloth")).zstr_tcopy());
         }
@@ -600,7 +659,9 @@ fn int main(String[] args) {
         renderer = drie::renderer(antialias: true, width: W, height: H, title: "drie: handkerchiefs");
         build_scene();
         controls = controls::orbit_controls(camera);
+        controls.enabled = false;
         controls.target = START_AT;
+        aim_from(START_EYE, START_AT);
         drie::add_overlay(&hud);
         drie::add_event_listener(&on_event);
         renderer.set_animation_loop(&animate);
@@ -622,7 +683,7 @@ fn int main(String[] args) {
     }
     int falling;
     int dormant;
-    foreach (h : hankies) {
+    foreach (h : handkerchiefs) {
         if (h.state == FALLING || h.state == HELD) falling++;
         if (h.state == DORMANT) dormant++;
     }
