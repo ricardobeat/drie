@@ -69,11 +69,6 @@ const int LATENCY = 2;
 // the corrections remembered (more than a readback can be late)
 const int LOG = 16;
 
-enum BendModel : char {
-    DISTANCE,
-    SIGNED,
-}
-
 enum ColliderKind : char {
     SPHERE,
     CAPSULE,
@@ -336,6 +331,7 @@ fn GpuCloth* panels(int count, int cols, int rows, Vector3 origin, Vector3 acros
 // `panel_cols` columns (0: one panel).
 fn GpuCloth* from_positions(int cols, int rows, Vector3[] rest, float mass = 0.4f, int panel_cols = 0) {
     GpuCloth* c = mem::new(GpuCloth);
+    c.bend_model = DISTANCE;
     c.cols = cols;
     c.rows = rows;
     c.panel_cols = panel_cols > 0 ? panel_cols : cols;
