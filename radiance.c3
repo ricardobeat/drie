@@ -511,7 +511,7 @@ fn bool RadianceCascades.touches(&self, BufferGeometry* g, Mat4 m) {
 fn void RadianceCascades.add_mesh(&self, Mesh* mesh, Vector3 albedo_scale = { 1, 1, 1 }) {
     Material* mat     = mesh.material;
     BufferGeometry* g = mesh.geometry;
-    if (!mat || !g || !mat.visible || mat.transparent || mat.opacity < 1 || mat.alpha_test > 0 || mat.glass) return;
+    if (!mat || !g || mesh.shadow_only || !mat.visible || mat.transparent || mat.opacity < 1 || mat.alpha_test > 0 || mat.glass) return;
     // lines have no surface to light or glow from
     if (mesh.is_line()) return;
     if (g.bounds_radius <= 0) g.compute_bounding_sphere();
