@@ -674,6 +674,15 @@ fn Lod* Lod.add_level(&self, Object3D* object, float distance = 0) {
 
 // How a mesh turns toward the camera (Mesh.billboard): its local x and y (a quad in its xy,
 // as three's sprites and PlaneGeometry) become
+// How a cloth holds its bends, drie::cloth's and drie::gpu_cloth's (see the top of each):
+// SIGNED, a point's offset from the midpoint of its neighbours along the normal, held at the
+// rest shape's (Cloth's default); DISTANCE, each point linked to the one two away along its row
+// and column (GpuCloth's default).
+enum BendModel : char {
+    SIGNED,
+    DISTANCE,
+}
+
 enum Billboard : char {
     NO_BILLBOARD,
     FACING,     // the view's right and up: in the view's plane (three's Sprite)
