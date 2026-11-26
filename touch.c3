@@ -5,7 +5,7 @@
 // buttons do, and with `keys` on they also send the same key events (menus work with them).
 // The stick and the look drag are read from here:
 //
-//   TouchControls* touch = ui::touch_controls();
+//   TouchControls* touch = input::touch_controls();
 //   touch.add_button(input::PAD_NORTH, "LAMP", 70, 150);             // from the bottom right
 //   touch.add_button(input::PAD_MENU, "MENU", 40, 40, 22, TOP_RIGHT);
 //   ...
@@ -14,15 +14,16 @@
 //   touch.take_look(&dx, &dy);                                       // points dragged since last time
 //
 // The stick appears where the left thumb comes down (in the left half of the screen) and
-// follows it when it slides past the edge; pushed past `run_beyond` it also holds PAD_L3. While
-// a menu is open, flicking the stick presses the d-pad instead, to move through the items.
+// follows it when it slides past the edge; pushed past `run_beyond` it also holds PAD_L3. With
+// `stick_as_dpad` set (a game sets it while its menu is open), flicking the stick presses the
+// d-pad instead, to move through the items.
 //
 // It is shown and read once `enabled`: from the start on iOS and Android, elsewhere from the
 // first touch. Positions are in points (pixels / sapp::dpi_scale()), like window_width().
-// `mouse_as_touch` lets a mouse stand in for one finger.
-module drie::ui;
+// `mouse_as_touch` lets a mouse stand in for one finger. ui::draw() draws the controls.
+module drie::input;
 import std::collections::list, std::math;
-import sokol, drie, drie::input;
+import sokol, drie, drie::ui;
 
 enum TouchAnchor {
     BOTTOM_RIGHT,
@@ -56,6 +57,8 @@ struct TouchControls {
     bool running;
     // the mouse is a finger (to try the controls on a desktop): it no longer reaches the app
     bool mouse_as_touch;
+    // flicks of the stick press the d-pad instead of walking (set it while a menu is open)
+    bool stick_as_dpad;
     List{TouchButton} buttons;
 
     float look_dx;
@@ -108,14 +111,14 @@ fn uint TouchControls.held(&self) {
     if (!self.enabled) return 0;
     uint bits;
     foreach (&b : self.buttons) if (b.down) bits |= b.button;
-    if (self.stick_down && any_menu_open()) {
+    if (self.stick_down && self.stick_as_dpad) {
         // a flick of the stick moves through a menu
-        if (self.stick_y > 0.6f) bits |= input::PAD_UP;
-        if (self.stick_y < -0.6f) bits |= input::PAD_DOWN;
-        if (self.stick_x < -0.6f) bits |= input::PAD_LEFT;
-        if (self.stick_x > 0.6f) bits |= input::PAD_RIGHT;
+        if (self.stick_y > 0.6f) bits |= PAD_UP;
+        if (self.stick_y < -0.6f) bits |= PAD_DOWN;
+        if (self.stick_x < -0.6f) bits |= PAD_LEFT;
+        if (self.stick_x > 0.6f) bits |= PAD_RIGHT;
     } else if (self.running) {
-        bits |= input::PAD_L3;
+        bits |= PAD_L3;
     }
     return bits;
 }
@@ -156,7 +159,7 @@ fn void TouchControls.release_stick(&self) {
 }
 
 // Takes the touch events (the renderer passes them in before anything else sees them).
-fn void touch_event(SappEvent* e) @private {
+fn void touch_event(SappEvent* e) @local {
     TouchControls* t = &touch_state;
     t.enabled = true;
     float scale = sapp::isvalid() ? sapp::dpi_scale() : 1;
@@ -220,7 +223,7 @@ fn void touch_event(SappEvent* e) @private {
 
 // With mouse_as_touch, turns the left mouse button's presses and drags into a finger's
 // touches. Returns whether the event was taken.
-fn bool touch_from_mouse(SappEvent* e) @private {
+fn bool touch_from_mouse(SappEvent* e) @local {
     if (!touch_state.mouse_as_touch) return false;
     SappEventType type;
     switch (e.type) {
@@ -239,7 +242,7 @@ fn bool touch_from_mouse(SappEvent* e) @private {
 }
 
 // Lets go of everything (the app went to the background, say).
-fn void touch_reset() @private {
+fn void touch_reset() @local {
     TouchControls* t = &touch_state;
     t.release_stick();
     t.look_down = false;
@@ -264,9 +267,9 @@ fn void ui_circle(float x, float y, float r, float width, float cr, float cg, fl
 }
 
 // Draws the stick and the buttons into the current sgl layer, and the labels into sdtx
-// (whose canvas has `canvas_scale` points to a unit; see draw).
-fn void draw_touch_controls(float canvas_scale) @private {
-    TouchControls* t = &touch_state;
+// (whose canvas has `canvas_scale` points to a unit; see ui::draw).
+fn void TouchControls.draw(&self, float canvas_scale) {
+    TouchControls* t = self;
     sgl::matrix_mode_projection();
     sgl::push_matrix();
     sgl::load_identity();
@@ -286,7 +289,37 @@ fn void draw_touch_controls(float canvas_scale) @private {
         // the label, centered (sdtx characters are 8 canvas units)
         float col = (bx / canvas_scale - (float)b.label.len * 4) / 8;
         float row = (by / canvas_scale - 4) / 8;
-        ui_text(col, row, b.label, 1, 1, 1, b.down ? 0.9f : 0.6f);
+        ui::text(col, row, b.label, 1, 1, 1, b.down ? 0.9f : 0.6f);
     }
     sgl::pop_matrix();
+}
+
+// The window's events go through here first (see drie::add_event_filter): the touch controls
+// see touches, and the mouse when it stands in for a finger.
+fn bool filter_touch_event(Event* e) @local {
+    switch (e.type) {
+        case TOUCHES_BEGAN:
+        case TOUCHES_MOVED:
+        case TOUCHES_ENDED:
+        case TOUCHES_CANCELLED:
+            touch_event(e);
+        case MOUSE_DOWN:
+        case MOUSE_UP:
+        case MOUSE_MOVE:
+        case MOUSE_SCROLL:
+        case MOUSE_ENTER:
+        case MOUSE_LEAVE:
+            return touch_from_mouse(e);
+        case UNFOCUSED:
+        case SUSPENDED:
+            touch_reset();
+        default:
+            break;
+    }
+    return false;
+}
+
+// Registered first, so the touch controls see the events before a game's own filters (menus).
+fn void register_touch() @init @local {
+    drie::add_event_filter(&filter_touch_event, first: true);
 }

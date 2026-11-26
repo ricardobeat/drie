@@ -7,11 +7,11 @@
 //   if (pad.connected) walk(pad.left_x, pad.left_y);    // sticks: -1..1, up is +y, dead zone removed
 //   if (pad.pressed(input::PAD_SOUTH)) jump();          // went down this frame
 //
-// With `keys` on (the default) the pad also sends key events, so menus (menu.c3) and keyboard
+// With `keys` on (the default) the pad also sends key events, so menus and keyboard
 // code work with it unchanged: the d-pad sends the arrow keys, cross / A sends enter,
 // circle / B backspace, and options / menu escape.
 module drie::input;
-import drie::gamectl, sokol, drie, drie::ui;
+import drie::gamectl, sokol, drie;
 import std::math;
 
 const uint PAD_SOUTH = 1 << 0; // cross / A
@@ -88,8 +88,8 @@ fn void poll_gamepad() @local {
     gamectl::poll(&s);
     p.last = p.held;
     p.connected = s.connected;
-    // and the touch screen's buttons (touch.c3)
-    p.held = s.buttons | ui::touch_controls().held();
+    // and the touch screen's buttons (touch_controls())
+    p.held = s.buttons | touch_controls().held();
     p.left_x = s.left_x;
     p.left_y = s.left_y;
     p.right_x = s.right_x;
