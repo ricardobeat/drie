@@ -1,7 +1,7 @@
 // Material definitions, shading enums, subtype wrappers, and named-argument constructors
 // mirroring three.js parameter objects, e.g.:
 //   drie::mesh_standard_material(color: 0x44aa88, roughness: 0.4)
-//
+// 
 // MaterialType integer values match the shader `mode` constant. MaterialMap sentinel pointers
 // returned by `material_map_mark` are never dereferenced directly; NodeBuild.texture resolves
 // them to each material's own map via Material.own_map. MaterialKey (src/material/material_key.c3)
@@ -92,10 +92,10 @@ constdef MaterialType : int {
 
 // Standard vertex uniform block (binding 0) provided to ShaderMaterial shaders.
 struct ShaderMaterialVsParams {
-    Mat4 view_proj;   // world - view_origin -> clip space
+    Mat4 view_proj; // world - view_origin -> clip space
     Vec4 view_origin; // xyz = camera world position
-    Mat4 model;       // mesh matrix_world
-    Mat4 normal_mat;  // transpose(inverse(model))
+    Mat4 model; // mesh matrix_world
+    Mat4 normal_mat; // transpose(inverse(model))
     Vec4 camera_time; // xyz = camera world position, w = renderer time (s)
 }
 

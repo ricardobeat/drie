@@ -2,7 +2,7 @@
 // uncompressed deflate stored blocks by default (`compress: true` enables deflate compression),
 // tags color space via `sRGB` or Display P3 `cICP`/`cHRM`/`gAMA` chunks, and supports custom
 // ancillary chunks via `extra` and `png::find_chunk()`.
-//
+// 
 //   png::write("shot.png", pixels, w, h, p3: true);
 //   char[] data;
 //   if (png::find_chunk(file_bytes, "abCd", &data)) ...
@@ -59,12 +59,21 @@ struct Chunk {
 // Writes 8-bit RGB PNG data from `pixels` (top row first, `channels` bytes per pixel: 3 or 4,
 // dropping alpha) to `path`. Set `bgra` for BGRA byte order, `p3` to tag Display P3 (`cICP` +
 // `cHRM`/`gAMA`) instead of sRGB, `extra` for custom chunks, and `compress` for deflate output.
-fn bool write(String path, char[] pixels, int width, int height, bool p3 = false, bool bgra = false, int channels = 4,
-               Chunk[] extra = {}, bool compress = false) {
+fn bool write(
+    String path,
+    char[] pixels,
+    int width,
+    int height,
+    bool p3 = false,
+    bool bgra = false,
+    int channels = 4,
+    Chunk[] extra = { },
+    bool compress = false
+) {
     // raw scanlines: filter byte + RGB
     sz row_bytes = (sz)width * 3 + 1;
-    sz total = (sz)height * row_bytes;
-    char[] raw = mem::alloc_array(char, total);
+    sz total     = (sz)height * row_bytes;
+    char[] raw   = mem::alloc_array(char, total);
     defer mem::free(raw);
     sz dst = 0;
     for (int y = 0; y < height; y++) {
@@ -116,7 +125,7 @@ fn bool write(String path, char[] pixels, int width, int height, bool p3 = false
     }
     uint a = 1;
     uint b = 0;
-    sz ai = 0;
+    sz ai  = 0;
     while (ai < total) {
         sz end = ai + 5552;
         if (end > total) end = total;

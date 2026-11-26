@@ -9,7 +9,7 @@ module drie;
 import std::math, sokol;
 
 // Planar reflection target and plane definition assigned to surfaces via `Material.reflector`.
-//
+// 
 //   Reflector* mirror = drie::reflector({ 0, 1, 0 }, FLOOR_Y);
 //   floor_material.reflector = mirror;
 //   // Each frame, with the renderer's target set as for the main render:
@@ -80,8 +80,8 @@ fn Mat4 Reflector.mirror(&self) {
 // `cam.update_matrix_world()` and `cam.update_projection_matrix()`, with `cam.custom_projection`
 // enabled so `Renderer.render()` preserves the modified projection matrix.
 fn void oblique_projection(Camera* cam, Vector3 normal, float constant, float clip_bias = 0) {
-    Vector3 n = normal.normalize();
-    Mat4 mw   = cam.matrix_world;
+    Vector3 n     = normal.normalize();
+    Mat4 mw       = cam.matrix_world;
     float[<4>] pw = { n.x, n.y, n.z, -constant + clip_bias };
     float[<4>] cv;
     for (int i = 0; i < 4; i++) cv[i] = mw[i][0] * pw[0] + mw[i][1] * pw[1] + mw[i][2] * pw[2] + mw[i][3] * pw[3];

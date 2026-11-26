@@ -31,7 +31,7 @@ struct GradeSettings {
 }
 
 // Stateful HDR color grader and cached 3D LUT consumed by `OutputPass.grade`.
-//
+// 
 //   ColorGrade* grade = postprocessing::color_grade();
 //   grade.temperature = 15;
 //   grade.contrast = 1.1;
@@ -74,13 +74,15 @@ SgView grade_empty @local;
 
 fn SgSampler grade_sampler() @local {
     if (!grade_clamp.id) {
-        grade_clamp = sg::make_sampler(&&{
-            .min_filter = LINEAR,
-            .mag_filter = LINEAR,
-            .wrap_u = CLAMP_TO_EDGE,
-            .wrap_v = CLAMP_TO_EDGE,
-            .wrap_w = CLAMP_TO_EDGE,
-        });
+        grade_clamp = sg::make_sampler(
+            &&{
+                .min_filter = LINEAR,
+                .mag_filter = LINEAR,
+                .wrap_u = CLAMP_TO_EDGE,
+                .wrap_v = CLAMP_TO_EDGE,
+                .wrap_w = CLAMP_TO_EDGE,
+            }
+        );
     }
     return grade_clamp;
 }
@@ -89,16 +91,18 @@ fn SgSampler grade_sampler() @local {
 fn SgView empty_lut() {
     if (!grade_empty.id) {
         char[4] px = { 255, 255, 255, 255 };
-        SgImage img = sg::make_image(&&{
-            .type = TYPE_3D,
-        .sample_count = 1,
-            .width = 1,
-            .height = 1,
-            .num_slices = 1,
-            .pixel_format = RGBA8,
-            .data = { .ptr = &px, .size = 4 },
-            .label = "drie-empty-lut",
-        });
+        SgImage img = sg::make_image(
+            &&{
+                .type = TYPE_3D,
+                .sample_count = 1,
+                .width = 1,
+                .height = 1,
+                .num_slices = 1,
+                .pixel_format = RGBA8,
+                .data = { .ptr = &px, .size = 4 },
+                .label = "drie-empty-lut",
+            }
+        );
         grade_empty = sg::make_view(&&{ .texture = { .image = img } });
     }
     return grade_empty;
@@ -108,8 +112,8 @@ fn SgView empty_lut() {
 fn Vector3 white_balance(float temperature, float tint) @local {
     float t1 = temperature / 65;
     float t2 = tint / 65;
-    float x = 0.31271f - t1 * (t1 < 0 ? 0.1f : 0.05f);
-    float y = 2.87f * x - 3 * x * x - 0.27509507f + t2 * 0.05f;
+    float x  = 0.31271f - t1 * (t1 < 0 ? 0.1f : 0.05f);
+    float y  = 2.87f * x - 3 * x * x - 0.27509507f + t2 * 0.05f;
     float bx = x / y;
     float bz = (1 - x - y) / y;
     Vector3 lms = {
@@ -123,43 +127,53 @@ fn Vector3 white_balance(float temperature, float tint) @local {
 // Rebakes the 32x32x32 3D LUT on the GPU if `settings`, `tone`, or `p3` changed since the last
 // bake. Must be called outside any active render pass.
 fn void ColorGrade.prepare(&self, ToneMapping tone, bool p3) {
-    if (self.baked_once && mem::equals(&self.baked, &self.settings, GradeSettings::size) && self.baked_tone == tone.ordinal && self.baked_p3 == p3) return;
+    if (self.baked_once && mem::equals(
+        &self.baked,
+        &self.settings,
+        GradeSettings::size
+    ) && self.baked_tone == tone.ordinal && self.baked_p3 == p3) return;
     if (!self.lut.id) {
-        self.lut = sg::make_image(&&{
-            .type = TYPE_3D,
-        .sample_count = 1,
-            .usage = { .color_attachment = true },
-            .width = GRADE_LUT,
-            .height = GRADE_LUT,
-            .num_slices = GRADE_LUT,
-            .pixel_format = RGBA16F,
-            .label = "drie-grade-lut",
-        });
+        self.lut = sg::make_image(
+            &&{
+                .type = TYPE_3D,
+                .sample_count = 1,
+                .usage = { .color_attachment = true },
+                .width = GRADE_LUT,
+                .height = GRADE_LUT,
+                .num_slices = GRADE_LUT,
+                .pixel_format = RGBA16F,
+                .label = "drie-grade-lut",
+            }
+        );
         self.lut_texture = sg::make_view(&&{ .texture = { .image = self.lut } });
         for (int z = 0; z < GRADE_LUT; z++) {
             self.slices[z] = sg::make_view(&&{ .color_attachment = { .image = self.lut, .slice = z } });
         }
         self.shader = drie::make_program(grade_shader_desc(sg::query_backend()));
-        self.pipeline = sg::make_pipeline(&&{
-            .shader = self.shader,
-            .colors[0].pixel_format = RGBA16F,
-            .depth.pixel_format = NONE,
-            .sample_count = 1,
-            .label = "drie-grade",
-        });
+        self.pipeline = sg::make_pipeline(
+            &&{
+                .shader = self.shader,
+                .colors[0].pixel_format = RGBA16F,
+                .depth.pixel_format = NONE,
+                .sample_count = 1,
+                .label = "drie-grade",
+            }
+        );
         self.sampler = grade_sampler();
     }
     Vector3 wb = white_balance(self.temperature, self.tint);
-    bool look = self.look.id && self.look_strength > 0;
+    bool look  = self.look.id && self.look_strength > 0;
     SgBindings bind;
     bind.views[VIEW_GRADE_LOOK] = look ? self.look_texture : empty_lut();
     bind.samplers[SMP_GRADE_SMP] = self.sampler;
     for (int z = 0; z < GRADE_LUT; z++) {
-        sg::begin_pass(&&{
-            .action.colors[0] = { .load_action = DONTCARE, .store_action = STORE },
-            .attachments.colors[0] = self.slices[z],
-            .label = "drie-grade",
-        });
+        sg::begin_pass(
+            &&{
+                .action.colors[0] = { .load_action = DONTCARE, .store_action = STORE },
+                .attachments.colors[0] = self.slices[z],
+                .label = "drie-grade",
+            }
+        );
         sg::apply_pipeline(self.pipeline);
         sg::apply_bindings(&bind);
         GradeParams p = {
@@ -200,7 +214,8 @@ fn void? ColorGrade.load_look(&self, String path) {
             n = line[11..].trim().to_int()!;
             continue;
         }
-        if (line[0] < '0' && line[0] != '-' && line[0] != '.' || line[0] > '9' && line[0] != '-' && line[0] != '.') continue;
+        if (line[0] < '0' && line[0] != '-' && line[0] != '.'
+            || line[0] > '9' && line[0] != '-' && line[0] != '.') continue;
         foreach (f : line.tsplit(" ")) {
             if (f.len) values.push((float)f.to_double()!);
         }
@@ -214,16 +229,18 @@ fn void? ColorGrade.load_look(&self, String path) {
         px[i * 4 + 3] = 255;
     }
     if (self.look.id) sg::destroy_image(self.look);
-    self.look = sg::make_image(&&{
-        .type = TYPE_3D,
-        .sample_count = 1,
-        .width = n,
-        .height = n,
-        .num_slices = n,
-        .pixel_format = RGBA8,
-        .data = { .ptr = px.ptr, .size = px.len },
-        .label = "drie-grade-look",
-    });
+    self.look = sg::make_image(
+        &&{
+            .type = TYPE_3D,
+            .sample_count = 1,
+            .width = n,
+            .height = n,
+            .num_slices = n,
+            .pixel_format = RGBA8,
+            .data = { .ptr = px.ptr, .size = px.len },
+            .label = "drie-grade-look",
+        }
+    );
     self.look_texture = sg::make_view(&&{ .texture = { .image = self.look } });
     self.look_size = n;
     self.baked_once = false;

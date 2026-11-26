@@ -13,10 +13,10 @@ import sokol, drie;
 
 // Progressive downsample/upsample bloom pass (`shaders/bloom.glsl`, after Call of Duty/Unreal
 // bloom) operating in place on a linear HDR `RenderTarget`.
-//
+// 
 //   UnrealBloomPass* bloom = postprocessing::unreal_bloom_pass(strength: 0.05, threshold: 0);
 //   bloom.render(hdr_target);
-//
+// 
 // With `threshold == 0`, all brightness levels contribute proportionally (use low `strength`,
 // around `0.02..0.1`); a positive threshold restricts bloom to brighter highlights.
 struct UnrealBloomPass {
@@ -64,8 +64,8 @@ fn void UnrealBloomPass.render(&self, RenderTarget* target) {
     }
     // Downsample chain, applying the brightness threshold on level 0.
     SgView src = target.texture;
-    int sw = target.width;
-    int sh = target.height;
+    int sw     = target.width;
+    int sh     = target.height;
     for (int i = 0; i < n; i++) {
         RenderTarget* m = self.mips[i];
         BloomDownParams p = {
@@ -80,9 +80,9 @@ fn void UnrealBloomPass.render(&self, RenderTarget* target) {
         sh = m.height;
     }
     // Upsample chain, accumulating level `i` into `i - 1` with geometric weights `1, r, r^2, ...`.
-    float r = self.radius < 0 ? 0 : (self.radius > 1 ? 1 : self.radius);
+    float r     = self.radius < 0 ? 0 : (self.radius > 1 ? 1 : self.radius);
     float total = 1;
-    float k = 1;
+    float k     = 1;
     for (int i = 1; i < n; i++) {
         k *= r;
         total += k;
@@ -119,7 +119,7 @@ fn void UnrealBloomPass.dispose(&self) {
 
 // Screen-space lens ghosts and halo (`shaders/flare.glsl`) rendered at quarter resolution from a
 // blurred bright image and additively composited onto the HDR target.
-//
+// 
 //   LensFlarePass* flare = postprocessing::lens_flare_pass();
 //   bloom.render(hdr_target);
 //   flare.render(hdr_target, bloom.mips[3]);
@@ -138,7 +138,14 @@ struct LensFlarePass {
 // Allocates a `LensFlarePass` with the given `strength` and linear brightness `threshold`.
 fn LensFlarePass* lens_flare_pass(float strength = 0.4, float threshold = 2) {
     LensFlarePass* p = mem::new(LensFlarePass);
-    *p = { .strength = strength, .threshold = threshold, .ghosts = 5, .spacing = 0.32f, .halo = 0.42f, .dispersion = 0.006f };
+    *p = {
+        .strength = strength,
+        .threshold = threshold,
+        .ghosts = 5,
+        .spacing = 0.32f,
+        .halo = 0.42f,
+        .dispersion = 0.006f
+    };
     p.make.init(flare_shader_desc(sg::query_backend()), "drie-flare");
     p.make.set_sampler(SMP_FLARE_SMP, linear_sampler());
     p.add.init(bloom_up_shader_desc(sg::query_backend()), "drie-flare-add", ADDITIVE_BLEND);
@@ -155,7 +162,12 @@ fn void LensFlarePass.render(&self, RenderTarget* target, RenderTarget* bright) 
     self.flare.set_size(w, h, 1);
     FlareParams p = {
         .size = { w, h, self.threshold, (float)target.width / target.height },
-        .tune = { self.ghosts < 0 ? 0 : (self.ghosts > 8 ? 8 : self.ghosts), self.spacing, self.halo, self.dispersion },
+        .tune = {
+            self.ghosts < 0 ? 0 : (self.ghosts > 8 ? 8 : self.ghosts),
+            self.spacing,
+            self.halo,
+            self.dispersion
+        },
     };
     self.make.set_texture(VIEW_FLARE_SRC, bright.texture);
     self.make.set_uniforms(UB_FLARE_PARAMS, &p);

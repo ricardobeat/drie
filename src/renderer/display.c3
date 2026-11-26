@@ -9,9 +9,9 @@ import std::math;
 
 // Color spaces the window swapchain can present on macOS (mapped to platform/display.c).
 enum DisplayColorSpace {
-    SRGB,                         // Standard sRGB gamut and transfer curve.
-    DISPLAY_P3,                   // Wide-gamut Display P3 with SDR range.
-    EXTENDED_LINEAR_DISPLAY_P3,   // Linear Display P3 with EDR headroom (1.0 is SDR white).
+    SRGB,                       // Standard sRGB gamut and transfer curve.
+    DISPLAY_P3,                 // Wide-gamut Display P3 with SDR range.
+    EXTENDED_LINEAR_DISPLAY_P3, // Linear Display P3 with EDR headroom (1.0 is SDR white).
 }
 
 extern fn float drie_display_headroom(void* window) @local;

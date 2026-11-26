@@ -37,7 +37,7 @@ fn void BufferGeometry.set_skin_blend(&self, uint vertex, int bone_a, int bone_b
 }
 
 // Binds vertices `[from, to)` rigidly to one bone (useful right after `BufferGeometry.merge`):
-//
+// 
 //   uint first = g.vertex_count(); g.merge(part); g.skin_range(first, g.vertex_count(), bone);
 fn void BufferGeometry.skin_range(&self, uint from, uint to, int bone) {
     for (uint i = from; i < to; i++) self.set_skin(i, { (ushort)bone, 0, 0, 0 }, { 1, 0, 0, 0 });
@@ -138,21 +138,21 @@ fn int Skeleton.index_of(&self, Bone* bone) {
 // ---- SkinnedMesh
 
 // Mesh deformed on the CPU from `bind_geometry` into `geometry` via a bound `Skeleton`.
-//
+// 
 //   Bone* hip = drie::bone("hip");
 //   Bone* knee = drie::bone("knee");
 //   hip.add(knee);
 //   knee.position.y = -0.4f;
-//
+// 
 //   BufferGeometry* leg = ...;                              // modelled in bind pose
 //   leg.skin_range(0, leg.vertex_count(), 0);
 //   leg.set_skin(7, { 0, 1, 0, 0 }, { 0.5f, 0.5f, 0, 0 });
-//
+// 
 //   SkinnedMesh* mesh = drie::skinned_mesh(leg, material);
 //   mesh.add(hip);
 //   mesh.bind(drie::skeleton({ hip, knee }));
 //   scene.add(mesh);
-//
+// 
 //   knee.rotation.x = 0.8f;                                 // each frame: pose, then skin
 //   mesh.update();
 struct SkinnedMesh {

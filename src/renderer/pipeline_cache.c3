@@ -10,35 +10,50 @@ import std::io, std::collections::list, sokol::sg;
 // ---- Text pipeline cache
 
 const String PIPELINE_CACHE_HEADER @local = "drie-pipelines 6\n";
-const int PIPELINE_CACHE_JOBS @local = 6;  // Maximum concurrent background warmup jobs.
+const int PIPELINE_CACHE_JOBS @local      = 6; // Maximum concurrent background warmup jobs.
 
 // Recorded pipeline configuration emitted by get_pipeline() or gen_shadow_pipeline().
 struct PipelineRecord @private {
-    MaterialKey key;          // Generated material program key (src/material/material_key.c3).
-    MaterialProgram* shared;  // Node-material program (refcounted via MaterialProgram.users).
-    bool shadow;              // True for shadow-map pipelines (remaining render fields unused).
+    MaterialKey key; // Generated material program key (src/material/material_key.c3).
+    MaterialProgram* shared; // Node-material program (refcounted via MaterialProgram.users).
+    bool shadow; // True for shadow-map pipelines (remaining render fields unused).
     Side side;
     bool transparent;
     bool wireframe;
     bool alpha_test;
-    ulong blend;              // Packed blend state from blend_key().
+    ulong blend; // Packed blend state from blend_key().
     DrawKind kind;
-    bool gbuffer;             // True for deferred G-Buffer pipelines.
+    bool gbuffer; // True for deferred G-Buffer pipelines.
     bool depth_test;
     bool depth_write;
     bool vsm;
-    int target_samples;       // 0 denotes the window swapchain (or Renderer.screen_stand_in).
+    int target_samples; // 0 denotes the window swapchain (or Renderer.screen_stand_in).
     SgPixelFormat target_format;
     bool target_mrt;
 }
 
 fn bool PipelineRecord.same(&self, PipelineRecord* o) {
-    return bitcast(self.key, KeyWords) == bitcast(o.key, KeyWords) && self.shared == o.shared
-        && self.shadow == o.shadow && self.side == o.side && self.transparent == o.transparent
-        && self.wireframe == o.wireframe && self.alpha_test == o.alpha_test && self.blend == o.blend
-        && self.kind == o.kind && self.gbuffer == o.gbuffer && self.depth_test == o.depth_test
-        && self.depth_write == o.depth_write && self.vsm == o.vsm && self.target_samples == o.target_samples
-        && self.target_format == o.target_format && self.target_mrt == o.target_mrt;
+    return bitcast(
+        self.key,
+        KeyWords
+    ) == bitcast(
+        o.key,
+        KeyWords
+    ) && self.shared
+        == o.shared && self.shadow
+            == o.shadow && self.side
+                == o.side && self.transparent
+                    == o.transparent && self.wireframe
+                        == o.wireframe && self.alpha_test
+                            == o.alpha_test && self.blend
+                                == o.blend && self.kind
+                                    == o.kind && self.gbuffer
+                                        == o.gbuffer && self.depth_test
+                                            == o.depth_test && self.depth_write
+                                                == o.depth_write && self.vsm
+                                                    == o.vsm && self.target_samples
+                                                        == o.target_samples && self.target_format
+                                                            == o.target_format && self.target_mrt == o.target_mrt;
 }
 
 // Unique pipelines built from scratch during this run, exported by Renderer.pipeline_cache().
@@ -46,11 +61,11 @@ List{PipelineRecord} pipeline_records @local;
 
 // Background compilation queue for loaded pipeline caches.
 struct PipelineWarmup @private {
-    List{PipelineRecord} pending;      // Records not yet dispatched to worker threads.
-    List{PipelineRecord} loaded;       // Deduplicated union of all loaded cache records.
-    List{int} jobs;                    // Active sg_warm_begin job IDs on already-compiling shaders.
-    List{ShaderProgram*} generated;    // Programs claimed by warmup jobs (ShaderProgram.claim).
-    int started;                       // Number of records popped from `pending`.
+    List{PipelineRecord} pending; // Records not yet dispatched to worker threads.
+    List{PipelineRecord} loaded; // Deduplicated union of all loaded cache records.
+    List{int} jobs; // Active sg_warm_begin job IDs on already-compiling shaders.
+    List{ShaderProgram*} generated; // Programs claimed by warmup jobs (ShaderProgram.claim).
+    int started; // Number of records popped from `pending`.
 }
 
 PipelineWarmup cache_warmup @local;
@@ -104,7 +119,7 @@ fn String key_hex(MaterialKey key) @local {
 // Dispatches a background compile job for generated program `p` and pipeline `desc`.
 fn void PipelineWarmup.start_generated(&self, ShaderProgram* p, SgPipelineDesc* desc) {
     SgShaderDesc shader = p.desc();
-    int job = sg_warm_begin(&shader, desc);
+    int job             = sg_warm_begin(&shader, desc);
     if (job < 0) return;
     if (p.claim(job)) {
         self.generated.push(p);
@@ -123,7 +138,7 @@ fn void PipelineWarmup.start_generated(&self, ShaderProgram* p, SgPipelineDesc* 
 //                                         Render pipeline (`<program>` -1 for non-node materials,
 //                                         `<target_samples>` 0 for the window).
 //   H <key> <program>                     Shadow-map pipeline.
-//
+// 
 // With `include_loaded` (default true), merges records loaded via load_pipeline_cache() so saving
 // after a warmed run preserves entries that hit the cache without being built from scratch.
 fn String Renderer.pipeline_cache(&self, Allocator a, bool include_loaded = true) {
@@ -166,10 +181,24 @@ fn String Renderer.pipeline_cache(&self, Allocator a, bool include_loaded = true
                 out.appendf("H %s %d\n", key_hex(r.key), program);
                 continue;
             }
-            out.appendf("G %s %d %d %d %d %d %d %d %d %d %d %d %d %d %d\n", key_hex(r.key), program, r.side.ordinal,
-                r.transparent ? 1 : 0, r.wireframe ? 1 : 0, r.alpha_test ? 1 : 0, r.blend, r.kind.ordinal,
-                r.depth_test ? 1 : 0, r.depth_write ? 1 : 0, r.vsm ? 1 : 0, r.target_samples, (uint)r.target_format,
-                r.target_mrt ? 1 : 0, r.gbuffer ? 1 : 0);
+            out.appendf(
+                "G %s %d %d %d %d %d %d %d %d %d %d %d %d %d %d\n",
+                key_hex(r.key),
+                program,
+                r.side.ordinal,
+                r.transparent ? 1 : 0,
+                r.wireframe ? 1 : 0,
+                r.alpha_test ? 1 : 0,
+                r.blend,
+                r.kind.ordinal,
+                r.depth_test ? 1 : 0,
+                r.depth_write ? 1 : 0,
+                r.vsm ? 1 : 0,
+                r.target_samples,
+                (uint)r.target_format,
+                r.target_mrt ? 1 : 0,
+                r.gbuffer ? 1 : 0
+            );
         }
     };
     return out.str_view();
@@ -195,7 +224,7 @@ fn void Renderer.clear_pipeline_cache(&self) {
 // Parses a serialized node material program at `*at` in `text`, advancing `*at`, and deduplicates
 // it against already-registered MaterialPrograms.
 fn MaterialProgram*? read_material_program(String text, usz* at, MaterialKey key, bool depth) @local {
-    ShaderProgram* program = read_program(text, at)!;
+    ShaderProgram* program  = read_program(text, at)!;
     ShaderProgram*? prepass = depth ? read_program(text, at) : (ShaderProgram*)null;
     if (catch prepass) {
         free_program(program);
@@ -255,8 +284,9 @@ fn int Renderer.load_pipeline_cache(&self, String text) {
                         if (w.add({ .key = key, .shared = shared, .shadow = true })) added++;
                         continue;
                     }
-                    if (n[1] < 0 || n[1] > Side.DOUBLE_SIDE.ordinal || n[5] < 0
-                        || n[6] < 0 || n[6] > DrawKind.DEPTH.ordinal || n[10] < 0) {
+                    if (n[1] < 0 || n[1] > Side.DOUBLE_SIDE.ordinal || n[5] < 0 || n[6] < 0
+                        || n[6] > DrawKind.DEPTH.ordinal
+                        || n[10] < 0) {
                         continue;
                     }
                     PipelineRecord r = {
@@ -360,8 +390,19 @@ fn void Renderer.pump_pipeline_cache(&self) {
         // get_pipeline() reads VSM mode off the renderer.
         self.shadow_type = r.vsm ? ShadowType.VSM : shadow_type == VSM ? ShadowType.PCF : shadow_type;
         RenderTarget target = { .samples = r.target_samples, .format = r.target_format, .mrt = r.target_mrt };
-        (void)get_pipeline(r.side, r.transparent, r.wireframe, r.target_samples ? &target : null, r.alpha_test,
-            r.blend, r.kind, r.depth_test, r.depth_write, r.gbuffer, gen);
+        (void)get_pipeline(
+            r.side,
+            r.transparent,
+            r.wireframe,
+            r.target_samples ? &target : null,
+            r.alpha_test,
+            r.blend,
+            r.kind,
+            r.depth_test,
+            r.depth_write,
+            r.gbuffer,
+            gen
+        );
     }
 }
 
@@ -393,7 +434,12 @@ fn void load_pipeline_archive() @private {
     archive_loaded = true;
     @pool() {
         CInt r = sg_warm_archive_load(archive_path.zstr_tcopy());
-        if (r > 0) io::printfn("drie: pipelines compiled ahead of time in %s (%d %s)", archive_path, r, r == 1 ? "file" : "files");
+        if (r > 0) io::printfn(
+            "drie: pipelines compiled ahead of time in %s (%d %s)",
+            archive_path,
+            r,
+            r == 1 ? "file" : "files"
+        );
     };
 }
 

@@ -1,7 +1,7 @@
 // Orbit camera controller: left-drag rotates around a target, right-drag or shift+left-drag
 // pans, and scroll zooms. Events are wired automatically through a shared window listener; call
 // `update()` once per frame to apply accumulated input.
-//
+// 
 //   import drie::controls;
 //   OrbitControls* c = controls::orbit_controls(camera);
 //   // each frame:

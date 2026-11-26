@@ -104,16 +104,16 @@ fn SgView update_fog_volume(
         fog_pass.pipeline = sg::make_pipeline(&&{ .compute = true, .shader = fog_pass.shader, .label = "drie-fog" });
     }
     // Scale both xy cell density and slice count (`Renderer.fog_resolution_scale`).
-    float q      = resolution_scale > 0 ? resolution_scale : 1;
-    float res    = math::min((f.resolution > 0 ? f.resolution : 0.25f) * q, 1.0f);
-    int cx       = math::max((int)math::ceil((float)width * res), 1);
-    int cy       = math::max((int)math::ceil((float)height * res), 1);
-    int slices   = math::min(math::max((int)((f.slices > 0 ? f.slices : 96) * q + 0.5f), 2), 256);
+    float q     = resolution_scale > 0 ? resolution_scale : 1;
+    float res   = math::min((f.resolution > 0 ? f.resolution : 0.25f) * q, 1.0f);
+    int cx      = math::max((int)math::ceil((float)width * res), 1);
+    int cy      = math::max((int)math::ceil((float)height * res), 1);
+    int slices  = math::min(math::max((int)((f.slices > 0 ? f.slices : 96) * q + 0.5f), 2), 256);
     // Keep the tiled slice atlas within GPU limits and a bounded VRAM budget on HiDPI/4K targets.
-    int per_row  = (int)math::ceil(math::sqrt((float)slices));
-    int rows     = (slices + per_row - 1) / per_row;
-    int max_dim  = sg::query_limits().max_image_size_2d;
-    int cap_dim  = max_dim > 0 ? math::min(max_dim, 4096) : 4096;
+    int per_row = (int)math::ceil(math::sqrt((float)slices));
+    int rows    = (slices + per_row - 1) / per_row;
+    int max_dim = sg::query_limits().max_image_size_2d;
+    int cap_dim = max_dim > 0 ? math::min(max_dim, 4096) : 4096;
     if (cx * per_row > cap_dim || cy * rows > cap_dim) {
         float sx = (float)cap_dim / (float)(cx * per_row);
         float sy = (float)cap_dim / (float)(cy * rows);

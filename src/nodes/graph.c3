@@ -1,6 +1,6 @@
 // Shader node graph IR (`Node`, `NodeData`, `NodeFunction`), operator/swizzle methods, and
 // per-material graph builds (`NodeBuild`, `node_build_of`).
-//
+// 
 // Nodes are immutable uint handles (0 = none) stored in a monotonic arena; only `UNIFORM` nodes
 // mutate in place via `Node.set*`, updating parameters without rebuilding shaders. A material
 // binds at most 6 custom node textures (`NODE_TEXTURES`) across its 15 `*_node` slots
@@ -13,7 +13,7 @@ import std::collections::list, std::collections::map, std::io, std::os::env, sok
 
 // Handle to an immutable shader graph node (0 = none); only uniform values mutate via `Node.set*`.
 // Constructed through `drie::nodes`, e.g.:
-//
+// 
 //   Node wave = nodes::sin(nodes::position_local().y() * 8 + nodes::time() * 2);
 //   mat.color_node = nodes::mix(nodes::color(0x2266ff), nodes::color(0xffffff), wave * 0.5f + 0.5f);
 //   mat.position_node = nodes::position_local() + nodes::normal_local() * (wave * 0.05f);
@@ -64,7 +64,7 @@ enum NodeType : char {
     UVEC2,
     UVEC3,
     UVEC4,
-    VOID,     // a statement's
+    VOID, // a statement's
     MAT3,
 }
 
@@ -78,70 +78,70 @@ enum NodeScalar : char {
 
 // Operation tag identifying the expression, statement, or engine input encoded in `NodeData`.
 enum NodeOp : char {
-    CONST,    // value
-    UNIFORM,  // value (Node.set)
-    BUILTIN,  // fn: a NodeBuiltin
-    TEXTURE,  // texture; args[0] = uv, args[1] = the level (0: from the derivatives); kind 1:
-              //   its size instead (a vec2); kind 2: with the gradients args[1] and args[2]
-    VARYING,  // args[0], worked out per vertex
-    BINARY,   // fn: a NodeBinary
-    CALL,     // fn: a NodeFn, args
-    SELECT,   // args[0] ? args[1] : args[2]
-    SWIZZLE,  // args[0]'s components swizzle[0..count)
-    JOIN,     // a vector of args[0..count)
-    CONVERT,  // args[0], as type
-    NOT,      // kind 0: !args[0]; 1: ~args[0]
-    // statements, of type VOID, in blocks (the first statement; each one's `next`):
-    VAR,      // a variable, of args[0] at first (0: zeros); declared where it is first read
-    ASSIGN,   // args[0] (a VAR, or a swizzle of one) = args[1]
-    IF,       // if (args[0]) the block args[1] else the block args[2]
-    LOOP,     // kind: a NodeLoop; args[0] the index (a VAR), args[1] from, args[2] to, args[3] the block
-    JUMP,     // kind 0: break, 1: continue, 2: discard (the fragment stage)
-    EVAL,     // args[0] worked out here (a VAR's declaration, a SEQ that returns nothing)
-    // and the one that gives a value
-    SEQ,      // the block args[0], then args[1] (0: nothing, a VOID)
-    // Engine program inputs (src/nodes/program.c3):
-    INPUT,    // rows of an engine uniform block: res[0] = its NodeSource, res[1] = the first row,
-              //   res[2] = the component of the row a vector starts at; args[0] an index into an
-              //   array (0: none) of value[0] rows a step, value[1] steps long (as bits)
-    STORAGE,  // element args[0] of a storage buffer (res[0]: the view slot) of vec4s, uvec4s or uints
-    SAMPLE,   // an engine texture: kind = a NodeSampling; res[0] = the view slot, res[1] = the
-              //   sampler slot, res[2] = a NodeTextureKind; args = coordinates, then the level, the
-              //   gradients or the depth compared against
+    CONST,     // value
+    UNIFORM,   // value (Node.set)
+    BUILTIN,   // fn: a NodeBuiltin
+    TEXTURE,   // texture; args[0] = uv, args[1] = the level (0: from the derivatives); kind 1:
+               // its size instead (a vec2); kind 2: with the gradients args[1] and args[2]
+    VARYING,   // args[0], worked out per vertex
+    BINARY,    // fn: a NodeBinary
+    CALL,      // fn: a NodeFn, args
+    SELECT,    // args[0] ? args[1] : args[2]
+    SWIZZLE,   // args[0]'s components swizzle[0..count)
+    JOIN,      // a vector of args[0..count)
+    CONVERT,   // args[0], as type
+    NOT,       // kind 0: !args[0]; 1: ~args[0]
+               // statements, of type VOID, in blocks (the first statement; each one's `next`):
+    VAR,       // a variable, of args[0] at first (0: zeros); declared where it is first read
+    ASSIGN,    // args[0] (a VAR, or a swizzle of one) = args[1]
+    IF,        // if (args[0]) the block args[1] else the block args[2]
+    LOOP,      // kind: a NodeLoop; args[0] the index (a VAR), args[1] from, args[2] to, args[3] the block
+    JUMP,      // kind 0: break, 1: continue, 2: discard (the fragment stage)
+    EVAL,      // args[0] worked out here (a VAR's declaration, a SEQ that returns nothing)
+               // and the one that gives a value
+    SEQ,       // the block args[0], then args[1] (0: nothing, a VOID)
+               // Engine program inputs (src/nodes/program.c3):
+    INPUT,     // rows of an engine uniform block: res[0] = its NodeSource, res[1] = the first row,
+               // res[2] = the component of the row a vector starts at; args[0] an index into an
+               // array (0: none) of value[0] rows a step, value[1] steps long (as bits)
+    STORAGE,   // element args[0] of a storage buffer (res[0]: the view slot) of vec4s, uvec4s or uints
+    SAMPLE,    // an engine texture: kind = a NodeSampling; res[0] = the view slot, res[1] = the
+               // sampler slot, res[2] = a NodeTextureKind; args = coordinates, then the level, the
+               // gradients or the depth compared against
     ATTRIBUTE, // vertex attribute kind (its location)
-    SYSTEM,   // kind = a NodeSystem
-    PARAM,    // a function's parameter kind
-    CALL_FN,  // the function value[0] (as bits, in node_funcs) of the count arguments in node_args
-              //   from value[1] (as bits)
-    BIND,     // a statement: the builtin kind is args[0] from here on
+    SYSTEM,    // kind = a NodeSystem
+    PARAM,     // a function's parameter kind
+    CALL_FN,   // the function value[0] (as bits, in node_funcs) of the count arguments in node_args
+               // from value[1] (as bits)
+    BIND,      // a statement: the builtin kind is args[0] from here on
 }
 
 // What SAMPLE does with its texture.
 enum NodeSampling : char {
-    SAMPLE,   // filtered, the level from the derivatives
-    LEVEL,    // at level args[1]
-    GRAD,     // with the derivatives args[1] and args[2]
-    FETCH,    // texel args[0] (integers) of level args[1] (an int)
-    SIZE,     // the size of level args[0] (an int): an ivec2, or an ivec3 for 3D textures and arrays
-    COMPARE,  // a depth texture's comparison sampler: how much of the 2x2 footprint at args[0]
-              //   is nearer than args[1]
-    LEVELS,   // how many mip levels the texture has (an int)
+    SAMPLE,  // filtered, the level from the derivatives
+    LEVEL,   // at level args[1]
+    GRAD,    // with the derivatives args[1] and args[2]
+    FETCH,   // texel args[0] (integers) of level args[1] (an int)
+    SIZE,    // the size of level args[0] (an int): an ivec2, or an ivec3 for 3D textures and arrays
+    COMPARE, // a depth texture's comparison sampler: how much of the 2x2 footprint at args[0]
+             // is nearer than args[1]
+    LEVELS,  // how many mip levels the texture has (an int)
 }
 
 // Texture dimensionality and sample mode for `NodeOp.SAMPLE`.
 enum NodeTextureKind : char {
     TEX_2D,
     TEX_3D,
-    TEX_ARRAY,  // 2D layers: coordinates (u, v, layer)
-    TEX_DEPTH,  // 2D depths, read with COMPARE
+    TEX_ARRAY, // 2D layers: coordinates (u, v, layer)
+    TEX_DEPTH, // 2D depths, read with COMPARE
 }
 
 // The stage's own inputs.
 enum NodeSystem : char {
-    INSTANCE_ID,   // uint (vertex)
-    VERTEX_ID,     // uint (vertex)
-    FRAG_COORD,    // vec4 (fragment): the backend's own, as sokol-shdc hands it on
-    FRONT_FACING,  // bool (fragment)
+    INSTANCE_ID,  // uint (vertex)
+    VERTEX_ID,    // uint (vertex)
+    FRAG_COORD,   // vec4 (fragment): the backend's own, as sokol-shdc hands it on
+    FRONT_FACING, // bool (fragment)
 }
 
 // How a LOOP goes: its index from args[1] while below (LT, LE) or above (GT, GE) args[2], by 1;
@@ -158,29 +158,29 @@ enum NodeLoop : char {
 enum NodeBuiltin : char {
     UV,
     UV1,
-    POSITION_LOCAL,   // in the model (with the instance's matrix), as three's positionLocal
+    POSITION_LOCAL,     // in the model (with the instance's matrix), as three's positionLocal
     POSITION_WORLD,
     NORMAL_LOCAL,
-    NORMAL_WORLD,     // the shaded normal (fragment: after the normal map and normal_node)
-    NORMAL_GEOMETRY,  // the surface's own, facing the camera
+    NORMAL_WORLD,       // the shaded normal (fragment: after the normal map and normal_node)
+    NORMAL_GEOMETRY,    // the surface's own, facing the camera
     CAMERA_POSITION,
-    VIEW_DIRECTION,   // from the point toward the camera, normalized
-    TIME,             // Renderer.time (s)
-    VERTEX_COLOR,     // rgba
-    FRAG_COORD,       // the pixel's position in the target (fragment)
-    FRONT_FACING,     // bool (fragment)
-    MODEL_MATRIX,     // the mesh's matrix_world (a billboard's as it is, before it is turned)
+    VIEW_DIRECTION,     // from the point toward the camera, normalized
+    TIME,               // Renderer.time (s)
+    VERTEX_COLOR,       // rgba
+    FRAG_COORD,         // the pixel's position in the target (fragment)
+    FRONT_FACING,       // bool (fragment)
+    MODEL_MATRIX,       // the mesh's matrix_world (a billboard's as it is, before it is turned)
     VIEW_MATRIX,
     PROJECTION_MATRIX,
-    OUTPUT,           // the lit color, rgba (in output_node)
-    ENV_DIRECTION,    // the direction the surface reflects, in the world (in env_node)
-    ENV_ROUGHNESS,    // the roughness it reflects with (in env_node)
-    INSTANCE_INDEX,   // the instance's index in its mesh (0 without instances), a float
-    // the material's own value at the step a graph replaces, for a graph that changes it:
+    OUTPUT,             // the lit color, rgba (in output_node)
+    ENV_DIRECTION,      // the direction the surface reflects, in the world (in env_node)
+    ENV_ROUGHNESS,      // the roughness it reflects with (in env_node)
+    INSTANCE_INDEX,     // the instance's index in its mesh (0 without instances), a float
+                        // the material's own value at the step a graph replaces, for a graph that changes it:
     MATERIAL_COLOR,     // rgba (in color_node, opacity_node): the color after its maps, vertex
-                        //   and instance colors, and its opacity
+                        // and instance colors, and its opacity
     MATERIAL_ROUGHNESS, // (in roughness_node, metalness_node and the surface step's others):
-    MATERIAL_METALNESS, //   after the material's maps
+    MATERIAL_METALNESS, // after the material's maps
     ENV_COLOR,          // the environment's reflection along ENV_DIRECTION (in env_node)
     INSTANCE_MATRIX,    // the instance's matrix (identity without instances; vertex stage)
 }
@@ -199,13 +199,13 @@ enum NodeBinary : char {
     NE,
     AND,
     OR,
-    REM,      // %: of floats as mod (floored), of integers as their remainder
+    REM, // %: of floats as mod (floored), of integers as their remainder
     BIT_AND,
     BIT_OR,
     BIT_XOR,
     SHL,
     SHR,
-    XOR,      // of bools
+    XOR, // of bools
 }
 
 // Built-in shader math, derivative, matrix, and bit-reinterpretation intrinsics for `NodeOp.CALL`.
@@ -269,10 +269,10 @@ struct NodeData {
     char count;
     uint[4] args;
     char[4] swizzle;
-    float[16] value;    // (an int's or a uint's: its bits)
+    float[16] value; // (an int's or a uint's: its bits)
     Texture* texture;
-    int[3] res;         // INPUT, STORAGE, SAMPLE: where they read
-    uint next;          // a statement's: the one after it in its block (0: the last)
+    int[3] res; // INPUT, STORAGE, SAMPLE: where they read
+    uint next; // a statement's: the one after it in its block (0: the last)
 }
 
 List{NodeData} node_graph @local;
@@ -373,8 +373,8 @@ fn NodeType wider(NodeType a, NodeType b) {
     if (sa == BOOL) sa = sb == BOOL ? FLOAT : sb;
     if (sb == BOOL) sb = sa;
     NodeScalar s = sa == FLOAT || sb == FLOAT ? FLOAT : sa;
-    int na = components(a);
-    int nb = components(b);
+    int na       = components(a);
+    int nb       = components(b);
     if (na != nb && na != 1 && nb != 1) {
         abort("drie: nodes: a %s and a %s don't combine (convert one: nodes::vec3(...), .xyz()...)", a, b);
     }
@@ -405,7 +405,9 @@ fn Node node_binary(NodeBinary op, Node a, Node b) {
             if (scalar_of(t) == FLOAT) abort("drie: nodes: bitwise operators take integers");
         case SHL:
         case SHR:
-            if (scalar_of(ta) == FLOAT || scalar_of(ta) == BOOL || scalar_of(tb) == FLOAT) abort("drie: nodes: shifts take integers");
+            if (scalar_of(
+                ta
+            ) == FLOAT || scalar_of(ta) == BOOL || scalar_of(tb) == FLOAT) abort("drie: nodes: shifts take integers");
             t = components(ta) >= components(tb) ? ta : type_of(scalar_of(ta), components(tb));
         case XOR:
             t = BOOL;
@@ -451,7 +453,15 @@ fn Node node_call(NodeFn f, Node a, Node b = { }, Node c = { }) {
     NodeType ta = a.type();
     if (f == TRANSPOSE || f == DETERMINANT) {
         if (!is_matrix(ta)) abort("drie: nodes: %s takes a matrix", f);
-        return add_node({ .op = CALL, .type = f == TRANSPOSE ? ta : FLOAT, .kind = (char)f.ordinal, .count = 1, .args = { a.id, 0, 0, 0 } });
+        return add_node(
+            {
+                .op = CALL,
+                .type = f == TRANSPOSE ? ta : FLOAT,
+                .kind = (char)f.ordinal,
+                .count = 1,
+                .args = { a.id, 0, 0, 0 }
+            }
+        );
     }
     NodeType t;
     int count = 1;
@@ -518,7 +528,9 @@ fn Node node_call(NodeFn f, Node a, Node b = { }, Node c = { }) {
         default:
             t = type_of(FLOAT, components(t));
     }
-    return add_node({ .op = CALL, .type = t, .kind = (char)f.ordinal, .count = (char)count, .args = { a.id, b.id, c.id, 0 } });
+    return add_node(
+        { .op = CALL, .type = t, .kind = (char)f.ordinal, .count = (char)count, .args = { a.id, b.id, c.id, 0 } }
+    );
 }
 
 // Converts node `a` to type `t`, returning `a` unchanged if its type already matches.
@@ -530,8 +542,8 @@ fn Node node_convert(Node a, NodeType t) {
 fn Node node_swizzle(Node a, String s) @local {
     if (s.len < 1 || s.len > 4) abort("drie: nodes: a swizzle of 1 to 4 components, not \"%s\"", s);
     NodeScalar sa = scalar_of(a.type());
-    NodeData d = { .op = SWIZZLE, .type = type_of(sa, (int)s.len), .count = (char)s.len, .args = { a.id, 0, 0, 0 } };
-    int have = components(a.type());
+    NodeData d    = { .op = SWIZZLE, .type = type_of(sa, (int)s.len), .count = (char)s.len, .args = { a.id, 0, 0, 0 } };
+    int have      = components(a.type());
     foreach (i, ch : s) {
         int c;
         switch (ch) {
@@ -597,7 +609,8 @@ fn Node node_assign(Node target, Node value) {
     // (a varying of a variable: the variable, in the vertex stage)
     if (t.op == VARYING && node_data({ t.args[0] }).op == VAR) target = { t.args[0] };
     t = node_data(target);
-    if (t.op != VAR && !(t.op == SWIZZLE && node_data({ t.args[0] }).op == VAR)) abort("drie: nodes: assign() to a variable (or its components)");
+    if (t.op != VAR && !(t.op == SWIZZLE && node_data({ t.args[0] })
+        .op == VAR)) abort("drie: nodes: assign() to a variable (or its components)");
     return add_node({ .op = ASSIGN, .type = VOID, .count = 2, .args = { target.id, value.id, 0, 0 } });
 }
 
@@ -610,7 +623,15 @@ fn Node node_if(Node cond, Node then, Node otherwise = { }) {
 // against `to`; with WHILE, while `to` (a bool) holds.
 fn Node node_loop(NodeLoop cond, Node index, Node from, Node to, Node body) {
     if (cond != WHILE && node_data(index).op != VAR) abort("drie: nodes: a loop's index is a variable");
-    return add_node({ .op = LOOP, .type = VOID, .kind = (char)cond.ordinal, .count = 4, .args = { index.id, from.id, to.id, body.id } });
+    return add_node(
+        {
+            .op = LOOP,
+            .type = VOID,
+            .kind = (char)cond.ordinal,
+            .count = 4,
+            .args = { index.id, from.id, to.id, body.id }
+        }
+    );
 }
 
 // Creates a control-flow jump statement (`0` = break, `1` = continue, `2` = discard).
@@ -648,7 +669,8 @@ fn Node node_block(Node[] stmts) {
 // Appends `stmt` after `last` (a block's last statement) and returns it (the new last).
 // (a block: worked out there, as in node_block)
 fn Node node_append(Node last, Node stmt) {
-    if (node_data(stmt).type != VOID || node_data(stmt).next) stmt = node_eval(stmt.type() == VOID ? node_seq(stmt) : stmt);
+    if (node_data(stmt)
+        .type != VOID || node_data(stmt).next) stmt = node_eval(stmt.type() == VOID ? node_seq(stmt) : stmt);
     if (last.id) node_data(last).next = stmt.id;
     return stmt;
 }
@@ -656,7 +678,9 @@ fn Node node_append(Node last, Node stmt) {
 // The block `block` worked out, then `value` ({}: nothing): an expression with statements in
 // it (a TSL Fn's body and what it returns).
 fn Node node_seq(Node block, Node value = { }) {
-    return add_node({ .op = SEQ, .type = value.id ? value.type() : VOID, .count = 2, .args = { block.id, value.id, 0, 0 } });
+    return add_node(
+        { .op = SEQ, .type = value.id ? value.type() : VOID, .count = 2, .args = { block.id, value.id, 0, 0 } }
+    );
 }
 
 // ---- Operators and methods
@@ -784,12 +808,12 @@ uint node_epoch;
 
 // A material's build: its graphs' program, and where its uniforms and textures go.
 struct NodeBuild {
-    Node[NODE_SLOTS] slots;  // the material's *_node fields it was built from
-    Material* material;      // whose they are (its maps for nodes::material_map)
+    Node[NODE_SLOTS] slots; // the material's *_node fields it was built from
+    Material* material; // whose they are (its maps for nodes::material_map)
     // color_node or opacity_node can cut holes: a discard, or alpha (with the material's
     // alpha_test), which the shadow maps cut too
     bool cuts;
-    List{Node} uniforms;     // in their order in the USER block (a matrix takes four)
+    List{Node} uniforms; // in their order in the USER block (a matrix takes four)
     Texture*[NODE_TEXTURES] textures; // node texture k: a generated program's view NODE_USER_VIEW + k
     int texture_count;
     // Generated programs (src/material/material_key.c3) keyed by MaterialKey (with `nodes` set).
@@ -842,7 +866,7 @@ fn bool has_nodes(Material* mat) {
 fn NodeBuild* node_build_of(Material* mat) {
     if (!has_nodes(mat)) return null;
     Node[NODE_SLOTS] slots = node_slots(mat);
-    NodeBuild* b = mat.node_build;
+    NodeBuild* b           = mat.node_build;
     if (b && same_nodes(b.slots, slots)) return b;
     // (its program stays: other materials may share it, and the same graphs may come back)
     if (b) {
@@ -855,7 +879,9 @@ fn NodeBuild* node_build_of(Material* mat) {
     b.material = mat;
     b.uniforms.init(mem);
     mat.node_build = b;
-    b.cuts = mat.mask_node.id || node_discards(mat.color_node) || mat.opacity_node.id || (mat.color_node.id && mat.color_node.type() == VEC4);
+    b.cuts = mat.mask_node.id || node_discards(
+        mat.color_node
+    ) || mat.opacity_node.id || (mat.color_node.id && mat.color_node.type() == VEC4);
     return b;
 }
 

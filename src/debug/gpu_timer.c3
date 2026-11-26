@@ -3,18 +3,18 @@
 // flight, and aggregates milliseconds by pass label. Metal samples pass stage boundaries via
 // `lib/sokol.c3l/LOCAL_PATCHES`; D3D11 and GL timestamp pass starts and frame end. Set
 // `DRIE_GPU_TIMER=<n>` in the environment to auto-enable and print every `n` frames (1 => 120).
-//
+// 
 //   gpu_timer::enabled = true;
 //   gpu_timer::report();
 module drie::gpu_timer;
 import sokol, std::io, std::os::env, std::collections::list;
 
 // Number of in-flight frame query ring slots (must match `platform/gputimer*.c`).
-const int SLOTS = 4;
+const int SLOTS      = 4;
 // Maximum number of GPU passes timed in a single frame.
 const int MAX_PASSES = 128;
 // Maximum number of distinct pass labels tracked simultaneously.
-const int MAX_NAMES = 96;
+const int MAX_NAMES  = 96;
 
 // Enables GPU pass timestamping when true; also activated automatically by `DRIE_GPU_TIMER`.
 bool enabled;
@@ -27,18 +27,16 @@ extern fn void gt_pass_begin(CInt slot, CInt index) @cname("gt_pass_begin") @loc
 extern fn bool gt_frame_end(CInt slot) @cname("gt_frame_end") @local;
 extern fn bool gt_resolve(CInt slot, CInt count, double* ms) @cname("gt_resolve") @local;
 
-struct Slot @local
-{
-    bool busy;              // timed, waiting to be resolved
-    int count;              // passes timed
+struct Slot @local {
+    bool busy; // timed, waiting to be resolved
+    int count; // passes timed
     char[MAX_PASSES] names; // name index of each pass
 }
 
-struct Totals @local
-{
+struct Totals @local {
     String name;
-    double ms;       // since reset
-    double last_ms;  // in the last resolved frame
+    double ms; // since reset
+    double last_ms; // in the last resolved frame
     double max_ms;
 }
 
@@ -49,7 +47,7 @@ int gt_cur @local = -1;    // the slot of the frame being encoded (-1: not timed
 int gt_next @local;
 Totals[MAX_NAMES] gt_names @local;
 int gt_name_count @local;
-int gt_frames @local;     // resolved frames since reset
+int gt_frames @local;      // resolved frames since reset
 int gt_since_report @local;
 double gt_frame_ms @local; // sum of the passes of the last resolved frame
 
@@ -126,7 +124,7 @@ fn void poll() {
     if (!gt_ok) return;
     double[MAX_PASSES] ms;
     for (int k = 0; k < SLOTS; k++) {
-        int i = (gt_next + k) % SLOTS; // oldest first
+        int i   = (gt_next + k) % SLOTS; // oldest first
         Slot* s = &gt_slots[i];
         if (!s.busy || i == gt_cur) continue;
         if (!gt_resolve(i, s.count, &ms)) continue;
@@ -140,7 +138,8 @@ fn void poll() {
             t.ms += ms[p];
             total += ms[p];
         }
-        for (int n = 0; n < gt_name_count; n++) if (gt_names[n].last_ms > gt_names[n].max_ms) gt_names[n].max_ms = gt_names[n].last_ms;
+        for (int n = 0; n < gt_name_count; n++) if (gt_names[n]
+            .last_ms > gt_names[n].max_ms) gt_names[n].max_ms = gt_names[n].last_ms;
         gt_frame_ms = total;
         gt_frames++;
         if (report_every > 0 && ++gt_since_report >= report_every) {

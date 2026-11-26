@@ -110,8 +110,8 @@ fn SgBuffer instance_vertex_buffer(Mesh* m, int* offset) @private {
 struct CullJobInfo @private {
     Mesh* mesh;
     int view;
-    int draw_count;  // Padded instance count submitted to sg::draw().
-    int cpu_count;   // CPU reference count when Renderer.check_compute is enabled (-1 otherwise).
+    int draw_count; // Padded instance count submitted to sg::draw().
+    int cpu_count; // CPU reference count when Renderer.check_compute is enabled (-1 otherwise).
 }
 
 // Per-render culling buffers. The 3-slot `counts` ring lets the GPU write the current frame
@@ -125,7 +125,7 @@ struct CullSet @private {
     uint[3] frames;
     List{CullJobInfo}[3] infos;
     bool[3] tracked;
-    List{uint} fetched;    // Most recent readback counts (from `fetched_ring`) for this frame.
+    List{uint} fetched; // Most recent readback counts (from `fetched_ring`) for this frame.
     int fetched_ring;
     uint fetched_frame;
     bool[3] checked;
@@ -144,10 +144,10 @@ struct CullState @private {
     ComputePass* kernel;
     bool active;
     bool check;
-    int checks;            // Renderer.check_compute: total jobs verified against CPU.
-    int check_failures;    // Renderer.check_compute: frames with a CPU/GPU mismatch.
-    int short_draws;       // Draws whose lagged draw_count was smaller than actual visible count.
-    int short_instances;   // Total instances clipped across short_draws.
+    int checks; // Renderer.check_compute: total jobs verified against CPU.
+    int check_failures; // Renderer.check_compute: frames with a CPU/GPU mismatch.
+    int short_draws; // Draws whose lagged draw_count was smaller than actual visible count.
+    int short_instances; // Total instances clipped across short_draws.
 }
 
 CullState cull @private;
@@ -206,8 +206,8 @@ fn int cull_view(Frustum* f) @private {
 // is drawn without per-instance culling.
 fn int cull_job(Mesh* m, int view) @private {
     // Per-instance colors are not compacted alongside matrices, so colored instanced meshes draw whole.
-    if (!cull.active || view < 0 || !m.in_arena || !m.frustum_culled
-        || m.instance_count < CULL_MIN_INSTANCES || m.instance_colors.len()) return -1;
+    if (!cull.active || view < 0 || !m.in_arena || !m.frustum_culled || m.instance_count < CULL_MIN_INSTANCES
+        || m.instance_colors.len()) return -1;
     int j             = (int)cull.jobs.len();
     Mat4 w            = m.matrix_world;
     BufferGeometry* g = m.geometry;
