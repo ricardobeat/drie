@@ -2992,6 +2992,7 @@ fn void collect(
         case MESH:
             Mesh* m = (Mesh*)obj;
             if (!m.geometry || !m.material || !m.material.visible) break;
+            if (m.shadow_only && !shadow_pass) break;
             // a Reflector's own surfaces are not in its picture
             if (state.renderer.reflecting && m.material.reflector == state.renderer.reflecting) break;
             if (shadow_pass && (!m.cast_shadow || m.material.transparent || m.is_line() || m.billboard != NO_BILLBOARD)) break;

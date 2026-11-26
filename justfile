@@ -63,7 +63,7 @@ bindings:
 
 # regenerate generated/*.c3 from the .glsl files with sokol-shdc (sokol-tools)
 shaders:
-    for s in shader shader_deferred kernels output gtao taa bloom flare grade bokeh radiance_cs radiance_rays_cs vsm atlas lightmap; do \
+    for s in shader shader_deferred kernels output gtao taa bloom flare grade bokeh radiance_cs radiance_rays_cs vsm atlas lightmap gpu_cloth; do \
         sokol-shdc -i $s.glsl -o generated/$s.c3 -f sokol_c3 -l glsl430:hlsl5:metal_macos:metal_ios:metal_sim || exit 1; \
     done
     # sokol-shdc's C3 output writes storage image view slots as `const int VIEW_X (0)`;
