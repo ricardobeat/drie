@@ -5111,6 +5111,7 @@ fn void present_window_rt() @local {
     SgBindings bind;
     bind.views[postprocessing::VIEW_OUTPUT_SRC] = state.window_rt.texture;
     bind.views[postprocessing::VIEW_OUTPUT_EXPOSURE] = state.window_rt.texture;
+    bind.views[postprocessing::VIEW_OUTPUT_LUT] = postprocessing::empty_lut();
     bind.samplers[postprocessing::SMP_OUTPUT_SMP] = state.mip_sampler;
     sg::apply_bindings(&bind);
     postprocessing::OutputParams p = { .params = { 0, 1, 0, 1 } };
@@ -5467,6 +5468,7 @@ fn void fill_levels(SgView source, SgView[] views, SgView[] attachments) @local 
         SgBindings bind;
         bind.views[postprocessing::VIEW_OUTPUT_SRC] = level;
         bind.views[postprocessing::VIEW_OUTPUT_EXPOSURE] = level;
+        bind.views[postprocessing::VIEW_OUTPUT_LUT] = postprocessing::empty_lut();
         bind.samplers[postprocessing::SMP_OUTPUT_SMP] = state.mip_sampler;
         sg::apply_bindings(&bind);
         sg::apply_uniforms(postprocessing::UB_OUTPUT_PARAMS, &&{ .ptr = &p, .size = postprocessing::OutputParams::size });
