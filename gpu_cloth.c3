@@ -1,11 +1,28 @@
 // GpuCloth: Cloth (cloth.c3) solved on the GPU with compute kernels (gpu_cloth.glsl), for
 // sheets of tens of thousands of points. The same XPBD in small steps: each fixed step of
 // 1/60 s cut into `substeps`, each substep moving the points by their velocity, projecting the
-// stretch, shear and bend links and the tethers to the pins once, and pushing the points out of
-// the colliders (spheres, capsules, boxes, planes, swept over the substeps) and above the floor.
+// stretch and shear links, the bends and the tethers to the pins once, and pushing the points
+// out of the colliders (spheres, capsules, boxes, planes, swept over the substeps) and above
+// the floor.
+//
+// The bends, by `bend_model`, each with its own `bend_compliance`:
+//   - DISTANCE (the default): each point linked to the one two away along its row and its
+//     column, held at the rest distance. bend_compliance is a link's (m/N, as the stretch and
+//     shear links'; 1e-2 by default, 0.05 for the dust sheet of examples/cloth_furniture). A
+//     fold either way is the same to it.
+//   - SIGNED (Cloth's): how far a point sits off the midpoint of its two neighbours along a row
+//     or column, along the cloth's normal there, held at the rest shape's (a signed curvature:
+//     a fold bulges back the way it did at rest). bend_compliance is per m of that offset, and
+//     the offset grows with the square of the spacing for a given curvature: the same value is
+//     far stiffer on a fine grid than on a coarse one. For shaped rest poses (pleated curtains);
+//     Cloth's examples use 0.1 to 20 at 3 to 6 cm spacing.
 //
 //   - the links are colored on the CPU so that no two of a color share a point, and each color
-//     is one dispatch: Gauss-Seidel in batches, in the same order every run, without atomics
+//     is one dispatch: Gauss-Seidel in batches, in the same order every run, without atomics;
+//     the signed bends in nine runs along the rows and nine down the columns, as Cloth's. Both
+//     models' bends are made; only the model in use is solved, so it can change at any time.
+//   - panels(): several grids side by side solved as one cloth (one run of dispatches), each
+//     with its own mesh; they collide with each other and share the colliders
 //   - self-collision: a spatial hash of the points (counted into cells, summed, filled) and a
 //     push apart of the points nearer than `self_distance` (no nearer than at rest), summed in
 //     fixed point: the order a cell lists its points in, which changes from run to run, does
@@ -52,6 +69,11 @@ const int LATENCY = 2;
 // the corrections remembered (more than a readback can be late)
 const int LOG = 16;
 
+enum BendModel : char {
+    DISTANCE,
+    SIGNED,
+}
+
 enum ColliderKind : char {
     SPHERE,
     CAPSULE,
@@ -80,7 +102,8 @@ struct Collider {
     Vector3 dv;
 }
 
-// A mesh drawn where a collider is, its vertices written on the GPU (make_collider_mesh).
+// A mesh drawn where a collider is, its vertices written on the GPU (make_collider_mesh) from
+// `template`, the shape's vertices around the origin (made at the first update)
 struct Shape {
     int collider;
     Mesh* mesh;
@@ -98,11 +121,17 @@ struct Applied {
     Vector3[BODIES] dv;
 }
 
-// A run of links of one kind and color, solved in one dispatch.
+// A run of links of one kind and color, or of bends, solved in one dispatch.
 struct Batch {
     uint first, count;
-    // 0 stretch, 1 shear, 2 bend: which compliance
+    // 0 stretch, 1 shear, 2 distance bend (in the links), 3 signed bend (in the bends)
     int kind;
+}
+
+// A mesh of one panel's points (make_mesh).
+struct PanelMesh {
+    int panel;
+    Mesh* mesh;
 }
 
 // The compute kernels, made once for every cloth.
@@ -111,6 +140,7 @@ struct Kernels {
     ComputePass* forces;
     ComputePass* integrate;
     ComputePass* links;
+    ComputePass* bends;
     ComputePass* tethers;
     ComputePass* clear;
     ComputePass* count;
@@ -131,6 +161,8 @@ Kernels* kernels @local;
 
 struct GpuCloth {
     int cols, rows;
+    // the columns of a panel (cols: one panel); no link, bend or triangle joins two panels
+    int panel_cols;
     // where the points are kept from (the rest shape's first point), as Cloth.origin
     Vector3 origin;
     // the rest shape, from origin
@@ -139,6 +171,7 @@ struct GpuCloth {
     float[] inv_mass;
     Vector3[] pin_to;
     List{shaders::GcLink} links;
+    List{shaders::GcBend} bends;
     List{Batch} batches;
     shaders::GcTether[] tether_data;
     List{Collider} colliders;
@@ -154,6 +187,8 @@ struct GpuCloth {
     float stretch_compliance;
     float shear_compliance;
     float bend_compliance;
+    // which bends are solved (see the top of the file)
+    BendModel bend_model;
     float tether_slack;
     float damping;
     // of the difference in velocity between neighbours, the share lost each step (0..1): stills
@@ -182,7 +217,7 @@ struct GpuCloth {
     double time;
     float accumulator;
     ulong steps;
-    Mesh* mesh;
+    List{PanelMesh} meshes;
 
     // GPU state: per point (vec4s), the links, the hash
     StorageBuffer* pos;
@@ -193,6 +228,7 @@ struct GpuCloth {
     StorageBuffer* rest_buf;
     StorageBuffer* pins;
     StorageBuffer* link_buf;
+    StorageBuffer* bend_buf;
     StorageBuffer* tether_buf;
     StorageBuffer* collider_buf;
     StorageBuffer* cells;
@@ -223,7 +259,23 @@ struct GpuCloth {
 fn uint GpuCloth.index(&self, int col, int row) @inline => (uint)(row * self.cols + col);
 fn uint GpuCloth.count(&self) @inline => (uint)(self.cols * self.rows);
 fn sz GpuCloth.link_count(&self) => self.links.len();
-fn sz GpuCloth.batch_count(&self) => self.batches.len();
+fn sz GpuCloth.bend_count(&self) => self.bends.len();
+fn int GpuCloth.panel_count(&self) => self.cols / self.panel_cols;
+// Whether columns `a` and `b` are both in the cloth and in one panel.
+fn bool GpuCloth.joined(&self, int a, int b) => a >= 0 && b < self.cols && a / self.panel_cols == b / self.panel_cols;
+// The batches (dispatches per link pass) of the bend model in use.
+fn sz GpuCloth.batch_count(&self) {
+    sz count;
+    foreach (b : self.batches) if (self.solves(b.kind)) count++;
+    return count;
+}
+
+// Whether batches of `kind` are solved: the bends of the model in use only.
+fn bool GpuCloth.solves(&self, int kind) {
+    if (kind == 2) return self.bend_model == DISTANCE;
+    if (kind == 3) return self.bend_model == SIGNED;
+    return true;
+}
 
 // A flat grid of `cols` x `rows` points from `origin`, `across` to the last column and `down`
 // to the last row. Its front (the mesh's front faces) is cross(across, -down). `mass` is the
@@ -239,17 +291,39 @@ fn GpuCloth* grid(int cols, int rows, Vector3 origin, Vector3 across, Vector3 do
     return from_positions(cols, rows, rest, mass);
 }
 
-// A grid of points at rest where `rest` has them (row by row, `cols` to a row).
-fn GpuCloth* from_positions(int cols, int rows, Vector3[] rest, float mass = 0.4f) {
+// `count` panels side by side, each a grid as grid() makes, the i-th from origin + apart * i:
+// solved as one cloth, so that they collide with each other and share the colliders (a ball
+// with a mass pushed by all of them). `mass` is a panel's. Each panel gets its mesh from
+// make_mesh(panel: i).
+fn GpuCloth* panels(int count, int cols, int rows, Vector3 origin, Vector3 across, Vector3 down, Vector3 apart, float mass = 0.4f) {
+    int width = cols * count;
+    Vector3[] rest = mem::new_array(Vector3, (sz)width * rows);
+    defer free(rest);
+    for (int i = 0; i < count; i++) {
+        for (int r = 0; r < rows; r++) {
+            for (int c = 0; c < cols; c++) {
+                rest[r * width + i * cols + c] = origin + apart * (float)i + across * ((float)c / (float)(cols - 1)) + down * ((float)r / (float)(rows - 1));
+            }
+        }
+    }
+    return from_positions(width, rows, rest, mass * count, panel_cols: cols);
+}
+
+// A grid of points at rest where `rest` has them (row by row, `cols` to a row), in panels of
+// `panel_cols` columns (0: one panel).
+fn GpuCloth* from_positions(int cols, int rows, Vector3[] rest, float mass = 0.4f, int panel_cols = 0) {
     GpuCloth* c = mem::new(GpuCloth);
     c.cols = cols;
     c.rows = rows;
+    c.panel_cols = panel_cols > 0 ? panel_cols : cols;
     sz n = (sz)cols * rows;
     c.rest = mem::new_array(Vector3, n);
     c.inv_mass = mem::new_array(float, n);
     c.pin_to = mem::new_array(Vector3, n);
     c.links.allocator = mem;
+    c.bends.allocator = mem;
     c.batches.allocator = mem;
+    c.meshes.allocator = mem;
     c.colliders.allocator = mem;
     c.substeps = 8;
     c.iterations = 1;
@@ -285,18 +359,42 @@ fn GpuCloth* from_positions(int cols, int rows, Vector3[] rest, float mass = 0.4
         for (int r = 0; r < rows; r++) {
             for (int k = 0; k < cols; k++) {
                 uint i = c.index(k, r);
-                if (k + 1 < cols) c.link(&kinds[0], i, c.index(k + 1, r));
+                bool across = c.joined(k, k + 1);
+                if (across) c.link(&kinds[0], i, c.index(k + 1, r));
                 if (r + 1 < rows) c.link(&kinds[0], i, c.index(k, r + 1));
-                if (k + 1 < cols && r + 1 < rows) {
+                if (across && r + 1 < rows) {
                     c.link(&kinds[1], i, c.index(k + 1, r + 1));
                     c.link(&kinds[1], c.index(k + 1, r), c.index(k, r + 1));
                 }
-                if (k + 2 < cols) c.link(&kinds[2], i, c.index(k + 2, r));
+                if (c.joined(k, k + 2)) c.link(&kinds[2], i, c.index(k + 2, r));
                 if (r + 2 < rows) c.link(&kinds[2], i, c.index(k, r + 2));
             }
         }
         for (int k = 0; k < 3; k++) c.add_colored(&kinds[k], k, n);
     };
+    // in runs, rows then columns, at every third middle point along the bends and every third
+    // point across them, so that bends of a run share no point (as Cloth's)
+    for (int phase = 0; phase < 9; phase++) {
+        uint first = (uint)c.bends.len();
+        for (int r = phase / 3; r < rows; r += 3) {
+            for (int k = 1 + phase % 3; k + 1 < cols; k += 3) {
+                if (!c.joined(k - 1, k + 1)) continue;
+                c.add_bend(c.index(k - 1, r), c.index(k, r), c.index(k + 1, r), c.index(k, math::max(r - 1, 0)), c.index(k, math::min(r + 1, rows - 1)), 1);
+            }
+        }
+        c.add_bend_batch(first);
+    }
+    for (int phase = 0; phase < 9; phase++) {
+        uint first = (uint)c.bends.len();
+        for (int r = 1 + phase % 3; r + 1 < rows; r += 3) {
+            for (int k = phase / 3; k < cols; k += 3) {
+                int left = c.joined(k - 1, k) ? k - 1 : k;
+                int right = c.joined(k, k + 1) ? k + 1 : k;
+                c.add_bend(c.index(k, r - 1), c.index(k, r), c.index(k, r + 1), c.index(left, r), c.index(right, r), -1);
+            }
+        }
+        c.add_bend_batch(first);
+    }
     c.tethers_dirty = true;
     c.pins_dirty = true;
     c.state_dirty = true;
@@ -305,6 +403,22 @@ fn GpuCloth* from_positions(int cols, int rows, Vector3[] rest, float mass = 0.4
 
 fn void GpuCloth.link(&self, List{shaders::GcLink}* list, uint a, uint b) {
     list.push({ a, b, (self.rest[a] - self.rest[b]).length(), 0 });
+}
+
+// m between a and b, c and d its neighbours the other way: (a + b - 2m) along the normal
+// s (b - a) x (d - c) held at the rest shape's.
+fn void GpuCloth.add_bend(&self, uint a, uint m, uint b, uint c, uint d, float s) {
+    Vector3* p = self.rest.ptr;
+    Vector3 n = (p[b] - p[a]).cross(p[d] - p[c]) * s;
+    float n2 = n.dot(n);
+    float rest = n2 > 1e-24f ? (p[a] + p[b] - p[m] * 2).dot(n) / math::sqrt(n2) : 0;
+    self.bends.push({ a, m, b, c, d, s, rest, 0 });
+}
+
+// The bends from `first` on, a batch.
+fn void GpuCloth.add_bend_batch(&self, uint first) {
+    uint count = (uint)self.bends.len() - first;
+    if (count) self.batches.push({ first, count, 3 });
 }
 
 // Appends `list` to the links color by color (each link the first color its points' other
@@ -341,15 +455,18 @@ fn void GpuCloth.free(&self) {
     free(self.pin_to);
     free(self.tether_data);
     self.links.free();
+    self.bends.free();
     self.batches.free();
+    self.meshes.free();
     self.colliders.free();
     foreach (sh : self.shapes) {
+        if (!sh.template) continue;
         sh.template.dispose();
         free(sh.template);
     }
     self.shapes.free();
-    foreach (b : (StorageBuffer*[16]) { self.pos, self.prev, self.vel, self.start, self.acc, self.rest_buf, self.pins,
-        self.link_buf, self.tether_buf, self.collider_buf, self.cells, self.sums, self.ids, self.push, self.bodies,
+    foreach (b : (StorageBuffer*[17]) { self.pos, self.prev, self.vel, self.start, self.acc, self.rest_buf, self.pins,
+        self.link_buf, self.bend_buf, self.tether_buf, self.collider_buf, self.cells, self.sums, self.ids, self.push, self.bodies,
         self.partials }) {
         if (!b) continue;
         b.dispose();
@@ -523,14 +640,12 @@ fn Mesh* GpuCloth.make_collider_mesh(&self, int id, BufferGeometry* shape, Mater
     int count = (int)shape.vertex_count();
     float radius = 0;
     for (int i = 0; i < count; i++) radius = math::max(radius, shape.get_position((uint)i).length());
-    StorageBuffer* t = drie::storage_buffer(16, label: "gpu-cloth-shape");
-    t.write(shape.vertices.entries, (sz)shape.vertices.len() * float::size);
     Mesh* m = drie::mesh(g, material);
     m.matrix_auto_update = false;
     m.matrix_world_auto_update = false;
     m.matrix = drie::mat4_identity();
     m.matrix_world = drie::mat4_identity();
-    self.shapes.push({ id, m, t, count, radius });
+    self.shapes.push({ id, m, null, count, radius });
     return m;
 }
 
@@ -567,7 +682,7 @@ fn void GpuCloth.build_tethers(&self) {
             for (int dc = -1; dc <= 1; dc++) {
                 int c2 = col + dc;
                 int r2 = row + dr;
-                if ((dr == 0 && dc == 0) || c2 < 0 || r2 < 0 || c2 >= self.cols || r2 >= self.rows) continue;
+                if ((dr == 0 && dc == 0) || !self.joined(math::min(col, c2), math::max(col, c2)) || r2 < 0 || r2 >= self.rows) continue;
                 uint j = self.index(c2, r2);
                 float d = e.dist + (self.rest[e.at] - self.rest[j]).length();
                 if (d < dist[j]) {
@@ -626,13 +741,15 @@ fn HeapEntry heap_pop(List{HeapEntry}* h) @local {
     return top;
 }
 
-// A mesh of the cloth, drawn where the points are (its matrix is the identity: add it anywhere
-// in the scene), its vertices written on the GPU. Use a DOUBLE_SIDE material to see both faces.
-// Its uvs are in meters along the cloth at rest, as Cloth's. Its bounding sphere (for culling
-// and shadows) is centered on the cloth at rest, as wide as the cloth's diagonal.
-fn Mesh* GpuCloth.make_mesh(&self, Material* material = null) {
-    int cols = self.cols;
+// A mesh of the cloth (of panel `panel` of a cloth made by panels()), drawn where the points
+// are (its matrix is the identity: add it anywhere in the scene), its vertices written on the
+// GPU. Use a DOUBLE_SIDE material to see both faces. Its uvs are in meters along the cloth at
+// rest, as Cloth's. Its bounding sphere (for culling and shadows) is centered on the panel at
+// rest, as wide as its diagonal.
+fn Mesh* GpuCloth.make_mesh(&self, Material* material = null, int panel = 0) {
+    int cols = self.panel_cols;
     int rows = self.rows;
+    int first = panel * cols;
     BufferGeometry* g = drie::buffer_geometry();
     g.dynamic = true;
     g.gpu_vertices = true;
@@ -643,9 +760,9 @@ fn Mesh* GpuCloth.make_mesh(&self, Material* material = null) {
     for (int r = 0; r < rows; r++) {
         float across = 0;
         for (int k = 0; k < cols; k++) {
-            int i = r * cols + k;
+            uint i = self.index(first + k, r);
             if (k > 0) across += (self.rest[i] - self.rest[i - 1]).length();
-            if (r > 0) down[k] += (self.rest[i] - self.rest[i - cols]).length();
+            if (r > 0) down[k] += (self.rest[i] - self.rest[i - (uint)self.cols]).length();
             Vector3 p = self.origin + self.rest[i];
             lo = math::min(lo, p);
             hi = math::max(hi, p);
@@ -675,15 +792,16 @@ fn Mesh* GpuCloth.make_mesh(&self, Material* material = null) {
     m.matrix_world_auto_update = false;
     m.matrix = drie::mat4_identity();
     m.matrix_world = drie::mat4_identity();
-    self.mesh = m;
+    self.meshes.push({ panel, m });
     return m;
 }
 
-// The sphere the mesh is culled and shadowed with, in the world.
+// The sphere the meshes (of every panel) are culled and shadowed with, in the world.
 fn void GpuCloth.set_bounds(&self, Vector3 center, float radius) {
-    if (!self.mesh) return;
-    self.mesh.geometry.bounds_center = center;
-    self.mesh.geometry.bounds_radius = radius;
+    foreach (pm : self.meshes) {
+        pm.mesh.geometry.bounds_center = center;
+        pm.mesh.geometry.bounds_radius = radius;
+    }
 }
 
 fn void make_kernels() @local {
@@ -694,6 +812,7 @@ fn void make_kernels() @local {
     k.forces = drie::compute_pass(shaders::gc_forces_shader_desc(be), "gpu-cloth-forces");
     k.integrate = drie::compute_pass(shaders::gc_integrate_shader_desc(be), "gpu-cloth-integrate");
     k.links = drie::compute_pass(shaders::gc_links_shader_desc(be), "gpu-cloth-links");
+    k.bends = drie::compute_pass(shaders::gc_bends_shader_desc(be), "gpu-cloth-bends");
     k.tethers = drie::compute_pass(shaders::gc_tethers_shader_desc(be), "gpu-cloth-tethers");
     k.clear = drie::compute_pass(shaders::gc_clear_shader_desc(be), "gpu-cloth-clear");
     k.count = drie::compute_pass(shaders::gc_count_shader_desc(be), "gpu-cloth-count");
@@ -726,6 +845,8 @@ fn void GpuCloth.sync(&self) {
         self.pins = drie::storage_buffer(vec4s, cpu_write: true, label: "gpu-cloth-pins");
         self.link_buf = drie::storage_buffer(16, label: "gpu-cloth-links");
         self.link_buf.write(self.links.entries, (sz)self.links.len() * shaders::GcLink::size);
+        self.bend_buf = drie::storage_buffer(32, label: "gpu-cloth-bends");
+        if (self.bends.len()) self.bend_buf.write(self.bends.entries, (sz)self.bends.len() * shaders::GcBend::size);
         self.tether_buf = drie::storage_buffer((sz)n * shaders::GcTether::size, label: "gpu-cloth-tethers");
         self.collider_buf = drie::storage_buffer(shaders::GcCollider::size, cpu_write: true, label: "gpu-cloth-colliders");
         self.table = 1024;
@@ -814,6 +935,9 @@ fn void GpuCloth.bind(&self) {
     k.links.set_buffer(shaders::VIEW_GC_LINKS_POS, self.pos);
     k.links.set_buffer(shaders::VIEW_GC_LINKS_LINKS, self.link_buf);
     k.links.set_buffer(shaders::VIEW_GC_LINKS_PINS, self.pins);
+    k.bends.set_buffer(shaders::VIEW_GC_BENDS_POS, self.pos);
+    k.bends.set_buffer(shaders::VIEW_GC_BENDS_BENDS, self.bend_buf);
+    k.bends.set_buffer(shaders::VIEW_GC_BENDS_PINS, self.pins);
     k.tethers.set_buffer(shaders::VIEW_GC_TETH_POS, self.pos);
     k.tethers.set_buffer(shaders::VIEW_GC_TETH_TETHERS, self.tether_buf);
     k.clear.set_buffer(shaders::VIEW_GC_CLEAR_CELLS, self.cells);
@@ -879,6 +1003,7 @@ fn shaders::GcParams GpuCloth.params(&self, float t, float t_prev) {
         .gc_origin = { self.origin.x, self.origin.y, self.origin.z, 1 },
         .gc_gust = { self.gust, (float)self.time, span, drop },
         .gc_self = { 1 / cell, self.self_stiffness, self.tether_slack, self.self_friction },
+        .gc_grid = { self.panel_cols, 0, 0, 0 },
     };
 }
 
@@ -940,7 +1065,7 @@ fn void GpuCloth.step_once(&self, float from, float until) {
     dispatch(k.forces, &u, n);
     if (self.body_count) self.dispatch_bodies(1, &u);
     float h = STEP / self.substeps;
-    float[3] alpha = { self.stretch_compliance / (h * h), self.shear_compliance / (h * h), self.bend_compliance / (h * h) };
+    float[4] alpha = { self.stretch_compliance / (h * h), self.shear_compliance / (h * h), self.bend_compliance / (h * h), self.bend_compliance / (h * h) };
     int blocks = (self.table + 1 + 1023) / 1024;
     for (int s = 0; s < self.substeps; s++) {
         float t_prev = from + (until - from) * (float)s / self.substeps;
@@ -949,10 +1074,11 @@ fn void GpuCloth.step_once(&self, float from, float until) {
         dispatch(k.integrate, &u, n);
         for (int it = 0; it < math::max(self.iterations, 1); it++) {
             foreach (b : self.batches) {
+                if (!self.solves(b.kind)) continue;
                 u.gc_range[0] = (int)b.first;
                 u.gc_range[1] = (int)b.count;
                 u.gc_step[2] = alpha[b.kind];
-                dispatch(k.links, &u, (int)b.count);
+                dispatch(b.kind == 3 ? k.bends : k.links, &u, (int)b.count);
             }
         }
         u = self.params(t, t_prev);
@@ -1005,10 +1131,15 @@ fn int GpuCloth.update(&self, float dt) {
     }
     ulong until = self.steps + (ulong)n;
     self.sync();
+    // (made here, not in make_collider_mesh: before a window opens there is no GPU to make them on)
+    foreach (&sh : self.shapes) {
+        if (sh.template) continue;
+        BufferGeometry* g = sh.mesh.geometry;
+        sh.template = drie::storage_buffer(16, label: "gpu-cloth-shape");
+        sh.template.write(g.vertices.entries, (sz)g.vertices.len() * float::size);
+    }
     self.hear_bodies(until);
     if (n > 0 || self.body_count) self.write_colliders();
-    SgView target;
-    if (self.mesh) target = self.mesh.geometry.gpu_vertices_target();
     self.bind();
     drie::begin_compute("drie-gpu-cloth");
     shaders::GcParams u = self.params(1, 1);
@@ -1016,9 +1147,13 @@ fn int GpuCloth.update(&self, float dt) {
     for (int s = 0; s < n; s++) self.step_once((float)s / n, (float)(s + 1) / n);
     u = self.params(1, 1);
     u.gc_origin[3] = self.accumulator / STEP;
-    if (target.id) {
+    foreach (pm : self.meshes) {
+        SgView target = pm.mesh.geometry.gpu_vertices_target();
+        if (!target.id) continue;
         kernels.write.set_view(shaders::VIEW_GC_WRITE_VERTS, target);
-        dispatch(kernels.write, &u, (int)self.count());
+        shaders::GcParams wu = u;
+        wu.gc_grid[1] = pm.panel * self.panel_cols;
+        dispatch(kernels.write, &wu, self.panel_cols * self.rows);
     }
     foreach (sh : self.shapes) {
         Collider* c = &self.colliders[sh.collider];

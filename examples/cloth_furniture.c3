@@ -107,6 +107,7 @@ fn void make_sheet() {
     sheet.self_every = 2;
     sheet.stretch_compliance = 0;
     sheet.shear_compliance = 2e-4f;
+    sheet.bend_model = DISTANCE;
     sheet.bend_compliance = 0.05f;
     sheet.damping = 0.4f;
     sheet.drag = 0.4f;

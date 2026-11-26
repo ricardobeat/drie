@@ -1,11 +1,14 @@
-// examples/cloth on the GPU (drie::gpu_cloth): balls thrown at a thin light blue sheet, laid flat
-// in the air and held along one edge, that swings down and hangs from it over a mirror-like
-// checkerboard platform under a sunny sky. Each ball flies from the camera (through the point
-// clicked, or along the view), falls, bounces on the floor and is a sphere collider with a mass:
-// the cloth pushes it back as it pushes the cloth, at every substep on the GPU, and the CPU
-// hears a frame or two later how far and how much slower (collider_shift, collider_impulse). The
-// balls are drawn where the GPU has them. At most MAX_BALLS are in play: a new one takes the
-// place of the oldest. The sheet keeps its folds apart (self-collision).
+// examples/cloth on the GPU (drie::gpu_cloth): balls thrown at three velvet panels side by side,
+// dark blue, dark red and white, laid flat in the air and held along one edge, that swing down
+// and hang from it over a mirror-like checkerboard platform that runs to the horizon under a
+// sunny sky. The panels are one GpuCloth (gpu_cloth::panels): solved together, they keep apart
+// from each other as each keeps its own folds apart (self-collision). Each ball flies from the
+// camera (through the point clicked, or along the view), falls, bounces on the floor and is a
+// sphere collider with a mass: the cloth pushes it back as it pushes the cloth, at every
+// substep on the GPU, and the CPU hears a frame or two later how far and how much slower
+// (collider_shift, collider_impulse). The balls are drawn where the GPU has them. At most
+// MAX_BALLS are in play: a new one takes the place of the oldest. The velvet's textures are in
+// examples/textures.
 //
 //   just example gpu_cloth_balls                  in a window (drag to orbit, scroll to zoom)
 //   just example gpu_cloth_balls --png out.png    one frame, headless (--time t): two balls
@@ -18,6 +21,7 @@
 //   click (without dragging)            throw a ball through the point clicked
 //   space                               throw a ball along the view
 //   R                                   take the balls away and lay the cloth flat again
+//   C                                   let go of the panels: they drop to the ground
 module gpu_cloth_balls_example;
 import drie, drie::gpu_cloth, drie::objects, drie::ui, drie::controls, drie::readback, drie::png, drie::gpu_timer, sokol;
 import std::io, std::math;
@@ -30,14 +34,18 @@ const float THROW_SPEED = 15.5f;
 // kg: a tennis ball is 0.06, a softball 0.19
 const float BALL_MASS = 0.25f;
 const float GRAVITY = 9.81f;
-const float MASS = 0.9f;
+const float MASS = 1.1f;
 const float DRAG = 0.15f;
-const float DAMPING = 0.4f;
+const float DAMPING = 0.8f;
+// the distance bends' compliance (m/N)
 const float BEND = 0.05f;
 const float INTERNAL = 0.5f;
 const int SUBSTEPS = 16;
 // of its speed into the floor, what a ball keeps going up again
 const float BOUNCE = 0.6f;
+const int PANELS = 3;
+// the panels' colours: dark blue, dark red, white
+const Color[PANELS] PANEL_COLORS = { 0x1c2c5a, 0x5a1420, 0xe8e4dc };
 // a ball's place while it is not in play, away from the cloth
 const Vector3 PARKED = { 0, -100, 0 };
 
@@ -84,28 +92,42 @@ fn Texture* checker_texture() {
     return t;
 }
 
+// The left edge of panel `i`; the panels are 0.9 m wide, 15 cm apart.
+fn float panel_x0(int i) => -0.45f - (float)(PANELS - 1) * 0.525f + (float)i * 1.05f;
+
 fn void make_cloth() {
-    // 2 m wide and 3 m long (a point every 3 cm), laid flat 3.4 m up and held along its near
-    // edge: it swings down and hangs from that edge. 0.9 kg: 0.15 kg/m², a cotton sheet
-    sheet = gpu_cloth::grid(67, 100, { -1.0f, 3.4f, 0 }, { 2.0f, 0, 0 }, { 0, 0, -3.0f }, mass: MASS);
+    // 0.9 m wide and 3 m long (a point every 3 cm), side by side 15 cm apart, laid flat 3.4 m
+    // up and held along the near edge: each swings down and hangs from it. 1.1 kg each: 0.4
+    // kg/m², velvet
+    sheet = gpu_cloth::panels(PANELS, 31, 100, { panel_x0(0), 3.4f, 0 }, { 0.9f, 0, 0 }, { 0, 0, -3.0f }, { 1.05f, 0, 0 }, mass: MASS);
     sheet.pin_row(0);
     sheet.substeps = SUBSTEPS;
     sheet.drag = DRAG;
     sheet.damping = DAMPING;
+    sheet.bend_model = DISTANCE;
     sheet.bend_compliance = BEND;
     sheet.internal_damping = INTERNAL;
     sheet.thickness = 0.01f;
     sheet.floor_y = 0.01f;
-    sheet.self_distance = 2.0f / 66;
+    sheet.self_distance = 0.035f;
     sheet.self_every = 2;
-    MeshStandardMaterial* m = drie::mesh_standard_material(color: 0x80c4ff, roughness: 0.7f, side: DOUBLE_SIDE);
-    m.sheen = 0.3f;
-    m.sheen_color = { 0.85f, 0.93f, 1.0f };
-    m.sheen_roughness = 0.5f;
-    Mesh* mesh = sheet.make_mesh(m);
-    mesh.cast_shadow = true;
-    mesh.receive_shadow = true;
-    scene.add(mesh);
+    for (int i = 0; i < PANELS; i++) {
+        // velvet, as the house's light trap: its pile in the normal map, a sheen along it
+        MeshStandardMaterial* m = drie::mesh_standard_material(color: PANEL_COLORS[i], roughness: 1, side: DOUBLE_SIDE);
+        m.map = drie::load_texture("examples/textures/velvet_grey_diff.jpg", flip_y: false);
+        m.normal_map = drie::load_texture("examples/textures/velvet_nor.jpg", NO_COLOR_SPACE, flip_y: false);
+        // (flip_y off: the green flipped back)
+        m.normal_scale = { 0.6f, -0.6f };
+        m.specular_intensity = 0.12f;
+        m.sheen = 1;
+        Vector3 col = drie::color_to_linear(PANEL_COLORS[i]);
+        m.sheen_color = col * 0.5f + (Vector3) { 0.1f, 0.1f, 0.1f };
+        m.sheen_roughness = 0.45f;
+        Mesh* mesh = sheet.make_mesh(m, panel: i);
+        mesh.cast_shadow = true;
+        mesh.receive_shadow = true;
+        scene.add(mesh);
+    }
 
     MeshStandardMaterial*[3] ball_mats = {
         drie::mesh_standard_material(color: 0xe04030, roughness: 0.65f),
@@ -135,10 +157,18 @@ fn void park_balls() {
     next_ball = 0;
 }
 
-// The cloth laid flat again, the balls taken away.
+// The cloth laid flat again and held along its near edge, the balls taken away.
 fn void hang_cloth() {
+    sheet.pin_row(0);
     sheet.reset();
     park_balls();
+}
+
+// Lets go of every panel's pins.
+fn void drop_cloth() {
+    for (uint i = 0; i < sheet.count(); i++) {
+        if (sheet.inv_mass[i] == 0) sheet.unpin(i);
+    }
 }
 
 fn void build_scene() {
@@ -149,6 +179,14 @@ fn void build_scene() {
     sky = objects::sky();
     sky.sun_position = { -0.5f, 0.3f, 0.8f };
     sky.cloud_coverage = 0.25f;
+    // a clear sky, its sun's glow kept tight round the disc
+    sky.turbidity = 1.5f;
+    sky.rayleigh = 1.2f;
+    sky.mie_coefficient = 0.002f;
+    sky.mie_directional_g = 0.9f;
+    // the sky is in physical units: tone mapped, the sun and the bright horizon don't clip
+    renderer.tone_mapping = AGX_TONE_MAPPING;
+    renderer.tone_mapping_exposure = 0.75f;
     scene.add(sky);
     scene.add(drie::hemisphere_light(0xcfe0ff, 0x505860, 0.8));
     DirectionalLight* sun = drie::directional_light(0xfff2e0, 4.0);
@@ -188,6 +226,19 @@ fn void throw_ball(Vector3 from, Vector3 dir) {
     thrown++;
 }
 
+// A ball's flight `dt` seconds on: gravity, and a bounce on the floor.
+fn void fly(Vector3* pos, Vector3* vel, float dt) {
+    vel.y -= GRAVITY * dt;
+    *pos += *vel * dt;
+    if (pos.y < BALL_RADIUS) {
+        pos.y = BALL_RADIUS;
+        if (vel.y < 0) vel.y = -vel.y * BOUNCE;
+        // rolling on: the floor takes a little of its speed along it
+        vel.x *= 0.98f;
+        vel.z *= 0.98f;
+    }
+}
+
 // Through the point (x, y) of the window, in pixels.
 fn void throw_at(float x, float y) {
     Raycaster r = drie::raycaster();
@@ -204,15 +255,7 @@ fn void throw_from_camera() {
 fn void step(float dt) {
     foreach (&b : balls) {
         if (!b.live) continue;
-        b.vel.y -= GRAVITY * dt;
-        b.pos += b.vel * dt;
-        if (b.pos.y < BALL_RADIUS) {
-            b.pos.y = BALL_RADIUS;
-            if (b.vel.y < 0) b.vel.y = -b.vel.y * BOUNCE;
-            // rolling on: the floor takes a little of its speed along it
-            b.vel.x *= 0.98f;
-            b.vel.z *= 0.98f;
-        }
+        fly(&b.pos, &b.vel, dt);
         sheet.move_collider(b.collider, b.pos);
     }
     sheet.update(dt);
@@ -248,6 +291,7 @@ fn void on_event(Event* e) {
             if (e.key_repeat) return;
             if (e.key_code == SPACE) throw_from_camera();
             if (e.key_code == R) hang_cloth();
+            if (e.key_code == C) drop_cloth();
         case MOUSE_DOWN:
             if (e.mouse_button == LEFT) drag_travel = 0;
         case MOUSE_MOVE:
@@ -267,7 +311,7 @@ fn void hud() {
     sdtx::font(ui::FONT_KC853);
     sdtx::color3f(0.1f, 0.12f, 0.16f);
     @pool() {
-        sdtx::puts("click or space: throw a ball   R: hang the cloth again   drag: orbit\n");
+        sdtx::puts("click or space: throw a ball   R: hang the cloth again   C: drop it   drag: orbit\n");
         sdtx::puts(string::tformat("balls thrown: %d (at most %d in play)\n", thrown, MAX_BALLS).zstr_tcopy());
         if (gpu_timer::enabled) {
             sdtx::puts(string::tformat("cloth on the GPU: %.2f ms\n", gpu_timer::last_ms("drie-gpu-cloth")).zstr_tcopy());
@@ -305,7 +349,8 @@ fn int main(String[] args) {
     renderer.auto_time = false;
     renderer.time = at;
     build_scene();
-    io::printfn("%d points, %d links in %d batches, %d substeps", sheet.count(), sheet.link_count(), sheet.batch_count(), SUBSTEPS);
+    io::printfn("%d points in %d panels, %d links in %d batches, %d substeps", sheet.count(), sheet.panel_count(), sheet.link_count(),
+                sheet.batch_count(), SUBSTEPS);
     if (gpu_time) gpu_timer::enabled = true;
     // two balls from beside the camera into the cloth, the scene stepped at `fps` up to `at`
     float dt = 1.0f / fps;
