@@ -1,36 +1,40 @@
+// Final tone-mapping and display-encoding pass (`OutputPass`, `shaders/output.glsl`) for linear
+// HDR post-processing chains. Reads `Renderer.tone_mapping` and `Renderer.tone_mapping_exposure`
+// on each draw, optionally multiplies exposure by a GPU `exposure_map` or substitutes a baked
+// 3D `ColorGrade` LUT on SDR output, and encodes to sRGB, Display P3, or linear extended-range
+// HDR while preserving alpha. Drawing to `null` (the window) syncs `color_space` and `hdr` from
+// the renderer via `match_window()`.
+
 module drie::postprocessing;
 import std::collections::list;
 import sokol, drie;
 
-// The end of a chain in linear light, like three's OutputPass: tone maps the picture with the
-// renderer's tone_mapping and tone_mapping_exposure (read whenever it draws) and encodes it as
-// sRGB. Alpha is kept.
+// ---- OutputPass
+
+// Tone-mapping and display-encoding pass placed at the end of a linear HDR chain.
 //
 //   OutputPass* out = postprocessing::output_pass(renderer);
 //   out.set_source(hdr_target.texture);
-//   out.render(ldr_target);           // or null: the window
+//   out.render(ldr_target); // or null for the window
 struct OutputPass {
     inline ShaderPass shader_pass;
-    Renderer* renderer;
-    // A 1x1 texture whose red channel multiplies the exposure (an auto exposure's meter, say),
-    // read on the GPU so the meter never has to come back to the CPU. None: {}.
+    Renderer* renderer; // Renderer providing tone mapping, exposure, color space, and HDR headroom.
+    // Optional 1x1 texture whose red channel multiplies exposure on the GPU (e.g., auto-exposure
+    // meter). Leave zero-initialized (`{}`) to disable.
     SgView exposure_map;
-    // The color grade (grading.c3): its LUT, baked with the renderer's tone mapping, takes the
-    // place of the tone mapping (not on an HDR screen). Null: none.
+    // Optional `ColorGrade` (`drie::postprocessing`) whose baked 3D LUT replaces inline tone
+    // mapping on SDR output (ignored when `hdr` is true).
     ColorGrade* grade;
-    // Leave the result linear (0..1) instead of encoding it as sRGB, for more passes after it
-    // that work in linear light.
-    bool keep_linear;
-    // The colors of the result: SRGB_COLOR_SPACE, or DISPLAY_P3_COLOR_SPACE (tone mapping clips
-    // to P3's colors instead of sRGB's). Set from renderer.output_color_space when it draws into
-    // the window.
+    bool keep_linear; // When true, outputs linear `0..1` instead of sRGB encoding for downstream linear passes.
+    // Output gamut (`SRGB_COLOR_SPACE` or `DISPLAY_P3_COLOR_SPACE`). Synced from
+    // `renderer.output_color_space` automatically when rendering to the window.
     ColorSpace color_space;
-    // For an HDR screen (renderer.hdr_output): the result is linear, in Display P3, with the
-    // highlights going up to the screen's headroom instead of to white. Set from the renderer
-    // when it draws into the window.
+    // Extended-range linear Display P3 output up to `renderer.output_headroom()`. Synced from
+    // `renderer.hdr_on()` automatically when rendering to the window.
     bool hdr;
 }
 
+// Allocates an `OutputPass` reading tone-mapping settings from `renderer`.
 fn OutputPass* output_pass(Renderer* renderer) {
     OutputPass* p = mem::new(OutputPass);
     p.init(
@@ -45,10 +49,11 @@ fn OutputPass* output_pass(Renderer* renderer) {
     return p;
 }
 
-// The picture to tone map (linear light, any size: it is stretched over the target).
+// Sets the linear HDR source texture view to tone map (stretched to fit the output viewport).
 fn void OutputPass.set_source(&self, SgView picture) => self.bindings.views[VIEW_OUTPUT_SRC] = picture;
 
-// Takes the renderer's tone mapping as it is now. render() and draw() call it.
+// Refreshes uniforms and auxiliary texture bindings from `renderer`, `exposure_map`, and
+// `grade`. Called automatically by `render()` and `draw()`.
 fn void OutputPass.update(&self) {
     Renderer* r = self.renderer;
     OutputParams p = {
@@ -66,12 +71,14 @@ fn void OutputPass.update(&self) {
         },
     };
     self.set_uniforms(UB_OUTPUT_PARAMS, &p);
-    // (an unused slot still needs a texture)
+    // Bind a valid fallback view when `exposure_map` is unset.
     self.bindings.views[VIEW_OUTPUT_EXPOSURE] = self.exposure_map.id ? self.exposure_map
         : self.bindings.views[VIEW_OUTPUT_SRC];
     self.bindings.views[VIEW_OUTPUT_LUT] = self.grade && self.grade.lut.id ? self.grade.lut_texture : empty_lut();
 }
 
+// Prepares any attached `ColorGrade` LUT (outside a pass), refreshes uniforms, and renders into
+// `target` (or the swapchain when `target == null`).
 fn void OutputPass.render(
     &self,
     RenderTarget* target,
@@ -85,12 +92,14 @@ fn void OutputPass.render(
     self.shader_pass.render(target, load, clear, clear_alpha);
 }
 
-// Takes the window's colors and range from the renderer (output_color_space, hdr_output).
+// Copies `color_space` and `hdr` flags from `renderer`'s active window configuration.
 fn void OutputPass.match_window(&self) {
     self.color_space = self.renderer.output_color_space;
     self.hdr = self.renderer.hdr_on();
 }
 
+// Draws inside an already-active render pass; callers using `grade` must call
+// `ColorGrade.prepare()` before starting the pass.
 fn void OutputPass.draw(&self) {
     if (post_state.current.screen) self.match_window();
     self.update();

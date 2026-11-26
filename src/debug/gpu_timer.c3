@@ -1,27 +1,24 @@
-// GpuTimer: GPU time per pass, without stalls. Each pass drie begins (profile::begin_pass) is
-// timed on the GPU, and the results come back a few frames later (GT_SLOTS frames in flight),
-// summed by the pass's label:
+// Non-stalling per-pass GPU timestamp profiler backed by `platform/gputimer*.c`. Times each pass
+// started through `profile::begin_pass()`, resolves completed frames after `SLOTS` frames in
+// flight, and aggregates milliseconds by pass label. Metal samples pass stage boundaries via
+// `lib/sokol.c3l/LOCAL_PATCHES`; D3D11 and GL timestamp pass starts and frame end. Set
+// `DRIE_GPU_TIMER=<n>` in the environment to auto-enable and print every `n` frames (1 => 120).
 //
-//     gpu_timer::enabled = true;         // or DRIE_GPU_TIMER=1 in the environment
-//     ...                                // frames
-//     gpu_timer::report();               // ms per frame of each pass label since the last reset
-//
-// Metal samples each pass's encoder at its start and end (stage boundaries: drie's sokol patch,
-// lib/sokol.c3l/LOCAL_PATCHES); D3D11 and GL take a timestamp at each pass's start and one at the
-// frame's end, so a pass's time there runs to the next pass's start (CPU gaps included).
-// DRIE_GPU_TIMER=<n> also prints the report every n timed frames (1: every 120), and what is
-// left of it when the program exits.
+//   gpu_timer::enabled = true;
+//   gpu_timer::report();
 module drie::gpu_timer;
 import sokol, std::io, std::os::env, std::collections::list;
 
-const int SLOTS = 4;       // frames in flight the timer keeps (as in platform/gputimer*.c)
-const int MAX_PASSES = 128; // passes timed in a frame
-const int MAX_NAMES = 96;   // distinct pass labels
+// Number of in-flight frame query ring slots (must match `platform/gputimer*.c`).
+const int SLOTS = 4;
+// Maximum number of GPU passes timed in a single frame.
+const int MAX_PASSES = 128;
+// Maximum number of distinct pass labels tracked simultaneously.
+const int MAX_NAMES = 96;
 
-// Time the passes. Off by default (a timed pass costs two GPU samples); DRIE_GPU_TIMER turns it
-// on at the first pass.
+// Enables GPU pass timestamping when true; also activated automatically by `DRIE_GPU_TIMER`.
 bool enabled;
-// Print the report every this many timed frames (0: never; DRIE_GPU_TIMER=<n> sets it).
+// Prints and resets stats every `report_every` resolved frames when positive (0 disables).
 int report_every;
 
 extern fn CInt atexit(void* f) @cname("atexit") @local;
@@ -97,7 +94,7 @@ fn char name_index(ZString label) @local {
     return (char)gt_name_count++;
 }
 
-// (profile::begin_pass) Before sg::begin_pass.
+// Records a pass start timestamp right before `sg::begin_pass()` (called by `profile::begin_pass()`).
 fn void before_pass(SgPass* pass) {
     check_env();
     if (!enabled) return;
@@ -117,7 +114,7 @@ fn void before_pass(SgPass* pass) {
     s.count++;
 }
 
-// (profile::commit) Before sg::commit.
+// Closes the active frame query slot immediately before `sg::commit()` (called by `profile::commit()`).
 fn void before_commit() {
     if (gt_cur < 0) return;
     gt_slots[gt_cur].busy = gt_frame_end(gt_cur);
@@ -169,6 +166,7 @@ fn double last_frame_ms() => gt_frame_ms;
 // Frames read back since the last reset.
 fn int frames() => gt_frames;
 
+// Clears accumulated totals, peak timings, and frame counters while retaining pass labels.
 fn void reset() {
     for (int i = 0; i < gt_name_count; i++) {
         gt_names[i].ms = 0;

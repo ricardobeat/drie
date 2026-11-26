@@ -1,67 +1,58 @@
+// Depth-of-field pass (`BokehPass`, `shaders/bokeh.glsl`) combining tiled gather blur with
+// additive bokeh disc scattering for small out-of-focus highlights. Reads linear HDR color and
+// a depth view whose green channel stores linear camera-plane distance in meters (such as
+// `GTAOPass.ao_target.texture`). Optional `autofocus` tracks center depth in the 1x1 `R16F`
+// `focus_dist` ping-pong target exposed via `focus_map()` for `Renderer.focus_map`. Run before
+// `TAAPass` so temporal accumulation smooths the per-frame rotated gather taps.
+
 module drie::postprocessing;
 import std::collections::list;
 import sokol, drie;
 
-// Depth of field, as three's BokehPass: what is nearer or further than `focus` goes soft, the
-// more the wider the aperture. Made as games make it (bokeh.glsl): a gather where things are
-// soft, as close round each pixel as its neighbours' blur needs, and small bright things that
-// are out of focus (motes of dust in a beam, lamps far off) drawn as discs of their own, as
-// even as a lens makes them. It reads the picture (in linear light) and each pixel's distance
-// from the camera's plane in g, as GTAOPass's ao_target has it:
+// ---- BokehPass
+
+// Thin-lens depth-of-field pass with optional autofocus and highlight bokeh scattering.
 //
 //   BokehPass* dof = postprocessing::bokeh_pass(focus: 3, aperture: 6, maxblur: 16);
 //   dof.render(dof_rt, scene_rt.texture, ao.ao_target.texture);
 //
-// With `autofocus` it focuses on what is in the middle of the picture instead, following it
-// a little late as a camera's does. Run it before a TAAPass: the gather's taps turn each frame
-// and the temporal filter evens them out.
+// Circle of confusion at distance `z` (m) is `aperture / focus * |1 - focus / z|` pixels,
+// clamped to `maxblur`.
 struct BokehPass {
     inline Pass pass;
-    // the distance in focus (m), unless autofocus
-    float focus;
-    // how soft what is out of focus goes: the blur (pixels) of what is far off, focused at 1 m.
-    // Something at distance z blurs by aperture / focus * |1 - focus / z| (a thin lens's circle
-    // of confusion: a longer lens or a wider aperture, more)
-    float aperture;
-    // the most anything blurs (pixels)
-    float maxblur;
-    // taps of the gather round each pixel (4..64): more is smoother
-    int taps;
-    // small bright things out of focus drawn as discs (on by default); off, they are gathered
-    // like the rest, a few dots where taps happen to land on them
-    bool scatter;
-    // the distance in the middle of the picture instead of `focus`: how much of the way to it
-    // it goes each frame (1: at once), and the nearest and furthest it focuses
-    bool autofocus;
-    float focus_speed;
-    float focus_min;
-    float focus_max;
-    // the autofocus jumps to its distance, after a cut (cleared by render)
-    bool reset;
-    // in an EffectComposer: the distances (GTAOPass.ao_target's texture)
-    SgView depth;
-    // the distance in focus (r of a 1x1 texture), for other passes that want it
-    PingPong focus_dist;
-    int frame;
-    ShaderPass focus_pass;
-    ShaderPass tiles;
-    ShaderPass reach;
-    ShaderPass prefilter;
-    ShaderPass sparks;
-    ShaderPass rest;
-    ShaderPass clean;
-    ShaderPass shrink;
-    ShaderPass gather;
-    ShaderPass scatter_pass;
-    RenderTarget* tiles_rt;
-    RenderTarget* reach_rt;
-    RenderTarget* soft_rt;
-    RenderTarget* sparks_rt;
-    RenderTarget* half_rt;
-    RenderTarget* quarter_rt;
-    RenderTarget* clean_rt;
+    float focus; // Manual focus distance from camera plane (m), ignored when `autofocus` is true.
+    float aperture; // Blur scale in pixels at infinity when focused at 1 m.
+    float maxblur; // Maximum circle-of-confusion radius in pixels.
+    int taps; // Gather taps per pixel (`4..64`, default 16).
+    bool scatter; // When true (default), extracts bright out-of-focus sparks and scatters them as discs.
+    bool autofocus; // When true, focuses on center screen depth instead of `focus`.
+    float focus_speed; // Per-frame autofocus interpolation factor (`1` snaps immediately).
+    float focus_min; // Nearest autofocus clamp distance (m).
+    float focus_max; // Farthest autofocus clamp distance (m).
+    bool reset; // Snaps autofocus to the current center depth on the next `render()`, then clears.
+    SgView depth; // Depth view (`G` = linear camera-plane distance in meters) used inside `EffectComposer`.
+    PingPong focus_dist; // 1x1 `R16F` ping-pong target storing the active focus distance (m) in R.
+    int frame; // Frame counter rotating gather tap angles (mod 64).
+    ShaderPass focus_pass; // Updates `focus_dist` from center depth or manual `focus`.
+    ShaderPass tiles; // Computes per-16x16-tile maximum circle of confusion.
+    ShaderPass reach; // Dilates tile CoC bounds to neighborhood maximum reach.
+    ShaderPass prefilter; // Half-res CoC-weighted prefilter pass.
+    ShaderPass sparks; // Extracts bright high-contrast sparks for disc scattering.
+    ShaderPass rest; // Subtracts scattered sparks from the half-res prefiltered buffer.
+    ShaderPass clean; // Removes scattered sparks from full-res color before gather.
+    ShaderPass shrink; // Downsamples `half_rt` to `quarter_rt` for large-radius gather taps.
+    ShaderPass gather; // Full-res multi-resolution depth-aware gather pass.
+    ShaderPass scatter_pass; // Instanced additive quad pass drawing bokeh discs for sparks.
+    RenderTarget* tiles_rt; // 1/16-res `R16F` per-tile max CoC target.
+    RenderTarget* reach_rt; // 1/16-res `R16F` dilated neighborhood CoC target.
+    RenderTarget* soft_rt; // Half-res `RGBA16F` prefiltered color target.
+    RenderTarget* sparks_rt; // Half-res `RGBA16F` extracted spark color/CoC target.
+    RenderTarget* half_rt; // Half-res `RGBA16F` spark-subtracted gather source.
+    RenderTarget* quarter_rt; // Quarter-res `RGBA16F` gather source for wide blur radii.
+    RenderTarget* clean_rt; // Full-res `RGBA16F` spark-subtracted color target (when `scatter` is true).
 }
 
+// Allocates a `BokehPass` with initial `focus` (m), `aperture`, and `maxblur` (pixels).
 fn BokehPass* bokeh_pass(float focus = 1, float aperture = 4, float maxblur = 12) {
     BokehPass* p = mem::new(BokehPass);
     *p = {
@@ -112,12 +103,12 @@ fn RenderTarget* bokeh_target(RenderTarget* t, int w, int h, SgPixelFormat forma
     return t;
 }
 
-// Draws `color` with its depth of field into `target` (as large as it), `depth` holding each
-// pixel's distance from the camera's plane (m) in g.
-// The distance in focus, as a 1x1 map (r, m) for Renderer.focus_map (Material.defocus): the
-// last render's, the autofocus's or the one set.
+// Returns the latest 1x1 `R16F` focus-distance texture (R = meters) for `Renderer.focus_map`
+// (`Material.defocus`).
 fn Texture* BokehPass.focus_map(&self) => self.focus_dist.read().as_map();
 
+// Renders `color` (linear HDR) with depth of field into `target`, reading linear camera-plane
+// distance in meters from `depth`'s green channel.
 fn void BokehPass.render(&self, RenderTarget* target, SgView color, SgView depth) {
     int w = target.width;
     int h = target.height;
@@ -169,7 +160,7 @@ fn void BokehPass.render(&self, RenderTarget* target, SgView color, SgView depth
     self.rest.render(self.half_rt);
     self.shrink.set_texture(VIEW_BOKEH_SHRINK_SRC, self.half_rt.texture);
     self.shrink.render(self.quarter_rt);
-    // the picture without the sparks, for the gather (which would spread them again)
+    // Strip scattered sparks from the gather source so they are not double-counted.
     SgView gathered = color;
     if (self.scatter) {
         self.clean.set_texture(VIEW_BOKEH_CLEAN_COLOR, color);

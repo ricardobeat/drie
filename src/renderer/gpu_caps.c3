@@ -1,47 +1,38 @@
-// GpuCaps: what the GPU can do beyond sokol's portable feature set, for choosing between a
-// portable compute kernel (GLSL through sokol-shdc, every backend) and a fast one (runtime MSL on
-// Metal: float atomics, simdgroup reductions, 64-bit atomic min/max).
-//
-// Filled once when the GPU is set up (Renderer setup) and printed then. The tier comes from
-// the GPU family, never from the OS version (iOS 17 still runs on A12/A13). DRIE_COMPUTE=portable
-// in the environment forces the portable tier.
+// GPU capability probing beyond sokol's portable feature set, backed by platform/gpucaps.c.
+// Selects between portable sokol-shdc GLSL compute kernels and runtime MSL kernels on Apple7+
+// Metal devices (device float atomics, simdgroup reductions, 64-bit atomic min/max). Populated
+// once during setup_gfx(); the tier depends on GPU family rather than OS version, and setting
+// DRIE_COMPUTE=portable in the environment forces PORTABLE.
 module drie;
 import std::io, std::os::env, sokol;
 
+// Compute kernel tier selected at GPU initialization.
 enum ComputeTier : char
 {
-    PORTABLE,    // shdc GLSL kernels only: 32-bit integer atomics, shared memory, no subgroups
-    METAL_FAST,  // Metal Apple7+: atomic_float in device memory, simdgroup reductions (MSL 3.0+)
+    PORTABLE,    // sokol-shdc GLSL kernels only: 32-bit int atomics, shared memory, no subgroups.
+    METAL_FAST,  // Metal Apple7+ with MSL 3.0+: device atomic_float and simdgroup reductions.
 }
 
+// Queried GPU backend features and compute limits, populated by query_gpu_caps().
 struct GpuCaps
 {
-    ComputeTier tier;
-    SgBackend backend;
-    String name;
-    // Metal: the highest MTLGPUFamilyAppleN (0 elsewhere, or not an Apple GPU)
-    int apple_family;
-    // Metal: the newest Metal Shading Language version this OS compiles (0.0 elsewhere)
-    int msl_major;
-    int msl_minor;
-    bool metal3;
-    bool metal4;
-    bool unified_memory;
-    // atomic_float in device memory (Apple7+, MSL 3.0+)
-    bool float_atomics;
-    // atomic_float in threadgroup memory (also MSL 4.1)
-    bool threadgroup_float_atomics;
-    // simd_sum / simd_min / simd_max ... (Apple7+)
-    bool simd_reductions;
-    // simd_shuffle and quad shuffles (Apple6+)
-    bool simd_permute;
-    // 64-bit atomic min/max on ulong, no compare-and-swap (Apple9+, Apple8 on macOS)
-    bool atomic64_minmax;
-    // bytes of threadgroup (shared) memory a kernel may use
-    uint max_threadgroup_memory;
-    uint max_threads_per_threadgroup;
-    // DRIE_COMPUTE=portable was set
-    bool forced_portable;
+    ComputeTier tier;                   // Active compute tier (METAL_FAST or PORTABLE).
+    SgBackend backend;                  // Active sokol graphics backend.
+    String name;                        // Device name reported by the backend, if available.
+    int apple_family;                   // Highest MTLGPUFamilyAppleN on Metal (0 elsewhere).
+    int msl_major;                      // Maximum MSL major version supported by this OS (0 elsewhere).
+    int msl_minor;                      // Maximum MSL minor version supported by this OS.
+    bool metal3;                        // True when the device supports Metal 3.
+    bool metal4;                        // True when the device supports Metal 4.
+    bool unified_memory;                // True when CPU and GPU share unified memory.
+    bool float_atomics;                 // Device-memory atomic_float support (Apple7+, MSL 3.0+).
+    bool threadgroup_float_atomics;     // Threadgroup-memory atomic_float support (MSL 4.1+).
+    bool simd_reductions;               // simd_sum / simd_min / simd_max support (Apple7+).
+    bool simd_permute;                  // simd_shuffle and quad-shuffle support (Apple6+).
+    bool atomic64_minmax;               // 64-bit atomic min/max without CAS (Apple9+, Apple8 macOS).
+    uint max_threadgroup_memory;        // Maximum threadgroup (shared) memory per kernel, in bytes.
+    uint max_threads_per_threadgroup;   // Maximum threads per threadgroup.
+    bool forced_portable;               // True when DRIE_COMPUTE=portable overrode the tier.
 }
 
 struct GpucapsMetal @local
@@ -63,17 +54,19 @@ extern fn bool gpucaps_query_metal(void* device, GpucapsMetal* out) @cname("gpuc
 GpuCaps gpu_caps_value @local;
 char[64] gpu_caps_name @local;
 
-// What the GPU can do: valid once the renderer has set up the GPU (zeroed and PORTABLE before).
+// Returns the queried GPU capabilities; valid after setup_gfx() (zeroed and PORTABLE before).
 fn GpuCaps* gpu_caps() => &gpu_caps_value;
 
+// True when the GPU runs the Metal fast compute tier.
 fn bool GpuCaps.fast_compute(&self) => self.tier == METAL_FAST;
 
-// (Renderer setup calls it.) Queries the GPU into gpu_caps(), and prints it.
+// Queries GPU capabilities into gpu_caps() and optionally logs a one-line summary. Called once
+// during setup_gfx().
 fn void query_gpu_caps(bool print = true) {
     GpuCaps c;
     c.backend = sg::query_backend();
     c.tier = PORTABLE;
-    // the portable tier's limits: what sokol-shdc's GLSL compute gives on every backend
+    // Portable baseline limits guaranteed by sokol-shdc GLSL compute on all supported backends.
     c.max_threadgroup_memory = 32 * 1024;
     c.max_threads_per_threadgroup = 1024;
     if (c.backend == METAL_MACOS || c.backend == METAL_IOS || c.backend == METAL_SIMULATOR) {
@@ -122,7 +115,7 @@ fn String backend_name(SgBackend b) @local {
     }
 }
 
-// One line of what the GPU can do (printed once at startup).
+// Prints a single-line summary of the GPU backend, features, shared memory, and compute tier.
 fn void GpuCaps.print(&self) {
     io::printf("drie: gpu %s, %s", self.name.len ? self.name : "(unnamed)", backend_name(self.backend));
     if (self.apple_family) {

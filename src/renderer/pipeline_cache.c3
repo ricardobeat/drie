@@ -1,66 +1,33 @@
-// The pipeline cache: the list of the render pipelines a run made, saved to be compiled again,
-// in the background, at the start of a later run. Like Unreal's PSO cache: play the game once
-// (or each level), save what it drew with, ship that, and load it at startup; or load each
-// level's while its loading screen is up.
-//
-// A pipeline is a program and the state it draws with (sides, blending, depth, the target's
-// format). The driver compiles one the first time it is made, which can take from a few to
-// hundreds of milliseconds: a frame that makes one stalls. The driver keeps what it compiles
-// in a cache of its own on disk, so a pipeline made once before takes next to no time; the
-// pipeline cache is what gets it into the driver's cache before the frame that wants it.
-//
-//   // a run that plays the game:
-//   renderer.save_pipeline_cache("pipelines.txt");
-//
-//   // at startup:
-//   renderer.load_pipeline_cache(file::load_temp("pipelines.txt"))!!;
-//   // each frame, for a loading bar: what is left of it
-//   int[2] n = renderer.compiling();      // { still compiling, all }
-//
-// Loading compiles a few at a time on worker threads (Metal only: elsewhere it does
-// nothing), so the frames go on: a pipeline still compiling when something wants it is
-// made then, after its compile in the background (or drawn with the plain material till its
-// pipelines are ready, for a node material with Renderer.compile_in_background). The
-// materials' generated programs are listed by their MaterialKey; a node material's, which its
-// key alone can't print, as the program itself (its text): a graph that prints the same then
-// gets the program already made. The list is text, one line a pipeline (see
-// Renderer.pipeline_cache); it holds no compiled code, so it doesn't go stale when the
-// driver or the GPU change, only less complete.
-//
-// What a render target stands for: a pipeline that draws into the window is listed as the
-// window's, and is compiled for whatever window the run that loads it has (its samples, its
-// formats). A run without a window (making pictures, tests) can name the render target that
-// stands for one, Renderer.screen_stand_in.
+// Pipeline warmup cache (text PSO list) and Metal binary pipeline archives (sokol_warm.h).
+// Records pipelines created by get_pipeline() and gen_shadow_pipeline() so later runs can warm
+// them up to PIPELINE_CACHE_JOBS at a time on background worker threads (Metal only; no-op on
+// other backends). Standard materials serialize by MaterialKey; node materials include shader
+// source text so matching graphs share compiled programs. Window pipelines record `target_samples`
+// as 0 (including Renderer.screen_stand_in) and compile against the active window's formats.
 module drie;
 import std::io, std::collections::list, sokol::sg;
 
-const String PIPELINE_CACHE_HEADER @local = "drie-pipelines 6\n";
-// pipelines compiled at once while a cache loads
-const int PIPELINE_CACHE_JOBS @local = 6;
+// ---- Text pipeline cache
 
-// A pipeline as get_pipeline (or gen_shadow_pipeline) made it.
+const String PIPELINE_CACHE_HEADER @local = "drie-pipelines 6\n";
+const int PIPELINE_CACHE_JOBS @local = 6;  // Maximum concurrent background warmup jobs.
+
+// Recorded pipeline configuration emitted by get_pipeline() or gen_shadow_pipeline().
 struct PipelineRecord @private {
-    // its generated program's key (materials_nodes.c3)
-    MaterialKey key;
-    // a node material's program (MaterialKey.nodes), which the key alone doesn't print: listed
-    // by its text (kept while it is listed: MaterialProgram.users)
-    MaterialProgram* shared;
-    // a shadow map's (the rest unused)
-    bool shadow;
+    MaterialKey key;          // Generated material program key (src/material/material_key.c3).
+    MaterialProgram* shared;  // Node-material program (refcounted via MaterialProgram.users).
+    bool shadow;              // True for shadow-map pipelines (remaining render fields unused).
     Side side;
     bool transparent;
     bool wireframe;
     bool alpha_test;
-    // the blending, as blend_key gives it (the material's blending and its factors)
-    ulong blend;
+    ulong blend;              // Packed blend state from blend_key().
     DrawKind kind;
-    // into the deferred G-buffer
-    bool gbuffer;
+    bool gbuffer;             // True for deferred G-Buffer pipelines.
     bool depth_test;
     bool depth_write;
     bool vsm;
-    // the render target: 0 samples for the window's
-    int target_samples;
+    int target_samples;       // 0 denotes the window swapchain (or Renderer.screen_stand_in).
     SgPixelFormat target_format;
     bool target_mrt;
 }
@@ -74,30 +41,25 @@ fn bool PipelineRecord.same(&self, PipelineRecord* o) {
         && self.target_format == o.target_format && self.target_mrt == o.target_mrt;
 }
 
-// the pipelines made in this run, for Renderer.pipeline_cache
+// Unique pipelines built from scratch during this run, exported by Renderer.pipeline_cache().
 List{PipelineRecord} pipeline_records @local;
 
-// What a loaded cache has left to do.
+// Background compilation queue for loaded pipeline caches.
 struct PipelineWarmup @private {
-    // the records not started yet
-    List{PipelineRecord} pending;
-    // all it was given (one of each, however many caches list it)
-    List{PipelineRecord} loaded;
-    // pipelines compiling (sg_warm_begin's jobs) whose programs were compiling already
-    List{int} jobs;
-    // generated programs compiled by the jobs of the pipelines it has started (ShaderProgram.claim)
-    List{ShaderProgram*} generated;
-    // the pipelines it has started
-    int started;
+    List{PipelineRecord} pending;      // Records not yet dispatched to worker threads.
+    List{PipelineRecord} loaded;       // Deduplicated union of all loaded cache records.
+    List{int} jobs;                    // Active sg_warm_begin job IDs on already-compiling shaders.
+    List{ShaderProgram*} generated;    // Programs claimed by warmup jobs (ShaderProgram.claim).
+    int started;                       // Number of records popped from `pending`.
 }
 
 PipelineWarmup cache_warmup @local;
-// set while one of cache_warmup's pending records is started: get_pipeline then compiles
-// in the background rather than making the pipeline (see start)
+// Non-null while pump_pipeline_cache() invokes get_pipeline() / gen_shadow_pipeline() so they
+// dispatch background compilation instead of blocking on synchronous pipeline creation.
 PipelineWarmup* pipeline_warmup @private;
 
 fn void record_pipeline(PipelineRecord r) @private {
-    // (not what a cache being loaded asks for: only what was drawn with)
+    // Skip warmup dispatches so only pipelines actually drawn with are recorded.
     if (pipeline_warmup) return;
     if (!pipeline_records.is_initialized()) pipeline_records.init(mem);
     foreach (&o : pipeline_records) {
@@ -107,7 +69,7 @@ fn void record_pipeline(PipelineRecord r) @private {
     pipeline_records.push(r);
 }
 
-// Adds `r` to what is left to start, if it hasn't been given it before.
+// Enqueues `r` for background warmup if not already present in `loaded`.
 fn bool PipelineWarmup.add(&self, PipelineRecord r) {
     foreach (&o : self.loaded) {
         if (o.same(&r)) return false;
@@ -117,7 +79,7 @@ fn bool PipelineWarmup.add(&self, PipelineRecord r) {
     return true;
 }
 
-// A MaterialKey from the 64 hex digits pipeline_cache writes.
+// Parses a 64-hex-digit MaterialKey written by Renderer.pipeline_cache().
 fn MaterialKey? key_from_hex(String hex) @local {
     if (hex.len != 64) return NOT_FOUND~;
     ulong[4] q;
@@ -139,8 +101,7 @@ fn String key_hex(MaterialKey key) @local {
     return string::tformat("%016x%016x%016x%016x", (ulong)(k.lo >> 64), (ulong)k.lo, (ulong)(k.hi >> 64), (ulong)k.hi);
 }
 
-// Compiles generated program `p`'s pipeline `desc` in the background (for get_pipeline): the
-// program with it, if it isn't made or compiling yet.
+// Dispatches a background compile job for generated program `p` and pipeline `desc`.
 fn void PipelineWarmup.start_generated(&self, ShaderProgram* p, SgPipelineDesc* desc) {
     SgShaderDesc shader = p.desc();
     int job = sg_warm_begin(&shader, desc);
@@ -152,27 +113,19 @@ fn void PipelineWarmup.start_generated(&self, ShaderProgram* p, SgPipelineDesc* 
     }
 }
 
-// The pipelines (those made so far), as the text load_pipeline_cache takes, in `a`'s memory:
-//
+// Serializes the recorded pipelines into a portable text cache allocated in `a`:
 //   drie-pipelines 6
-//   M <key> <depth>                       a node material's program, numbered from 0 in the
-//                                         order listed: the key it was printed for (64 hex
-//                                         digits), then the program as ShaderProgram.write
-//                                         writes it, and with <depth> 1 its depth prepass's
+//   M <key> <depth>                       Node material program (0-indexed in emission order),
+//                                         followed by ShaderProgram.write output (and prepass
+//                                         program when `<depth>` is 1).
 //   G <key> <program> <side> <transparent> <wireframe> <alpha_test> <blend> <kind>
-//     <depth_test> <depth_write> <vsm> <target samples, 0: the window> <target format> <mrt>
-//     <gbuffer>                           a pipeline of the generated program for <key>, or
-//                                         of node program <program> (-1: none)
-//   H <key> <program>                     a shadow map's pipeline
+//     <depth_test> <depth_write> <vsm> <target_samples> <target_format> <mrt> <gbuffer>
+//                                         Render pipeline (`<program>` -1 for non-node materials,
+//                                         `<target_samples>` 0 for the window).
+//   H <key> <program>                     Shadow-map pipeline.
 //
-// `include_loaded` (on by default) also writes what a loaded cache's records had
-// (cache_warmup.loaded: load_pipeline_cache's own full list, not just what's left pending),
-// so that saving after a run that mostly drew with an already-loaded cache doesn't lose
-// them: record_pipeline skips a pipeline started by the cache's own warmup (so a run doesn't
-// save back what it only compiled for someone else to use later), and get_pipeline finding
-// one already made the same way (compiled by the warmup, or by an earlier draw this run)
-// returns before ever reaching record_pipeline: a pipeline the loaded cache already knew
-// about is never (re-)recorded by drawing with it, only by making it from scratch.
+// With `include_loaded` (default true), merges records loaded via load_pipeline_cache() so saving
+// after a warmed run preserves entries that hit the cache without being built from scratch.
 fn String Renderer.pipeline_cache(&self, Allocator a, bool include_loaded = true) {
     DString out = dstring::new(a);
     out.append(PIPELINE_CACHE_HEADER);
@@ -222,7 +175,7 @@ fn String Renderer.pipeline_cache(&self, Allocator a, bool include_loaded = true
     return out.str_view();
 }
 
-// pipeline_cache, into a file.
+// Writes Renderer.pipeline_cache() to `path`. Returns false if saving fails.
 fn bool Renderer.save_pipeline_cache(&self, String path) {
     @pool() {
         if (catch file::save(path, self.pipeline_cache(tmem))) return false;
@@ -230,8 +183,7 @@ fn bool Renderer.save_pipeline_cache(&self, String path) {
     return true;
 }
 
-// Clears the recorded pipelines (for a process that renders several scenes in turn and saves
-// each one's pipeline cache).
+// Clears the pipelines recorded during this run (useful when saving per-scene caches in one process).
 fn void Renderer.clear_pipeline_cache(&self) {
     if (!pipeline_records.is_initialized()) return;
     foreach (&r : pipeline_records) {
@@ -240,9 +192,8 @@ fn void Renderer.clear_pipeline_cache(&self) {
     pipeline_records.clear();
 }
 
-// A node material's program as pipeline_cache lists it, at `*at` in `text` (moved past it):
-// the one made already that prints the same, or this one, which a graph that prints the same
-// takes from then on (see material_program).
+// Parses a serialized node material program at `*at` in `text`, advancing `*at`, and deduplicates
+// it against already-registered MaterialPrograms.
 fn MaterialProgram*? read_material_program(String text, usz* at, MaterialKey key, bool depth) @local {
     ShaderProgram* program = read_program(text, at)!;
     ShaderProgram*? prepass = depth ? read_program(text, at) : (ShaderProgram*)null;
@@ -256,15 +207,13 @@ fn MaterialProgram*? read_material_program(String text, usz* at, MaterialKey key
     mp.depth = prepass;
     mp.pipelines.init(mem);
     mp = share_material_program(mp);
-    // (held by the loaded list)
+    // Reference held by cache_warmup.loaded.
     mp.users++;
     return mp;
 }
 
-// Starts compiling the pipelines `text` lists (pipeline_cache, from another run) in the
-// background, a few at a time from here on (each render starts more as those finish): see
-// compiling. Returns how many it lists that no cache loaded before has (the text up to
-// anything it doesn't read). Call it between frames, before the first one too.
+// Parses a text pipeline cache and queues its unique entries for background compilation on Metal.
+// Returns the number of newly added records; safe to call before the first frame or between frames.
 fn int Renderer.load_pipeline_cache(&self, String text) {
     if (!text.starts_with(PIPELINE_CACHE_HEADER)) return 0;
     PipelineWarmup* w = &cache_warmup;
@@ -337,7 +286,7 @@ fn int Renderer.load_pipeline_cache(&self, String text) {
     return added;
 }
 
-// load_pipeline_cache, from a file: false if it can't be read.
+// Loads a text pipeline cache from `path`. Returns false if the file cannot be read.
 fn bool Renderer.load_pipeline_cache_file(&self, String path) {
     @pool() {
         char[]? text = file::load_temp(path);
@@ -347,9 +296,8 @@ fn bool Renderer.load_pipeline_cache_file(&self, String path) {
     return true;
 }
 
-// The loaded caches' pipelines, for a loading bar: { still compiling (or not started), all
-// of them } (all: since the first cache was loaded, so the bar fills once from 0). Done when
-// the first is 0.
+// Returns `{ remaining, total }` for loaded pipeline caches, advancing pending warmup jobs.
+// Warmup is complete when `remaining` reaches 0.
 fn int[2] Renderer.compiling(&self) {
     PipelineWarmup* w = &cache_warmup;
     self.pump_pipeline_cache();
@@ -371,12 +319,13 @@ fn int[2] Renderer.compiling(&self) {
     return n;
 }
 
-// Starts what the loaded caches have left, while fewer than PIPELINE_CACHE_JOBS compile.
+// Dispatches pending pipeline cache entries on Metal while fewer than PIPELINE_CACHE_JOBS are
+// running; clears the queue on backends without background compilation.
 fn void Renderer.pump_pipeline_cache(&self) {
     PipelineWarmup* w = &cache_warmup;
-    // (before the renderer's first frame: from its first)
+    // Wait until setup_gfx() finishes; Renderer.render() pumps on the first frame.
     if (!w.pending.len() || !state.gfx_ready) return;
-    // (compiled in the background on Metal only: elsewhere it would stall the frames)
+    // Background worker compilation is supported on Metal only; other backends would stall.
     switch (sg::query_backend()) {
         case METAL_MACOS:
         case METAL_IOS:
@@ -400,7 +349,7 @@ fn void Renderer.pump_pipeline_cache(&self) {
     while (running < PIPELINE_CACHE_JOBS && w.pending.len()) {
         PipelineRecord r = w.pending.pop_first()!!;
         w.started++;
-        // (a node material's program printed for another backend's language: never drawn here)
+        // Skip node programs generated for another backend's shading language.
         if (r.shared && r.shared.program.lang != backend_lang()) continue;
         running++;
         MaterialProgram* gen = r.shared ?: material_program(r.key);
@@ -408,7 +357,7 @@ fn void Renderer.pump_pipeline_cache(&self) {
             (void)gen_shadow_pipeline(gen);
             continue;
         }
-        // (get_pipeline reads VSM off the renderer)
+        // get_pipeline() reads VSM mode off the renderer.
         self.shadow_type = r.vsm ? ShadowType.VSM : shadow_type == VSM ? ShadowType.PCF : shadow_type;
         RenderTarget target = { .samples = r.target_samples, .format = r.target_format, .mrt = r.target_mrt };
         (void)get_pipeline(r.side, r.transparent, r.wireframe, r.target_samples ? &target : null, r.alpha_test,
@@ -416,31 +365,21 @@ fn void Renderer.pump_pipeline_cache(&self) {
     }
 }
 
-// ---- the pipeline archive
+// ---- Binary pipeline archive
 
-// Metal's binary archives of compiled pipelines (sokol_warm.h): files a run saves and the next
-// loads, so a pipeline they have is made without compiling. Every pipeline drie makes is looked
-// up in them; those they haven't are compiled, and the run saves them into a new file: `path`
-// for the first run, then `path.1`, `path.2`... (Metal can't always save a loaded archive with
-// more pipelines added.) Deleting them all starts over.
-//
-//   renderer.use_pipeline_archive("pipelines.archive");   // before the first frame
-//   renderer.save_pipeline_archive();                     // now and then, and at the end
-//
-// Made on one GPU and OS, it has nothing for another (its pipelines are then compiled as
-// without it). Metal only.
+// Metal MTLBinaryArchive persistence (sokol_warm.h): caches compiled GPU pipelines on disk per
+// GPU and OS version. Newly compiled pipelines are saved into sequential files (`path`, `path.1`,
+// `path.2`, ...). Metal only; ignored on other backends.
 
 extern fn CInt sg_warm_archive_load(ZString path) @cname("sg_warm_archive_load");
 extern fn CInt sg_warm_archive_save(ZString path) @cname("sg_warm_archive_save");
 extern fn void sg_warm_archive_counts(CInt* hits, CInt* misses) @cname("sg_warm_archive_counts");
 
-// the archive's file ("": none), and whether it was loaded yet
 String archive_path @local;
 bool archive_loaded @local;
 
-// Takes the pipeline archive at `path` (its files `path`, `path.1`...; none when there is no
-// file there, or none this device can read), from the GPU's setup (now, if that was before),
-// and saves this run's pipelines into its next file.
+// Configures the Metal binary archive base path (`path`, `path.1`, ...) and loads existing files
+// immediately if the GPU is ready, or during setup_gfx() otherwise.
 fn void Renderer.use_pipeline_archive(&self, String path) {
     if (archive_path.len) free(archive_path.ptr);
     archive_path = path.copy(mem);
@@ -448,7 +387,7 @@ fn void Renderer.use_pipeline_archive(&self, String path) {
     load_pipeline_archive();
 }
 
-// (from setup_gfx too)
+// Loads any configured binary archive files once setup_gfx() has initialized the Metal device.
 fn void load_pipeline_archive() @private {
     if (!archive_path.len || archive_loaded || !state.gfx_ready) return;
     archive_loaded = true;
@@ -458,7 +397,8 @@ fn void load_pipeline_archive() @private {
     };
 }
 
-// Saves the pipeline archive, if pipelines were added to it: false if it couldn't.
+// Persists any pipelines newly compiled this run into the next archive file. Returns false on
+// write failure.
 fn bool Renderer.save_pipeline_archive(&self) {
     if (!archive_loaded) return true;
     @pool() {
@@ -466,7 +406,7 @@ fn bool Renderer.save_pipeline_archive(&self) {
     };
 }
 
-// { pipelines made from the archive, pipelines compiled and added to it }.
+// Returns `{ archive_hits, archive_misses }` for Metal binary archive lookups this run.
 fn int[2] pipeline_archive_counts() {
     CInt hits;
     CInt misses;

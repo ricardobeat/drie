@@ -1,78 +1,63 @@
-// Touch controls for phones and tablets: a virtual stick under the left thumb, dragging
-// anywhere else to look around, and round on-screen buttons that press gamepad buttons.
-//
-// The buttons go into input::gamepad()'s `held` bits, so they work wherever a controller's
-// buttons do, and with `keys` on they also send the same key events (menus work with them).
-// The stick and the look drag are read from here:
+// On-screen touch controls: a floating left-thumb stick, right-side look dragging, and circular
+// buttons whose pressed bits merge into `input::gamepad().held`. Enabled from startup on iOS and
+// Android, or upon the first touch event elsewhere; positions are in points (`pixels / dpi_scale`),
+// and `ui::draw()` renders the overlay.
 //
 //   TouchControls* touch = input::touch_controls();
-//   touch.add_button(input::PAD_NORTH, "LAMP", 70, 150);             // from the bottom right
-//   touch.add_button(input::PAD_MENU, "MENU", 40, 40, 22, TOP_RIGHT);
-//   ...
+//   touch.add_button(input::PAD_NORTH, "LAMP", 70, 150);
 //   walk(touch.stick_x, touch.stick_y);
 //   float dx, dy;
-//   touch.take_look(&dx, &dy);                                       // points dragged since last time
-//
-// The stick appears where the left thumb comes down (in the left half of the screen) and
-// follows it when it slides past the edge; pushed past `run_beyond` it also holds PAD_L3. With
-// `stick_as_dpad` set (a game sets it while its menu is open), flicking the stick presses the
-// d-pad instead, to move through the items.
-//
-// It is shown and read once `enabled`: from the start on iOS and Android, elsewhere from the
-// first touch. Positions are in points (pixels / sapp::dpi_scale()), like window_width().
-// `mouse_as_touch` lets a mouse stand in for one finger. ui::draw() draws the controls.
+//   touch.take_look(&dx, &dy);
 module drie::input;
 import std::collections::list, std::math;
 import sokol, drie, drie::ui;
 
+// Screen corner from which a `TouchButton` offset `(x, y)` is measured.
 enum TouchAnchor {
-    BOTTOM_RIGHT,
-    TOP_RIGHT,
-    BOTTOM_LEFT,
-    TOP_LEFT,
+    BOTTOM_RIGHT, // Offset inward from the bottom-right corner.
+    TOP_RIGHT, // Offset inward from the top-right corner.
+    BOTTOM_LEFT, // Offset inward from the bottom-left corner.
+    TOP_LEFT, // Offset inward from the top-left corner.
 }
 
+// Circular on-screen button that drives one or more `PAD_*` bits while held.
 struct TouchButton {
-    uint button; // PAD_* bits it holds down
-    String label;
-    TouchAnchor anchor;
-    float x; // its middle, in points from the anchor's corner
-    float y;
-    float radius;
-    bool down;
-    uptr finger;
+    uint button; // `PAD_*` bitmask held while this button is pressed.
+    String label; // Centered text label drawn inside the button ring.
+    TouchAnchor anchor; // Corner of the window that `(x, y)` is measured from.
+    float x; // Horizontal distance in points from the anchor corner to the center.
+    float y; // Vertical distance in points from the anchor corner to the center.
+    float radius; // Drawn radius in points (hit testing uses 1.25x this radius).
+    bool down; // True while a finger is holding this button.
+    uptr finger; // Identifier of the touchpoint holding this button.
 }
 
+// Virtual stick, look-drag accumulator, and button list for touch input.
 struct TouchControls {
-    bool enabled;
-    // -1..1, up is +y
-    float stick_x;
-    float stick_y;
-    // the stick's size and where it rests when no thumb is on it (from the bottom left)
-    float stick_radius;
-    float stick_home_x;
-    float stick_home_y;
-    // past this many radii the stick holds PAD_L3 (run)
-    float run_beyond;
-    bool running;
-    // the mouse is a finger (to try the controls on a desktop): it no longer reaches the app
-    bool mouse_as_touch;
-    // flicks of the stick press the d-pad instead of walking (set it while a menu is open)
-    bool stick_as_dpad;
-    List{TouchButton} buttons;
+    bool enabled; // Drawn and included in `held()` when true; auto-enabled on first touch.
+    float stick_x; // Virtual stick X in [-1, 1], right positive.
+    float stick_y; // Virtual stick Y in [-1, 1], up positive.
+    float stick_radius; // Ring radius of the virtual stick in points.
+    float stick_home_x; // Resting center X in points from the left edge.
+    float stick_home_y; // Resting center Y in points from the bottom edge.
+    float run_beyond; // Stick radii beyond which `running` (and `PAD_L3`) activates.
+    bool running; // True when the thumb is pushed past `stick_radius * run_beyond`.
+    bool mouse_as_touch; // Translates left-mouse drags into touch input and consumes mouse events.
+    bool stick_as_dpad; // Maps stick deflections past 0.6 into `PAD_UP/DOWN/LEFT/RIGHT` bits.
+    List{TouchButton} buttons; // Registered on-screen buttons.
 
-    float look_dx;
-    float look_dy;
-    bool stick_down;
-    uptr stick_finger;
-    float stick_x0;
-    float stick_y0;
-    float thumb_x;
-    float thumb_y;
-    bool look_down;
-    uptr look_finger;
-    float look_x;
-    float look_y;
+    float look_dx; // Accumulated horizontal look drag in points since `take_look()`.
+    float look_dy; // Accumulated vertical look drag in points since `take_look()`.
+    bool stick_down; // True while a finger owns the virtual stick.
+    uptr stick_finger; // Identifier of the touchpoint owning the stick.
+    float stick_x0; // Active stick ring center X in points.
+    float stick_y0; // Active stick ring center Y in points.
+    float thumb_x; // Current stick touchpoint X in points.
+    float thumb_y; // Current stick touchpoint Y in points.
+    bool look_down; // True while a finger is dragging to look.
+    uptr look_finger; // Identifier of the touchpoint dragging to look.
+    float look_x; // Previous look touchpoint X in points.
+    float look_y; // Previous look touchpoint Y in points.
 }
 
 TouchControls touch_state @local = {
@@ -83,8 +68,10 @@ TouchControls touch_state @local = {
     .run_beyond = 1.25,
 };
 
+// Returns the singleton `TouchControls` state.
 fn TouchControls* touch_controls() => &touch_state;
 
+// Registers an on-screen button of `radius` points at `(x, y)` from `anchor` that holds `button`.
 fn void TouchControls.add_button(
     &self,
     uint button,
@@ -98,7 +85,7 @@ fn void TouchControls.add_button(
     self.buttons.push({ .button = button, .label = label, .anchor = anchor, .x = x, .y = y, .radius = radius });
 }
 
-// The look drag since the last call, in points (right and down are positive), and starts over.
+// Writes the look drag in points (right and down positive) since the last call and resets it to 0.
 fn void TouchControls.take_look(&self, float* dx, float* dy) {
     *dx = self.look_dx;
     *dy = self.look_dy;
@@ -106,7 +93,7 @@ fn void TouchControls.take_look(&self, float* dx, float* dy) {
     self.look_dy = 0;
 }
 
-// The PAD_* bits the touch buttons (and the stick) hold down now.
+// Returns the `PAD_*` bitmask currently held by touch buttons and stick states.
 fn uint TouchControls.held(&self) {
     if (!self.enabled) return 0;
     uint bits;
@@ -123,6 +110,7 @@ fn uint TouchControls.held(&self) {
     return bits;
 }
 
+// Computes the button's screen-space center `(x, y)` in points from the current window size.
 fn void TouchButton.center(&self, float* x, float* y) {
     float w = drie::window_width();
     float h = drie::window_height();
@@ -134,6 +122,7 @@ fn void TouchButton.center(&self, float* x, float* y) {
     }
 }
 
+// Recomputes `stick_x`, `stick_y`, `running`, and floating center from the current thumb position.
 fn void TouchControls.move_stick(&self) {
     float r      = self.stick_radius;
     float dx     = self.thumb_x - self.stick_x0;
@@ -151,6 +140,7 @@ fn void TouchControls.move_stick(&self) {
     self.stick_y = -dy * k;
 }
 
+// Releases the virtual stick and zeroes its axis and run state.
 fn void TouchControls.release_stick(&self) {
     self.stick_down = false;
     self.running = false;

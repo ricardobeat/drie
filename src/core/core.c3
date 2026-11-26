@@ -1,63 +1,89 @@
-// Scene graph: Object3D, Group, Scene, Mesh, cameras, lights, fog.
+// Scene graph core: `Object3D`, `Group`, `Scene`, `Fog`/`VolumetricFog`, `Mesh`,
+// `InstancedMesh`, `Lod`, `Line` variants, cameras, and lights. Coordinates are right-handed
+// Y-up meters with intrinsic XYZ Euler rotations in radians; constructors allocate on the heap
+// (`mem`) and `Object3D.children` uses `mem`. Consumed by `Renderer.render`, `Raycaster`,
+// `Skeleton`, `walk_casters`, `IrradianceVolume`, `RadianceCascades`, and `ReflectionProbes`.
 module drie;
 import std::collections::list, libc;
 import sokol;
 
+// Discriminator stored in `Object3D.kind` for downcasting scene-graph nodes.
 enum ObjectKind {
+    // Plain transform node (`Object3D`).
     OBJECT,
+    // Logical container (`Group`).
     GROUP,
+    // Root scene container (`Scene`).
     SCENE,
+    // Renderable triangle or line mesh (`Mesh`, `InstancedMesh`, `SkinnedMesh`, `Line`).
     MESH,
+    // Distance-switched level-of-detail container (`Lod`).
     LOD,
+    // Projection camera (`PerspectiveCamera`, `OrthographicCamera`).
     CAMERA,
+    // Scene light (`Light` subtypes).
     LIGHT,
 }
 
+// Base scene-graph node owning local/world transforms, hierarchy links, and render flags.
 struct Object3D {
+    // Concrete node subtype for safe downcasting.
     ObjectKind kind;
+    // Optional lookup label matched by `Object3D.get_object_by_name`.
     String name;
+    // Local translation relative to `parent`, in meters.
     Vector3 position;
+    // Local XYZ Euler rotation in radians.
     Euler rotation;
+    // Local non-uniform scale factors (defaults to `{ 1, 1, 1 }`).
     Vector3 scale;
+    // Reference up vector used by `look_at` (defaults to `{ 0, 1, 0 }`).
     Vector3 up;
+    // When false, the node and its subtree are skipped during rendering.
     bool visible;
-    // Meshes: skip drawing when the bounding sphere is outside the camera's view.
+    // For meshes: skip drawing when the bounding sphere falls outside the camera frustum.
     bool frustum_culled;
-    // Meshes: render into shadow maps / get darkened by them.
+    // For meshes and lights: render into shadow maps.
     bool cast_shadow;
+    // For meshes: sample shadow maps during lighting.
     bool receive_shadow;
-    // Meshes: drawn only into shadow maps (with cast_shadow), as a cheaper stand-in for a
-    // detailed mesh whose own cast_shadow is off; not seen, picked or lit by radiance.
+    // For meshes: render only into shadow maps (with `cast_shadow`) as a cheap proxy for a
+    // detailed mesh whose own `cast_shadow` is false; excluded from main pass, picking, and GI.
     bool shadow_only;
-    // Like three.js renderOrder: among see-through meshes, higher ones are drawn later
-    // whatever their distance (a film of dirt over the glass it lies on).
+    // Draw priority among transparent meshes: higher values render later regardless of depth.
     int render_order;
+    // Parent node in the scene graph, or `null` at the root.
     Object3D* parent;
+    // Direct child nodes, heap-allocated (`mem`).
     List{Object3D*} children;
+    // Local transform matrix composed from `position`, `rotation`, and `scale`.
     Mat4 matrix;
+    // Accumulated world transform matrix (`parent.matrix_world * matrix`).
     Mat4 matrix_world;
-    // What update_matrix_world last built `matrix` from: an object that has not moved is
-    // not computed again (most of a scene stands still).
+    // Cached `position` from the last `update_world` pass to skip unchanged matrices.
     Vector3 placed_position;
+    // Cached `rotation` from the last `update_world` pass.
     Euler placed_rotation;
+    // Cached `scale` from the last `update_world` pass.
     Vector3 placed_scale;
+    // True once `placed_*` mirrors `matrix`.
     bool placed;
-    // matrix_world was changed outside update_world, which has yet to tell the children
+    // Set when `matrix_world` changed outside `update_world` and children still need propagation.
     bool world_dirty;
-    // visible and cast_shadow as update_world last saw them (see note_switches)
+    // Bitmask of `visible` and mesh `cast_shadow` as `update_world` last observed them.
     char seen_switches;
-    // Like three's matrixAutoUpdate: `matrix` is rebuilt from position, rotation and scale
-    // when they change. Off, `matrix` is yours to set (update_matrix() rebuilds it).
+    // When true (default), `update_world` rebuilds `matrix` when TRS changes. When false, the
+    // caller writes `matrix` directly (or calls `update_matrix`).
     bool matrix_auto_update;
-    // Like three's matrixWorldAutoUpdate: the scene's update_matrix_world() brings this
-    // object and its descendants up to date. Off, it leaves the whole subtree alone (call
-    // update_matrix_world() on it after moving something in it): for the parts of a big
-    // scene that never move, which then cost nothing per frame.
+    // When true (default), `update_matrix_world` traverses this node and its descendants. Set
+    // false on static subtrees to skip per-frame traversal; call `update_matrix_world` manually
+    // after moving anything inside them.
     bool matrix_world_auto_update;
-    // Free slot for your own data, like three's object.userData.
+    // Opaque pointer reserved for application data.
     void* user_data;
 }
 
+// Initializes default transform, flags, identity matrices, and heap allocator on `children`.
 fn void Object3D.init(&self, ObjectKind kind) {
     self.kind = kind;
     self.scale = { 1, 1, 1 };
@@ -68,21 +94,18 @@ fn void Object3D.init(&self, ObjectKind kind) {
     self.matrix_world_auto_update = true;
     self.matrix = mat4_identity();
     self.matrix_world = mat4_identity();
-    // lists live on the heap: by default they would use the temp allocator and be freed
-    // with the caller's @pool
+    // Keep `children` on the heap so it outlives any caller `@pool` frame.
     self.children.allocator = mem;
 }
 
-// What changed in the world since the shadow atlas last looked (renderer.c3's walk_casters):
-// the meshes whose matrix_world update_world changed, in order (`moved_meshes_dropped`
-// counts the times the list was emptied, so that a walk that missed some looks at everything),
-// and how many times an object was added or removed anywhere, shown or hidden, or had its
-// cast_shadow switched.
+// World changes tracked since `walk_casters` last scanned the scene: meshes whose
+// `matrix_world` changed (with `moved_meshes_dropped` counting overflows that force a full
+// rescan), and `scene_structure_changes` counting graph edits or `visible`/`cast_shadow` flips.
 List{Mesh*} moved_meshes @private;
 uint moved_meshes_dropped @private;
 uint scene_structure_changes @private;
 
-// Counts a switch of `visible`, or of a mesh's cast_shadow, since update_world last saw it.
+// Records a `visible` or mesh `cast_shadow` change since `update_world` last checked `o`.
 fn void note_switches(Object3D* o) @private {
     char now = (char)((o.visible ? 1 : 0) | (o.cast_shadow && o.kind == MESH ? 2 : 0) | 4);
     if (now == o.seen_switches) return;
@@ -99,7 +122,7 @@ fn void note_moved_mesh(Mesh* m) @private {
     moved_meshes.push(m);
 }
 
-// Adds a child, removing it from its previous parent first. Returns self for chaining.
+// Reparents `child` under this node (detaching from any existing parent) and returns `self`.
 fn Object3D* Object3D.add(&self, Object3D* child) {
     if (child == self) return self;
     scene_structure_changes++;
@@ -110,6 +133,7 @@ fn Object3D* Object3D.add(&self, Object3D* child) {
     return self;
 }
 
+// Detaches `child` from `children` if present, clearing its `parent`, and returns `self`.
 fn Object3D* Object3D.remove(&self, Object3D* child) {
     scene_structure_changes++;
     foreach (i, c : self.children) {
@@ -122,12 +146,14 @@ fn Object3D* Object3D.remove(&self, Object3D* child) {
     return self;
 }
 
+// Detaches all direct children from this node without freeing them.
 fn void Object3D.clear(&self) {
     scene_structure_changes++;
     foreach (c : self.children) c.parent = null;
     self.children.clear();
 }
 
+// Depth-first search for the first node in this subtree with `node.name == name`, or `null`.
 fn Object3D* Object3D.get_object_by_name(&self, String name) {
     if (self.name == name) return self;
     foreach (c : self.children) {
@@ -137,10 +163,9 @@ fn Object3D* Object3D.get_object_by_name(&self, String name) {
     return null;
 }
 
-// Like three's object.clone(): a copy of this object and its descendants that shares their
-// geometries and materials, without a parent. For groups and meshes (a loaded model's
-// nodes, say: scene.add(model.get("chair").clone())); lights, cameras, LODs and instanced
-// meshes come out as empty groups.
+// Recursively clones this node and its descendants without a parent, sharing `BufferGeometry`
+// and `Material` pointers (e.g. `scene.add(model.get_object_by_name("chair").clone())`). Plain
+// meshes keep their `draw_mode`; lights, cameras, LODs, and instanced meshes clone as `Group`s.
 fn Object3D* Object3D.clone(&self) {
     Object3D* copy;
     if (self.kind == MESH && ((Mesh*)self).instance_data.len() == 0) {
@@ -164,26 +189,28 @@ fn Object3D* Object3D.clone(&self) {
     return copy;
 }
 
+// Callback invoked on each node visited by `Object3D.traverse`.
 alias TraverseCallback = fn void(Object3D*);
 
+// Visits this node and every descendant in pre-order depth-first traversal.
 fn void Object3D.traverse(&self, TraverseCallback cb) {
     cb(self);
     foreach (c : self.children) c.traverse(cb);
 }
 
+// Recomputes local `matrix` from `position`, `rotation`, and `scale`.
 fn void Object3D.update_matrix(&self) {
     self.matrix = mat4_compose(self.position, self.rotation, self.scale);
 }
 
-// Brings matrix_world up to date for this object and all its descendants. Only what moved
-// since the last call (or hangs under something that did) is computed. Set position,
-// rotation and scale, not `matrix`: it is rebuilt from them.
+// Updates `matrix_world` for this node and its auto-updating descendants, recomputing only
+// nodes whose TRS changed or whose ancestor moved.
 fn void Object3D.update_matrix_world(&self) => self.update_world(true);
 
+// Recursive world-matrix update pass tracking moved meshes and switches for `walk_casters`.
 fn void Object3D.update_world(&self, bool parent_moved) {
     note_switches(self);
-    // (with matrix_auto_update off the matrix may have changed in any way: matrix_world is
-    // computed, and compared below)
+    // With `matrix_auto_update` off, `matrix` may have changed externally; recompute and diff.
     bool moved = !self.matrix_auto_update;
     if (self.matrix_auto_update
         && (!self.placed || self.position != self.placed_position || self.rotation != self.placed_rotation
@@ -197,18 +224,17 @@ fn void Object3D.update_world(&self, bool parent_moved) {
     }
     if (moved || parent_moved) {
         Mat4 world = self.parent ? self.parent.matrix_world.mul(self.matrix) : self.matrix;
-        // (the first object of the walk can't tell whether its parent moved, so it is
-        // always computed: its descendants only if that changed anything)
+        // Root of the walk checks `memcmp` so unchanged transforms do not force child updates.
         moved = libc::memcmp(&world, &self.matrix_world, Mat4::size) != 0;
         self.matrix_world = world;
     }
-    // moved already, by update_world_matrix_from_parents (a bone its skeleton placed)
+    // Propagate updates made earlier by `update_world_matrix_from_parents` (e.g. posed bones).
     moved = moved || self.world_dirty;
     if (moved && self.kind == MESH) note_moved_mesh((Mesh*)self);
 
     self.world_dirty = false;
     foreach (c : self.children) {
-        // (a child left alone is still looked at: shown or hidden, it changes the shadows)
+        // Still record visibility/shadow toggles on static subtrees for shadow-atlas tracking.
         if (c.matrix_world_auto_update) {
             c.update_world(moved);
         } else {
@@ -217,30 +243,34 @@ fn void Object3D.update_world(&self, bool parent_moved) {
     }
 }
 
-// Recomputes matrix_world for this object using its ancestors' current transforms.
+// Recomputes `matrix_world` along the ancestor chain down to this node and flags `world_dirty`
+// if the matrix changed.
 fn void Object3D.update_world_matrix_from_parents(&self) {
     if (self.parent) self.parent.update_world_matrix_from_parents();
     if (self.matrix_auto_update) self.update_matrix();
     Mat4 world = self.parent ? self.parent.matrix_world.mul(self.matrix) : self.matrix;
-    // update_world must still carry the move down to the children (a mesh hung on a bone)
+    // Ensure the next `update_world` still propagates this change to descendants.
     if (libc::memcmp(&world, &self.matrix_world, Mat4::size) != 0) self.world_dirty = true;
     self.matrix_world = world;
 }
 
+// Updates ancestor transforms and returns this node's world-space position.
 fn Vector3 Object3D.get_world_position(&self) {
     self.update_world_matrix_from_parents();
     return self.matrix_world.get_position();
 }
 
-// Rotates the object to face a world-space point. Cameras and lights point -Z at it, like three.
+// Rotates this node to face world point `(x, y, z)`. Cameras and lights orient `-Z` toward the
+// target; other objects orient `+Z`.
 fn void Object3D.look_at(&self, float x, float y, float z) => self.look_at_vec({ x, y, z });
 
+// Rotates this node to face world-space `target` (cameras and lights face `-Z`, others `+Z`).
 fn void Object3D.look_at_vec(&self, Vector3 target) {
     Vector3 eye = self.get_world_position();
     bool neg_z  = self.kind == CAMERA || self.kind == LIGHT;
     Mat4 rot    = mat4_look_at(eye, target, self.up, neg_z);
     if (self.parent) {
-        // remove the parent's rotation (assumes uniform scale)
+        // Strip parent world rotation (assumes uniform parent scale).
         Mat4 pm = self.parent.matrix_world;
         pm[3] = { 0, 0, 0, 1 };
         Vector3 s = { ((Vector3) { pm[0][0], pm[0][1], pm[0][2] }).length(), 0, 0 };
@@ -252,110 +282,120 @@ fn void Object3D.look_at_vec(&self, Vector3 target) {
     self.rotation = euler_from_rotation(rot);
 }
 
+// Adds `angle` radians to `rotation.x`.
 fn void Object3D.rotate_x(&self, float angle) => self.rotation.x += angle;
+// Adds `angle` radians to `rotation.y`.
 fn void Object3D.rotate_y(&self, float angle) => self.rotation.y += angle;
+// Adds `angle` radians to `rotation.z`.
 fn void Object3D.rotate_z(&self, float angle) => self.rotation.z += angle;
 
-// Moves along the object's local axis (like three's translateX/Y/Z).
+// Translates `position` by `distance` along local `axis` rotated by `rotation`.
 fn void Object3D.translate_on_axis(&self, Vector3 axis, float distance) {
     Mat4 r = mat4_compose({ 0, 0, 0 }, self.rotation, { 1, 1, 1 });
     self.position += r.transform_point(axis) * distance;
 }
+// Translates `d` meters along local +X.
 fn void Object3D.translate_x(&self, float d) => self.translate_on_axis({ 1, 0, 0 }, d);
+// Translates `d` meters along local +Y.
 fn void Object3D.translate_y(&self, float d) => self.translate_on_axis({ 0, 1, 0 }, d);
+// Translates `d` meters along local +Z.
 fn void Object3D.translate_z(&self, float d) => self.translate_on_axis({ 0, 0, 1 }, d);
 
+// Allocates an initialized `Object3D` on the heap (`mem`).
 fn Object3D* object3d() {
     Object3D* o = mem::new(Object3D);
     o.init(OBJECT);
     return o;
 }
 
-// ----------------------------------------------------------------------------
-// Group / Scene / Fog
-// ----------------------------------------------------------------------------
+// ---- Group, Scene, and Fog
 
+// Transform container for grouping child `Object3D` nodes.
 struct Group {
     inline Object3D object;
 }
 
+// Allocates an empty `Group` on the heap (`mem`).
 fn Group* group() {
     Group* g = mem::new(Group);
     g.init(GROUP);
     return g;
 }
 
+// Distance attenuation curve used by `Fog`.
 enum FogType {
+    // Linear ramp from `near` to `far`.
     LINEAR,
+    // Gaussian exponential falloff: `exp(-(density * d)^2)`.
     EXP2,
-    // Extension: plain exponential falloff, exp(-density * distance), like real haze.
+    // Beer-Lambert exponential falloff: `exp(-density * d)`.
     EXP,
 }
 
-// Extension: the settings of fog that is lit (by the sun, its shadows and the lamps), after
-// three.js's volumetric lighting example (webgpu_volume_lighting, VolumeNodeMaterial). Part of
-// every Fog (`fog.light_scatter`, `fog.volumetric`...), and made whole by `drie::volumetric_fog`.
-//
-// With `volumetric` on (the default) and something for the fog to scatter (light_scatter,
-// sun_shafts or noise_amount above 0), the renderer marches the fog in a pass of its own
-// before the main one: a grid of froxels (cells of the camera's view, like the light clusters,
-// but finer), lit by the sun through its cascaded shadow, by the spot lights through their
-// shadow maps (lamp beams stop at walls) and by the point lights, each cell with only the
-// lights of its own cluster. A surface then reads the fog in front of it from the grid. Off,
-// the fog is worked out per pixel of each surface: no shadows on the lamps' glow, and the
-// glow of every light in the scene added up at every pixel.
+// Lit and volumetric fog settings embedded in every `Fog` (`fog.volumetric`,
+// `fog.light_scatter`, etc.). With `volumetric` enabled and at least one scattering term above
+// zero (`light_scatter`, `sun_shafts`, or `noise_amount`), `Renderer.render` ray-marches a
+// camera-aligned froxel grid lit by the sun's cascaded shadow, shadowed spot lights, and
+// clustered point lights; surfaces then sample the grid. When `volumetric` is false, lighting
+// in fog evaluates per pixel without lamp shadows.
 struct VolumetricFog {
-    // Use the froxel grid when the fog has light to scatter (false: the per-pixel fog).
+    // Enable froxel ray-marching when scattering is active; false falls back to per-pixel fog.
     bool volumetric;
-    // How much point and spot lights light up the fog around them (0 = fog has a constant color).
-    // Light is also dimmed by the fog on its way to surfaces.
+    // Scattering strength for point and spot lights (0 = constant-color fog); fog also
+    // attenuates light reaching surfaces.
     float light_scatter;
-    // A box without fog (e.g. the inside of a building). Enabled when has_clear_box is set.
+    // Enables the axis-aligned `clear_box_min..clear_box_max` interior volume.
     bool has_clear_box;
+    // World-space minimum corner of the clear box (meters).
     Vector3 clear_box_min;
+    // World-space maximum corner of the clear box (meters).
     Vector3 clear_box_max;
-    // The part of the fog's density left in the clear box, 0..1 (0 = none: clear air; a
-    // little for a haze indoors that the lamps' beams show in).
+    // Density multiplier inside the clear box, in 0..1 (0 = clear air; small value = indoor haze).
     float clear_box_density;
-    // Fog that lies on the ground: its density falls off by exp(-height_falloff * (y -
-    // height_base)) above height_base, and is `density` at it. 0 = the same at every height.
+    // Vertical decay rate above `height_base`: `exp(-height_falloff * (y - height_base))`
+    // (0 = uniform with altitude).
     float height_falloff;
+    // World Y altitude (meters) where ground fog has full `density`.
     float height_base;
-    // A sun in the fog: looking towards sun_direction (a unit vector towards the sun; zero:
-    // towards the scene's directional light, the one that casts a shadow if any) the fog
-    // takes sun_color (0: the light's color) instead of its own, the more sharply the higher
-    // sun_sharpness (0 = no sun). Looking away from the sun's side there is only
-    // shade_density of the fog (1 = as much all round).
+    // Unit vector toward the sun for fog tinting; zero uses the primary directional light.
     Vector3 sun_direction;
+    // Tint color when looking toward the sun (0 uses the directional light's color).
     Color sun_color;
+    // Angular concentration exponent for the sun glow in fog (0 = disabled).
     float sun_sharpness;
+    // Density multiplier when looking away from the sun, in 0..1 (1 = uniform all around).
     float shade_density;
-    // Light shafts: how much the shadows of the directional light that casts them (see
-    // DirectionalLight.shadow) take the sun out of the fog, 0..1. The fog towards the sun goes
-    // dark behind whatever stands in the way, bright in the gaps (0 = no shafts).
+    // Shadow-shaft strength in 0..1 from the primary `DirectionalLight` shadow (0 = off).
     float sun_shafts;
-    // Patchy mist (volumetric only): the density varies by up to noise_amount (0..1) in
-    // blobs about 1 / noise_scale meters across, drifting with noise_wind (m/s).
+    // Procedural mist density variation in 0..1 (volumetric froxel pass only).
     float noise_amount;
+    // Inverse noise blob size in `1 / meters` (default `0.15`).
     float noise_scale;
+    // Drift velocity of procedural mist in meters per second.
     Vector3 noise_wind;
-    // The froxel grid: its cells across and up the picture, as a part of its pixels (0.125:
-    // a cell per 8x8 pixels), and its slices of depth (from the camera to its far plane,
-    // thinner near the camera).
+    // Froxel grid X/Y resolution as a fraction of viewport pixels (e.g. `0.25` = 1 cell per 4x4).
     float resolution;
+    // Number of exponential depth slices from the camera to its far plane (default 96).
     int slices;
 }
 
+// Scene fog parameters combining distance falloff with `VolumetricFog` scattering settings.
 struct Fog {
-    // Extensions (not in three.js): fog.light_scatter, fog.volumetric... (see VolumetricFog)
+    // Volumetric scattering and froxel settings (`fog.volumetric`, `fog.light_scatter`, etc.).
     inline VolumetricFog volume;
+    // Distance falloff curve (`LINEAR`, `EXP2`, or `EXP`).
     FogType type;
+    // Base fog color in sRGB hex.
     Color color;
+    // Start distance in meters (`LINEAR` fog only).
     float near;
+    // Full-fog distance in meters (`LINEAR` fog only).
     float far;
+    // Optical density coefficient (`EXP` and `EXP2` fog).
     float density;
 }
 
+// Default `VolumetricFog` settings applied by all fog constructors.
 const VolumetricFog VOLUMETRIC_FOG_DEFAULTS = {
     .volumetric = true,
     .shade_density = 1,
@@ -364,84 +404,83 @@ const VolumetricFog VOLUMETRIC_FOG_DEFAULTS = {
     .slices = 96
 };
 
-// Extension: exponential fog, exp(-density * distance).
+// Allocates an `EXP` fog (`exp(-density * distance)`) on the heap (`mem`).
 fn Fog* fog_exp(Color color, float density = 0.01) {
     Fog* f = mem::new(Fog);
     *f = { .type = EXP, .color = color, .density = density, .volume = VOLUMETRIC_FOG_DEFAULTS };
     return f;
 }
 
-// Extension: exponential fog that lights scatter in: lamp beams, light shafts (see VolumetricFog).
+// Allocates an `EXP` fog with `light_scatter` enabled for lamp beams and sun shafts.
 fn Fog* volumetric_fog(Color color, float density = 0.01, float light_scatter = 1) {
     Fog* f = fog_exp(color, density);
     f.light_scatter = light_scatter;
     return f;
 }
 
+// Enables the fog clear box and sets its world-space `[min, max]` bounds.
 fn void Fog.set_clear_box(&self, Vector3 min, Vector3 max) {
     self.has_clear_box = true;
     self.clear_box_min = min;
     self.clear_box_max = max;
 }
 
-// Linear fog, like `new THREE.Fog(color, near, far)`.
+// Allocates a `LINEAR` fog fading from `near` to `far` meters on the heap (`mem`).
 fn Fog* fog(Color color, float near = 1, float far = 1000) {
     Fog* f = mem::new(Fog);
     *f = { .type = LINEAR, .color = color, .near = near, .far = far, .volume = VOLUMETRIC_FOG_DEFAULTS };
     return f;
 }
 
-// Exponential squared fog, like `new THREE.FogExp2(color, density)`.
+// Allocates an `EXP2` fog (`exp(-(density * distance)^2)`) on the heap (`mem`).
 fn Fog* fog_exp2(Color color, float density = 0.00025) {
     Fog* f = mem::new(Fog);
     *f = { .type = EXP2, .color = color, .density = density, .volume = VOLUMETRIC_FOG_DEFAULTS };
     return f;
 }
 
+// Root scene node holding background, fog, environment lighting, and global illumination volumes.
 struct Scene {
     inline Object3D object;
-    // Clear color for this scene. 0 (black) falls back to the renderer's clear color.
+    // Clear color in sRGB hex; 0 falls back to `Renderer.clear_color`.
     Color background;
+    // Optional scene fog (`null` disables fog).
     Fog* fog;
-    // Extension: bounced light for the materials inside its box (see irradiance.c3).
+    // Primary baked diffuse GI volume (`IrradianceVolume`) lighting materials inside its bounds.
     IrradianceVolume* irradiance;
-    // Extension: more volumes after `irradiance` (all of them together up to
-    // MAX_IRRADIANCE_VOLUMES; the scene owns neither). Each one lights the materials inside
-    // its box in place of the ones before it, fading out over half a cell outside it. Whether
-    // they add to the ambient light or replace it is the first one's replaces_ambient.
+    // Additional non-owning `IrradianceVolume` entries (total across `irradiance` and this slice
+    // capped at `MAX_IRRADIANCE_VOLUMES`). Later volumes override earlier ones inside their box,
+    // fading over half a cell outside; `replaces_ambient` is read from the first volume.
     IrradianceVolume*[] irradiance_volumes;
-    // Extension: light bouncing around a box, traced every frame (see radiance.c3). Inside
-    // the box it takes the place of the ambient and hemisphere lights and of `irradiance`.
+    // Real-time `RadianceCascades` GI volume; inside its bounds it replaces ambient/hemisphere
+    // lights and `irradiance`.
     RadianceCascades* radiance;
-    // Extension: environment maps by room, for materials with env_probes (reflection_probes.c3).
+    // Room-based `ReflectionProbes` set sampled by materials with `Material.env_probes`.
     ReflectionProbes* reflection_probes;
-    // Like three's scene.environment: an equirectangular map (capture_environment, best with
-    // hdr) that lights every standard material without an env_map of its own, both the light
-    // falling on it from all around and its reflections, times environment_intensity.
+    // Equirectangular environment map (e.g. from `Renderer.capture_environment`) providing
+    // diffuse IBL and reflections for standard materials without their own `env_map`.
     Texture* environment;
+    // Scalar multiplier on `environment` lighting (defaults to 1).
     float environment_intensity;
-    // Like three's scene.background when it is an equirectangular texture: the map drawn
-    // behind everything (in place of `background`'s color), blurred by background_blurriness
-    // (0..1, as three's backgroundBlurriness) and times background_intensity. It shows
-    // through transmission materials too.
+    // Equirectangular (or flat when `background_flat`) backdrop drawn behind geometry instead
+    // of `background`, also visible through transmission materials.
     Texture* background_texture;
-    // background_texture is a flat picture over the whole view, placed with its repeat and
-    // offset, and not tone mapped if it is sRGB (three's scene.background as a texture that is
-    // not an environment map)
+    // Draws `background_texture` as a 2D full-viewport image with its UV `repeat`/`offset`,
+    // skipping tone mapping when it is sRGB.
     bool background_flat;
+    // Mip blur factor in 0..1 applied to equirectangular `background_texture`.
     float background_blurriness;
+    // Scalar multiplier on `background_texture` brightness (defaults to 1).
     float background_intensity;
-    // A material drawn behind everything in place of the background color or texture, on the
-    // inside of a sphere around the camera (three's scene.backgroundNode: a node material that
-    // reads the view's direction, e.g. normal_geometry). Give it depth_write false and fog
-    // false. It shows through transmission materials too.
+    // Custom material rendered on an enclosing sky sphere in place of `background` or
+    // `background_texture` (typically a node material with `depth_write = false`, `fog = false`).
     Material* background_material;
-    // Like three's matrixWorldAutoUpdate: render() refreshes every object's world matrix first.
-    // Switch it off for a second render of an unchanged scene in the same frame (update
-    // whatever did move yourself).
+    // When true, `Renderer.render` skips its automatic `update_matrix_world` pass (useful for a
+    // second render of an unchanged scene within the same frame).
     bool no_matrix_world_update;
 }
 
+// Allocates an empty `Scene` on the heap (`mem`) with environment and background intensity 1.
 fn Scene* scene() {
     Scene* s = mem::new(Scene);
     s.init(SCENE);
@@ -450,93 +489,107 @@ fn Scene* scene() {
     return s;
 }
 
-// ----------------------------------------------------------------------------
-// Mesh
-// ----------------------------------------------------------------------------
+// ---- Mesh, InstancedMesh, and LOD
 
-// How a mesh's indices are drawn: as triangles, or as lines (Line, LineSegments, LineLoop).
+// Primitive topology used when drawing `Mesh.geometry`.
 enum DrawMode {
+    // Indexed triangles (default for meshes).
     TRIANGLES,
-    // each two indices a segment (three's LineSegments)
+    // Disconnected line segments, one per pair of indices (`LineSegments`).
     LINE_SEGMENTS,
-    // each index joined to the next (three's Line)
+    // Connected polyline through consecutive indices (`Line`).
     LINE_STRIP,
-    // the same, and the last back to the first (three's LineLoop)
+    // Closed polyline connecting the last index back to the first (`LineLoop`).
     LINE_LOOP,
 }
 
+// Renderable scene node pairing a `BufferGeometry` with a `Material`, plus optional instancing,
+// billboarding, GPU morph targets, and renderer-maintained tracking state.
 struct Mesh {
     inline Object3D object;
+    // Vertex and index data to draw.
     BufferGeometry* geometry;
+    // Surface or line material applied when rendering.
     Material* material;
-    // TRIANGLES, except for lines (see line())
+    // Topology mode (`TRIANGLES` for meshes, line modes for `Line` subtypes).
     DrawMode draw_mode;
-    // Triangles: only draw_count of the geometry's indices from draw_start (three's drawRange,
-    // or one of the geometry's groups, drawn with a material of its own by a mesh of its own
-    // that shares the geometry); draw_count 0: all of them. A wireframe draws all.
+    // First index drawn for triangle meshes (used for sub-mesh ranges sharing one geometry).
     int draw_start;
+    // Number of indices drawn from `draw_start` (0 draws the full index buffer; wireframes draw all).
     int draw_count;
-    // Turned toward the camera as it is drawn (see Billboard): a sprite, three's Sprite. Its
-    // axes are scaled by the lengths of matrix_world's, and the point billboard_center of its
-    // quad (in the quad's 0..1 across: three's Sprite.center; 0.5, 0.5 is the middle) lands on
-    // matrix_world's position. A FACING one is turned by billboard_rotation (radians,
-    // counterclockwise: three's SpriteMaterial.rotation) about that point, and with
-    // billboard_fixed_size it keeps its size on screen, a unit of scale being the view's
-    // height at a distance of 1 (three's sizeAttenuation false). Billboards cast no shadows.
+    // Camera-facing billboard mode (`NO_BILLBOARD` for regular meshes). Billboards align local
+    // X/Y axes (scaled by `matrix_world` axis lengths) around `billboard_center` and cast no shadows.
     Billboard billboard;
+    // For `FACING` billboards: keep constant screen size (1 scale unit = viewport height at z = 1).
     bool billboard_fixed_size;
+    // Counterclockwise roll in radians around `billboard_center` for `FACING` billboards.
     float billboard_rotation;
+    // Anchor point in the billboard quad's 0..1 UV space (`{ 0.5, 0.5 }` centers the quad).
     Vector2 billboard_center;
-    // Instancing (see InstancedMesh): 12 floats per instance, the rows of a 3x4 matrix.
+    // Per-instance transforms (12 floats per instance, row-major 3x4) for `InstancedMesh`.
     List{float} instance_data;
+    // Active instance count in `instance_data`.
     int instance_count;
+    // Dedicated GPU buffer for instance matrices when not packed in the GPU culling arena.
     SgBuffer instance_buf;
+    // False when `instance_data` needs GPU upload.
     bool instances_uploaded;
-    // Each instance's color, 3 floats in linear light (InstancedMesh.set_color_at); none:
-    // white. Uploaded to instance_color_buf when they change.
+    // Optional linear RGB per-instance tint (3 floats per instance; empty means white).
     List{float} instance_colors;
+    // GPU buffer holding `instance_colors`.
     SgBuffer instance_color_buf;
+    // False when `instance_colors` needs GPU upload.
     bool instance_colors_uploaded;
-    // Bounding sphere of all instances in local space, for culling.
+    // Local-space bounding sphere center covering all instances, for frustum culling.
     Vector3 instance_center;
+    // Local-space bounding sphere radius covering all instances.
     float instance_radius;
-    // where the instances are on the GPU: in the shared arena (culling.c3) from instance
-    // arena_base, or in instance_buf; and how often they were uploaded
+    // True while instance matrices live in the shared `Renderer.gpu_culling` arena.
     bool in_arena;
+    // First instance slot inside the shared GPU culling arena.
     int arena_base;
+    // Allocated slot count inside the shared GPU culling arena.
     int arena_size;
+    // Upload counter used to decide when static instances belong in the shared arena.
     int instance_uploads;
-    // for motion vectors (RenderTarget.mrt): its matrix_world in the last frame drawn with them
-    // and in this one, and which frame that was
+    // Previous frame's `matrix_world` used by MRT motion vectors (`RenderTarget.mrt`).
     Mat4 motion_prev;
+    // Current frame's `matrix_world` stored for MRT motion vectors.
     Mat4 motion_cur;
+    // Frame index when `motion_prev`/`motion_cur` were last rotated.
     int motion_frame;
-    // its material's displacement_map read at each vertex (see the renderer's
-    // displacement_heights), and what they were read for
+    // Cached per-vertex displacement heights sampled from `Material.displacement_map`.
     SgBuffer displacement_buf;
+    // Cache key identifying the geometry/material state that produced `displacement_buf`.
     ulong displacement_key;
-    // GPU morph target weights (header vec4 + vec4-packed weights per instance, or 1 set for a plain mesh)
+    // Packed GPU morph target weights: header `vec4(targets, verts, stride, 0)` plus vec4 rows.
     List{float} morph_weights;
+    // Number of active morph targets bound on this mesh.
     int morph_targets;
+    // Transient GPU storage buffer holding `morph_weights`.
     SgBuffer morph_weights_buf;
+    // Storage buffer view bound by vertex shaders for `morph_weights_buf`.
     SgView morph_weights_view;
+    // Allocated float capacity of `morph_weights_buf`.
     int morph_weights_cap;
+    // False when `morph_weights` needs GPU upload.
     bool morph_weights_uploaded;
-    // Set by the shadow atlas's walk over the casters (renderer.c3): it changed in the last
-    // frames (moved, or its vertices, instances, geometry or material changed), or it moves on
-    // the GPU every frame (sway, position_node, morph targets). Lights draw such casters over
-    // a cache of the others (see AtlasMap).
+    // Set by `walk_casters` when this caster moved or changed geometry/material recently so
+    // shadow-atlas lights composite it over their static cache (`AtlasMap`).
     bool shadow_moving;
+    // Set by `walk_casters` when vertices deform on the GPU every frame (sway, morphs, nodes).
     bool shadow_animated;
-    // where that walk last found it: the walk, its frame and its index in the walk's list
+    // Internal pointer to the `CasterWalk` that last indexed this mesh.
     void* shadow_walk;
+    // Frame counter of the last `CasterWalk` entry.
     uint shadow_walk_frame;
+    // Slot index inside `shadow_walk`.
     int shadow_walk_at;
 }
 
-// Sets morph target weights: `target_count` floats per instance (`instance_count == 0` for a
-// non-instanced mesh). Packed on the GPU as a header vec4(targets, verts, stride, 0) followed
-// by vec4-aligned weight rows.
+// Packs `target_count` morph target weights per instance (`instance_count == 0` for a plain
+// mesh) into `morph_weights` as a header `vec4(targets, verts, stride, 0)` followed by
+// vec4-aligned rows, marking the GPU buffer dirty.
 fn void Mesh.set_morph_weights(&self, float[] weights, int target_count, int instance_count, int vertex_count) {
     if (!self.morph_weights.allocator) self.morph_weights.allocator = mem;
     self.morph_weights.clear();
@@ -565,6 +618,7 @@ fn void Mesh.set_morph_weights(&self, float[] weights, int target_count, int ins
     self.morph_weights_uploaded = false;
 }
 
+// Uploads dirty `morph_weights` to a transient GPU storage buffer (called by the renderer).
 fn void Mesh.upload_morph_weights(&self) {
     if (self.morph_weights_uploaded || !self.morph_weights.len()) return;
     int n = (int)self.morph_weights.len();
@@ -589,12 +643,13 @@ fn void Mesh.upload_morph_weights(&self) {
     self.morph_weights_uploaded = true;
 }
 
-// Draws the same geometry many times with one draw call, like THREE.InstancedMesh.
-// Set the transforms once with set_matrix_at; they are uploaded on first render.
+// Mesh drawing `instance_count` copies of one `BufferGeometry` in a single draw call. Populate
+// transforms with `set_matrix_at` or `add_instance`; GPU upload happens on first render.
 struct InstancedMesh {
     inline Mesh mesh;
 }
 
+// Allocates an `InstancedMesh` on the heap (`mem`) pre-populated with `count` identity matrices.
 fn InstancedMesh* instanced_mesh(BufferGeometry* geometry, Material* material, int count = 0) {
     InstancedMesh* m = mem::new(InstancedMesh);
     m.init(MESH);
@@ -605,6 +660,8 @@ fn InstancedMesh* instanced_mesh(BufferGeometry* geometry, Material* material, i
     return m;
 }
 
+// Writes the affine transform matrix for instance `index` (stored row-major 3x4) and marks GPU
+// instance data dirty.
 fn void InstancedMesh.set_matrix_at(&self, int index, Mat4 m) {
     float* d = &self.instance_data[(sz)index * 12];
     for (int row = 0; row < 3; row++) {
@@ -613,14 +670,14 @@ fn void InstancedMesh.set_matrix_at(&self, int index, Mat4 m) {
     self.instances_uploaded = false;
 }
 
-// Its color (three's setColorAt): the material's color times this, as vertex colors are.
-// Instances whose color isn't set are white.
+// Sets per-instance sRGB hex tint at `index`, multiplied with the material color (unset
+// instances default to white).
 fn void InstancedMesh.set_color_at(&self, int index, Color color) {
     Vector3 c = color_to_linear(color);
     self.set_linear_color_at(index, c.x, c.y, c.z);
 }
 
-// The same in linear light (three's instanceColor holds these).
+// Sets per-instance linear RGB tint at `index` (allocating the color list on first call).
 fn void InstancedMesh.set_linear_color_at(&self, int index, float r, float g, float b) {
     if (index < 0 || index >= self.instance_count) return;
     if (!self.instance_colors.len()) {
@@ -634,7 +691,7 @@ fn void InstancedMesh.set_linear_color_at(&self, int index, float r, float g, fl
     self.instance_colors_uploaded = false;
 }
 
-// Appends an instance and returns its index.
+// Appends a new instance with transform `m` and returns its zero-based index.
 fn int InstancedMesh.add_instance(&self, Mat4 m) {
     for (int i = 0; i < 12; i++) self.instance_data.push(0);
     if (self.instance_colors.len()) {
@@ -646,16 +703,17 @@ fn int InstancedMesh.add_instance(&self, Mat4 m) {
     return self.instance_count - 1;
 }
 
-// Level of detail: shows the one child whose distance range contains the camera, like THREE.LOD.
+// Level-of-detail node displaying the child matching the camera's distance band.
 struct Lod {
     inline Object3D object;
+    // Sorted threshold distances in meters corresponding one-to-one with `children`.
     List{float} distances;
-    // Meters over which one level dissolves into the next instead of swapping at once (0: swap).
-    // Both levels are drawn in that band, each through a screen-door dither that is the
-    // other's complement, so nothing doubles and nothing pops (like Unity's LOD cross-fade).
+    // Cross-fade width in meters over which adjacent levels dissolve using complementary
+    // screen-door dithering (0 = hard swap).
     float fade;
 }
 
+// Allocates an empty `Lod` node on the heap (`mem`).
 fn Lod* lod() {
     Lod* l = mem::new(Lod);
     l.init(LOD);
@@ -663,8 +721,8 @@ fn Lod* lod() {
     return l;
 }
 
-// `object` is shown from `distance` on, until the next level takes over.
-// Pass null to show nothing from that distance on. Add levels in increasing distance.
+// Adds a level shown from `distance` meters until the next level takes over; pass `null` to
+// hide beyond `distance`. Add levels in increasing `distance` order; returns `self`.
 fn Lod* Lod.add_level(&self, Object3D* object, float distance = 0) {
     if (!object) object = object3d();
     self.add(object);
@@ -672,27 +730,33 @@ fn Lod* Lod.add_level(&self, Object3D* object, float distance = 0) {
     return self;
 }
 
-// How a mesh turns toward the camera (Mesh.billboard): its local x and y (a quad in its xy,
-// as three's sprites and PlaneGeometry) become
-// How a cloth holds its bends, drie::cloth's and drie::gpu_cloth's (see the top of each):
-// SIGNED, a point's offset from the midpoint of its neighbours along the normal, held at the
-// rest shape's (Cloth's default); DISTANCE, each point linked to the one two away along its row
-// and column (GpuCloth's default).
+// Bending resistance model shared by `drie::cloth` and `drie::gpu_cloth`.
 enum BendModel : char {
+    // Holds each vertex's signed offset from its neighbors' midpoint along the normal to its
+    // rest-shape value (`drie::cloth` default).
     SIGNED,
+    // Connects each vertex to its two-step row and column neighbors by distance constraints
+    // (`drie::gpu_cloth` default).
     DISTANCE,
 }
 
+// Camera-facing orientation mode for `Mesh.billboard`. Local X and Y (a quad in the XY plane,
+// such as `PlaneGeometry`) are reoriented per variant.
 enum Billboard : char {
+    // Standard mesh orientation without billboarding.
     NO_BILLBOARD,
-    FACING,     // the view's right and up: in the view's plane (three's Sprite)
-    KEEP_Y,     // the view's right, and its own y: it turns about its y axis only (TSL's
-                // billboarding(), and billboarding({ horizontal: true }))
-    KEEP_X,     // its own x, and the view's up (billboarding({ horizontal: false, vertical: true }))
-    UPRIGHT,    // the world's up for y, turned about it to face the camera's position
-                // (billboarding({ horizontalRotation: true }))
+    // Aligns local X/Y with camera right and up (sprite parallel to the view plane).
+    FACING,
+    // Aligns local X with camera right while keeping the mesh's own Y axis.
+    KEEP_Y,
+    // Keeps the mesh's own X axis while aligning local Y with camera up.
+    KEEP_X,
+    // Uses world +Y as local Y and rotates around it to face the camera position.
+    UPRIGHT,
 }
 
+// Allocates a triangle `Mesh` on the heap (`mem`), using a default `MeshBasicMaterial` if
+// `material` is `null`.
 fn Mesh* mesh(BufferGeometry* geometry, Material* material = null) {
     Mesh* m = mem::new(Mesh);
     m.init(MESH);
@@ -702,32 +766,30 @@ fn Mesh* mesh(BufferGeometry* geometry, Material* material = null) {
     return m;
 }
 
+// Returns true if this mesh draws with a line topology (`draw_mode != TRIANGLES`).
 fn bool Mesh.is_line(&self) => self.draw_mode != TRIANGLES;
 
-// ----------------------------------------------------------------------------
-// Lines
-// ----------------------------------------------------------------------------
+// ---- Lines
 
-// Lines through the geometry's points in index order, like THREE.Line (LineSegments: a
-// segment for each two indices; LineLoop: closed). As in WebGL, they are a pixel wide
-// whatever the material says. Use line_basic_material: lines are not lit, cast no shadows,
-// add nothing to radiance cascades and are not hit by a Raycaster.
+// Unlit 1-pixel-wide polyline connecting `geometry` indices in order (`LINE_STRIP`). Lines
+// cast no shadows, do not contribute to `RadianceCascades`, and are ignored by `Raycaster`.
 struct Line {
     inline Mesh mesh;
 }
 
+// Disconnected 1-pixel-wide line segments, one per pair of indices (`LINE_SEGMENTS`).
 struct LineSegments {
     inline Line line;
 }
 
+// Closed 1-pixel-wide polyline connecting the last index back to the first (`LINE_LOOP`).
 struct LineLoop {
     inline Line line;
 }
 
-// For dashes (line_dashed_material), like three's computeLineDistances: each point's distance
-// along the line, in the order of the geometry's points (as three, which wants a geometry
-// without indices). For LineSegments, each segment carries on from the end of the one
-// before. Kept in the vertex normals' x: lines have no normals.
+// Computes cumulative arc length along vertices in vertex order for `line_dashed_material`,
+// storing distances in the vertex normal's X slot (lines have no normals) and flagging
+// `geometry` for re-upload. For `LineSegments`, resets per segment pair.
 fn Line* Line.compute_line_distances(&self) {
     BufferGeometry* g = self.geometry;
     uint n            = g.vertex_count();
@@ -737,7 +799,7 @@ fn Line* Line.compute_line_distances(&self) {
         if (i > 0 && !starts_segment) d += (g.get_position(i) - g.get_position(i - 1)).length();
         g.vertices[(sz)i * FLOATS_PER_VERTEX + 3] = d;
     }
-    // uploaded again on the next render
+    // Re-upload vertex buffer on next render.
     g.uploaded = false;
     return self;
 }
@@ -748,63 +810,82 @@ fn Mesh* new_line(BufferGeometry* geometry, Material* material, DrawMode mode) @
     return m;
 }
 
+// Allocates a connected `Line` (`LINE_STRIP`) on the heap (`mem`); defaults to `line_basic_material`.
 fn Line* line(BufferGeometry* geometry, Material* material = null) => (Line*)new_line(geometry, material, LINE_STRIP);
 
+// Allocates `LineSegments` (`LINE_SEGMENTS`) on the heap (`mem`); defaults to `line_basic_material`.
 fn LineSegments* line_segments(
     BufferGeometry* geometry,
     Material* material = null
 ) => (LineSegments*)new_line(geometry, material, LINE_SEGMENTS);
 
+// Allocates a closed `LineLoop` (`LINE_LOOP`) on the heap (`mem`); defaults to `line_basic_material`.
 fn LineLoop* line_loop(
     BufferGeometry* geometry,
     Material* material = null
 ) => (LineLoop*)new_line(geometry, material, LINE_LOOP);
 
-// ----------------------------------------------------------------------------
-// Cameras
-// ----------------------------------------------------------------------------
+// ---- Cameras
 
+// Projection model used by `Camera`.
 enum CameraType {
+    // Perspective frustum (`PerspectiveCamera`).
     PERSPECTIVE,
+    // Parallel orthographic box (`OrthographicCamera`).
     ORTHOGRAPHIC,
 }
 
+// Base scene camera holding clip planes, zoom, projection/view matrices, and TAA/motion state.
 struct Camera {
     inline Object3D object;
+    // Projection type (`PERSPECTIVE` or `ORTHOGRAPHIC`).
     CameraType camera_type;
+    // Near clip plane distance in meters.
     float near;
+    // Far clip plane distance in meters.
     float far;
+    // Zoom multiplier (defaults to 1; higher values narrow the view).
     float zoom;
+    // Current clip-space projection matrix built by `update_projection_matrix`.
     Mat4 projection_matrix;
+    // World-to-view inverse of `matrix_world`, updated by `Renderer.render`.
     Mat4 matrix_world_inverse;
-    // for motion vectors (RenderTarget.mrt): projection_matrix * matrix_world_inverse of the last
-    // frame drawn with them and of this one, and which frame that was
+    // Previous frame's view-projection matrix for MRT motion vectors (`RenderTarget.mrt`).
     Mat4 motion_prev;
+    // Current frame's view-projection matrix for MRT motion vectors.
     Mat4 motion_cur;
+    // Frame index when `motion_prev`/`motion_cur` were last updated.
     int motion_frame;
-    // keep projection_matrix as it is set: render() neither recomputes it nor fits the aspect
-    // to the target (a Reflector's oblique one)
+    // When true, `Renderer.render` preserves `projection_matrix` verbatim instead of recomputing
+    // it or matching target aspect (used by `Reflector`'s oblique clip plane).
     bool custom_projection;
-    // A shift of the whole picture by a fraction of a pixel (in pixels of the target), for
-    // temporal antialiasing (TAAPass sets it each frame), like the jitter three's TAA gives with
-    // setViewOffset. Motion vectors leave it out.
+    // Sub-pixel viewport shift in target pixels applied by `TAAPass`; omitted from motion vectors.
     Vector2 jitter;
 }
 
+// Perspective camera defined by vertical field of view and aspect ratio.
 struct PerspectiveCamera {
     inline Camera camera;
+    // Vertical field of view in degrees (default 50).
     float fov;
+    // Viewport width divided by height (default 1; updated automatically with `Renderer.auto_aspect`).
     float aspect;
 }
 
+// Orthographic camera defined by view-space frustum bounds around the camera origin.
 struct OrthographicCamera {
     inline Camera camera;
+    // Left frustum boundary in view units.
     float left;
+    // Right frustum boundary in view units.
     float right;
+    // Top frustum boundary in view units.
     float top;
+    // Bottom frustum boundary in view units.
     float bottom;
 }
 
+// Allocates a `PerspectiveCamera` on the heap (`mem`) and initializes `projection_matrix`.
 fn PerspectiveCamera* perspective_camera(float fov = 50, float aspect = 1, float near = 0.1, float far = 2000) {
     PerspectiveCamera* c = mem::new(PerspectiveCamera);
     c.init(CAMERA);
@@ -818,6 +899,7 @@ fn PerspectiveCamera* perspective_camera(float fov = 50, float aspect = 1, float
     return c;
 }
 
+// Allocates an `OrthographicCamera` on the heap (`mem`) and initializes `projection_matrix`.
 fn OrthographicCamera* orthographic_camera(
     float left = -1,
     float right = 1,
@@ -840,6 +922,7 @@ fn OrthographicCamera* orthographic_camera(
     return c;
 }
 
+// Rebuilds `projection_matrix` from the camera's current parameters and backend depth range.
 fn void Camera.update_projection_matrix(&self) {
     bool z01 = depth_zero_to_one();
     switch (self.camera_type) {
@@ -856,204 +939,196 @@ fn void Camera.update_projection_matrix(&self) {
     }
 }
 
-// ----------------------------------------------------------------------------
-// Lights
-// ----------------------------------------------------------------------------
+// ---- Lights
 
+// Discriminator stored in `Light.light_type`.
 enum LightType {
+    // Uniform scene-wide ambient illumination (`AmbientLight`).
     AMBIENT,
+    // Sky-to-ground gradient ambient illumination (`HemisphereLight`).
     HEMISPHERE,
+    // Parallel rays from infinity (`DirectionalLight`).
     DIRECTIONAL,
+    // Omnidirectional point, sphere, or tube emitter (`PointLight`).
     POINT,
+    // Conical spotlight with optional cookie texture (`SpotLight`).
     SPOT,
+    // Rectangular area emitter (`RectAreaLight`).
     RECT_AREA,
 }
 
+// Base scene light node shared by all concrete light subtypes.
 struct Light {
     inline Object3D object;
+    // Concrete light subtype.
     LightType light_type;
+    // Emitted light color in sRGB hex.
     Color color;
+    // Luminous intensity multiplier (units vary by subtype).
     float intensity;
-    // The lighting channels it is in (bits, up to 24): it lights the materials that take every
-    // light (Material.light_channels 0) and those that take one of its channels. The ambient
-    // and hemisphere lights light every material.
+    // 24-bit channel mask: lights materials whose `Material.light_channels` is 0 or shares a
+    // bit. `AmbientLight` and `HemisphereLight` always illuminate every material.
     uint channels;
-    // Extension: where the radiance cascades see it. With gi_fixed on they take its light
-    // from gi_position (a spot light aimed along gi_direction) while it is drawn and shadowed
-    // where it is: for a light that only sways (a lamp on a cord), whose bounce would
-    // otherwise change every frame and show the probes' cells.
+    // Locks the position/direction seen by `RadianceCascades` to `gi_position` and
+    // `gi_direction` while direct lighting and shadows follow the live node (prevents probe
+    // shimmer on swaying lamps).
     bool gi_fixed;
+    // Fixed world position used by `RadianceCascades` when `gi_fixed` is true.
     Vector3 gi_position;
+    // Fixed world direction used by `RadianceCascades` for spot lights when `gi_fixed` is true.
     Vector3 gi_direction;
 }
 
+// Uniform omnidirectional ambient light without shadows or directionality.
 struct AmbientLight {
     inline Light light;
 }
 
+// Two-color ambient light interpolating from `color` (+Y sky) to `ground_color` (-Y ground).
 struct HemisphereLight {
     inline Light light;
+    // Lower-hemisphere ambient color in sRGB hex.
     Color ground_color;
 }
 
+// Parallel directional light shining from `position` toward `target`'s world position.
 struct DirectionalLight {
     inline Light light;
-    // The light shines from its position towards target's world position.
+    // Aim target whose world position defines the light direction (defaults to origin).
     Object3D* target;
-    // Like three's light.shadow (set cast_shadow). Its camera is a box of parallel rays,
-    // shadow.far deep. shadow.radius is the blur of the edge in texels; softness and focus
-    // are not used. The first directional light with a shadow has a map of its own (spot
-    // lights keep theirs); the others get one box each, in a tile of the shadow atlas
-    // (Renderer.shadow_atlas_capacity), drawn every frame unless shadow.auto_update is off.
-    // Extension: cascaded shadow maps. With shadow.cascades above 1 the camera's view, up to
-    // shadow.max_distance, is cut into that many slices, each with a box of its own (2x2 tiles
-    // of map_size), so shadows near the camera are sharp and far ones still there.
+    // Shadow settings (enabled by `cast_shadow`). The primary shadowed directional light gets a
+    // dedicated map (or 2x2 cascaded tiles of `map_size` when `cascades > 1`, covering up to
+    // `max_distance`); additional shadowed directional lights get one orthographic block each in
+    // the shadow atlas (`Renderer.shadow_atlas_size`). `softness` and `focus` are unused.
     LightShadow shadow;
-    // With shadow.cascades = 1: one box, `shadow_extent` half its width and height in meters
-    // (three's shadow.camera.right and .top), around the light's target.
+    // Half-width and half-height in meters of the orthographic shadow box when `cascades == 1`.
     float shadow_extent;
-    // Extension (with shadow.cascades = 1): the box travels with the camera, a little ahead of
-    // it, instead of sitting on the light's target.
+    // When `cascades == 1`, centers the shadow box ahead of the camera instead of `target`.
     bool shadow_follow;
 }
 
+// Omnidirectional light supporting zero-radius points, spherical bulbs (`radius`), and linear
+// tube lights (`length` along local X).
 struct PointLight {
     inline Light light;
+    // Maximum reach in meters where light cuts off to zero (0 = infinite range).
     float distance;
+    // Distance falloff exponent (default 2 for physically inverse-square decay).
     float decay;
-    // Extension: radius of the light source in meters (a bulb). Softens the falloff close to
-    // the light, and its highlights are the bulb's own shape: on a smooth surface a sharp-edged
-    // disc as big as the bulb, on a rough one as before, with the same light in all (Karis'
-    // representative point, "Real Shading in Unreal Engine 4", 2013). 0: a point.
+    // Spherical emitter radius in meters (0 = point). Softens near falloff and produces
+    // disk-shaped specular highlights (Karis representative-point area light).
     float radius;
-    // Extension: a tube light (a fluorescent tube, a strip), `length` meters long along the
-    // light's own x axis (its world rotation's; scale is left out), centred on its position,
-    // `radius` thick. Its intensity is spread along it: the light falls off from the whole
-    // segment (with the distance to its nearest point for `distance`'s cutoff, and as the
-    // square of the distance whatever `decay`) and its highlights are long, the tube's own shape
-    // (Karis' tube lights). Its shadow is cast from its centre. 0: a ball of `radius`.
+    // Tube length in meters centered on `position` along local X (world rotation, ignoring
+    // scale; 0 = sphere of `radius`). Uses inverse-square falloff and tube-shaped highlights;
+    // shadows cast from the tube center.
     float length;
-    // Like three's PointLightShadow: with cast_shadow, six maps in the renderer's shadow
-    // atlas, one for each face of a cube round the light, from shadow.near to shadow.far (0:
-    // the light's distance, or 50). Each face takes a tile of the atlas, which holds
-    // MAX_ATLAS_TILES; with shadow.auto_update off they are drawn once (and on needs_update).
+    // Cube-face shadow settings (enabled by `cast_shadow`): allocates six blocks in the shadow
+    // atlas (`Renderer.shadow_atlas_size`), dynamically sized from 128 px up to `shadow.map_size`
+    // by screen importance, covering `shadow.near` to `shadow.far` (0 defaults to `distance` or
+    // 50 m). With `shadow.auto_update` off, renders once and on `shadow.needs_update`.
     LightShadow shadow;
 }
 
-// Shadow settings of a light, like three's light.shadow.
+// Shadow-map, PCF/VSM filter, cascade, and contact/ray-traced shadow settings for a light.
 struct LightShadow {
+    // Target shadow map resolution in pixels along one side.
     int map_size;
-    // World-space offset along the surface normal per meter of distance to the light.
+    // World-space offset along the surface normal per meter of distance to the light (PCF).
     float normal_bias;
-    // Blur radius of the shadow edge in shadow map texels.
+    // Shadow edge blur radius in shadow-map texels.
     float radius;
-    // Like three's shadow.bias: added to the depth looked up in the map (negative: lit more
-    // readily). Used with Renderer.shadow_type = VSM only (PCF has normal_bias). Default 0.
+    // Depth bias for `Renderer.shadow_type == VSM` (negative lights more readily; default 0).
     float bias;
-    // Like three's shadow.blurSamples: taps of VSM's blur across the 2 * radius texels.
-    // Default 8.
+    // Filter tap count across `2 * radius` texels for VSM blur (default 8).
     int blur_samples;
-    // How dark the shadow is, 0..1, like three's LightShadow.intensity (r166+): 1 takes all
-    // of the light away, 0.5 half of it. Default 1.
+    // Shadow darkness in 0..1: 1 removes all direct light in shadow, 0.5 removes half (default 1).
     float intensity;
-    // Size of the light source in meters, for shadows whose edge is sharp where they touch
-    // what casts them and widens with the distance behind it (`radius` is then the least
-    // blur). 0 = the same edge everywhere, which is cheaper.
+    // Emitter diameter in meters for blocker-distance penumbra widening (`radius` sets minimum
+    // blur; 0 disables variable penumbra).
     float softness;
+    // Shadow frustum near clip distance in meters.
     float near;
-    // Contact shadows (extension): how far (m) a ray from each pixel goes toward the light
-    // through the depth buffer, catching the small shadows where things touch that the map is
-    // too coarse for (feet on a floor, a cup on a table). 0 = off (default); 0.1 to 0.5 suit
-    // most scenes. On top of the map, not instead of it; with or without cast_shadow. In
-    // the deferred lighting pass (Renderer.deferred), for directional, point and spot lights.
+    // Screen-space contact shadow ray length in meters through the depth buffer in deferred mode
+    // (`Renderer.deferred`), for directional, point, and spot lights (0 = off; 0.1..0.5 typical).
+    // Combines with shadow maps and works regardless of `cast_shadow`.
     float contact_length;
-    // Rect area lights only (extension): the shadow ray traced (ray_shadows.c3), soft as the
-    // rectangle is wide, where the GPU can (Metal's ray tracing) and the deferred pass draws,
-    // with Renderer.ray_traced_shadows; the shadow maps elsewhere. On by default.
+    // For `RectAreaLight` only: enable hardware ray-traced area shadows when
+    // `Renderer.ray_traced_shadows` and `Renderer.traces_rays` are active (default true); falls
+    // back to shadow maps otherwise.
     bool ray_traced;
-    // Distance up to which shadows are cast (0 = the light's distance, or 50).
+    // Shadow frustum far clip distance in meters (0 defaults to `distance` or 50 m).
     float far;
-    // Part of the light's cone covered by the shadow map, 0..1, like three's SpotLightShadow.focus.
-    // A wide light that travels with the camera only needs shadows where the camera looks:
-    // a smaller focus spends the map's resolution there. Outside of it nothing is shadowed.
+    // Fraction of a `SpotLight` cone covered by its shadow map in 0..1; narrower values spend
+    // shadow texels near the cone center and leave the outer ring unshadowed.
     float focus;
-    // Like three's shadow.autoUpdate and needsUpdate: with auto_update off the map is drawn
-    // once, and again whenever needs_update is set. For lamps that stay where they are among
-    // things that don't move. Additional dynamic shadowed spot, point and directional lights
-    // also share the shadow atlas and redraw each frame while auto_update is on.
+    // Redraw shadow maps every frame while true; when false, draw once and on `needs_update`.
     bool auto_update;
+    // Requests a shadow map redraw when `auto_update` is false.
     bool needs_update;
-    // Leave instanced meshes (scattered plants, usually by the thousand) out of this
-    // light's map.
+    // Excludes `InstancedMesh` nodes from this light's shadow map.
     bool skip_instanced;
-    // Directional lights only (extension): cascaded shadow maps.
-    // Number of slices of the view, 1..4 (1: one box, see DirectionalLight.shadow_extent).
+    // For `DirectionalLight`: number of view-frustum shadow cascades in 1..4 (1 uses a single
+    // box sized by `DirectionalLight.shadow_extent`).
     int cascades;
-    // Where the slices end: 0 = evenly spaced, 1 = logarithmic (near ones small).
+    // Cascade split distribution in 0..1: 0 = linear, 1 = logarithmic (tighter near camera).
     float split_lambda;
-    // Distance from the camera up to which there are shadows (meters, capped at camera.far).
+    // Maximum camera distance in meters covered by directional cascades (capped at `camera.far`).
     float max_distance;
-    // Width of the band where one slice fades into the next, as a part of the slice, 0..1.
+    // Overlap blend width between adjacent cascades as a fraction of slice depth, in 0..1.
     float cascade_blend;
 }
 
+// Conical spotlight aimed from `position` toward `target`'s world position, with optional
+// soft edge penumbra, cookie texture (`map`), and shadow map.
 struct SpotLight {
     inline Light light;
-    // The light points towards target's world position.
+    // Aim target whose world position defines the cone axis (defaults to origin).
     Object3D* target;
+    // Maximum reach in meters (0 = infinite range).
     float distance;
-    // Maximum cone angle in radians (up to PI/2).
+    // Half-angle of the light cone in radians (up to `PI / 2`).
     float angle;
-    // Fraction of the cone that fades out at the edge, 0..1.
+    // Outer cone fraction in 0..1 that smoothly fades to zero at the edge.
     float penumbra;
+    // Distance falloff exponent (default 2).
     float decay;
-    // Extension: radius of the light source in meters. Softens the falloff close to the light.
+    // Emitter radius in meters softening near-field falloff.
     float radius;
-    // Extension: radius of the bright part seen in reflections, in meters (0 = `radius`): a
-    // sphere of that size, as PointLight.radius's highlights. A lamp
-    // with a small bulb behind a big diffuser keeps sharp highlights on glossy surfaces.
+    // Specular highlight sphere radius in meters (0 uses `radius`), allowing a small bright bulb
+    // inside a larger diffuser to keep crisp highlights.
     float specular_radius;
-    // Extension: how much the light shows in fog with `light_scatter` (1 = as it is, 0 = not
-    // at all, for a lamp indoors whose glow would otherwise show through the walls).
+    // Multiplier on `VolumetricFog.light_scatter` glow (1 = normal, 0 = excluded from fog).
     float fog_glow;
-    // Set `cast_shadow` on the light to enable.
+    // Shadow map settings (enabled by `cast_shadow`).
     LightShadow shadow;
-    // As three's SpotLight.map (a cookie, or gobo): a picture the light projects, its color
-    // times the light's, as a slide projector or a lamp behind a window's mullions. The
-    // picture fills the square that holds the cone (the cone's edge touches the middle of its
-    // sides), seen from the light: +u to the light's right, +v up (up being world +y, or +x
-    // for a light pointing straight up or down, as the shadow map's), turned by
-    // `map_rotation`. Black stops the light: no shadow need be cast for a dark part.
-    // Every lit material takes it but a Reflector's (whose picture has the map's slot). All
-    // the spot lights of one render
-    // share a texture: the first map met is used and other lights with a different one are
-    // drawn without theirs. Put several pictures on one texture and pick each light's with
-    // `map_rect`.
+    // Projected gobo/cookie texture multiplied with light color across the cone's circumscribed
+    // square (`+U` right, `+V` up, rotated by `map_rotation`). All spot lights in a frame share
+    // the first encountered `map` texture; pack multiple cookies into one atlas using `map_rect`.
+    // Supported on all lit materials except `Reflector`.
     Texture* map;
-    // The part of `map` this light projects: x, y offset and width, height, in 0..1 of the
-    // texture (all 0: the whole texture).
+    // Sub-rectangle `{ x, y, width, height }` in 0..1 UV space within `map` (all zeros = full map).
     float[4] map_rect;
-    // Turns the picture about the light's axis (radians, counterclockwise as seen from the light).
+    // Counterclockwise roll of `map` around the cone axis in radians (seen from the light).
     float map_rotation;
 }
 
-// Like three's RectAreaLight: a lit rectangle (a window, a light panel), `width` by `height`
-// meters, shining from its front, its -z (point it with look_at, as three). Its intensity is
-// in nits, its power in lumens intensity * width * height * PI (three r155+). Lights
-// MeshStandardMaterial (and its physical layers: the clear coat too) only, as three, with
-// linearly transformed cosines (Heitz et al. 2016, three's tables). The light's world rotation
-// turns it; its scale is left out. Renderer.max_rect_area_lights of them at most.
+// Rectangular area light (`width` by `height` meters) emitting from its local `-Z` face (aim
+// with `look_at`). Intensity is in nits (`power() = intensity * width * height * PI` lumens).
+// Uses linearly transformed cosines on `MeshStandardMaterial` (including clearcoat); world
+// rotation orients the panel while scale is ignored. Capped at `Renderer.max_rect_area_lights`.
 struct RectAreaLight {
     inline Light light;
+    // Panel width in meters along local X.
     float width;
+    // Panel height in meters along local Y.
     float height;
-    // Extension (three's has none): with cast_shadow, what stands in front of it shadows its
-    // light and its highlights, as from a point light at its centre: six maps in the shadow
-    // atlas (see PointLight.shadow), from shadow.near to shadow.far (0: 50). shadow.softness
-    // about the rectangle's size gives the edges an area light's.
+    // Shadow settings (enabled by `cast_shadow`): hardware ray-traced when `shadow.ray_traced`
+    // and `Renderer.traces_rays` are active, otherwise six cube faces in the shadow atlas
+    // (`Renderer.shadow_atlas_size`) from `shadow.near` to `shadow.far` (0 defaults to 50 m).
     LightShadow shadow;
 }
 
+// Initializes base `Object3D` and light type, color, and intensity fields.
 fn void Light.init_light(&self, LightType t, Color color, float intensity) {
     self.init(LIGHT);
     self.light_type = t;
@@ -1061,12 +1136,14 @@ fn void Light.init_light(&self, LightType t, Color color, float intensity) {
     self.intensity = intensity;
 }
 
+// Allocates an `AmbientLight` on the heap (`mem`).
 fn AmbientLight* ambient_light(Color color = 0xffffff, float intensity = 1) {
     AmbientLight* l = mem::new(AmbientLight);
     l.init_light(AMBIENT, color, intensity);
     return l;
 }
 
+// Allocates a `HemisphereLight` positioned at `(0, 1, 0)` on the heap (`mem`).
 fn HemisphereLight* hemisphere_light(Color sky_color = 0xffffff, Color ground_color = 0xffffff, float intensity = 1) {
     HemisphereLight* l = mem::new(HemisphereLight);
     l.init_light(HEMISPHERE, sky_color, intensity);
@@ -1075,6 +1152,8 @@ fn HemisphereLight* hemisphere_light(Color sky_color = 0xffffff, Color ground_co
     return l;
 }
 
+// Allocates a `DirectionalLight` at `(0, 1, 0)` aimed at a new origin `target`, with 4-cascade
+// 2048 px shadow defaults.
 fn DirectionalLight* directional_light(Color color = 0xffffff, float intensity = 1) {
     DirectionalLight* l = mem::new(DirectionalLight);
     l.init_light(DIRECTIONAL, color, intensity);
@@ -1086,6 +1165,7 @@ fn DirectionalLight* directional_light(Color color = 0xffffff, float intensity =
     return l;
 }
 
+// Allocates a `PointLight` on the heap (`mem`) with 512 px cube-face shadow defaults.
 fn PointLight* point_light(Color color = 0xffffff, float intensity = 1, float distance = 0, float decay = 2) {
     PointLight* l = mem::new(PointLight);
     l.init_light(POINT, color, intensity);
@@ -1104,6 +1184,7 @@ fn PointLight* point_light(Color color = 0xffffff, float intensity = 1, float di
     return l;
 }
 
+// Allocates a `RectAreaLight` on the heap (`mem`) with ray-traced shadows enabled by default.
 fn RectAreaLight* rect_area_light(Color color = 0xffffff, float intensity = 1, float width = 10, float height = 10) {
     RectAreaLight* l = mem::new(RectAreaLight);
     l.init_light(RECT_AREA, color, intensity);
@@ -1123,13 +1204,15 @@ fn RectAreaLight* rect_area_light(Color color = 0xffffff, float intensity = 1, f
     return l;
 }
 
-// three's RectAreaLight.power: the light it gives off in lumens.
+// Returns total luminous flux in lumens (`intensity * width * height * PI`).
 fn float RectAreaLight.power(&self) => self.intensity * self.width * self.height * (float)PI;
 
+// Sets `intensity` from luminous flux `power` in lumens for the current `width` and `height`.
 fn void RectAreaLight.set_power(&self, float power) {
     self.intensity = power / (self.width * self.height * (float)PI);
 }
 
+// Allocates a `SpotLight` at `(0, 1, 0)` aimed at a new origin `target` (1024 px shadow).
 fn SpotLight* spot_light(
     Color color = 0xffffff,
     float intensity = 1,

@@ -1,11 +1,8 @@
-// UnrealBloomPass (postprocessing.c3): the glow round what is bright, as a lens spreads a
-// little of all the light it lets in. As in Call of Duty: Advanced Warfare (Jimenez 2014) and
-// Unreal's bloom: the picture (linear light) is halved again and again, each level with a
-// 13-tap filter (the first one also weighs each tap down by its brightness, Karis's average, so
-// one very bright pixel doesn't flicker as it moves), then the levels are added back up from
-// the smallest, each through a 3x3 tent filter, into the one above it. The largest level, all
-// the others added in, is added to the picture.
-// Regenerate generated/bloom.c3 with: just shaders
+// UnrealBloomPass (drie::postprocessing): lens glow around bright areas of a linear-light image,
+// following Jimenez 2014 (Call of Duty: Advanced Warfare) and Unreal's bloom. The image is halved
+// through a mip chain with a 13-tap filter (the first pass uses Karis luminance weighting so one
+// very bright pixel does not flicker as it moves), then upsampled back from the smallest level
+// via a 3x3 tent filter and added to the scene. Regenerate generated/bloom.c3 with `just shaders`.
 @header module drie::postprocessing;
 @header import drie;
 

@@ -1,140 +1,93 @@
-// GpuCloth: Cloth (cloth.c3) solved on the GPU with compute kernels (gpu_cloth.glsl), for
-// sheets of tens of thousands of points. The same XPBD in small steps: each fixed step of
-// 1/60 s cut into `substeps`, each substep moving the points by their velocity, projecting the
-// stretch and shear links, the bends and the tethers to the pins once, and pushing the points
-// out of the colliders (spheres, capsules, boxes, planes, swept over the substeps) and above
-// the floor.
+// GPU compute cloth simulation (`shaders/gpu_cloth.glsl`), mirroring `drie::cloth::Cloth` for
+// grids of tens of thousands of vertices. Runs deterministic graph-colored XPBD substeps,
+// fixed-point spatial-hash self-collision, multi-panel sheets (`panels()`), two-way dynamic body
+// coupling (up to `BODIES` spheres/capsules with fixed-latency readback), and direct GPU vertex
+// buffer writes (`BufferGeometry.gpu_vertices`) with zero per-frame vertex readback.
 //
-// The bends, by `bend_model`, each with its own `bend_compliance`:
-//   - DISTANCE (the default): each point linked to the one two away along its row and its
-//     column, held at the rest distance. bend_compliance is a link's (m/N, as the stretch and
-//     shear links'; 1e-2 by default, 0.05 for the dust sheet of examples/cloth_furniture). A
-//     fold either way is the same to it.
-//   - SIGNED (Cloth's): how far a point sits off the midpoint of its two neighbours along a row
-//     or column, along the cloth's normal there, held at the rest shape's (a signed curvature:
-//     a fold bulges back the way it did at rest). bend_compliance is per m of that offset, and
-//     the offset grows with the square of the spacing for a given curvature: the same value is
-//     far stiffer on a fine grid than on a coarse one. For shaped rest poses (pleated curtains);
-//     Cloth's examples use 0.1 to 20 at 3 to 6 cm spacing.
-//
-//   - the links are colored on the CPU so that no two of a color share a point, and each color
-//     is one dispatch: Gauss-Seidel in batches, in the same order every run, without atomics;
-//     the signed bends in nine runs along the rows and nine down the columns, as Cloth's. Both
-//     models' bends are made; only the model in use is solved, so it can change at any time.
-//   - panels(): several grids side by side solved as one cloth (one run of dispatches), each
-//     with its own mesh; they collide with each other and share the colliders
-//   - self-collision: a spatial hash of the points (counted into cells, summed, filled) and a
-//     push apart of the points nearer than `self_distance` (no nearer than at rest), summed in
-//     fixed point: the order a cell lists its points in, which changes from run to run, does
-//     not change the result. The same calls give the same points every run.
-//   - the points stay on the GPU: gc_write_cs writes the mesh's positions and normals into its
-//     vertex buffer (BufferGeometry.gpu_vertices); nothing is copied either way per frame.
-//
-//   - two-way coupling: a sphere or capsule with a mass (set_collider_mass, up to BODIES of
-//     them) shares each push with the point by their inverse masses, at every substep, and goes
-//     on at the velocity the pushes left it (a body: an offset from where it was moved, and a
-//     change of velocity, kept on the GPU). The pushes on it are summed in a fixed order, a tree
-//     per group of points and the groups in turn. The CPU learns of them a frame or two later
-//     (an async readback): collider_shift() and collider_impulse() give what has arrived, to
-//     apply to the body, and the GPU takes off what the CPU applies, so the two agree.
-//     make_collider_mesh draws a body where the GPU has it, so it meets the cloth on screen.
-//
-// The air pushes on each triangle as in Cloth (wind, gust, drag); a point's force is gathered
-// from the triangles around it. Not here: from_fine's detail grid, moved()/mark() (the points
-// are not on the CPU), the cloth's own bounds (make_mesh gives the mesh a sphere the cloth is
-// expected to stay in; set_bounds for another).
-//
-//     GpuCloth* c = gpu_cloth::grid(200, 200, { -1.5, 2, -1.5 }, { 3, 0, 0 }, { 0, 0, 3 }, 1.4);
-//     c.floor_y = 0;
-//     c.self_distance = 0.015;
-//     c.add_box({ 0.4, 0.2, 0.4 }, drie::mat4_compose({ 0, 0.2, 0 }, { }, { 1, 1, 1 }));
-//     scene.add(c.make_mesh(drie::mesh_standard_material(color: 0xd8d0c0, side: DOUBLE_SIDE)));
-//     // each frame, before rendering:
-//     c.update(delta);
+//   GpuCloth* c = gpu_cloth::grid(200, 200, { -1.5, 2, -1.5 }, { 3, 0, 0 }, { 0, 0, 3 }, 1.4);
+//   c.floor_y = 0;
+//   scene.add(c.make_mesh(drie::mesh_standard_material(color: 0xd8d0c0, side: DOUBLE_SIDE)));
+//   c.update(delta);  // call outside render(), before drawing
 module drie::gpu_cloth;
 import std::math, std::collections::list, drie, drie::shaders, sokol;
 
+// Fixed simulation timestep in seconds (60 Hz).
 const float STEP    = 1.0f / 60;
+// Maximum fixed steps taken in a single `update()` call before dropping excess accumulator time.
 const int MAX_STEPS = 4;
-// A collider that moves further than this in one update has been put somewhere else, not
-// swept there through the cloth.
+// Displacement threshold (m) above which a collider teleports rather than sweeping through cloth.
 const float JUMP = 1.0f;
+// Sentinel vertex index marking an untethered particle.
 const uint NONE  = 0xffffffff;
+// Compute workgroup size shared with `shaders/gpu_cloth.glsl`.
 const int GROUP  = 128;
-// colliders with a mass (gc_collide_bodies_cs's GC_BODIES)
+// Maximum number of dynamic (mass-bearing) sphere/capsule colliders (`GC_BODIES` in shader).
 const int BODIES = 8;
-// the readbacks of the bodies in flight, and how many updates late the CPU hears of them
+// Number of ring-buffered async readback slots kept in flight for dynamic bodies.
 const int RING = 4;
+// Fixed update latency between GPU body pushes and CPU `collider_shift()`/`collider_impulse()`.
 const int LATENCY = 2;
-// the corrections remembered (more than a readback can be late)
+// History ring length for applied CPU body corrections (larger than max readback latency).
 const int LOG = 16;
 
+// Geometric primitive type for a `Collider`.
 enum ColliderKind : char {
-    SPHERE,
-    CAPSULE,
-    BOX,
-    PLANE,
+    SPHERE, // Sphere centered at `a` with `radius`.
+    CAPSULE, // Capsule segment `a..b` with `radius`.
+    BOX, // Oriented box centered at `a` with half-extents `half` along `axes`.
+    PLANE, // Half-space through `a` keeping points on the side facing `axes[0]`.
 }
 
-// As cloth::Collider: a sphere (a), a capsule (a..b) of `radius`; a box centered at a, `half`
-// its half size along `axes`; a plane through a facing axes[0].
+// Swept collision primitive uploaded to the GPU each update, matching `drie::cloth::Collider`.
 struct Collider {
-    ColliderKind kind;
-    float radius;
-    Vector3 from_a, from_b;
-    Vector3 a, b;
-    bool active;
-    Vector3 half;
-    Vector3[3] from_axes;
-    Vector3[3] axes;
-    // 1 / its mass (kg); 0: kinematic. A collider with a mass has a body (-1: none).
-    float inv_mass;
-    int body;
-    // put somewhere new (place_collider): its body starts over at the next update
-    bool restart;
-    // its own friction coefficient (see `friction`); -1: the cloth's
-    float friction;
-    // what the last update found the cloth did to it (collider_shift, collider_impulse)
-    Vector3 shift;
-    Vector3 dv;
+    ColliderKind kind; // Primitive shape kind.
+    float radius; // Sphere or capsule radius in meters.
+    Vector3 from_a, from_b; // Sweep-start endpoints in cloth-local space.
+    Vector3 a, b; // Sweep-end endpoints in cloth-local space.
+    bool active; // Skipped by collision kernels when false.
+    Vector3 half; // Box half-extents along `axes` in meters.
+    Vector3[3] from_axes; // Box orthonormal basis at sweep start.
+    Vector3[3] axes; // Box orthonormal basis at sweep end (or plane normal in `axes[0]`).
+    float inv_mass; // Inverse mass in 1/kg (0 = kinematic).
+    int body; // Dynamic body slot in `0..BODIES-1`, or -1 for kinematic colliders.
+    bool restart; // Resets GPU body offset and velocity on the next update (`place_collider()`).
+    float friction; // Per-collider friction override, or -1 to inherit `GpuCloth.friction`.
+    Vector3 shift; // Latest CPU-side position correction read back from the GPU.
+    Vector3 dv; // Latest CPU-side velocity delta read back from the GPU.
 }
 
-// A mesh drawn where a collider is, its vertices written on the GPU (make_collider_mesh) from
-// `template`, the shape's vertices around the origin (made at the first update)
+// GPU-driven render mesh tracking a collider's live GPU position (`make_collider_mesh()`).
 struct Shape {
-    int collider;
-    Mesh* mesh;
-    StorageBuffer* template;
-    int count;
-    float radius;
+    int collider; // Index into `GpuCloth.colliders`.
+    Mesh* mesh; // Render mesh whose vertex buffer is rewritten on the GPU each update.
+    StorageBuffer* template; // Unshifted local template vertices uploaded on first update.
+    int count; // Vertex count in `template` and `mesh`.
+    float radius; // Bounding radius of the template geometry around its origin.
 }
 
-// What the CPU was told to apply to the bodies at the end of an update: its index, the steps
-// taken by then, and per body the offset and the change of velocity.
+// Record of dynamic body corrections delivered to the CPU at the end of a past update.
 struct Applied {
-    long update;
-    ulong steps;
-    Vector3[BODIES] off;
-    Vector3[BODIES] dv;
+    long update; // Update index when these corrections were reported (-1 = unused).
+    ulong steps; // Cumulative fixed steps completed by that update.
+    Vector3[BODIES] off; // Position shifts applied per dynamic body slot.
+    Vector3[BODIES] dv; // Velocity changes applied per dynamic body slot.
 }
 
-// A run of links of one kind and color, or of bends, solved in one dispatch.
+// Contiguous range of same-color links or bend stencils dispatched in a single compute pass.
 struct Batch {
-    uint first, count;
-    // 0 stretch, 1 shear, 2 distance bend (in the links), 3 signed bend (in the bends)
-    int kind;
+    uint first, count; // Start index and element count in `links` or `bends`.
+    int kind; // Constraint kind: 0 = stretch, 1 = shear, 2 = distance bend, 3 = signed bend.
 }
 
-// A mesh of one panel's points (make_mesh).
+// Render mesh bound to one panel of a `GpuCloth`, written directly on the GPU by `gc_write_cs`.
 struct PanelMesh {
-    int panel;
-    Mesh* mesh;
-    int detail;
-    // updates written since its panel last changed while every point of it was pinned
-    int quiet;
+    int panel; // Panel index in `0..panel_count()-1`.
+    Mesh* mesh; // Render mesh with `BufferGeometry.gpu_vertices = true`.
+    int detail; // Subdivision factor per simulation cell edge (1 = native grid).
+    int quiet; // Consecutive updates written while every vertex in the panel was pinned.
 }
 
-// The compute kernels, made once for every cloth.
+// Shared compute pipeline instances compiled once for all `GpuCloth` instances.
 struct Kernels {
     ComputePass* begin;
     ComputePass* forces;
@@ -159,125 +112,105 @@ struct Kernels {
 
 Kernels* kernels @local;
 
+// GPU-simulated XPBD cloth grid (or multi-panel sheet) driven by `shaders/gpu_cloth.glsl`.
 struct GpuCloth {
-    int cols, rows;
-    // the columns of a panel (cols: one panel); no link, bend or triangle joins two panels
-    int panel_cols;
-    // where the points are kept from (the rest shape's first point), as Cloth.origin
-    Vector3 origin;
-    // the rest shape, from origin
-    Vector3[] rest;
-    // per point: the inverse mass (0 pinned) and a pinned point's place
-    float[] inv_mass;
-    Vector3[] pin_to;
-    // per panel: how many of its points are free, and whether a pin or a reset has changed it
-    // since its mesh was last written (a panel with none free and no change is not written)
-    int[] panel_free;
-    bool[] panel_changed;
-    List{shaders::GcLink} links;
-    List{shaders::GcBend} bends;
-    List{Batch} batches;
-    shaders::GcTether[] tether_data;
-    List{Collider} colliders;
-    bool tethers_dirty;
-    bool pins_dirty;
-    // the points' state must be written to the GPU (at the start and by reset)
-    bool state_dirty;
-    // where reset_to puts the points instead of at rest (empty: at rest)
-    Vector3[] start_from;
-    bool has_tethers;
+    int cols, rows; // Total simulation grid dimensions across all panels.
+    int panel_cols; // Columns per independent panel (`cols` when single-panel).
+    Vector3 origin; // World-space anchor matching the first rest vertex.
+    Vector3[] rest; // Rest positions relative to `origin`.
+    float[] inv_mass; // Per-vertex inverse mass in 1/kg (0 = pinned).
+    Vector3[] pin_to; // Per-vertex pin target positions relative to `origin`.
+    int[] panel_free; // Free (unpinned) vertex count per panel.
+    bool[] panel_changed; // True when a pin change or reset dirtied the panel since last write.
+    List{shaders::GcLink} links; // Graph-colored stretch, shear, and distance-bend links.
+    List{shaders::GcBend} bends; // Nine-phase signed curvature bend stencils.
+    List{Batch} batches; // Dispatch ranges across `links` and `bends`.
+    shaders::GcTether[] tether_data; // Nearest-pin tether entries uploaded to `tether_buf`.
+    List{Collider} colliders; // Registered collision primitives.
+    bool tethers_dirty; // Rebuilds and uploads `tether_buf` on the next `sync()`.
+    bool pins_dirty; // Re-uploads `pins` storage buffer on the next `sync()`.
+    bool state_dirty; // Resets GPU particle positions, velocities, and bodies on next `sync()`.
+    Vector3[] start_from; // Custom reset pose from `reset_to()` (empty resets to `rest`).
+    bool has_tethers; // True when at least one free vertex is tethered to a pin.
 
-    int substeps;
-    // link passes per substep
-    int iterations;
-    float stretch_compliance;
-    float shear_compliance;
+    int substeps; // XPBD substeps per 1/60 s fixed step (default 8).
+    int iterations; // Constraint projection passes per substep (default 1).
+    float stretch_compliance; // Stretch link compliance in m/N (0 = rigid).
+    float shear_compliance; // Shear link compliance in m/N.
+    // Bend compliance on the active model's scale: `DISTANCE` in m/N (default 1e-2, 0.05 in
+    // `examples/cloth_furniture.c3`); `SIGNED` per meter of curvature offset (~0.1..20).
     float bend_compliance;
-    // which bends are solved (see the top of the file)
+    // Active bend solver (`DISTANCE` 2-hop links or `SIGNED` rest curvature); switchable anytime.
     BendModel bend_model;
-    float tether_slack;
-    float damping;
-    // of the difference in velocity between neighbours, the share lost each step (0..1): stills
-    // the quick small wobbles and leaves the swing to `damping`
+    float tether_slack; // Allowed stretch ratio past rest tether distance (0.02 = 2%).
+    float damping; // Exponential velocity damping rate per second.
+    // Share of neighbor velocity difference damped per fixed step (0..1) to suppress jitter.
     float internal_damping;
-    Vector3 gravity;
-    Vector3 wind;
-    float gust;
-    float drag;
-    // the air's push across its flow on a triangle it meets at an angle, of `drag`'s (0: none;
-    // about 0.5 makes a falling sheet glide and swoop)
+    Vector3 gravity; // Constant world acceleration in m/s^2.
+    Vector3 wind; // Base air velocity in m/s.
+    float gust; // Deterministic spatial-temporal wind gust amplitude.
+    float drag; // Aerodynamic normal drag coefficient.
+    // Cross-flow lift relative to `drag` (0 disables; ~0.5 makes falling sheets glide).
     float lift;
-    // points stay this far from the colliders' surfaces
-    float thickness;
-    // friction against the colliders: a point stays put on one while its slide over a substep
-    // is under `friction` times how far the collider pushed it out (static), and past that
-    // keeps at most (1 - friction) of the slide (cloth on upholstery about 0.8, on wood 0.4).
-    // The floor keeps (1 - friction) of a point's slide.
+    float thickness; // Surface separation in meters from colliders and floor.
+    // Static/kinetic collider friction in [0, 1] (~0.8 upholstery, ~0.4 wood); also floor slide.
     float friction;
-    // a floor (y up) the points stay above; -1e30: none
-    float floor_y;
-    float mass;
-    // Self-collision: points are kept this far apart (0: none), or as far as they are at rest
-    // if that is less. About the spacing of the points, so that no point slips between four.
+    float floor_y; // World-space Y height of an infinite floor plane (-1e30 disables).
+    float mass; // Total mass in kg across all simulated vertices.
+    // Minimum self-collision separation in meters (0 disables), clamped to rest spacing.
     float self_distance;
-    // the share of the overlap pushed out per substep (1: all of it)
-    float self_stiffness;
-    // 0 slides over the cloth's other layers, 1 moves with them
-    float self_friction;
-    // self-collision every this many substeps (1: each)
-    int self_every;
+    float self_stiffness; // Fraction of self-collision overlap pushed out per substep (0..1).
+    float self_friction; // Tangential friction between colliding cloth layers (0..1).
+    int self_every; // Runs spatial-hash self-collision every `self_every` substeps.
 
-    double time;
-    float accumulator;
-    ulong steps;
-    List{PanelMesh} meshes;
+    double time; // Total simulated time in seconds.
+    float accumulator; // Unstepped frame time remainder in seconds.
+    ulong steps; // Total fixed steps simulated so far.
+    List{PanelMesh} meshes; // Panel render meshes created by `make_mesh()`.
 
-    // GPU state: per point (vec4s), the links, the hash
-    StorageBuffer* pos;
-    StorageBuffer* prev;
-    StorageBuffer* vel;
-    StorageBuffer* start;
-    StorageBuffer* acc;
-    StorageBuffer* rest_buf;
-    StorageBuffer* pins;
-    StorageBuffer* link_buf;
-    StorageBuffer* bend_buf;
-    StorageBuffer* tether_buf;
-    StorageBuffer* collider_buf;
-    StorageBuffer* cells;
-    StorageBuffer* sums;
-    StorageBuffer* ids;
-    StorageBuffer* push;
-    // hash cells (a power of two, at least twice the points)
-    int table;
-    // the readback slot of read_points (-1: none yet)
-    int read_slot;
-    // watch_points: the points read back each update without waiting (seen_points), their slot
-    bool watching;
-    int[3] watch_slot;
-    ulong[3] watch_update;
-    drie::Vec4[] watched;
+    StorageBuffer* pos; // Current cloth-local positions (vec4 per vertex).
+    StorageBuffer* prev; // Previous-substep positions (vec4 per vertex).
+    StorageBuffer* vel; // Per-vertex velocities (vec4 per vertex).
+    StorageBuffer* start; // Last fixed-step start positions for frame interpolation.
+    StorageBuffer* acc; // Per-vertex gravity and wind accelerations.
+    StorageBuffer* rest_buf; // Rest-pose positions uploaded once on sync.
+    StorageBuffer* pins; // Per-vertex pin target `.xyz` and inverse mass `.w`.
+    StorageBuffer* link_buf; // Graph-colored stretch, shear, and distance-bend links.
+    StorageBuffer* bend_buf; // Nine-phase signed curvature bend stencils.
+    StorageBuffer* tether_buf; // Nearest-pin tether targets and rest distances.
+    StorageBuffer* collider_buf; // Packed active colliders uploaded each update.
+    StorageBuffer* cells; // Spatial-hash cell counts and prefix-summed offsets.
+    StorageBuffer* sums; // Per-block prefix-sum scratch buffer for spatial hashing.
+    StorageBuffer* ids; // Vertex indices sorted into spatial-hash buckets.
+    StorageBuffer* push; // Accumulated self-collision displacement per vertex.
+    int table; // Spatial-hash bucket count (power of two, >= 2 * vertex count).
+    int read_slot; // Readback slot used by synchronous `read_points()` (-1 until allocated).
+    bool watching; // Queues non-blocking position readbacks every update when true.
+    int[3] watch_slot; // Triple-buffered async readback slots for `seen_points()`.
+    ulong[3] watch_update; // Update sequence number associated with each `watch_slot`.
+    drie::Vec4[] watched; // CPU staging buffer receiving `seen_points()` vec4 data.
 
-    // the bodies (colliders with a mass): their state on the GPU, the partial sums of the pushes
-    // on them, the readback slots, the corrections told to the CPU, and the update each body
-    // last started over at
-    int body_count;
-    StorageBuffer* bodies;
-    StorageBuffer* partials;
-    int[RING] ring_slot;
-    Applied[LOG] applied;
-    int applied_at;
-    long applied_through;
-    long[BODIES] body_reset;
-    // updates so far
-    long updates;
-    List{Shape} shapes;
+    int body_count; // Number of dynamic mass-bearing colliders allocated (`0..BODIES`).
+    StorageBuffer* bodies; // Live GPU offset and velocity delta per dynamic body.
+    StorageBuffer* partials; // Per-workgroup dynamic body impulse reduction buffer.
+    int[RING] ring_slot; // Ring of async readback slots tracking `bodies`.
+    Applied[LOG] applied; // History of body corrections already reported to the CPU.
+    int applied_at; // Next write cursor in `applied`.
+    long applied_through; // Latest update index whose GPU body state was consumed.
+    long[BODIES] body_reset; // Update index at which each dynamic body last restarted.
+    long updates; // Total `update()` calls completed.
+    List{Shape} shapes; // Collider-tracking meshes created by `make_collider_mesh()`.
 }
 
+// Returns the linear vertex index for `(col, row)`.
 fn uint GpuCloth.index(&self, int col, int row) @inline => (uint)(row * self.cols + col);
+// Returns the total number of simulated vertices across all panels.
 fn uint GpuCloth.count(&self) @inline => (uint)(self.cols * self.rows);
+// Returns the total number of stretch, shear, and distance-bend links.
 fn sz GpuCloth.link_count(&self) => self.links.len();
+// Returns the number of signed curvature bend stencils.
 fn sz GpuCloth.bend_count(&self) => self.bends.len();
+// Returns the number of independent panels in this cloth.
 fn int GpuCloth.panel_count(&self) => self.cols / self.panel_cols;
 // Whether columns `a` and `b` are both in the cloth and in one panel.
 fn bool GpuCloth.joined(&self, int a, int b) => a >= 0 && b < self.cols && a / self.panel_cols == b / self.panel_cols;
@@ -424,6 +357,7 @@ fn GpuCloth* from_positions(int cols, int rows, Vector3[] rest, float mass = 0.4
     return c;
 }
 
+// Appends a distance link between vertices `a` and `b` using their rest separation.
 fn void GpuCloth.link(&self, List{shaders::GcLink}* list, uint a, uint b) {
     list.push({ a, b, (self.rest[a] - self.rest[b]).length(), 0 });
 }
@@ -472,6 +406,7 @@ fn void GpuCloth.add_colored(&self, List{shaders::GcLink}* list, int kind, sz po
     }
 }
 
+// Releases all CPU arrays, GPU storage buffers, shape templates, and the `GpuCloth` itself.
 fn void GpuCloth.free(&self) {
     free(self.rest);
     free(self.inv_mass);
@@ -502,13 +437,13 @@ fn void GpuCloth.free(&self) {
     free(self);
 }
 
-// Holds point `i` where it is at rest, or where move_pin puts it.
+// Returns the panel index containing vertex `i`.
 fn int GpuCloth.panel_of(&self, uint i) @inline => (int)(i % (uint)self.cols) / self.panel_cols;
 
-// Whether every point of `panel` is pinned (it is not solved, and its mesh is not written again
-// until a pin of it moves).
+// Returns true when every vertex of `panel` is pinned (so its mesh stops updating once settled).
 fn bool GpuCloth.panel_asleep(&self, int panel) => self.panel_free[panel] == 0;
 
+// Pins vertex `i` at its rest position (reposition later with `move_pin()`).
 fn void GpuCloth.pin(&self, uint i) {
     if (self.inv_mass[i] != 0) self.panel_free[self.panel_of(i)]--;
     self.panel_changed[self.panel_of(i)] = true;
@@ -518,10 +453,12 @@ fn void GpuCloth.pin(&self, uint i) {
     self.pins_dirty = true;
 }
 
+// Pins every vertex along `row` across all panels at its rest position.
 fn void GpuCloth.pin_row(&self, int row) {
     for (int k = 0; k < self.cols; k++) self.pin(self.index(k, row));
 }
 
+// Restores vertex `i` to a free mass and marks pins and tethers for re-upload.
 fn void GpuCloth.unpin(&self, uint i) {
     if (self.inv_mass[i] == 0) self.panel_free[self.panel_of(i)]++;
     self.panel_changed[self.panel_of(i)] = true;
@@ -614,12 +551,14 @@ fn void GpuCloth.reset_scattered(&self, uint seed, float ripple = 0.03f, float s
     self.reset_to(points);
 }
 
+// Registers a sphere collider at world `center` with `radius` and returns its collider ID.
 fn int GpuCloth.add_sphere(&self, Vector3 center, float radius) {
     center -= self.origin;
     self.colliders.push({ .kind = SPHERE, .radius = radius, .from_a = center, .from_b = center, .a = center, .b = center, .active = true, .body = -1, .friction = -1 });
     return (int)self.colliders.len() - 1;
 }
 
+// Registers a capsule collider spanning world segment `a..b` with `radius` and returns its ID.
 fn int GpuCloth.add_capsule(&self, Vector3 a, Vector3 b, float radius) {
     a -= self.origin;
     b -= self.origin;
@@ -681,6 +620,7 @@ fn void GpuCloth.move_box(&self, int id, drie::Mat4 placement) {
     k.axes = axes;
 }
 
+// Enables or disables collider `id` without removing it.
 fn void GpuCloth.set_collider_active(&self, int id, bool active) => self.colliders[id].active = active;
 
 // Collider `id`'s own friction coefficient (see GpuCloth.friction); -1: the cloth's.
@@ -1024,6 +964,7 @@ fn void GpuCloth.sync(&self) {
     }
 }
 
+// Packs and uploads the current `colliders` array to the GPU `collider_buf` storage buffer.
 fn void GpuCloth.write_colliders(&self) {
     sz count = self.colliders.len();
     if (!count) return;
@@ -1051,6 +992,7 @@ fn void GpuCloth.write_colliders(&self) {
 
 fn drie::Vec4 v4(Vector3 v) @local => { v.x, v.y, v.z, 0 };
 
+// Binds this cloth's storage buffers to every shared compute kernel before dispatching.
 fn void GpuCloth.bind(&self) {
     Kernels* k = kernels;
     k.begin.set_buffer(shaders::VIEW_GC_BEGIN_POS, self.pos);

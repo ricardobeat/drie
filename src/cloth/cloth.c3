@@ -1,236 +1,174 @@
-// Cloth: a grid of point masses held together by distance constraints, solved with XPBD in
-// small steps (Macklin, Müller et al., "Small Steps in Physics Simulation", 2019): each fixed
-// step of 1/60 s is cut into `substeps`, and each substep moves the points by their velocity,
-// projects every constraint once and pushes the points out of the colliders.
+// CPU cloth simulation solved with small-step XPBD (Macklin et al., 2019). Each 1/60 s fixed step
+// splits into `substeps` enforcing stretch, shear, bend (`SIGNED` curvature or `DISTANCE`),
+// pin tethers, spatial-hash self-collision, and swept sphere/capsule/box/plane colliders with
+// optional two-way impulse coupling. Points are stored relative to `origin` for precision far from
+// world zero, and every run is deterministic.
 //
-//   - stretch: each point to its neighbours across and down
-//   - shear: the diagonals of each cell
-//   - bend, by `bend_model`:
-//       SIGNED: along each row and column, how far a point sits off the midpoint of its two
-//       neighbours, along the cloth's normal there, is held at the rest shape's (a signed
-//       curvature: a fold bulges back the way it did at rest, not either way). For a rest
-//       shape with folds to keep (a pleated curtain).
-//       DISTANCE: each point to the one two away, across and down. A fold may bulge either
-//       way; soft and forgiving, for a cloth that starts flat (a sheet, a tablecloth).
-//   - tethers: no point gets further from its nearest pin than it is along the cloth at rest
-//   - self: with self_distance set, no two points come closer than that (collide_self), so
-//     a fold doesn't pass through the cloth
-//
-// Pinned points (inverse mass 0) are held where pin() or move_pin() puts them. Colliders are
-// spheres, capsules, boxes (turned any way: a door, a wall) and planes, moved with
-// move_collider() or move_box(); the points go where the collider was at each substep, so a
-// fast capsule or a swinging door does not pass through. collider_impulse() is the momentum the
-// cloth took from a collider in the last update; a sphere or capsule given a mass
-// (set_collider_mass) is pushed back by the cloth at every substep, and a ball thrown into a
-// sheet is caught by it. A collider faster than the links can follow at `substeps` stretches
-// them open: with the points ~6 cm apart, a 15 m/s ball needs 16 substeps. The wind pushes on each triangle by
-// how much the air crosses it, and gusts with a deterministic noise in time and space.
-// Everything is in world space, but the points are kept from `origin`, near them: a float 1 km
-// from the world's origin steps by 0.12 mm, and a cloth simulated there in world coordinates
-// shivers at half a meter a second. The same calls give the same result every run.
-//
-// from_fine simulates every few columns and rows of a fine grid and draws the whole of it, its
-// folds carried by the coarse cells (see Detail). moved() and mark() tell when the cloth has
-// moved enough to draw a static light's shadow of it again.
-//
-//     Cloth* c = cloth::grid(24, 36, { -0.6, 2.4, 0 }, { 1.2, 0, 0 }, { 0, -2.4, 0 });
-//     c.pin_row(0);
-//     scene.add(c.make_mesh(drie::mesh_standard_material(color: 0x8a1010, side: DOUBLE_SIDE)));
-//     int body = c.add_capsule(a, b, 0.25);
-//     // each frame:
-//     c.move_collider(body, a, b);
-//     c.update(delta);   // steps, and writes the mesh
+//   Cloth* c = cloth::grid(24, 36, { -0.6, 2.4, 0 }, { 1.2, 0, 0 }, { 0, -2.4, 0 });
+//   c.pin_row(0);
+//   scene.add(c.make_mesh(drie::mesh_standard_material(color: 0x8a1010, side: DOUBLE_SIDE)));
+//   c.update(delta);
 module drie::cloth;
 import std::math, std::collections::list, std::thread, std::atomic, std::os, std::time, drie;
 
+// Fixed simulation timestep in seconds (60 Hz).
 const float STEP       = 1.0f / 60;
+// Maximum fixed steps taken in a single `update()` call before dropping excess accumulator time.
 const int MAX_STEPS    = 4;
 const float FAR @local = 1e30f;
-// A collider that moves further than this in one update has been put somewhere else, not
-// swept there through the cloth.
+// Displacement threshold (m) above which a collider teleports rather than sweeping through cloth.
 const float JUMP = 1.0f;
-// The mesh is written again when a point has moved further than this since it was last
-// written (0.1 mm): a cloth at rest costs no upload.
+// Minimum point displacement (0.1 mm) required before `write_mesh()` re-uploads vertex data.
 const float STILL = 1e-4f;
 
+// Geometric primitive type for a `Collider`.
 enum ColliderKind : char {
-    SPHERE,
-    CAPSULE,
-    BOX,
-    PLANE,
+    SPHERE, // Sphere centered at `a` with `radius`.
+    CAPSULE, // Capsule segment `a..b` with `radius`.
+    BOX, // Oriented box centered at `a` with half-extents `half` along `axes`.
+    PLANE, // Half-space through `a` keeping points on the side facing `axes[0]`.
 }
 
-// A sphere (a) or a capsule (the segment a..b) of `radius`; a box centered at a, `half` its
-// half size along its `axes`; a plane through a, the points kept on the side axes[0] faces.
+// Swept collision primitive (sphere, capsule, oriented box, or plane) with optional dynamic mass.
 struct Collider {
-    ColliderKind kind;
-    float radius;
-    // where it was at the end of the last step and where it is going
-    Vector3 from_a, from_b;
-    Vector3 a, b;
-    bool active;
-    Vector3 half;
-    Vector3[3] from_axes;
-    Vector3[3] axes;
-    // the momentum (kg m/s) the cloth's points took from it over the last update (see
-    // collider_impulse)
+    ColliderKind kind; // Primitive shape kind.
+    float radius; // Sphere or capsule radius in meters.
+    Vector3 from_a, from_b; // Sweep-start endpoints in cloth-local space.
+    Vector3 a, b; // Sweep-end endpoints in cloth-local space.
+    bool active; // Skipped during collision when false.
+    Vector3 half; // Box half-extents along `axes` in meters.
+    Vector3[3] from_axes; // Box orthonormal basis at the start of the sweep.
+    Vector3[3] axes; // Box orthonormal basis at the end of the sweep (or plane normal in `axes[0]`).
+    // Momentum (kg m/s) transferred from this collider to the cloth in the last `update()`.
     Vector3 impulse;
-    // 1 / its mass (kg), 0: kinematic (see set_collider_mass)
+    // Inverse mass in 1/kg; 0 marks a kinematic collider unaffected by cloth pushback.
     float inv_mass;
-    // a sphere or capsule with a mass: how far the cloth has pushed it off the path it was
-    // given in this update, and how much it has changed its velocity
-    Vector3 shift;
-    Vector3 dv;
+    Vector3 shift; // Cumulative displacement applied to a dynamic sphere/capsule by the cloth.
+    Vector3 dv; // Cumulative velocity delta applied to a dynamic sphere/capsule by the cloth.
 }
 
+// Distance constraint between two cloth vertices with precomputed inverse-mass weights.
 struct Link {
-    uint a, b;
-    float rest;
-    // each end's share of the correction: its inverse mass over (both + the compliance)
+    uint a, b; // Endpoint vertex indices.
+    float rest; // Rest distance in meters.
+    // Precomputed per-endpoint correction shares: `inv_mass / (w_a + w_b + alpha)`.
     float ka, kb;
 }
 
-// A point m between a and b along a row or column: (a + b - 2m) along the normal at m is held at
-// `rest`. The normal is m's across x down: s (b - a) x (d - c), c and d m's neighbours the other
-// way (m itself at an edge), s 1 along a row and -1 down a column.
+// Signed curvature bend constraint over point `m` between `a` and `b` along a row or column.
+// Holds `(a + b - 2m)` projected onto `s * (b - a) x (d - c)` at `rest`, where `c` and `d` are
+// `m`'s orthogonal neighbors (`m` itself on borders) and `s` is +1 along rows or -1 down columns.
 struct Bend {
-    uint a, m, b, c, d;
-    float s;
-    float rest;
-    // the compliance (over h²)
-    float alpha;
+    uint a, m, b, c, d; // Stencil vertex indices.
+    float s; // Normal orientation sign (+1 for rows, -1 for columns).
+    float rest; // Signed rest curvature offset in meters.
+    float alpha; // Compliance scaled by `1 / h^2`.
 }
 
+// Long-range tether keeping a free vertex within geodesic rest distance of its nearest pin.
 struct Tether {
-    uint point, pin;
-    float rest;
+    uint point, pin; // Free vertex index and its nearest pinned vertex index.
+    float rest; // Geodesic rest distance along the cloth grid in meters.
 }
 
+// Point-mass cloth grid simulated on the CPU with XPBD constraints, wind, and swept colliders.
 struct Cloth {
-    int cols, rows;
-    // where the points are kept from (the rest shape's first point): a point at p is at
-    // origin + p in the world. The arrays of points below are from it; point() gives one in
-    // the world.
+    int cols, rows; // Simulation grid dimensions.
+    // World-space anchor equal to the first rest point; all particle arrays are stored relative to
+    // `origin` to retain float precision far from world zero. Use `point()` for world coordinates.
     Vector3 origin;
-    // per point: where it is, where it was a substep ago, its velocity, where it was at the
-    // start of the last fixed step (the mesh is drawn between that and now)
-    Vector3[] pos;
-    Vector3[] prev;
-    Vector3[] vel;
-    Vector3[] start;
-    Vector3[] accel;
-    Vector3[] rest;
-    float[] inv_mass;
-    // a pinned point's place
-    Vector3[] pin_to;
-    // per column and row: the sines gust_at puts together
-    float[] gust_cols;
-    float[] gust_rows;
-    List{Link} stretch;
-    List{Link} shear;
-    List{Bend} bend;
-    // the DISTANCE bend's links
-    List{Link} bend_links;
-    List{Tether} tethers;
-    bool tethers_dirty;
-    // the compliances (over h²) the links' ka and kb were worked out for; -1: not yet
+    Vector3[] pos; // Current cloth-local vertex positions.
+    Vector3[] prev; // Cloth-local positions at the start of the current substep.
+    Vector3[] vel; // Per-vertex velocities in m/s.
+    Vector3[] start; // Cloth-local positions at the start of the last fixed step.
+    Vector3[] accel; // Per-vertex gravity and aerodynamic accelerations in m/s^2.
+    Vector3[] rest; // Rest-pose positions relative to `origin`.
+    float[] inv_mass; // Per-vertex inverse mass in 1/kg (0 = pinned).
+    Vector3[] pin_to; // Target cloth-local positions for pinned vertices.
+    float[] gust_cols; // Precomputed column trig terms combined by `gust_at()`.
+    float[] gust_rows; // Precomputed row trig terms combined by `gust_at()`.
+    List{Link} stretch; // Graph-colored horizontal and vertical structural links.
+    List{Link} shear; // Graph-colored diagonal shear links.
+    List{Bend} bend; // Nine-phase signed curvature bend constraints.
+    List{Link} bend_links; // Graph-colored two-step distance links used by `BendModel.DISTANCE`.
+    List{Tether} tethers; // Geodesic tethers from free vertices to nearest pins.
+    bool tethers_dirty; // Rebuilds `tethers` on the next fixed step when true.
+    // Scaled compliances (`alpha`) cached in link weights; -1 forces recomputation.
     float[3] links_alpha;
-    List{Collider} colliders;
+    List{Collider} colliders; // Registered collision primitives.
 
-    int substeps;
-    // compliance (m/N, 0 rigid) of the stretch and shear links, and of the bends (m/N of the
-    // curvature offset)
-    float stretch_compliance;
-    float shear_compliance;
-    // the bend's compliance, on its model's own scale: SIGNED about 0.1 (folds held) to 20
-    // (limp), DISTANCE about 1e-3 to 1e-1
+    int substeps; // XPBD substeps per 1/60 s fixed step (default 8).
+    float stretch_compliance; // Stretch link compliance in m/N (0 = rigid).
+    float shear_compliance; // Diagonal shear link compliance in m/N.
+    // Bend compliance on the active model's scale: `SIGNED` ~0.1..20, `DISTANCE` ~1e-3..1e-1.
     float bend_compliance;
+    // Bend solver model: `SIGNED` preserves pleated rest curvature; `DISTANCE` uses 2-hop links.
     BendModel bend_model;
-    // a tether lets its point go this much further than the rest distance (0.02 = 2%)
-    float tether_slack;
-    // velocity lost per second (0..)
-    float damping;
-    // of the difference in velocity between neighbours, the share lost each step (0..1): stills
-    // the cloth's quick small wobbles and leaves its swing to `damping`
+    float tether_slack; // Allowed stretch ratio past rest tether length (0.02 = 2%).
+    float damping; // Exponential velocity damping rate per second (0..).
+    // Fraction of neighbor velocity difference damped per fixed step (0..1) to quiet jitter.
     float internal_damping;
-    Vector3 gravity;
-    // the air's velocity (m/s); `gust` scales its variation (0 steady, 1 between 0 and twice)
-    Vector3 wind;
-    float gust;
-    // how hard the air pushes on the cloth per m² per m/s of air across it
-    float drag;
-    // points stay this far from the colliders' surfaces
-    float thickness;
-    // 0 slides along a collider, 1 sticks to it
-    float friction;
-    // a floor (y up) the points stay above; -1e30: none
-    float floor_y;
-    // as friction, on the floor
-    float floor_friction;
-    // points of the cloth are kept this far apart (m; 0: the cloth passes through itself), or
-    // as far as they are along the cloth at rest when that is less; checked every
-    // `self_every` substeps (see collide_self)
+    Vector3 gravity; // Constant world acceleration in m/s^2.
+    Vector3 wind; // Base air velocity in m/s.
+    float gust; // Wind gust variation amplitude (0 = steady, 1 = 0..2x wind).
+    float drag; // Aerodynamic drag coefficient per m^2 per m/s of normal airflow.
+    float thickness; // Surface offset in meters maintained from colliders and the floor.
+    float friction; // Collider tangential friction in [0, 1] (0 = slide, 1 = stick).
+    float floor_y; // World-space Y height of an infinite floor plane (-1e30 disables).
+    float floor_friction; // Tangential friction on the floor plane in [0, 1].
+    // Minimum self-collision separation in meters (0 disables), clamped to rest distance.
     float self_distance;
-    int self_every;
-    // the spatial hash collide_self sorts the points into: each point's bucket, the points in
-    // bucket order, and where each bucket starts in that order
+    int self_every; // Runs `collide_self()` every `self_every` substeps.
+    // Spatial-hash scratch buffers for `collide_self()`.
     uint[] self_bucket;
     uint[] self_order;
     uint[] self_start;
-    // for update_all: the points in the world as the frame began, hashed as collide_self
-    // hashes its own, and the other cloths whose bounds meet this one's
+    // Frame-start world-space snapshot and overlapping cloths for `update_all()` cloth-cloth push.
     Vector3[] snap;
     uint[] snap_bucket;
     uint[] snap_order;
     uint[] snap_start;
     uint snap_mask;
     List{Cloth*} touching;
-    // a cloth whose fastest point stays under sleep_speed (m/s; 0: never) for sleep_time
-    // seconds sleeps: update() leaves it as it is, until a collider comes into its bounds or a
-    // pin moves. Asleep, the wind doesn't move it either.
-    float sleep_speed;
-    float sleep_time;
-    float still_for;
-    bool asleep;
-    // the points' bounds (from origin) at the last substep, grown by `thickness`: the colliders
-    // outside them are skipped
+    float sleep_speed; // Speed threshold in m/s below which the cloth can sleep (0 disables).
+    float sleep_time; // Consecutive seconds below `sleep_speed` required before sleeping.
+    float still_for; // Consecutive seconds spent below `sleep_speed`.
+    bool asleep; // True while simulation is paused until woken by a collider or moved pin.
+    // Cloth-local AABB padded by `thickness`, updated each substep for coarse collider culling.
     Vector3 lo, hi;
-    float mass;
+    float mass; // Total cloth mass in kg distributed uniformly across vertices.
 
-    double time;
-    float accumulator;
-    ulong steps;
-    Mesh* mesh;
-    // where the points are drawn this frame (between the last step's start and its end)
-    Vector3[] shown;
-    // a finer grid drawn over the points (see from_fine); null: the points' own grid is drawn
+    double time; // Total simulated time in seconds.
+    float accumulator; // Leftover unstepped frame delta time in seconds.
+    ulong steps; // Total fixed steps simulated so far.
+    Mesh* mesh; // Render mesh created by `make_mesh()`, or null.
+    Vector3[] shown; // Interpolated cloth-local positions written to `mesh` this frame.
+    // Optional high-resolution skinning grid from `from_fine()`; null renders the coarse grid.
     Detail* detail;
-    // the points when mark() was last called (see moved)
-    Vector3[] marked;
-    // where the points were drawn when the mesh was last written (see write_mesh)
-    Vector3[] drawn;
+    Vector3[] marked; // Cloth-local positions captured by the last `mark()` call.
+    Vector3[] drawn; // Positions last uploaded to `mesh`, used for `STILL` skip checks.
 }
 
-// The grid drawn over a coarser cloth. Each of its points is a spot in a cell of the cloth
-// (a column cell and t across it, a row cell and s down it) and an offset from the cell's
-// bilinear patch there, along the patch's frame (across, down, out) at rest: the cloth's
-// folds finer than its own grid ride along as the cells move and turn.
+// High-resolution display grid skinned onto a coarser simulated `Cloth` via `from_fine()`.
+// Stores each fine vertex's coarse cell coordinates and rest-frame offset so fine folds ride on
+// the coarse bilinear patches.
 struct Detail {
-    int cols, rows;
-    Vector3[] rest;
-    int[] col_cell;
-    float[] col_t;
-    int[] row_cell;
-    float[] row_s;
-    Vector3[] offset;
-    // the rest shape's normal, in the same frame
-    Vector3[] normal;
+    int cols, rows; // Fine mesh dimensions.
+    Vector3[] rest; // Fine rest positions in world space.
+    int[] col_cell; // Coarse column cell index per fine column.
+    float[] col_t; // Interpolation parameter in [0, 1] across each coarse column cell.
+    int[] row_cell; // Coarse row cell index per fine row.
+    float[] row_s; // Interpolation parameter in [0, 1] down each coarse row cell.
+    Vector3[] offset; // Rest position offset expressed in the coarse patch's `(u, v, n)` frame.
+    Vector3[] normal; // Rest surface normal expressed in the coarse patch's `(u, v, n)` frame.
 }
 
+// Returns the linear vertex index for `(col, row)`.
 fn uint Cloth.index(&self, int col, int row) @inline => (uint)(row * self.cols + col);
+// Returns the total number of simulated vertices (`cols * rows`).
 fn uint Cloth.count(&self) @inline => (uint)(self.cols * self.rows);
 
-// Where point `i` is, in the world.
+// Returns vertex `i`'s current world-space position.
 fn Vector3 Cloth.point(&self, uint i) => self.origin + self.pos[i];
 
 // A flat grid of `cols` x `rows` points from `origin`, `across` to the last column and `down`
@@ -403,8 +341,9 @@ fn void place_lines(int[] lines, int[] cell, float[] t) @local {
     }
 }
 
+// Orthonormal surface frame evaluated on a coarse cloth cell's bilinear patch.
 struct Frame {
-    Vector3 at, u, v, n;
+    Vector3 at, u, v, n; // Patch point, across tangent `u`, orthogonal tangent `v`, and outward normal `n`.
 }
 
 // The bilinear patch of cell (c, r) of the points `p` at (t, s): the place and an orthonormal
@@ -460,10 +399,12 @@ fn void color_links(List{Link}* links, sz points) @local {
     foreach (i, l : sorted) (*links)[i] = l;
 }
 
+// Appends a distance link between vertices `a` and `b` using their current rest separation.
 fn void Cloth.link(&self, List{Link}* list, uint a, uint b) {
     list.push({ a, b, (self.pos[a] - self.pos[b]).length(), 0, 0 });
 }
 
+// Appends a signed curvature bend stencil over `(a, m, b)` with cross neighbors `(c, d)` and sign `s`.
 fn void Cloth.add_bend(&self, uint a, uint m, uint b, uint c, uint d, float s) {
     Vector3* p = self.pos.ptr;
     Vector3 n  = (p[b] - p[a]).cross(p[d] - p[c]) * s;
@@ -472,6 +413,7 @@ fn void Cloth.add_bend(&self, uint a, uint m, uint b, uint c, uint d, float s) {
     self.bend.push({ a, m, b, c, d, s, rest, 0 });
 }
 
+// Releases all particle arrays, constraint lists, detail skinning data, and the `Cloth` itself.
 fn void Cloth.free(&self) {
     free(self.pos);
     free(self.prev);
@@ -523,11 +465,12 @@ fn void Cloth.pin(&self, uint i) {
     self.links_alpha = { -1, -1, -1 };
 }
 
+// Pins every vertex along `row` at its current position.
 fn void Cloth.pin_row(&self, int row) {
     for (int k = 0; k < self.cols; k++) self.pin(self.index(k, row));
 }
 
-// Lets point `i` go again.
+// Restores vertex `i` to a free mass and wakes the cloth.
 fn void Cloth.unpin(&self, uint i) {
     self.inv_mass[i] = (float)self.count() / math::max(self.mass, 1e-6f);
     self.tethers_dirty = true;
@@ -535,24 +478,27 @@ fn void Cloth.unpin(&self, uint i) {
     self.wake();
 }
 
-// Moves pinned point `i`: it gets there at the next fixed step.
+// Moves pinned vertex `i` to world position `to` on the next fixed step and wakes the cloth.
 fn void Cloth.move_pin(&self, uint i, Vector3 to) {
     Vector3 at = to - self.origin;
     if (at != self.pin_to[i]) self.wake();
     self.pin_to[i] = at;
 }
 
+// Clears sleep state and resets the stillness timer so `update()` resumes stepping.
 fn void Cloth.wake(&self) {
     self.asleep = false;
     self.still_for = 0;
 }
 
+// Registers a sphere collider at world `center` with `radius` and returns its collider ID.
 fn int Cloth.add_sphere(&self, Vector3 center, float radius) {
     center -= self.origin;
     self.colliders.push({ .kind = SPHERE, .radius = radius, .from_a = center, .from_b = center, .a = center, .b = center, .active = true });
     return (int)self.colliders.len() - 1;
 }
 
+// Registers a capsule collider spanning world segment `a..b` with `radius` and returns its ID.
 fn int Cloth.add_capsule(&self, Vector3 a, Vector3 b, float radius) {
     a -= self.origin;
     b -= self.origin;
@@ -634,6 +580,7 @@ fn void Cloth.set_collider_mass(&self, int id, float kg) => self.colliders[id].i
 // the last update(); where the cloth left it is where it was moved plus this.
 fn Vector3 Cloth.collider_shift(&self, int id) => self.colliders[id].shift;
 
+// Enables or disables collider `id` without removing it from the list.
 fn void Cloth.set_collider_active(&self, int id, bool active) => self.colliders[id].active = active;
 
 // Advances by `dt` seconds in fixed steps (at most MAX_STEPS) and writes the mesh, if it has
@@ -993,11 +940,10 @@ fn void prepare_bends(List{Bend}* bends, float alpha) @local {
 
 macro float dot(Vector3 x, Vector3 y) @local => x.x * y.x + x.y * y.y + x.z * y.z;
 
-// One pass of XPBD over the bends. The gradient takes in how the normal turns as a, b, c and d
-// move, as well as the move along it, so that the correction is a force's: one along a normal
-// taken as fixed does work round a swing and keeps the cloth going. Every point's gradient is along the normal (the normal's turning moves (a + b - 2m)'s
-// part in the cloth's plane out of it), so each is a number: a's 1 - ge, b's 1 + ge, m's -2,
-// c's -gf and d's gf.
+// One pass of XPBD over the bends. The gradient includes how the normal rotates as a, b, c, and d
+// move so the correction stays conservative (fixing the normal does spurious work on swings).
+// Every vertex gradient lies along the normal: scalars are `1 - ge` (a), `1 + ge` (b), `-2` (m),
+// `-gf` (c), and `+gf` (d).
 fn void solve_bends(Vector3* p, float* w, List{Bend}* bends) @local {
     Bend* b  = bends.entries;
     sz count = bends.len();
@@ -1036,6 +982,7 @@ fn void solve_bends(Vector3* p, float* w, List{Bend}* bends) @local {
     }
 }
 
+// Pulls each tethered vertex back within `rest * (1 + tether_slack)` of its nearest pin.
 fn void Cloth.solve_tethers(&self) {
     Vector3* p  = self.pos.ptr;
     Tether* t   = self.tethers.entries;
@@ -1340,6 +1287,7 @@ fn void Cloth.collide_box(&self, Collider* k, float t, float t_prev) {
     }
 }
 
+// Pushes free vertices out of plane collider `k` at sweep fraction `t` and applies friction.
 fn void Cloth.collide_plane(&self, Collider* k, float t) {
     uint n      = self.count();
     Vector3* p  = self.pos.ptr;
@@ -1380,6 +1328,7 @@ fn bool Cloth.moved(&self, float distance) {
     return false;
 }
 
+// Snapshots current vertex positions as the reference baseline for `moved()`.
 fn void Cloth.mark(&self) {
     if (!self.marked.len) self.marked = mem::new_array(Vector3, self.pos.len);
     self.marked[..] = self.pos[..];

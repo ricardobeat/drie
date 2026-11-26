@@ -1,10 +1,15 @@
-// The shading library of the built-in materials' node graphs (materials_nodes.c3): the
-// functions of the engine's material shader (shader_core.glsl, tonemapping.glsl) as node
-// builders, with the same math.
+// `drie::shading` node-graph shading library mirroring shaders/shader_core.glsl and
+// shaders/tonemapping.glsl: wind sway, UV slot transforms, hex tiling, equirectangular env
+// sampling, octahedral normal packing, analytic fog, tone mapping, and depth packing.
+//
+// `uv_rel` stores 2 Vec4 rows per map slot (0 = normal, 1 = ARM, 2..7 = `tex_ext0..5`), with
+// `r0.w > 0.5` selecting `uv1` and `r1.w` encoding software wrap modes (`0` = sampler default,
+// `1 + s + 3*t` for repeat/clamp/mirror). Hex tiling skips patches with weight `<= HEX_SKIP`
+// (`0.004`). Used by the material graph builders in src/material/.
 module drie::shading;
 import drie, drie::nodes;
 
-// Wind (shader_core.glsl's apply_sway): `wp` bent sideways the higher `height` is.
+// Wind (shaders/shader_core.glsl's apply_sway): `wp` bent sideways the higher `height` is.
 fn Node apply_sway(Node wp, Node height, Node sway) {
     Node h = nodes::max(height, 0);
     Node phase = wp.x() * 0.37f + wp.z() * 0.29f;
@@ -18,6 +23,7 @@ fn Node apply_sway(Node wp, Node height, Node sway) {
     return nodes::vec3(xz.x(), wp.y(), xz.y());
 }
 
+// `1 / pi`, used for Lambertian diffuse normalization and equirectangular UV projection.
 const float RECIPROCAL_PI = 0.31830988618f;
 
 // The material's uv and how it changes from one pixel to the next (g_uv and its derivatives).
@@ -35,9 +41,8 @@ struct FragUv {
     Node hex_w;
 }
 
-// The uv of slot `u` of uv_rel (0: the normal map, 1: the arm map, 2..7: the shared slots) at
-// the material's uv, and how it changes from one pixel to the next (shader_core.glsl's
-// slot_uv, slot_dx, slot_dy).
+// Transformed UV for `uv_rel` slot `u` (0 = normal, 1 = ARM, 2..7 = `tex_ext0..5`), matching
+// shaders/shader_core.glsl's `slot_uv`.
 fn Node slot_uv(FragUv* f, int u, Node shift = { }) {
     Node r0 = drie::fs_in("uv_rel", k: u * 2);
     Node r1 = drie::fs_in("uv_rel", k: u * 2 + 1);
@@ -46,6 +51,7 @@ fn Node slot_uv(FragUv* f, int u, Node shift = { }) {
     return nodes::vec2(nodes::dot(r0.xyz(), p), nodes::dot(r1.xyz(), p));
 }
 
+// Screen-space UV partial derivative (`y == false`: dFdx, `y == true`: dFdy) for `uv_rel` slot `u`.
 fn Node slot_d(FragUv* f, int u, bool y) {
     Node r0 = drie::fs_in("uv_rel", k: u * 2);
     Node r1 = drie::fs_in("uv_rel", k: u * 2 + 1);
@@ -168,6 +174,7 @@ fn Node slot_grad_at(int u, int view, Node suv, Node dx, Node dy) {
 // One of the six shared map slots (tex_ext0..5) at the material's uv.
 fn Node ext_texel(FragUv* f, int slot) => slot_texel(f, slot + 2, shaders::VIEW_TEX_EXT0 + slot);
 
+// Software UV wrap (`mode`: `0` = repeat, `1` = clamp inset by `half`, `2` = mirrored repeat).
 fn Node wrap_coord(Node x, Node mode, Node half) {
     Node mirrored = nodes::abs(nodes::mod(x, 2) - 1).one_minus();
     return nodes::select(mode.equal(nodes::int_(1)), nodes::clamp(x, half, half.one_minus()),
@@ -182,10 +189,12 @@ fn Node env_uv(Node d) {
     );
 }
 
+// Texel dimensions (`ivec2`) of `VIEW_TEX_ENV` at mip level `lod`.
 fn Node env_size(int lod = 0) {
     return drie::node_sample(SIZE, shaders::VIEW_TEX_ENV, shaders::SMP_ENV_SMP, TEX_2D, lod ? nodes::int_(lod) : (Node) { });
 }
 
+// Samples `VIEW_TEX_ENV` at equirectangular `uv` and explicit mip level `lod`.
 fn Node env_level(Node uv, Node lod) => drie::node_sample(LEVEL, shaders::VIEW_TEX_ENV, shaders::SMP_ENV_SMP, TEX_2D, uv, lod);
 
 // The material's map at its sharpest (env_texel_smooth): four bilinear reads at the corners
@@ -219,6 +228,7 @@ fn Node env_classic(Node d) {
     return drie::node_sample(GRAD, shaders::VIEW_TEX_ENV, shaders::SMP_ENV_SMP, TEX_2D, uv, dx, dy).xyz();
 }
 
+// Encodes unit normal `n` into a 2-component octahedral vector in `[-1, 1]^2`.
 fn Node pack_normal_octahedral(Node n) {
     Node m = n / (nodes::abs(n.x()) + nodes::abs(n.y()) + nodes::abs(n.z()));
     Node signs = nodes::vec2(
@@ -265,40 +275,54 @@ fn Node fog_transmittance(MaterialKey key, Node d) {
     }
 }
 
-// ---- tone mapping (tonemapping.glsl)
+// ---- Tone mapping and color space
 
+// Tone mapping disabled (matches shaders/tonemapping.glsl `TONE_NONE`).
 const int TONE_NONE = 0;
+// Linear exposure scale clamped to `[0, 1]`.
 const int TONE_LINEAR = 1;
+// Reinhard tone mapping `c / (c + 1)`.
 const int TONE_REINHARD = 2;
+// Filmic Cineon tone curve.
 const int TONE_CINEON = 3;
+// Stephen Hill ACES Filmic RRT+ODT fit.
 const int TONE_ACES_FILMIC = 4;
+// AgX wide-gamut tone mapper via Rec.2020 inset/outset.
 const int TONE_AGX = 5;
+// Khronos PBR Neutral tone mapper.
 const int TONE_NEUTRAL = 6;
+// Standard sRGB display output (`MaterialKey.display`).
 const int DISPLAY_SRGB = 0;
+// Linear HDR display output without sRGB transfer (`MaterialKey.display`).
 const int DISPLAY_HDR = 2;
 
+// Constructs a constant `MAT3` node from 9 column-major floats.
 fn Node mat3_of(float[9] m) {
     return drie::node_matrix({ nodes::vec3(m[0], m[1], m[2]), nodes::vec3(m[3], m[4], m[5]), nodes::vec3(m[6], m[7], m[8]) }, MAT3);
 }
 
+// Converts linear RGB `c` to sRGB transfer encoding.
 fn Node linear_to_srgb(Node c) {
     Node lo = c * 12.92f;
     Node hi = nodes::pow(c, nodes::vec3(1.0f / 2.4f)) * 1.055f - 0.055f;
     return nodes::mix(lo, hi, nodes::step(nodes::vec3(0.0031308f), c));
 }
 
+// Converts sRGB-encoded color `c` to linear RGB.
 fn Node srgb_to_linear(Node c) {
     Node lo = c / 12.92f;
     Node hi = nodes::pow((c + 0.055f) / 1.055f, nodes::vec3(2.4f));
     return nodes::mix(lo, hi, nodes::step(nodes::vec3(0.04045f), c));
 }
 
+// Rational polynomial fit to the ACES RRT+ODT curve (Stephen Hill).
 fn Node rrt_odt_fit(Node v) {
     Node a = v * (v + 0.0245786f) - 0.000090537f;
     Node b = v * (v * 0.983729f + 0.4329510f) + 0.238081f;
     return a / b;
 }
 
+// ACES Filmic tone curve applied in AP1 space, returning linear sRGB before clamping.
 fn Node aces_filmic_wide(Node c) {
     Node aces_in = mat3_of({ 0.59719f, 0.07600f, 0.02840f, 0.35458f, 0.90834f, 0.13383f, 0.04823f, 0.01566f, 0.83777f });
     Node aces_out = mat3_of({ 1.60475f, -0.10208f, -0.00327f, -0.53108f, 1.10813f, -0.07276f, -0.07367f, -0.00605f, 1.07602f });
@@ -306,12 +330,14 @@ fn Node aces_filmic_wide(Node c) {
     return aces_out * rrt_odt_fit(x);
 }
 
+// 6th-order polynomial contrast sigmoid for AgX log-encoded values in `[0, 1]`.
 fn Node agx_contrast(Node x) {
     Node x2 = x * x;
     Node x4 = x2 * x2;
     return x4 * x2 * 15.5f - x4 * x * 40.14f + x4 * 31.96f - x2 * x * 6.868f + x2 * 0.4298f + x * 0.1191f - 0.00232f;
 }
 
+// AgX tone mapper operating in Rec.2020 with inset/outset matrices, returning linear Rec.2020.
 fn Node agx_rec2020(Node c) {
     Node to_2020 = mat3_of({ 0.6274f, 0.0691f, 0.0164f, 0.3293f, 0.9195f, 0.0880f, 0.0433f, 0.0113f, 0.8956f });
     Node inset = mat3_of({ 0.856627153315983f, 0.137318972929847f, 0.11189821299995f, 0.0951212405381588f, 0.761241990602591f,
@@ -327,8 +353,10 @@ fn Node agx_rec2020(Node c) {
     return nodes::pow(nodes::max(x, nodes::vec3(0)), nodes::vec3(2.2f));
 }
 
+// Constant `MAT3` converting linear Rec.2020 primaries to linear sRGB.
 fn Node rec2020_to_srgb() => mat3_of({ 1.6605f, -0.1246f, -0.0182f, -0.5876f, 1.1329f, -0.1006f, -0.0728f, -0.0083f, 1.1187f });
 
+// Khronos PBR Neutral tone mapper preserving hue and base color fidelity.
 fn Node neutral(Node c) {
     float start = 0.8f - 0.04f;
     float desaturation = 0.15f;
@@ -344,6 +372,7 @@ fn Node neutral(Node c) {
     return nodes::select(peak.less_than(nodes::num(start)), d0, rolled);
 }
 
+// Optimized Cineon filmic tone curve (linear output).
 fn Node cineon(Node c) {
     Node x = nodes::max(nodes::vec3(0), c - 0.004f);
     return nodes::pow((x * (x * 6.2f + 0.5f)) / (x * (x * 6.2f + 1.7f) + 0.06f), nodes::vec3(2.2f));
@@ -364,6 +393,7 @@ fn Node tone_map(Node c, int mode, Node exposure) {
     }
 }
 
+// Applies tone mapping `mode` with `exposure`, converting to Display P3 primaries when `p3` holds.
 fn Node tone_map_gamut(Node c, int mode, Node exposure, bool p3) {
     if (!p3) return tone_map(c, mode, exposure);
     Node srgb_to_p3 = mat3_of({ 0.8225f, 0.0332f, 0.0171f, 0.1774f, 0.9669f, 0.0724f, 0.0000f, 0.0000f, 0.9108f });

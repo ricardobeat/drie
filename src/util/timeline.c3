@@ -1,70 +1,66 @@
-// Timeline: rewind and fast-forward by replaying recorded input.
-//
-// A game whose step is deterministic (same state + same input + same dt = same next state) can
-// go back in time without storing every frame: the timeline keeps each frame's input and dt,
-// plus a snapshot of the game state every `key_interval` seconds. Seeking back loads the
-// snapshot before the target and replays the frames after it; seeking forward just replays.
+// Deterministic input recording and rewind/fast-forward timeline parameterized by `Input` and
+// `State`. Records each frame's input and `dt` alongside periodic state snapshots every
+// `key_interval` seconds; seeking loads the nearest prior snapshot and replays forward with
+// `replay = true` so the step function can suppress one-shot side effects.
 //
 //   alias GameTimeline = drie::timeline::Timeline{MyInput, MyState};
 //   GameTimeline tl;
 //   tl.init(&step, &save, &load, length: 30);
-//   ...every frame: tl.advance(input, dt);       // records and steps
-//   ...in a rewind screen: tl.seek(tl.time - 2 * dt);
-//   ...to play on from there: tl.truncate();      // forgets what came after
-//
-// `step` is told when it is replaying, so it can leave out side effects that should only
-// happen once (sounds, logging).
+//   tl.advance(input, dt);
+//   tl.seek(tl.time - 2 * dt);
 module drie::timeline <Input, State>;
 import std::collections::list;
 
+// Deterministic simulation step callback; `replay` is true when called inside `seek_frame()`.
 alias StepFn = fn void(Input* input, float dt, bool replay);
+// Copies the current simulation state into `to` for a keyframe snapshot.
 alias SaveFn = fn void(State* to);
+// Restores the simulation state from keyframe snapshot `from`.
 alias LoadFn = fn void(State* from);
 
+// Recorded input and timestep for a single simulated frame.
 struct Frame {
-    Input input;
-    float dt;
-    double time; // when the frame started
+    Input input; // Input sampled for this frame.
+    float dt; // Frame duration in seconds.
+    double time; // Timeline timestamp when this frame started.
 }
 
+// Periodic simulation snapshot taken immediately before frame `frame` ran.
 struct Keyframe {
-    State state; // the state before frame `frame` ran
-    long frame;
-    double time;
+    State state; // Saved state prior to `frame`.
+    long frame; // Monotonic frame number corresponding to `state`.
+    double time; // Timeline timestamp of `frame`.
 }
 
+// Rolling history of recorded frames and state keyframes supporting arbitrary time seeking.
 struct Timeline {
-    StepFn step;
-    SaveFn save;
-    LoadFn load;
-    // seconds of history kept
-    double length;
-    // seconds between snapshots: a seek replays up to this much
-    double key_interval;
-    // frames[i] is frame number first + i
-    List{Frame} frames;
-    List{Keyframe} keys;
-    long first;
-    // the next frame to run; end() while live
-    long cursor;
-    // time at the cursor
-    double time;
-    // set while seek() replays frames
-    bool replaying;
+    StepFn step; // Deterministic step callback.
+    SaveFn save; // Snapshot capture callback.
+    LoadFn load; // Snapshot restore callback.
+    double length; // Maximum history duration retained in seconds.
+    double key_interval; // Minimum seconds between saved keyframes (caps seek replay work).
+    List{Frame} frames; // Recorded frames; `frames[i]` is frame number `first + i`.
+    List{Keyframe} keys; // Ordered snapshots covering `[first, end()]`.
+    long first; // Frame number of `frames[0]`.
+    long cursor; // Next frame number to run (`end()` while live).
+    double time; // Current timestamp at `cursor`.
+    bool replaying; // True while `seek_frame()` is replaying recorded frames.
 }
 
+// Initializes the timeline with callbacks, history `length` (seconds), and `key_interval`.
 fn void Timeline.init(&self, StepFn step, SaveFn save, LoadFn load, double length = 30, double key_interval = 0.25) {
     *self = { .step = step, .save = save, .load = load, .length = length, .key_interval = key_interval };
     self.frames.allocator = mem;
     self.keys.allocator = mem;
 }
 
+// Frees the internal frame and keyframe lists.
 fn void Timeline.free(&self) {
     self.frames.free();
     self.keys.free();
 }
 
-// Forgets everything and starts again at `time`, from the current state.
+// Clears all recorded history and restarts the timeline clock at `time` from the current state.
 fn void Timeline.reset(&self, double time = 0) {
     self.frames.clear();
     self.keys.clear();
@@ -73,19 +69,23 @@ fn void Timeline.reset(&self, double time = 0) {
     self.time = time;
 }
 
+// Returns the frame number one past the newest recorded frame.
 fn long Timeline.end(&self) => self.first + (long)self.frames.len();
 
-// Whether the cursor is at the newest frame (new input can be recorded).
+// Returns true when `cursor` is at `end()` (recording live without truncating).
 fn bool Timeline.is_live(&self) => self.cursor == self.end();
 
+// Returns the timestamp of the oldest retained frame, or `time` if history is empty.
 fn double Timeline.start_time(&self) => self.frames.len() ? self.frames[0].time : self.time;
 
+// Returns the timestamp at the end of the newest retained frame, or `time` if history is empty.
 fn double Timeline.end_time(&self) {
     if (!self.frames.len()) return self.time;
     Frame* last = &self.frames[self.frames.len() - 1];
     return last.time + last.dt;
 }
 
+// Returns the start timestamp of `frame` (or `end_time()` for `frame >= end()`).
 fn double Timeline.frame_time(&self, long frame) {
     if (frame >= self.end()) return self.end_time();
     return self.frames[(sz)(frame - self.first)].time;

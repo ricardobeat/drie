@@ -1,17 +1,17 @@
-// Compute shaders of the renderer (see compute.c3): light clustering and instance culling.
-// just shaders turns this into generated/kernels.c3.
+// Renderer compute kernels (drie): light clustering (cluster_cs), GPU instance culling (cull_cs),
+// and volumetric froxel fog (fog_cs). Regenerate generated/kernels.c3 with `just shaders`.
 @header module drie::shaders;
 @header import drie;
 
 @ctype mat4 Mat4
 @ctype vec4 Vec4
 
-// Sorts the point and spot lights into the clusters (froxels) of a view, as cluster_lights_cpu
-// does in clusters.c3, with the same result: per cluster its first entry in the index list, its
-// point lights, its spot lights after them. The CPU finds the clusters each light's sphere
-// touches (a box of them, `ranges`); this fills the grid in one group of 256: each thread
-// counts the lights of its run of clusters, the runs are added up in order, and each thread
-// writes its clusters' lists where they start.
+// Sorts the point and spot lights into the clusters (froxels) of a view, matching
+// drie::cluster_lights_cpu: per cluster its first entry in the index list, its point lights, and
+// its spot lights after them. The CPU finds the clusters each light's sphere touches (a box of
+// them, `ranges`); this fills the grid in one group of 256: each thread counts the lights of its
+// run of clusters, the runs are added up in order, and each thread writes its clusters' lists
+// where they start.
 @cs cluster_cs
 layout(binding=0) uniform cluster_params {
     ivec4 cl_lights;  // x = point lights, y = spot lights (their ranges follow the points')
@@ -23,7 +23,7 @@ struct light_range {
 };
 layout(binding=0) readonly buffer cluster_ranges { light_range ranges[]; };
 struct gpu_cluster {
-    uvec4 range;  // as gpu_light_cluster in shader.glsl
+    uvec4 range;  // as gpu_light_cluster in shaders/shader_core.glsl
 };
 struct gpu_cluster_light {
     uint index;
@@ -80,8 +80,8 @@ void main() {
 
 // Instance culling: one group per job (an instanced mesh seen from one view). Tests each
 // instance's bounding sphere against the view's planes and writes the ones inside, in order,
-// to `visible` from the job's first entry, and how many there are to counts[job]. An
-// instanced draw then reads its matrices through `visible` (shader.glsl, fetch_instance).
+// to `visible` from the job's first entry, and how many there are to counts[job]. An instanced
+// draw then reads its matrices through `visible` (shaders/shader_core.glsl, fetch_instance).
 @cs cull_cs
 struct cull_job {
     vec4 m0;      // the mesh's world matrix, rows
@@ -155,14 +155,14 @@ void main() {
 @end
 
 
-// Volumetric fog (fog.c3): marches every column of the froxel grid (a cell of the picture, cut
-// into slices of view depth that grow exponentially) from the camera outwards, and writes per
-// slice the light the fog scatters towards the camera up to the slice's far end (rgb) and how
-// much of what lies there gets through (a). The slices are tiles of one 2D image, `vf_grid.w`
-// across. Each slice is lit at one point, somewhere else in it every frame: by the sun through
-// its cascades, by the spot lights through their shadow maps, by the point lights, each with
-// only the lights of the cluster the point is in (clusters.c3). The fog's density, its height
-// and the clear box are integrated exactly over the slice; only the noise is taken at the point.
+// Volumetric fog (Fog): marches every column of the froxel grid (a cell of the picture, cut into
+// slices of view depth that grow exponentially) from the camera outwards, and writes per slice
+// the light the fog scatters towards the camera up to the slice's far end (rgb) and how much of
+// what lies there gets through (a). The slices are tiles of one 2D image, `vf_grid.w` across.
+// Each slice is lit at one point, somewhere else in it every frame: by the sun through its
+// cascades, by the spot lights through their shadow maps, and by the point lights, each with
+// only the lights of the cluster the point is in (ClusteredLighting). The fog's density, height,
+// and clear box are integrated over the slice; only the noise is evaluated at the sample point.
 @cs fog_cs
 layout(binding=0) uniform fog_cs_params {
     vec4 vf_cam;        // the camera's position, w = frame (for the jitter)
@@ -174,14 +174,14 @@ layout(binding=0) uniform fog_cs_params {
                         //   log(depth / x), z = where the last ends, w = 1 / tile's texel size
     vec4 vf_wind;       // xyz = noise drift (m/s)
     vec4 vf_color;      // the fog's own color (linear), w = light scatter
-    vec4 vf_params;     // as fog_params in shader.glsl: near, far, density, mode
+    vec4 vf_params;     // as fog_params in shaders/shader_core.glsl: near, far, density, mode
     vec4 vf_box_min;    // fog-free box, w = 1 when enabled
     vec4 vf_box_max;    // w = the part of the density left in the box
     vec4 vf_height;     // x = base height, y = falloff, w = density away from the sun's side
     vec4 vf_sun_dir;    // towards the sun, w = sharpness (0: no sun)
     vec4 vf_sun_color;  // w = light shafts
     vec4 vf_clusters;   // xyz = light clusters across, up, in depth; w = 1: there are lights
-    vec4 vf_cluster_depth;  // as cluster_depth in shader.glsl
+    vec4 vf_cluster_depth;  // as cluster_depth in shaders/shader_core.glsl
     mat4 vf_shadow_mat[4];  // as dir_shadow_mat...
     vec4 vf_shadow_params;  // x = the sun has a shadow map, z = texel size of it
     vec4 vf_cascade_rect[4];
@@ -192,11 +192,11 @@ layout(binding=0, rgba16f) uniform writeonly image2D vf_out;
 layout(binding=1) uniform texture2D vf_spot_map;   // the spot light's map, drawn every frame
 layout(binding=2) uniform texture2D vf_spot_atlas; // the maps drawn once
 layout(binding=3) uniform texture2D vf_sun_map;    // the sun's cascades
-layout(binding=9) uniform texture2D vf_cookies;    // the spot lights' SpotLight.map (shader.glsl's light_cookies)
+layout(binding=9) uniform texture2D vf_cookies;    // SpotLight.map atlas (light_cookies in shaders/shader_core.glsl)
 layout(binding=0) uniform sampler vf_shadow_smp;
 layout(binding=1) uniform sampler vf_cookie_smp;
 
-// the same layouts as in shader.glsl
+// the same layouts as in shaders/shader_core.glsl
 struct vf_point_light {
     vec4 pos;
     vec4 color;
@@ -232,7 +232,8 @@ layout(binding=8) readonly buffer vf_light_indices { vf_index cluster_lights[]; 
 
 layout(local_size_x=8, local_size_y=8) in;
 
-// Fraction of light that makes it through `d` meters of fog (fog_transmittance in shader.glsl).
+// Fraction of light that makes it through `d` meters of fog (fog_transmittance in
+// shaders/shader_core.glsl).
 float vf_transmittance(float d) {
     int mode = int(vf_params.w);
     if (mode == 1) return 1.0 - smoothstep(vf_params.x, vf_params.y, d);
@@ -337,7 +338,7 @@ float vf_spot_lit(int s, vec3 p) {
 }
 
 // SpotLight.map: how much of spot light s's map gets to p (its picture's luminance; spot_cookie
-// in shader.glsl, at a coarse mip: a froxel is large).
+// in shaders/shader_core.glsl, at a coarse mip: a froxel is large).
 float vf_spot_cookie(int s, vec3 p) {
     vec4 rect = spots[s].map;
     if (rect.z <= 0.0) return 1.0;

@@ -1,43 +1,46 @@
-// OrbitControls: left drag: rotate, right drag (or shift + left): pan, scroll: zoom.
-//   Call controls.update() every frame.
-// WalkControls (below): look with the mouse, walk with WASD.
+// Orbit camera controller: left-drag rotates around a target, right-drag or shift+left-drag
+// pans, and scroll zooms. Events are wired automatically through a shared window listener; call
+// `update()` once per frame to apply accumulated input.
 //
 //   import drie::controls;
 //   OrbitControls* c = controls::orbit_controls(camera);
+//   // each frame:
+//   c.update();
 module drie::controls;
 import std::math, std::collections::list;
 import sokol, drie;
-// Every OrbitControls made, fed the window's events by one listener.
+// Shared registry of live OrbitControls fed by a single window event listener.
 List{OrbitControls*} all @local;
 
+// Spherical orbit controller around `target` for a perspective or orthographic camera.
 struct OrbitControls {
-    Camera* camera;
-    Vector3 target;
-    bool enabled;
-    bool enable_damping;
-    float damping_factor;
-    bool enable_zoom;
-    float zoom_speed;
-    bool enable_rotate;
-    float rotate_speed;
-    bool enable_pan;
-    float pan_speed;
-    float min_distance;
-    float max_distance;
-    float min_polar_angle;
-    float max_polar_angle;
-    bool auto_rotate;
-    float auto_rotate_speed;
+    Camera* camera; // Controlled camera.
+    Vector3 target; // World-space point the camera orbits and looks at.
+    bool enabled; // Ignores input events when false.
+    bool enable_damping; // Smooths rotation and panning toward rest each frame.
+    float damping_factor; // Fraction of pending motion applied per frame when damping is enabled.
+    bool enable_zoom; // Enables scroll-wheel zooming.
+    float zoom_speed; // Multiplier for scroll-wheel zoom steps.
+    bool enable_rotate; // Enables left-drag orbiting.
+    float rotate_speed; // Multiplier for horizontal and vertical orbit drag.
+    bool enable_pan; // Enables right/middle-drag and shift+left-drag panning.
+    float pan_speed; // Multiplier for screen-space panning distance.
+    float min_distance; // Minimum orbit radius for perspective cameras.
+    float max_distance; // Maximum orbit radius for perspective cameras.
+    float min_polar_angle; // Minimum polar angle from +Y in radians (clamped away from 0).
+    float max_polar_angle; // Maximum polar angle from +Y in radians (clamped away from PI).
+    bool auto_rotate; // Slowly orbits around `target` while the user is not dragging.
+    float auto_rotate_speed; // Auto-rotate rate (at 60 fps, 2.0 completes a full turn in 30 s).
 
-    // internal
-    float delta_theta;
-    float delta_phi;
-    float scale;
-    Vector3 pan_offset;
-    bool rotating;
-    bool panning;
+    float delta_theta; // Pending azimuth delta in radians.
+    float delta_phi; // Pending polar angle delta in radians.
+    float scale; // Pending zoom multiplier accumulated since the last update.
+    Vector3 pan_offset; // Pending world-space offset to add to `target`.
+    bool rotating; // True while a rotation drag is active.
+    bool panning; // True while a pan drag is active.
 }
 
+// Creates an OrbitControls bound to `camera` and registers it with the window event listener.
 fn OrbitControls* orbit_controls(Camera* camera) {
     OrbitControls* c = mem::new(OrbitControls);
     *c = {
@@ -62,6 +65,7 @@ fn OrbitControls* orbit_controls(Camera* camera) {
     return c;
 }
 
+// Accumulates a screen-space pan offset scaled to world units at `target` depth.
 fn void OrbitControls.pan(&self, float dx, float dy) {
     drie::Mat4 m  = self.camera.matrix_world;
     Vector3 right = { m[0][0], m[0][1], m[0][2] };
@@ -79,6 +83,7 @@ fn void OrbitControls.pan(&self, float dx, float dy) {
     self.pan_offset += (right * -dx + up * dy) * world_per_pixel * self.pan_speed;
 }
 
+// Processes a sokol mouse or scroll event into pending orbit, pan, or zoom deltas.
 fn void OrbitControls.handle_event(&self, SappEvent* e) {
     if (!self.enabled) return;
     switch (e.type) {

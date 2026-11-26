@@ -1,64 +1,76 @@
-// Ray-traced shadows of rect area lights (RectAreaLight.shadow.ray_traced), with Metal's ray
-// tracing (lib/sokol.c3l/c/sokol_rt.h). In the deferred lighting pass, up to four of a
-// render's rect area lights read their shadow from a mask that rays to points on the lights'
-// rectangles fill, denoised over frames and across the surface: soft where the light is wide
-// and the caster far, sharp where they touch. Where there is no ray tracing (not Metal, an
-// older GPU), outside the deferred pass (transparent and layered materials) and in a
-// Reflector's render, the lights' shadow maps (PCSS with shadow.softness) stand in for it.
+// Hardware ray-traced shadows for `RectAreaLight` (`RectAreaLight.shadow.ray_traced`) backed by
+// Metal ray tracing (`lib/sokol.c3l/c/sokol_rt.h`). Up to `RT_MAX_LIGHTS` (4) rect area lights
+// per deferred render trace stochastic shadow rays against cached per-geometry acceleration
+// structures and denoise them temporally and spatially into a visibility mask bound at
+// `VIEW_TEX_EXT5`. Non-Metal GPUs, forward transparent/layered passes, and `Reflector` renders
+// fall back to PCSS shadow maps. Unused acceleration structures expire after `RT_KEEP_FRAMES`.
+
 module drie;
 import sokol, std::collections::map, std::collections::list, std::math;
 
+// ---- Native ray-tracing interface
+
+// World-space rect area light descriptor passed to `sg_rt_trace()`.
 struct RtLight {
-    float[4] center;
-    float[4] hw;
-    float[4] hh;
+    float[4] center; // World-space rectangle center (`xyz`).
+    float[4] hw; // World-space half-width basis vector (`xyz`).
+    float[4] hh; // World-space half-height basis vector (`xyz`).
 }
 
+// Instance transform and acceleration-structure handle passed to `sg_rt_trace()`.
 struct RtInstance {
-    float[12] columns;
-    CInt geometry;
+    float[12] columns; // Column-major 4x3 world transform (`[col * 3 + row]`).
+    CInt geometry; // Handle returned by `sg_rt_geometry()`.
 }
 
+// Parameter block for `sg_rt_trace()` matching `lib/sokol.c3l/c/sokol_rt.h`.
 struct RtTraceDesc {
-    SgImage depth;
-    SgImage normal;
-    SgImage raw;
-    SgImage blocker;
-    SgImage[2] history;
-    SgImage[2] dist;
-    SgImage mask;
-    CInt width;
-    CInt height;
-    CInt cur;
-    CInt frame;
-    CInt reset;
-    float[16] inv_view_proj;
-    float[16] prev_view_proj;
-    float[4] eye;
-    float[4] prev_eye;
-    float px_scale;
-    CInt zero_to_one;
-    CInt flip_y;
-    RtInstance* instances;
-    CInt instance_count;
-    RtLight[4] lights;
-    CInt light_count;
+    SgImage depth; // G-Buffer depth image.
+    SgImage normal; // G-Buffer world-normal image.
+    SgImage raw; // Scratch raw shadow-ray visibility target (`RGBA16F`).
+    SgImage blocker; // Scratch blocker-distance target (`RGBA16F`).
+    SgImage[2] history; // Ping-pong temporal visibility history (`RGBA16F`).
+    SgImage[2] dist; // Ping-pong linear camera distance history (`R32F`).
+    SgImage mask; // Final denoised 4-channel shadow visibility mask (`RGBA16F`).
+    CInt width; // G-Buffer width in pixels.
+    CInt height; // G-Buffer height in pixels.
+    CInt cur; // Active history index (`0` or `1`).
+    CInt frame; // Monotonic frame counter for stochastic ray jitter.
+    CInt reset; // Non-zero to discard temporal history on camera switch or resize.
+    float[16] inv_view_proj; // Inverse camera-relative view-projection matrix (column-major).
+    float[16] prev_view_proj; // Previous frame's camera-relative view-projection matrix.
+    float[4] eye; // Current camera world position (`xyz`).
+    float[4] prev_eye; // Previous frame's camera world position (`xyz`).
+    float px_scale; // Perspective screen-space pixel scale (`|P[1][1]| * height * 0.5`).
+    CInt zero_to_one; // Non-zero when NDC depth spans `[0, 1]`.
+    CInt flip_y; // Non-zero when image Y runs top-to-bottom.
+    RtInstance* instances; // Array of world-space shadow-caster instances.
+    CInt instance_count; // Number of entries in `instances`.
+    RtLight[4] lights; // Active ray-traced rect area lights for this render.
+    CInt light_count; // Number of entries in `lights` (`<= RT_MAX_LIGHTS`).
 }
 
+// Returns non-zero when the active graphics backend supports hardware ray tracing.
 extern fn CInt sg_rt_supported() @cname("sg_rt_supported");
+// Builds or refits (when `id != 0`) a bottom-level acceleration structure from mesh buffers.
 extern fn CInt sg_rt_geometry(CInt id, SgBuffer vbuf, CInt stride, CInt vertex_count, SgBuffer ibuf, CInt index_count) @cname("sg_rt_geometry");
+// Destroys a bottom-level acceleration structure returned by `sg_rt_geometry()`.
 extern fn void sg_rt_geometry_free(CInt id) @cname("sg_rt_geometry_free");
+// Traces and denoises rect-area shadow visibility for the current G-Buffer; returns non-zero on success.
 extern fn CInt sg_rt_trace(RtTraceDesc* desc) @cname("sg_rt_trace");
 
+// ---- Configuration & state
+
+// Maximum number of ray-traced rect area lights packed into one RGBA visibility mask.
 const int RT_MAX_LIGHTS = 4;
-// The largest shadow map of a ray-traced light (for what the deferred pass doesn't draw).
+// Maximum shadow-map resolution for a ray-traced light (used only for forward fallback passes).
 const int RT_MAP_SIZE = 256;
-// Frames a geometry no render has traced keeps its acceleration structure.
+// Number of frames an unused geometry retains its cached acceleration structure.
 const uint RT_KEEP_FRAMES @local = 240;
-// Instances traced at most (an instanced mesh's each count).
+// Upper bound on shadow-caster instances submitted per frame (including instanced meshes).
 const int RT_MAX_INSTANCES @local = 65536;
 
-// A geometry's acceleration structure (sg_rt_geometry), and what it was built from.
+// Cached acceleration structure for a `BufferGeometry` and the buffer versions it matches.
 struct RtGeometry @local {
     CInt id;
     uint version;
@@ -69,7 +81,7 @@ struct RtGeometry @local {
 struct RtState @private {
     bool checked;
     bool supported;
-    // this render's ray-traced lights (rt_light: their channel of the mask)
+    // Active ray-traced lights for the current render (indexed by RGBA mask channel).
     RtLight[RT_MAX_LIGHTS] lights;
     int count;
     HashMap{ulong, RtGeometry} geometries;
@@ -87,7 +99,7 @@ struct RtState @private {
 
 RtState rts @private;
 
-// Whether this GPU traces rays (Metal's ray tracing; DRIE_NO_RAY_TRACING=1: not).
+// Returns true when hardware ray tracing is available (disabled by `DRIE_NO_RAY_TRACING=1`).
 fn bool rt_supported() @private {
     if (!rts.checked) {
         rts.checked = true;
@@ -96,16 +108,18 @@ fn bool rt_supported() @private {
     return rts.supported;
 }
 
-// Whether the renderer is ray tracing rect area lights' shadows in this render.
+// Returns true when the renderer will ray-trace rect area light shadows in the current render.
 fn bool Renderer.traces_rays(&self) => self.ray_traced_shadows && self.deferred && !state.bake.on && !self.reflecting && rt_supported();
 
-// A new render's lights: none ray traced yet.
+// ---- Per-frame tracing
+
+// Resets the per-render ray-traced light list before light collection begins.
 fn void rt_begin() @private {
     rts.count = 0;
 }
 
-// The mask channel of rect area light `ra` (its half width `hw` and half height `hh` in the
-// world) plus 1, when it is ray traced in this render; 0: its shadow maps instead.
+// Registers `ra` (with world half-width `hw` and half-height `hh`) for ray tracing and returns
+// its 1-based mask channel (`1..RT_MAX_LIGHTS`), or `0` to fall back to shadow maps.
 fn int rt_light(Renderer* r, RectAreaLight* ra, Vector3 hw, Vector3 hh) @private {
     if (!ra.cast_shadow || !ra.shadow.ray_traced || rts.count >= RT_MAX_LIGHTS || !r.traces_rays()) return 0;
     Vector3 c = ra.matrix_world.get_position();
@@ -114,15 +128,15 @@ fn int rt_light(Renderer* r, RectAreaLight* ra, Vector3 hw, Vector3 hh) @private
     return rts.count;
 }
 
-// Whether `l` is a rect area light whose shadow is ray traced where the deferred pass draws
-// (its maps are then only for the rest, and smaller).
+// Returns true when `l` is a rect area light ray-traced in the deferred pass (so its fallback
+// shadow map can stay at `RT_MAP_SIZE`).
 fn bool rt_traced(Light* l) @private {
     if (l.light_type != RECT_AREA || !l.cast_shadow) return false;
     RectAreaLight* ra = (RectAreaLight*)l;
     return ra.shadow.ray_traced && state.renderer && state.renderer.traces_rays();
 }
 
-// The mask the lighting pass reads (bound in tex_ext5): white until rays fill it.
+// Returns the denoised shadow mask view (`VIEW_TEX_EXT5`), or `none` if no trace ran this frame.
 fn SgView rt_mask(SgView none) @private => rts.traced_frame == state.frame + 1 ? rts.mask_view : none;
 
 fn void rt_images(int w, int h) @local {
@@ -158,8 +172,7 @@ fn void rt_add_instance(Mat4 m, CInt geometry) @local {
     rts.instances.push(inst);
 }
 
-// The acceleration structure of a caster's geometry, built or refitted when its vertices
-// changed.
+// Returns the acceleration-structure handle for `g`, building or refitting when vertices update.
 fn CInt rt_geometry(BufferGeometry* g) @local {
     if (!g.uploaded || !g.vbuf.id || !g.ibuf.id || g.index_count < 3) return 0;
     ulong key = (ulong)(uptr)g;
@@ -168,7 +181,7 @@ fn CInt rt_geometry(BufferGeometry* g) @local {
         have.used = state.frame;
         return have.id;
     }
-    // (new buffers: a new structure; the same ones with other vertices: refitted)
+    // Reallocated GPU buffers require a fresh structure; updated vertices on the same buffers refit.
     CInt id = have && have.upload_version == g.upload_version ? have.id : 0;
     if (have && !id) sg_rt_geometry_free(have.id);
     id = sg_rt_geometry(id, g.vbuf, (CInt)(FLOATS_PER_VERTEX * float::size), (CInt)g.vertex_count(), g.ibuf, (CInt)g.index_count);
@@ -204,8 +217,8 @@ fn void rt_walk(Object3D* obj) @local {
     foreach (c : obj.children) rt_walk(c);
 }
 
-// Fills the mask for this render's ray-traced lights, after the G-buffer is drawn (its depth
-// `depth` and normals `normal`, `width` x `height`) and before the lighting pass reads it.
+// Traces and denoises the visibility mask for this render's ray-traced lights between the
+// G-Buffer pass (`depth`, `normal`, `width` x `height`) and the deferred lighting pass.
 fn void rt_trace(Scene* scene, Camera* camera, Mat4 view_proj_rel, SgImage depth, SgImage normal, int width, int height) @private {
     if (!rts.count) return;
     if (!rts.geometries.allocator) {
@@ -215,7 +228,7 @@ fn void rt_trace(Scene* scene, Camera* camera, Mat4 view_proj_rel, SgImage depth
     rt_images(width, height);
     rts.instances.clear();
     rt_walk(scene);
-    // structures no render used for a while
+    // Evict acceleration structures not touched for `RT_KEEP_FRAMES` frames.
     @pool() {
         List{ulong} gone;
         gone.tinit();

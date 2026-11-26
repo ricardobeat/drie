@@ -1,34 +1,15 @@
-// drie::nodes::snippet: a graph written as text, for material code. The text is an expression
-// in GLSL's syntax, with names from drie::nodes (three's TSL in snake case), and lets before it:
+// Text expression parser (`drie::nodes::snippet`) compiling GLSL-like expressions with `let`
+// bindings into shader `Node` graphs, plus error reporting (`SNIPPET_ERROR`, `snippet_error`).
 //
-//   Node dirt = nodes::snippet(`
-//       let h = position_world.y - floor_y;
-//       let d = smoothstep(0.6, 0.0, h) * amount;
-//       mix(material_color.rgb, vec3(0.2, 0.17, 0.12), d)
-//   `, { { "floor_y", floor_y }, { "amount", amount } })!!;
-//   mat.color_node = nodes::vec4(dirt, 1);
-//
-// It makes the same nodes as the calls would (nodes::mix(...)), so it goes wherever a graph
-// does: color_node, roughness_node, position_node... What it knows:
-//   - numbers (1, 0.5, 2e-3); + - * / % (mod); < <= > >= == !=; && || !; c ? a : b; ( )
-//   - swizzles: .x .xy .rgb .zyx...
-//   - vec2(...) vec3(...) vec4(...), as nodes::vec3 takes them
-//   - the math of drie::nodes by GLSL's names: sin cos tan asin acos atan exp exp2 log log2
-//     sqrt inversesqrt abs sign floor ceil fract round trunc normalize length saturate dfdx
-//     dfdy fwidth pow min max step dot cross distance atan2 reflect mod mix clamp smoothstep
-//     one_minus
-//   - what the shader knows: uv uv1 position_local position_world normal_local normal_world
-//     normal_geometry camera_position view_direction time vertex_color frag_coord
-//     material_color material_roughness material_metalness instance_index
-//   - `names`: nodes from the application (uniforms, textures read, other graphs)
-//   - let name = expr; before the expression, to name a part of it
-// Anything else (textures, loops, functions) is made with drie::nodes and passed in `names`.
-// A mistake in the text is no crash: the snippet fails with SNIPPET_ERROR and snippet_error()
-// says what and where ("2:14: no 'foor_y' here").
+// Validates operand types, swizzles, and arity before calling `drie::nodes` constructors so
+// syntax or type mistakes return `SNIPPET_ERROR~` with `"line:col: message"` instead of
+// aborting. Supports up to 32 `let` bindings and 4 arguments per call. Emits nodes through
+// `drie::nodes` (src/nodes/tsl.c3) and `drie` (src/nodes/graph.c3).
 module drie::nodes;
 import drie;
 import std::io, std::core::string;
 
+// Fault returned by `snippet` on syntax or type errors; call `snippet_error()` for details.
 faultdef SNIPPET_ERROR;
 
 // A name a snippet can use, and the node it stands for.
@@ -52,7 +33,22 @@ struct Snippet @local {
     bool failed;
 }
 
-// The graph `src` describes (see above).
+// Parses GLSL-like expression text `src` (with optional leading `let name = expr;` bindings and
+// external `names`) into a shader `Node`, returning `SNIPPET_ERROR~` on failure:
+//
+//   Node dirt = nodes::snippet(`
+//       let h = position_world.y - floor_y;
+//       let d = smoothstep(0.6, 0.0, h) * amount;
+//       mix(material_color.rgb, vec3(0.2, 0.17, 0.12), d)
+//   `, { { "floor_y", floor_y }, { "amount", amount } })!!;
+//   mat.color_node = nodes::vec4(dirt, 1);
+//
+// Supports numbers, `+ - * / % < <= > >= == != && || ! ?: ()`, swizzles (`.x`, `.xy`, `.rgb`,
+// ...), `vec2`/`vec3`/`vec4`, `drie::nodes` math functions (`sin`..`smoothstep`, `one_minus`),
+// and shader builtins (`uv`, `uv1`, `position_local`, `position_world`, `normal_local`,
+// `normal_world`, `normal_geometry`, `camera_position`, `view_direction`, `time`, `vertex_color`,
+// `frag_coord`, `material_color`, `material_roughness`, `material_metalness`, `instance_index`).
+// Pass textures, loops, or functions constructed with `drie::nodes` through `names`.
 fn Node? snippet(String src, SnippetName[] names = {}) {
     Snippet s = { .src = src, .names = names };
     snippet_message_len = 0;
@@ -72,10 +68,12 @@ fn Node? snippet(String src, SnippetName[] names = {}) {
     return n;
 }
 
-// ---- reading
+// ---- Lexing and diagnostics
 
+// Records a formatted parse error at the current cursor position and returns `SNIPPET_ERROR~`.
 fn Node? Snippet.fail(&self, String fmt, args...) => self.fail_at(self.at, fmt, ...args);
 
+// Records a formatted `"line:col: msg"` error at byte offset `at` and returns `SNIPPET_ERROR~`.
 fn Node? Snippet.fail_at(&self, usz at, String fmt, args...) {
     int line = 1;
     int col = 1;
@@ -96,6 +94,7 @@ fn Node? Snippet.fail_at(&self, usz at, String fmt, args...) {
     return SNIPPET_ERROR~;
 }
 
+// Skips whitespace and `//` line comments starting at the current cursor position.
 fn void Snippet.space(&self) {
     while (self.at < self.src.len) {
         char c = self.src[self.at];
@@ -162,7 +161,7 @@ fn String glsl(NodeType t) @local {
     }
 }
 
-// ---- types, checked before the nodes are made (drie::nodes aborts on a mismatch)
+// ---- Type checking
 
 fn bool fits(Node a, Node b) @local {
     NodeType ta = a.type();
@@ -174,14 +173,16 @@ fn bool fits(Node a, Node b) @local {
     return na == nb || na == 1 || nb == 1;
 }
 
+// Type-checks binary operator `op` on `x` and `y` and builds the corresponding `NodeBinary` node.
 fn Node? Snippet.binary(&self, usz at, String op, NodeBinary b, Node x, Node y) {
     if (!fits(x, y)) return self.fail_at(at, "%s %s %s: the sizes don't go together (.xyz, vec3(...))", glsl(x.type()), op, glsl(y.type()));
     if (drie::is_matrix(x.type()) && b != MUL) return self.fail_at(at, "matrices only multiply");
     return drie::node_binary(b, x, y);
 }
 
-// ---- expressions, loosest first
+// ---- Expression parser
 
+// Parses a ternary conditional expression (`c ? a : b`) or lower-precedence expression.
 fn Node? Snippet.expr(&self) {
     Node c = self.or_expr()!;
     usz at = self.at;
@@ -193,18 +194,21 @@ fn Node? Snippet.expr(&self) {
     return select(c, a, b);
 }
 
+// Parses logical OR (`||`) expressions.
 fn Node? Snippet.or_expr(&self) {
     Node a = self.and_expr()!;
     while (self.symbol("||")) a = logical_or(a, self.and_expr()!);
     return a;
 }
 
+// Parses logical AND (`&&`) expressions.
 fn Node? Snippet.and_expr(&self) {
     Node a = self.compare()!;
     while (self.symbol("&&")) a = logical_and(a, self.compare()!);
     return a;
 }
 
+// Parses relational and equality comparisons (`<`, `<=`, `>`, `>=`, `==`, `!=`).
 fn Node? Snippet.compare(&self) {
     Node a = self.sum()!;
     self.space();
@@ -218,6 +222,7 @@ fn Node? Snippet.compare(&self) {
     return a;
 }
 
+// Parses additive expressions (`+`, `-`).
 fn Node? Snippet.sum(&self) {
     Node a = self.product()!;
     while (true) {
@@ -233,6 +238,7 @@ fn Node? Snippet.sum(&self) {
     }
 }
 
+// Parses multiplicative and floored-modulo expressions (`*`, `/`, `%`).
 fn Node? Snippet.product(&self) {
     Node a = self.unary()!;
     while (true) {
@@ -252,12 +258,14 @@ fn Node? Snippet.product(&self) {
     }
 }
 
+// Parses unary negation (`-`) and logical NOT (`!`).
 fn Node? Snippet.unary(&self) {
     if (self.symbol("-")) return self.unary()!.negate();
     if (self.symbol("!")) return logical_not(self.unary()!);
     return self.postfix();
 }
 
+// Parses chained component swizzles (`.x`, `.xy`, `.rgb`, etc.) on a primary expression.
 fn Node? Snippet.postfix(&self) {
     Node n = self.primary()!;
     while (self.symbol(".")) {
@@ -283,6 +291,7 @@ fn Node? Snippet.postfix(&self) {
     return n;
 }
 
+// Parses parenthesized expressions, numbers, calls, `let`/`names` lookups, and shader builtins.
 fn Node? Snippet.primary(&self) {
     self.space();
     usz at = self.at;
@@ -327,6 +336,7 @@ fn Node? Snippet.primary(&self) {
     return self.fail_at(at, "no '%s' here", name);
 }
 
+// Parses a floating-point literal (optional exponent and `f` suffix) into a `FLOAT` constant node.
 fn Node? Snippet.number(&self) {
     usz start = self.at;
     while (self.at < self.src.len && (self.src[self.at].is_digit() || self.src[self.at] == '.')) self.at++;
@@ -342,6 +352,7 @@ fn Node? Snippet.number(&self) {
     return num((float)v);
 }
 
+// Parses a vector constructor (`vec2`/`vec3`/`vec4`) or built-in math function call.
 fn Node? Snippet.call(&self, usz at, String name) {
     Node[4] args;
     int n;

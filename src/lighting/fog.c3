@@ -1,18 +1,18 @@
-// Volumetric fog (see VolumetricFog in core.c3): before the main pass, a compute shader
-// (fog_cs in kernels.glsl) marches the fog through a froxel grid, a cell per few pixels of the
-// picture cut into slices of view depth, and the lit shader reads what lies in front of each
-// surface from it (fog_volume_at in shader.glsl). Like the clusters of lights, but finer, and
-// holding light instead of lists: per slice, the light the fog has scattered towards the
-// camera up to its far end and how much of what lies there still gets through.
-//
-// Unlike a fog pass over the finished picture this needs no depth buffer (the scene is drawn
-// in one pass, with no depth before it), it lands before tone mapping, which the lit shader
-// does itself, and see-through surfaces get the fog in front of them too.
+// Volumetric fog compute pass (`fog_cs` in `shaders/kernels.glsl`) for scenes with
+// `VolumetricFog` enabled. Marches fog through a perspective froxel grid tiled into a 2D RGBA16F
+// storage atlas before the main pass; each slice stores accumulated linear in-scattered light
+// (RGB) and transmittance (A) to its far edge. `fog_volume_at` in `shaders/shader_core.glsl`
+// samples the atlas before tone mapping, covering opaque and transparent surfaces without a
+// pre-pass depth buffer. Up to four volumes are cached by `(cells_x, cells_y, slices)` and
+// reused across frames.
+
 module drie;
 import std::math;
 import sokol;
 
-// A grid's image: its slices side by side, `per_row` to a row.
+// ---- Volume cache
+
+// Tiled 2D storage atlas holding a froxel grid's depth slices (`per_row` slices per row).
 struct FogVolume @local {
     int cells_x;
     int cells_y;
@@ -26,7 +26,7 @@ struct FogVolume @local {
 struct FogPassState @local {
     SgShader shader;
     SgPipeline pipeline;
-    // one per size of grid (renders into targets of other sizes in a frame keep theirs)
+    // Ring cache keyed by `(cells_x, cells_y, slices)` so multi-target frames keep separate grids.
     FogVolume[4] volumes;
     int next;
     int frame;
@@ -34,8 +34,8 @@ struct FogPassState @local {
 
 FogPassState fog_pass @local;
 
-// Whether the fog of a render goes through the froxel grid: there is something for it to
-// scatter, a perspective camera and compute shaders.
+// Returns true when volumetric fog should run through the froxel compute pass (perspective
+// camera, compute shader support, and at least one scattering, shaft, or noise term active).
 fn bool fog_volume_wanted(Fog* f, Camera* camera, bool no_scatter) @private {
     if (!f || !f.volumetric || camera.camera_type != PERSPECTIVE) return false;
     bool scatter = f.light_scatter > 0 && !no_scatter;
@@ -72,22 +72,22 @@ fn FogVolume* fog_volume_for(int cells_x, int cells_y, int slices) @local {
     return v;
 }
 
-// The views the fog pass reads: the shadow maps (the spot light's drawn every frame, the
-// atlas, the sun's) and their comparison sampler.
+// ---- Compute dispatch
+
+// Shadow maps and spotlight cookie textures bound as inputs to the volumetric fog compute pass.
 struct FogShadowViews @private {
     SgView spot_map;
     SgView spot_atlas;
     SgView sun_map;
     SgSampler sampler;
-    // the spot lights' SpotLight.map (light_cookies) and a plain sampler for it
+    // Spotlight projection cookies (`SpotLight.map`) and their regular linear sampler.
     SgView cookies;
     SgSampler cookie_sampler;
 }
 
-// Marches the fog of `scene` for `camera` into its grid, a picture of width x height pixels.
-// `p` holds the render's lights and shadows (build_light_params); the grid's layout goes into
-// it for the lit shader. `resolution_scale` multiplies the grid's cells and slices. Returns the
-// grid's texture.
+// Marches `scene`'s volumetric fog for `camera` into a froxel atlas sized to `width` x `height`
+// pixels scaled by `resolution_scale`. Reads light and shadow parameters from `p`, writes the
+// resulting grid layout back into `p.fog_grid` and `p.fog_slices`, and returns the atlas view.
 fn SgView update_fog_volume(
     Scene* scene,
     Camera* camera,
@@ -103,13 +103,13 @@ fn SgView update_fog_volume(
         fog_pass.shader = make_program(shaders::fog_shader_desc(sg::query_backend()));
         fog_pass.pipeline = sg::make_pipeline(&&{ .compute = true, .shader = fog_pass.shader, .label = "drie-fog" });
     }
-    // (Renderer.fog_resolution_scale: finer or coarser all round)
+    // Scale both xy cell density and slice count (`Renderer.fog_resolution_scale`).
     float q      = resolution_scale > 0 ? resolution_scale : 1;
     float res    = math::min((f.resolution > 0 ? f.resolution : 0.25f) * q, 1.0f);
     int cx       = math::max((int)math::ceil((float)width * res), 1);
     int cy       = math::max((int)math::ceil((float)height * res), 1);
     int slices   = math::min(math::max((int)((f.slices > 0 ? f.slices : 96) * q + 0.5f), 2), 256);
-    // Keep the tiled slice atlas within GPU limits and a reasonable VRAM budget on HiDPI/4K targets.
+    // Keep the tiled slice atlas within GPU limits and a bounded VRAM budget on HiDPI/4K targets.
     int per_row  = (int)math::ceil(math::sqrt((float)slices));
     int rows     = (slices + per_row - 1) / per_row;
     int max_dim  = sg::query_limits().max_image_size_2d;
@@ -128,7 +128,7 @@ fn SgView update_fog_volume(
     Vector3 fwd    = ((Vector3) { -cw[2][0], -cw[2][1], -cw[2][2] }).normalize();
     Vector3 right  = ((Vector3) { cw[0][0], cw[0][1], cw[0][2] }).normalize() / pr[0][0];
     Vector3 up     = ((Vector3) { cw[1][0], cw[1][1], cw[1][2] }).normalize() / pr[1][1];
-    // an off-centre projection (a jittered one, say) moves the middle of the view
+    // Account for off-center or jittered projections when computing the center view ray.
     Vector3 middle = fwd + right * pr[2][0] + up * pr[2][1];
     float near     = math::max(camera.near, CLUSTER_NEAR);
     float far      = math::max(camera.far, near * 2);

@@ -1,6 +1,6 @@
-// OutputPass (postprocessing.c3): the last step of a chain that works in linear light. Tone
-// maps the picture with the renderer's tone mapping and exposure and encodes it as sRGB, as
-// three.js's OutputPass does, or into Display P3's colors, or for an HDR screen. Alpha is kept. Regenerate generated/output.c3 with: just shaders
+// OutputPass (drie::postprocessing): final pass for a linear-light post-processing chain. Applies
+// renderer tone mapping and exposure (or a ColorGrade 3D LUT) and encodes for sRGB, Display P3,
+// or extended-linear HDR while preserving alpha. Regenerate generated/output.c3 with `just shaders`.
 @header module drie::postprocessing;
 @header import drie;
 
@@ -30,7 +30,7 @@ layout(binding=0) uniform output_params {
                    //   w = 1: no sRGB encoding (for a target that is sRGB itself, or more passes in linear)
     vec4 params2;  // x = 1: into Display P3's colors, y = HDR: the screen's peak (times SDR white;
                    //   0: SDR), the result left linear, z = 1: through the grade's LUT (see
-                   //   grade.glsl) instead of the tone mapping, w = the LUT's size
+                   //   shaders/grade.glsl) instead of the tone mapping, w = the LUT's size
 };
 
 in vec2 uv;

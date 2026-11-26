@@ -1,44 +1,43 @@
+// Temporal antialiasing and upscaling pass (`TAAPass`, `shaders/taa.glsl`) for linear HDR
+// render targets with `RenderTarget.mrt` (velocity buffer). Call `jitter()` before rendering
+// each frame to apply a Halton (2, 3) subpixel offset to the camera, then call `render()` to
+// reproject and variance-clip the `RGBA16F` ping-pong history buffer; read the resolved linear
+// texture via `texture()`. Setting `width` and `height` larger than the input target enables
+// temporal upscaling. Call `dispose()` to free history targets and shaders.
+
 module drie::postprocessing;
 import std::collections::list;
 import sokol, drie;
 
-// Temporal antialiasing, like three's TAARenderPass but over time instead of in one frame:
-// the camera is shifted by a fraction of a pixel each frame (jitter()), and render() blends
-// each new frame of a target rendered with MRT into the frames before, found again with the
-// target's motion vectors. The result (linear light, as the target's) is in texture().
+// ---- TAAPass
+
+// Motion-reprojected temporal antialiasing and upscaling pass operating in linear light.
 //
 //   TAAPass* taa = postprocessing::taa_pass();
-//   // each frame:
-//   taa.jitter(camera);                 // before rendering
-//   renderer.set_render_target(scene_rt); renderer.render(scene, camera);
+//   // Each frame:
+//   taa.jitter(camera);
+//   renderer.set_render_target(scene_rt);
+//   renderer.render(scene, camera);
 //   taa.render(scene_rt);
 //   output.set_source(taa.texture());
 //
-// With `width` and `height` larger than the target's, the picture is that large: temporal
-// upscaling (as UE's TAAU and FSR 2 do), which gets most of a picture rendered at that size out
-// of frames rendered at the target's. More shifts (`jitter_samples`) then put a sample near every
-// pixel of it: about 8 times the ratio of the two sizes' pixels.
+// When `width` and `height` exceed the input target's dimensions, increase `jitter_samples` to
+// roughly `8 * (out_pixels / in_pixels)` for even subpixel coverage.
 struct TAAPass {
     inline Pass pass;
-    // the picture's size (0: the target's)
-    int width;
-    int height;
-    // the share of each new frame in the average: less is smoother and slower to follow
-    float blend;
-    // how far the history may stray from the new frame's neighbourhood, in standard
-    // deviations of its colors: more keeps more of it (smoother, more ghosting)
-    float clip_width;
-    // the Halton sequence's length: the number of shifts the camera goes round
-    int jitter_samples;
-    // start over with the next frame (after a cut, or when the camera jumps)
-    bool reset;
-    // the camera's shift for the frame being rendered (jitter()), in its pixels
-    Vector2 shift;
-    PingPong history;
-    ShaderPass resolve;
-    int frame;
+    int width; // Output width in pixels (`0` matches the input render target).
+    int height; // Output height in pixels (`0` matches the input render target).
+    float blend; // Weight of the current frame in the exponential average (`0..1`, default `0.1`).
+    float clip_width; // Neighborhood variance clip half-width in standard deviations (higher = smoother, more ghosting).
+    int jitter_samples; // Length of the Halton (2, 3) camera jitter cycle (default 8).
+    bool reset; // Discards history on the next `render()` (set after cuts or camera teleports), then clears.
+    Vector2 shift; // Subpixel camera offset applied by the latest `jitter()` call (clip-space Y-up pixels).
+    PingPong history; // `RGBA16F` ping-pong temporal accumulation buffers.
+    ShaderPass resolve; // Temporal reprojection and variance-clipping pass (`shaders/taa.glsl`).
+    int frame; // Monotonic frame counter indexing the Halton jitter sequence.
 }
 
+// Allocates a `TAAPass` with default `blend = 0.1`, `clip_width = 1.25`, and `8` jitter samples.
 fn TAAPass* taa_pass() {
     TAAPass* p = mem::new(TAAPass);
     *p = {
@@ -56,7 +55,7 @@ fn TAAPass* taa_pass() {
     return p;
 }
 
-// The i-th number of the Halton sequence of `base`, in 0..1.
+// Returns the `i`-th element of the radical-inverse Halton sequence in `base`, within `[0, 1)`.
 fn float halton(int i, int base) {
     float f = 1;
     float r = 0;
@@ -68,17 +67,17 @@ fn float halton(int i, int base) {
     return r;
 }
 
-// Shifts the camera for the next frame (Halton 2, 3: within half a pixel of the middle); `on`
-// false leaves it where it is (and the picture is made as from frames that were not shifted).
+// Applies the next Halton (2, 3) subpixel offset (`[-0.5, 0.5)` px) to `camera.jitter` before
+// rendering. Pass `on = false` to zero the jitter.
 fn void TAAPass.jitter(&self, Camera* camera, bool on = true) {
     int i = self.frame % (self.jitter_samples > 0 ? self.jitter_samples : 1) + 1;
     self.shift = on ? (Vector2) { halton(i, 2) - 0.5f, halton(i, 3) - 0.5f } : (Vector2) { 0, 0 };
     camera.jitter = self.shift;
 }
 
-// Blends what `target` (rendered with MRT, with the jittered camera) shows now into the history.
-// With `color`, that picture instead, on the target's motion vectors: what came of the target's
-// after a pass of its own (a stochastic depth of field, whose noise the average evens out).
+// Reprojects `history` with `target.velocity_texture` and blends in `target.texture` (or
+// optional post-processed `color`, such as `BokehPass` output sharing `target`'s motion vectors).
+// Aborts if `target` was created without `mrt = true`.
 fn void TAAPass.render(&self, RenderTarget* target, SgView color = {}) {
     if (!target.mrt) abort("drie: TAAPass needs a target with MRT (for its motion vectors)");
     int w = self.width > 0 ? self.width : target.width;
@@ -90,8 +89,7 @@ fn void TAAPass.render(&self, RenderTarget* target, SgView color = {}) {
         self.reset = true;
     }
     bool up = w != target.width || h != target.height;
-    // the shift along the target's rows and columns: the camera's is in clip space, whose y runs
-    // up, and row 0 is the top but in GL
+    // Convert clip-space Y-up jitter to texture-space row direction (flipped on top-down backends).
     Vector2 shift = { self.shift.x, drie::depth_zero_to_one() ? -self.shift.y : self.shift.y };
     ShaderPass* r = &self.resolve;
     r.set_texture(VIEW_TAA_CURRENT, color.id ? color : target.texture);
@@ -109,16 +107,17 @@ fn void TAAPass.render(&self, RenderTarget* target, SgView color = {}) {
     self.frame++;
 }
 
-// The antialiased picture, after render().
+// Returns the latest resolved linear HDR texture view after `render()`.
 fn SgView TAAPass.texture(&self) => self.history.read().texture;
 
+// Disposes the resolve shader pass and ping-pong history targets.
 fn void TAAPass.dispose(&self) {
     self.resolve.dispose();
     foreach (t : self.history.targets) if (t) t.dispose();
 }
 
-// In an EffectComposer, after a RenderPass with `mrt` set (call jitter() before the composer
-// renders): the next pass reads the antialiased picture.
+// `EffectComposer` entry point: resolves `read` (from an MRT `RenderPass`, with `jitter()`
+// called beforehand) and sets `composer.read_buffer` to the latest history target.
 fn void taa_pass_render(
     Pass* pass,
     EffectComposer* composer,

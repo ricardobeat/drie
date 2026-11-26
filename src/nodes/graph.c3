@@ -1,44 +1,32 @@
-// Node materials: a material's color, opacity, normal, roughness, metalness, glow, vertex
-// positions and final color worked out by graphs of nodes made at runtime, like three's TSL
-// and NodeMaterial (colorNode, positionNode, outputNode...):
+// Shader node graph IR (`Node`, `NodeData`, `NodeFunction`), operator/swizzle methods, and
+// per-material graph builds (`NodeBuild`, `node_build_of`).
+//
+// Nodes are immutable uint handles (0 = none) stored in a monotonic arena; only `UNIFORM` nodes
+// mutate in place via `Node.set*`, updating parameters without rebuilding shaders. A material
+// binds at most 6 custom node textures (`NODE_TEXTURES`) across its 15 `*_node` slots
+// (`NODE_SLOTS`), and `node_release` reclaims transient nodes made during program builds.
+// Constructors live in `drie::nodes` (src/nodes/tsl.c3); program analysis and backend codegen
+// live in src/nodes/program.c3 and src/nodes/printer.c3; material integration lives in
+// src/material/material_key.c3 and src/material/material_graph.c3.
+module drie;
+import std::collections::list, std::collections::map, std::io, std::os::env, sokol, drie::nodes;
+
+// Handle to an immutable shader graph node (0 = none); only uniform values mutate via `Node.set*`.
+// Constructed through `drie::nodes`, e.g.:
 //
 //   Node wave = nodes::sin(nodes::position_local().y() * 8 + nodes::time() * 2);
 //   mat.color_node = nodes::mix(nodes::color(0x2266ff), nodes::color(0xffffff), wave * 0.5f + 0.5f);
 //   mat.position_node = nodes::position_local() + nodes::normal_local() * (wave * 0.05f);
-//
-// The renderer prints a material's graphs in the backend's own shading language (Metal, HLSL
-// or GLSL), the way three hands TSL to the browser as WGSL or GLSL: drie carries no shader
-// compiler. They go into the material's generated programs (materials_nodes.c3), where the
-// material's own steps would work out what they replace. A material's programs are built the
-// first time it is drawn, and again when one of its *_node fields changes. A uniform
-// (nodes::uniform) changes with Node.set, without a rebuild.
-//
-// The material's own settings still apply where no node replaces them (its maps, clear coat,
-// transmission...). Node materials work in every pass: the main one, the depth prepass, the
-// deferred G-buffer and the shadow maps, which see position_node, and the holes color_node
-// and opacity_node cut (a discard, or alpha under the material's alpha_test). A material's
-// graphs read at most six textures of their own.
-//
-// Graphs hold floats, ints, uints, bools and their vectors, and 4x4 matrices. They can also
-// hold statements, for TSL's Fn bodies: variables, assignments, ifs, loops, break, continue
-// and discard, in blocks that seq() turns into a value (see drie::nodes), and call functions
-// (nodes::function, three's Fn with a layout), which a program prints once and calls. A value
-// is printed once where it is first needed, and printed again after an assignment when it
-// reads a variable, or outside the block it was printed in.
-module drie;
-import std::collections::list, std::collections::map, std::io, std::os::env, sokol, drie::nodes;
-
-// A node of a shader graph: a handle (0: none). Nodes don't change once made, but for a
-// uniform's value (Node.set). See drie::nodes for the constructors.
 struct Node {
     uint id;
 }
 
-// A graph function (nodes::function), printed once in each stage that calls it.
+// A graph function (`nodes::function`), printed once in each shader stage that calls it.
 struct NodeFunction {
     int id;
 }
 
+// Returns the node representing parameter `i` of this function.
 fn Node NodeFunction.param(self, int i) => node_param(self.id, i);
 
 // Sets its body: the value it returns (a seq() for statements before it).
@@ -60,6 +48,7 @@ macro Node NodeFunction.call(self, ...) {
     $endif
 }
 
+// Value type carried by a node (scalars, vectors, 3x3/4x4 matrices, or `VOID` for statements).
 enum NodeType : char {
     FLOAT,
     VEC2,
@@ -87,6 +76,7 @@ enum NodeScalar : char {
     BOOL,
 }
 
+// Operation tag identifying the expression, statement, or engine input encoded in `NodeData`.
 enum NodeOp : char {
     CONST,    // value
     UNIFORM,  // value (Node.set)
@@ -110,7 +100,7 @@ enum NodeOp : char {
     EVAL,     // args[0] worked out here (a VAR's declaration, a SEQ that returns nothing)
     // and the one that gives a value
     SEQ,      // the block args[0], then args[1] (0: nothing, a VOID)
-    // what a whole program reads (nodes_program.c3):
+    // Engine program inputs (src/nodes/program.c3):
     INPUT,    // rows of an engine uniform block: res[0] = its NodeSource, res[1] = the first row,
               //   res[2] = the component of the row a vector starts at; args[0] an index into an
               //   array (0: none) of value[0] rows a step, value[1] steps long (as bits)
@@ -138,6 +128,7 @@ enum NodeSampling : char {
     LEVELS,   // how many mip levels the texture has (an int)
 }
 
+// Texture dimensionality and sample mode for `NodeOp.SAMPLE`.
 enum NodeTextureKind : char {
     TEX_2D,
     TEX_3D,
@@ -163,6 +154,7 @@ enum NodeLoop : char {
     WHILE,
 }
 
+// Shader stage builtins bound dynamically by material programs for user node graphs.
 enum NodeBuiltin : char {
     UV,
     UV1,
@@ -193,6 +185,7 @@ enum NodeBuiltin : char {
     INSTANCE_MATRIX,    // the instance's matrix (identity without instances; vertex stage)
 }
 
+// Binary arithmetic, comparison, logical, and bitwise operators for `NodeOp.BINARY`.
 enum NodeBinary : char {
     ADD,
     SUB,
@@ -215,6 +208,7 @@ enum NodeBinary : char {
     XOR,      // of bools
 }
 
+// Built-in shader math, derivative, matrix, and bit-reinterpretation intrinsics for `NodeOp.CALL`.
 enum NodeFn : char {
     // one argument
     SIN,
@@ -267,6 +261,7 @@ enum NodeFn : char {
     BITS_AS_FLOAT,
 }
 
+// Internal arena payload for a single shader graph node.
 struct NodeData {
     NodeOp op;
     NodeType type;
@@ -282,17 +277,20 @@ struct NodeData {
 
 List{NodeData} node_graph @local;
 
+// Returns the arena record for node `n`, aborting if `n.id` is 0 or out of bounds.
 fn NodeData* node_data(Node n) {
     if (n.id == 0 || n.id > node_graph.len()) abort("drie: nodes: not a node (%d)", n.id);
     return &node_graph[(sz)n.id - 1];
 }
 
+// Appends `d` to the global node arena and returns its 1-based `Node` handle.
 fn Node add_node(NodeData d) {
     if (!node_graph.is_initialized()) node_graph.init(mem, 256);
     node_graph.push(d);
     return { (uint)node_graph.len() };
 }
 
+// Returns the `NodeType` produced by this node.
 fn NodeType Node.type(self) => node_data(self).type;
 
 // How many nodes there are: a mark node_release goes back to.
@@ -306,6 +304,7 @@ fn void node_release(uint mark) {
     release_funcs(mark);
 }
 
+// Returns the component count of `t` (1..4 scalars/vectors, 9 MAT3, 16 MAT4, 0 VOID).
 fn int components(NodeType t) {
     switch (t) {
         case FLOAT:
@@ -327,6 +326,7 @@ fn int components(NodeType t) {
     }
 }
 
+// Returns the element scalar kind (`FLOAT`, `INT`, `UINT`, or `BOOL`) of `t`.
 fn NodeScalar scalar_of(NodeType t) {
     switch (t) {
         case INT:
@@ -357,6 +357,7 @@ fn NodeType type_of(NodeScalar s, int n) {
 
 fn NodeType vector_type(int n) @local => type_of(FLOAT, n);
 
+// Returns true if `t` is `MAT3` or `MAT4`.
 fn bool is_matrix(NodeType t) => t == MAT4 || t == MAT3;
 
 // The type two types combine into component by component (a number goes with any vector; a
@@ -380,10 +381,12 @@ fn NodeType wider(NodeType a, NodeType b) {
     return type_of(s, na > nb ? na : nb);
 }
 
-// ---- making nodes (the constructors are in drie::nodes)
+// ---- Node constructors
 
+// Creates a constant node of `type` carrying `value`.
 fn Node node_const(NodeType type, float[16] value) => add_node({ .op = CONST, .type = type, .value = value });
 
+// Creates a binary operator node (`op`) over `a` and `b`, inferring the result type.
 fn Node node_binary(NodeBinary op, Node a, Node b) {
     NodeType ta = a.type();
     NodeType tb = b.type();
@@ -443,6 +446,7 @@ fn Node node_binary(NodeBinary op, Node a, Node b) {
     return add_node({ .op = BINARY, .type = t, .kind = (char)op.ordinal, .count = 2, .args = { a.id, b.id, 0, 0 } });
 }
 
+// Creates a built-in intrinsic call node (`f`) with 1 to 3 arguments.
 fn Node node_call(NodeFn f, Node a, Node b = { }, Node c = { }) {
     NodeType ta = a.type();
     if (f == TRANSPOSE || f == DETERMINANT) {
@@ -517,6 +521,7 @@ fn Node node_call(NodeFn f, Node a, Node b = { }, Node c = { }) {
     return add_node({ .op = CALL, .type = t, .kind = (char)f.ordinal, .count = (char)count, .args = { a.id, b.id, c.id, 0 } });
 }
 
+// Converts node `a` to type `t`, returning `a` unchanged if its type already matches.
 fn Node node_convert(Node a, NodeType t) {
     if (a.type() == t) return a;
     return add_node({ .op = CONVERT, .type = t, .count = 1, .args = { a.id, 0, 0, 0 } });
@@ -555,6 +560,7 @@ fn Node node_swizzle(Node a, String s) @local {
     return add_node(d);
 }
 
+// Concatenates 1 to 4 scalar/vector nodes into a vector of type `t`.
 fn Node node_join(Node[] parts, NodeType t) {
     if (parts.len < 1 || parts.len > 4) abort("drie: nodes: a vector of 1 to 4 parts");
     int n;
@@ -577,7 +583,7 @@ fn Node node_const_bits(NodeType type, uint[4] bits) {
     return add_node(d);
 }
 
-// ---- statements
+// ---- Statements
 
 // A variable (three's toVar()), of `init` at first ({}: zeros of type `t`).
 fn Node node_var(NodeType t, Node init = { }) {
@@ -585,6 +591,7 @@ fn Node node_var(NodeType t, Node init = { }) {
     return add_node({ .op = VAR, .type = t, .count = 1, .args = { init.id, 0, 0, 0 } });
 }
 
+// Creates an assignment statement writing `value` into variable (or variable swizzle) `target`.
 fn Node node_assign(Node target, Node value) {
     NodeData* t = node_data(target);
     // (a varying of a variable: the variable, in the vertex stage)
@@ -594,6 +601,7 @@ fn Node node_assign(Node target, Node value) {
     return add_node({ .op = ASSIGN, .type = VOID, .count = 2, .args = { target.id, value.id, 0, 0 } });
 }
 
+// Creates a conditional statement running `then` when `cond` holds, and optional `otherwise`.
 fn Node node_if(Node cond, Node then, Node otherwise = { }) {
     return add_node({ .op = IF, .type = VOID, .count = 3, .args = { cond.id, then.id, otherwise.id, 0 } });
 }
@@ -605,6 +613,7 @@ fn Node node_loop(NodeLoop cond, Node index, Node from, Node to, Node body) {
     return add_node({ .op = LOOP, .type = VOID, .kind = (char)cond.ordinal, .count = 4, .args = { index.id, from.id, to.id, body.id } });
 }
 
+// Creates a control-flow jump statement (`0` = break, `1` = continue, `2` = discard).
 fn Node node_jump(int kind) => add_node({ .op = JUMP, .type = VOID, .kind = (char)kind });
 
 // A statement of an expression: worked out at this point.
@@ -650,38 +659,65 @@ fn Node node_seq(Node block, Node value = { }) {
     return add_node({ .op = SEQ, .type = value.id ? value.type() : VOID, .count = 2, .args = { block.id, value.id, 0, 0 } });
 }
 
-// ---- Node's operators and methods (TSL's chaining: a.mul(b) as a * b)
+// ---- Operators and methods
 
+// Component-wise addition (`self + b`).
 fn Node Node.add(self, Node b) @operator(+) => node_binary(ADD, self, b);
+// Component-wise subtraction (`self - b`).
 fn Node Node.sub(self, Node b) @operator(-) => node_binary(SUB, self, b);
+// Component-wise or matrix multiplication (`self * b`).
 fn Node Node.mul(self, Node b) @operator(*) => node_binary(MUL, self, b);
+// Component-wise division (`self / b`).
 fn Node Node.div(self, Node b) @operator(/) => node_binary(DIV, self, b);
+// Adds float scalar `b` to `self` (commutative).
 fn Node Node.add_f(self, float b) @operator_s(+) => node_binary(ADD, self, nodes::num(b));
+// Multiplies `self` by float scalar `b` (commutative).
 fn Node Node.mul_f(self, float b) @operator_s(*) => node_binary(MUL, self, nodes::num(b));
+// Subtracts float scalar `b` from `self`.
 fn Node Node.sub_f(self, float b) @operator(-) => node_binary(SUB, self, nodes::num(b));
+// Subtracts `self` from float scalar `a`.
 fn Node Node.rsub_f(self, float a) @operator_r(-) => node_binary(SUB, nodes::num(a), self);
+// Divides `self` by float scalar `b`.
 fn Node Node.div_f(self, float b) @operator(/) => node_binary(DIV, self, nodes::num(b));
+// Divides float scalar `a` by `self`.
 fn Node Node.rdiv_f(self, float a) @operator_r(/) => node_binary(DIV, nodes::num(a), self);
+// Negates `self` (`self * -1`).
 fn Node Node.negate(self) => node_binary(MUL, self, nodes::num(-1));
+// Complement `1 - self`.
 fn Node Node.one_minus(self) => node_binary(SUB, nodes::num(1), self);
 
+// Scalar comparison `self < b`.
 fn Node Node.less_than(self, Node b) => node_binary(LT, self, b);
+// Scalar comparison `self <= b`.
 fn Node Node.less_than_equal(self, Node b) => node_binary(LE, self, b);
+// Scalar comparison `self > b`.
 fn Node Node.greater_than(self, Node b) => node_binary(GT, self, b);
+// Scalar comparison `self >= b`.
 fn Node Node.greater_than_equal(self, Node b) => node_binary(GE, self, b);
+// Scalar equality `self == b`.
 fn Node Node.equal(self, Node b) => node_binary(EQ, self, b);
+// Scalar inequality `self != b`.
 fn Node Node.not_equal(self, Node b) => node_binary(NE, self, b);
 
-// Its components, as a swizzle: n.x(), n.xyz(), n.swizzle("zyx")
+// Extracts 1 to 4 components by swizzle string (`"x"`, `"xyz"`, `"zyx"`, etc.).
 fn Node Node.swizzle(self, String s) => node_swizzle(self, s);
+// Extracts the `.x` component.
 fn Node Node.x(self) => node_swizzle(self, "x");
+// Extracts the `.y` component.
 fn Node Node.y(self) => node_swizzle(self, "y");
+// Extracts the `.z` component.
 fn Node Node.z(self) => node_swizzle(self, "z");
+// Extracts the `.w` component.
 fn Node Node.w(self) => node_swizzle(self, "w");
+// Extracts the `.xy` components.
 fn Node Node.xy(self) => node_swizzle(self, "xy");
+// Extracts the `.xz` components.
 fn Node Node.xz(self) => node_swizzle(self, "xz");
+// Extracts the `.yz` components.
 fn Node Node.yz(self) => node_swizzle(self, "yz");
+// Extracts the `.xyz` components.
 fn Node Node.xyz(self) => node_swizzle(self, "xyz");
+// Extracts the `.xyz` color channels.
 fn Node Node.rgb(self) => node_swizzle(self, "xyz");
 
 // A uniform's new value (nodes::uniform...): read by the next draw, without a rebuild.
@@ -694,11 +730,13 @@ fn void Node.set(self, float x, float y = 0, float z = 0, float w = 0) {
     d.value[3] = w;
 }
 
+// Updates a vec3 uniform node's value from `v` without rebuilding shaders.
 fn void Node.set_vec3(self, Vector3 v) => self.set(v.x, v.y, v.z);
 
-// (sRGB hex, as three's Color: linear values)
+// Updates a vec3 color uniform from sRGB hex `c`, converting to linear RGB.
 fn void Node.set_color(self, Color c) => self.set_vec3(color_to_linear(c));
 
+// Updates a mat4 uniform node's 16 column-major elements from `m` without rebuilding shaders.
 fn void Node.set_matrix(self, Mat4 m) {
     NodeData* d = node_data(self);
     if (d.op != UNIFORM || d.type != MAT4) abort("drie: nodes: set_matrix() is for matrix uniforms");
@@ -716,7 +754,7 @@ fn float[4] Node.value(self) {
     return v;
 }
 
-// ---- building: a material's graphs printed into its shaders
+// ---- Material builds
 
 // The shading languages the graphs are printed in, one per sokol backend.
 enum NodeLang : char {
@@ -725,12 +763,18 @@ enum NodeLang : char {
     HLSL,
 }
 
+// Maximum number of custom textures a single node material may sample (`NODE_USER_VIEW + 0..5`).
 const int NODE_TEXTURES = 6;
 
+// Starts background shader+pipeline compilation; returns a job handle (< 0 if unsupported).
 extern fn int sg_warm_begin(SgShaderDesc* shader, SgPipelineDesc* pipeline) @cname("sg_warm_begin");
+// Polls background compile job status (0 = still running, non-zero = finished).
 extern fn int sg_warm_state(int job) @cname("sg_warm_state");
+// Releases resources for a finished background compile job.
 extern fn void sg_warm_end(int job) @cname("sg_warm_end");
+// Blocks until background compile `job` finishes.
 extern fn void sg_warm_wait(int job) @cname("sg_warm_wait");
+// Starts background shader-only compilation; returns a job handle (< 0 if unsupported).
 extern fn int sg_warm_shader_begin(SgShaderDesc* shader) @cname("sg_warm_shader_begin");
 
 // A new one each render (Renderer.render): what material_busy says holds for all of a
@@ -748,8 +792,7 @@ struct NodeBuild {
     List{Node} uniforms;     // in their order in the USER block (a matrix takes four)
     Texture*[NODE_TEXTURES] textures; // node texture k: a generated program's view NODE_USER_VIEW + k
     int texture_count;
-    // its generated programs (materials_nodes.c3), by their MaterialKey (with `nodes`): only
-    // its own graphs print them
+    // Generated programs (src/material/material_key.c3) keyed by MaterialKey (with `nodes` set).
     HashMap{KeyWords, MaterialProgram*} programs;
     // whether one of them is still compiling in the background (in render busy_epoch, see
     // node_epoch): then its draws take the plain material's, in every pass (see material_busy)
@@ -787,6 +830,7 @@ fn bool same_nodes(Node[NODE_SLOTS] a, Node[NODE_SLOTS] b) @local {
     return true;
 }
 
+// Returns true if any of `mat`'s 15 `*_node` graph slots is set.
 fn bool has_nodes(Material* mat) {
     foreach (n : node_slots(mat)) {
         if (n.id) return true;

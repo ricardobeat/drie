@@ -1,15 +1,8 @@
-// ColorGrade (grading.c3): bakes the grade, the tone mapping and the output encoding into a
-// 3D LUT that OutputPass reads through a log shaper.
-// A slice of the LUT a pass: each texel is a scene color (linear light, after the exposure)
-// encoded by grade_shape (log2 stops round middle grey), graded:
-//   - white balance, in LMS (the cones' responses)
-//   - contrast round middle grey, in log; gain (a multiply), lift (an offset of the log
-//     encoding) and power (a power of it), as ASC CDL's slope, offset and power
-//   - saturation, a turn of the hue, and the shadows and highlights tinted (split toning), in
-//     Oklab, where these keep the lightness and the hue even
-// then tone mapped (tonemapping.glsl) and sRGB encoded; a look (a .cube LUT on the sRGB
-// picture) after, if there is one.
-// Regenerate generated/grade.c3 with: just shaders
+// ColorGrade (drie::postprocessing): bakes color grading, tone mapping, and output encoding into
+// a 3D LUT that OutputPass samples through a log shaper (regenerate generated/grade.c3 with
+// `just shaders`). One LUT slice per pass; each texel decodes linear light from grade_shape and
+// applies LMS white balance, log contrast, CDL gain/lift/power, Oklab saturation/hue/split
+// toning, tone mapping (shaders/tonemapping.glsl), sRGB encoding, and an optional .cube look LUT.
 @header module drie::postprocessing;
 @header import drie;
 

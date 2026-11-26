@@ -1,36 +1,39 @@
-// The built-in materials as node graphs (three's NodeMaterial.setup), printed into programs
-// that hold only what a material and the render it is drawn in use (nodes_program.c3).
+// Material specialization keys, generated program caching, and node-material builtin bindings.
 //
-// A program is chosen by a MaterialKey: the features that change its code, worked out from
-// the same conditions the engine's material shader (shader_core.glsl) branches on, so that a
-// generated program draws what that shader draws. What only changes numbers stays in the
-// uniforms: the programs read the fields of FsParams and VsParams that they need (fs_in,
-// vs_in), and a draw gathers them from the structs the renderer fills for every draw.
+// MaterialKey packs every feature flag that alters shader code into 32 bytes (two uint128 words):
+// bits 0..88 hold boolean and enum feature fields matching shaders/shader_core.glsl, and bits
+// 192..254 hold 3-bit shared texture slot indices (`slot + 1`, 0 = absent) for 21 MAP_* roles
+// (MAP_CUSTOM uses a dedicated node texture view instead of a shared slot). Uniform row macros
+// (`fs_row`, `vs_row`, `fs_in`, `vs_in`) index 16-byte Vec4 rows of FsParams and VsParams.
+// VIEW_MORPH_DELTAS (32) and VIEW_MORPH_WEIGHTS (33) occupy logical view IDs between engine slots
+// (< 32) and NODE_USER_VIEW (64). Delegates graph construction to src/material/material_graph.c3
+// and compiles ShaderPrograms via src/nodes/program.c3, caching node programs on NodeBuild.
 module drie;
 import sokol, drie::nodes, drie::shading, std::collections::map, std::io, std::os::env, std::thread;
 
-// ---- the engine's uniforms, as the programs read them
+// ---- Uniform row inputs
 
-// The row (16 bytes) of FsParams or VsParams where field `$name` starts.
+// 16-byte Vec4 row offset of field `$name` inside FsParams.
 macro int fs_row($name) {
     FsParams* p = null;
     return (int)((usz)&p.$eval($name) / 16);
 }
 
+// 16-byte Vec4 row offset of field `$name` inside VsParams.
 macro int vs_row($name) {
     VsParams* p = null;
     return (int)((usz)&p.$eval($name) / 16);
 }
 
-// Field `$name` of FsParams (VsParams) as a `t`, from component `comp` of its row; `k` rows on
-// for an element of an array.
+// Reads FsParams field `$name` as type `t`, starting at component `comp` and array row offset `k`.
 macro Node fs_in($name, NodeType t = VEC4, int comp = 0, int k = 0) => node_input(FS, fs_row($name) + k, t, comp);
+// Reads VsParams field `$name` as type `t`, starting at component `comp` and array row offset `k`.
 macro Node vs_in($name, NodeType t = VEC4, int comp = 0, int k = 0) => node_input(VS, vs_row($name) + k, t, comp);
 
-// ---- the key
+// ---- Material key and program cache
 
-// What a material's program holds; for each map role (shader_core.glsl's MAP_*) the shared
-// map slot (tex_ext0..5) its map is in, + 1 (0: the material has none).
+// Feature bits and shared map slots (`tex_ext0..5`, stored as `slot + 1`, 0 = absent) for each
+// map role in shaders/shader_core.glsl (`MAP_*`).
 bitstruct MaterialKey : char[32] {
     char type : 0..3;            // MaterialType's ordinal
     bool mrt : 4;                // a target with MRT: normal, motion and indirect light too
@@ -113,48 +116,70 @@ bitstruct MaterialKey : char[32] {
     // sway, and for the alpha test's cut-out alpha_test, map and MAP_ALPHA's slot (1: one);
     // a node material's nodes and foliage too
     bool shadow : 82;
-    bool bake : 83;              // a light map's sample (lightmap.c3): drawn at uv1, its light blended in
+    bool bake : 83;              // light map sample (src/lighting/lightmap.c3): drawn at uv1, blended in
     // a node material's (its *_node graphs in the program): found through its NodeBuild
     // (NodeBuild.programs), which the key alone doesn't name
     bool nodes : 84;
     bool morph : 85;             // GPU morph targets (BufferGeometry.morph_view + Mesh.morph_weights_view)
     bool flat_shading : 86;      // flat face normals via screen-space derivatives (Material.flat_shading)
-    // the deferred G-buffer's program (gbuffer_key): the surface written into the four targets
-    // the lighting pass reads (shader_core.glsl's GBUFFER), without the lights
+    // Deferred G-buffer program (gbuffer_key): writes surface data into the four targets read by
+    // the deferred lighting pass (shaders/shader_core.glsl's GBUFFER), without direct lights.
     bool gbuffer : 87;
-    // a shadow map of the atlas (MaterialKey.shadow): drawn into its depth format (renderer.c3's
-    // atlas_format), as the distance from the light's plane over its reach (see
-    // build_shadow_graph)
+    // Shadow atlas map (MaterialKey.shadow): rendered into ATLAS_FORMAT as linear distance from
+    // the light's plane over its reach (see build_shadow_graph).
     bool atlas_depth : 88;
 }
 
-// Logical view IDs for GPU morph target storage buffers (between engine slots < 32 and NODE_USER_VIEW = 64).
+// Logical view ID for the GPU morph delta buffer (between engine slots < 32 and NODE_USER_VIEW).
 const int VIEW_MORPH_DELTAS = 32;
+// Logical view ID for the GPU morph weight buffer (between engine slots < 32 and NODE_USER_VIEW).
 const int VIEW_MORPH_WEIGHTS = 33;
 
-// The map roles (shader_core.glsl's MAP_*) a key holds a slot for.
+// Shared map role for ambient occlusion (shaders/shader_core.glsl's MAP_AO).
 const int MAP_AO = 0;
+// Shared map role for KHR_materials_specular color tint.
 const int MAP_SPECULAR_COLOR = 1;
+// Shared map role for KHR_materials_specular intensity.
 const int MAP_SPECULAR_INTENSITY = 2;
+// Shared map role for KHR_materials_transmission factor.
 const int MAP_TRANSMISSION = 3;
+// Shared map role for transmission volume thickness.
 const int MAP_THICKNESS = 4;
+// Shared map role for KHR_materials_iridescence strength.
 const int MAP_IRIDESCENCE = 5;
+// Shared map role for iridescence thin-film thickness.
 const int MAP_IRIDESCENCE_THICKNESS = 6;
+// Shared map role for clearcoat strength.
 const int MAP_CLEARCOAT = 7;
+// Shared map role for clearcoat roughness.
 const int MAP_CLEARCOAT_ROUGHNESS = 8;
+// Shared map role for clearcoat tangent-space normals.
 const int MAP_CLEARCOAT_NORMAL = 9;
+// Shared map role for sheen color tint.
 const int MAP_SHEEN_COLOR = 10;
+// Shared map role for sheen roughness.
 const int MAP_SHEEN_ROUGHNESS = 11;
+// Shared map role for alpha opacity (green channel).
 const int MAP_ALPHA = 12;
+// Shared map role for emissive color.
 const int MAP_EMISSIVE = 13;
+// Shared map role for baked lightmap irradiance.
 const int MAP_LIGHT = 14;
+// Shared map role for anisotropy direction and strength.
 const int MAP_ANISOTROPY = 15;
+// Reserved map role for Material.custom_map (read via a dedicated node view, not a shared slot).
 const int MAP_CUSTOM = 16;
+// Shared map role for lens focus depth (Material.defocus).
 const int MAP_FOCUS = 17;
+// Shared map role for Phong specular and classic env_combine reflectivity.
 const int MAP_SPECULAR = 18;
+// Shared map role for MeshMatcapMaterial sphere lookup.
 const int MAP_MATCAP = 19;
+// Shared map role for MeshToonMaterial lighting gradient.
 const int MAP_GRADIENT = 20;
+// Shared map role for height-based bump perturbation.
 const int MAP_BUMP = 21;
+// Total number of shared map roles.
 const int MAP_ROLES = 22;
 
 // The key as two words: bits 0..127, and 128..255.
@@ -163,19 +188,22 @@ struct KeyWords @private {
     uint128 hi;
 }
 
+// Hash of a 256-bit MaterialKey word pair for program cache lookup.
 fn uint KeyWords.hash(self) => (uint)(self.lo.hash() ^ self.hi.hash() * 31);
+// Equality comparison for 256-bit MaterialKey word pairs.
 fn bool KeyWords.equals(self, KeyWords other) @operator(==) => self.lo == other.lo && self.hi == other.hi;
 
 // Where role `role`'s slot is in the key's high word: three bits each from its bit 64 (the
 // key's bit 192; MAP_CUSTOM, 16, has none: a graph reads custom_map as a texture of its own).
 fn int map_role_bit(int role) @local => 64 + 3 * (role < 16 ? role : role - 1);
 
-// The shared slot role `role`'s map is in, + 1 (0: none).
+// Returns the shared map slot (`1..6`) assigned to `role`, or `0` if unassigned.
 fn int MaterialKey.slot(self, int role) {
     if (role == MAP_CUSTOM) return 0;
     return (int)((bitcast(self, KeyWords).hi >> map_role_bit(role)) & 7);
 }
 
+// Stores shared map slot (`1..6`, or `0` for none) for `role` in the key's high word.
 fn void MaterialKey.set_slot(&self, int role, int slot) {
     if (role == MAP_CUSTOM) return;
     int at = map_role_bit(role);
@@ -398,7 +426,7 @@ fn void free_program(ShaderProgram* p) @private {
     mem::free(p);
 }
 
-// ---- a node material's graphs
+// ---- Node material builtin bindings
 
 // What a node material's graphs read their builtins from in each stage (build_program's
 // vertex_bind and fragment_bind).
@@ -443,10 +471,9 @@ fn void fragment_binds(VertexValues* vtx, Node[NodeBuiltin::len]* b, Node v_uv, 
     (*b)[NodeBuiltin.FRONT_FACING.ordinal] = node_system(FRONT_FACING);
 }
 
-// A node material's color step (where the material shader runs node_color): mask_node's
-// discard, then color_node and opacity_node over the color `rgb` and its alpha `a`, read with
-// NORMAL_WORLD the facing vertex normal `n`. `holes`: the statements that cut its holes (the
-// mask's discard, and the slots' own when the graphs can cut: NodeBuild.cuts).
+// Applies a node material's mask_node discard, color_node, and opacity_node over `rgb` and `a`,
+// with NORMAL_WORLD bound to facing vertex normal `n`. Cut-out statements (mask_node discard,
+// plus color_node/opacity_node evaluation when NodeBuild.cuts is set) are appended to `holes`.
 fn void user_color(NodeBuild* build, Node n, Node* rgb, Node* a, Node[] holes, int* count) @private {
     Node mask = build.slots[8];
     Node color = build.slots[0];

@@ -1,10 +1,18 @@
-// Shader source emission for node programs: resource binding, expression printing,
-// and Metal/HLSL/GLSL stage source assembly.
+// Shader source emission for node programs: resource slot allocation, expression printing, and
+// Metal/HLSL/GLSL stage source assembly (`build_program`, `vertex_source`, `fragment_source`).
+//
+// `build_program` emits the fragment stage before the vertex stage so `p.varyings` captures
+// every interpolated value needed. Metal assigns textures `texture(0..)` and storage buffers
+// `buffer(8..)` and passes resources explicitly into functions; HLSL assigns per-stage `t`/`s`
+// registers, reads storage via `ByteAddressBuffer.Load*`, and constructs matrices by row
+// (`mul(b, a)`); GLSL emits `#version 430` combined samplers and `std430` buffers. All three mark
+// clip position invariant for depth-prepass `EQUAL` tests. Extends `ProgramGen` (src/nodes/program.c3).
 module drie;
 import std::collections::list, std::collections::map, std::io, std::thread, sokol;
 
-// ---- resources
+// ---- Resource allocation and expression printing
 
+// Allocates or reuses a texture or readonly storage buffer view slot for the active stage.
 fn int ProgramGen.view(&self, int source, bool storage, NodeTextureKind kind, NodeType elem) {
     ShaderProgram* p = self.p;
     int msl;
@@ -27,10 +35,12 @@ fn int ProgramGen.view(&self, int source, bool storage, NodeTextureKind kind, No
     return at;
 }
 
+// Records that the active body references view index `v` (for Metal helper parameter passing).
 fn void ProgramGen.uses_view(&self, int v) {
     if (!self.body.views.contains(v)) self.body.views.push(v);
 }
 
+// Allocates or reuses a filtering or comparison sampler slot for the active stage.
 fn int ProgramGen.sampler(&self, int source, bool compare) {
     ShaderProgram* p = self.p;
     int n;
@@ -73,8 +83,10 @@ fn int ProgramGen.rows(&self, NodeSource source, int row, int count) {
     return at;
 }
 
+// Returns the stage uniform-array identifier (`"vu"` for vertex, `"fu"` for fragment).
 fn String ProgramGen.block_name(&self) => self.stage == VERTEX ? "vu" : "fu";
 
+// Formats a `NodeOp.INPUT` read from the active stage's packed uniform block (`vu` or `fu`).
 fn String ProgramGen.input(&self, NodeData* d) {
     self.body.block = true;
     NodeType t = d.type;
@@ -123,6 +135,7 @@ fn String ProgramGen.user_uniform(&self, Node n) {
     return t == MAT4 ? x : self.convert(x, d.type, t);
 }
 
+// Formats a readonly storage buffer element load (indexing in GLSL/MSL, `Load`/`Load4` in HLSL).
 fn String ProgramGen.storage(&self, NodeData* d) {
     int v = self.view(d.res[0], true, TEX_2D, d.type);
     String i = self.value_as({ d.args[0] }, d.type == UINT ? UINT : INT);
@@ -134,6 +147,7 @@ fn String ProgramGen.storage(&self, NodeData* d) {
     }
 }
 
+// Formats a texture sample, level, grad, texel fetch, size, mip-count, or depth-compare expression.
 fn String ProgramGen.sample(&self, Node n, NodeData* d) {
     NodeSampling how = (NodeSampling)d.kind;
     NodeTextureKind kind = (NodeTextureKind)d.res[2];
@@ -251,6 +265,7 @@ fn String ProgramGen.user_texture(&self, Node n, NodeData* d) {
     return self.sample(n, &s);
 }
 
+// Records vertex attribute read `d.kind` and returns its input expression (`aN` or `vin.aN`).
 fn String ProgramGen.attribute(&self, NodeData* d) {
     if (self.stage != VERTEX) abort("drie: nodes: attributes are read in the vertex stage");
     if (self.body.func >= 0) abort("drie: nodes: attributes are read in main (a function takes them as arguments)");
@@ -260,6 +275,7 @@ fn String ProgramGen.attribute(&self, NodeData* d) {
     return self.lang == GLSL ? string::tformat("a%d", d.kind) : string::tformat("vin.a%d", d.kind);
 }
 
+// Records a stage system value and returns its backend expression (`gl_FragCoord`, `fin.fc`, etc.).
 fn String ProgramGen.system(&self, NodeData* d) {
     if (self.body.func >= 0) abort("drie: nodes: %s is read in main (a function takes it as an argument)", (NodeSystem)d.kind);
     switch ((NodeSystem)d.kind) {
@@ -282,6 +298,7 @@ fn String ProgramGen.system(&self, NodeData* d) {
     }
 }
 
+// Registers or looks up node `n` in `ShaderProgram.varyings`, returning its varying index.
 fn int ProgramGen.varying(&self, Node n) {
     ShaderProgram* p = self.p;
     foreach (i, v : p.varyings) {
@@ -294,6 +311,7 @@ fn int ProgramGen.varying(&self, Node n) {
 // A varying's type as carried: bools as uints.
 fn NodeType carried(NodeType t) @local => t == BOOL ? UINT : t;
 
+// Registers varying `n` and formats its fragment-stage input expression (`vN` or `fin.vN`).
 fn String ProgramGen.read_varying(&self, Node n) {
     if (self.body.func >= 0) abort("drie: nodes: varyings are read in main (a function takes them as arguments)");
     int k = self.varying(n);
@@ -303,6 +321,7 @@ fn String ProgramGen.read_varying(&self, Node n) {
     return self.convert(x, carried(t), t);
 }
 
+// Resolves stage builtin `b` to its currently bound node and emits that node.
 fn String ProgramGen.builtin(&self, Node n, NodeBuiltin b) {
     if (self.body.func >= 0) abort("drie: nodes: %s is read in main, not in a function", b);
     Node bound = self.binding[b.ordinal];
@@ -414,6 +433,7 @@ fn String msl_view_type(ProgramView* v) @local {
     }
 }
 
+// Emits the callee definition if needed and formats the call (with Metal resource args).
 fn String ProgramGen.call_fn(&self, Node n, NodeData* d) {
     int f = call_func(d);
     FuncDone* done = self.func(f);
@@ -582,6 +602,7 @@ fn String ProgramGen.emit(&self, Node n) {
     return name;
 }
 
+// Formats a `NodeOp.BINARY` expression (handling matrix multiplies and float floored remainder).
 fn String ProgramGen.binary(&self, NodeData* d) {
     Node a = { d.args[0] };
     Node b = { d.args[1] };
@@ -633,6 +654,7 @@ fn String ProgramGen.binary(&self, NodeData* d) {
     }
 }
 
+// Formats a `NodeOp.CALL` built-in intrinsic expression for GLSL, MSL, or HLSL.
 fn String ProgramGen.call(&self, NodeData* d) {
     NodeFn f = (NodeFn)d.kind;
     NodeType t = d.type;
@@ -686,7 +708,7 @@ fn String ProgramGen.call(&self, NodeData* d) {
     }
 }
 
-// ---- the stages
+// ---- Stage source assembly
 
 fn ProgramGen* new_gen(ShaderProgram* p, ProgramStage st, NodeBuild* build, Node[NodeBuiltin::len]* bindings) @local {
     ProgramGen* g = mem::tnew(ProgramGen);
@@ -766,6 +788,7 @@ fn String varying_qualifier(NodeLang lang, NodeType t) @local {
     }
 }
 
+// Returns the Metal shader preamble (`<metal_stdlib>`, `<simd/simd.h>`, `using namespace metal;`).
 fn String ProgramGen.msl_header(&self) {
     return "#include <metal_stdlib>\n#include <simd/simd.h>\n\nusing namespace metal;\n\n";
 }
@@ -813,6 +836,7 @@ fn String ProgramGen.resource_decls(&self) {
     return s.str_view();
 }
 
+// Formats the active stage's packed uniform block declaration (empty if `block_rows == 0`).
 fn String ProgramGen.block_decl(&self) {
     int rows = self.p.block_rows[self.stage.ordinal];
     if (!rows) return "";
@@ -824,6 +848,7 @@ fn String ProgramGen.block_decl(&self) {
     }
 }
 
+// Assembles the complete vertex shader source in MSL, HLSL, or GLSL from the emitted body.
 fn String ProgramGen.vertex_source(&self) {
     ShaderProgram* p = self.p;
     DString s = dstring::temp();
@@ -893,6 +918,7 @@ fn String ProgramGen.vertex_source(&self) {
     return s.str_view();
 }
 
+// Assembles the complete fragment shader source in MSL, HLSL, or GLSL from the emitted body.
 fn String ProgramGen.fragment_source(&self) {
     ShaderProgram* p = self.p;
     DString s = dstring::temp();

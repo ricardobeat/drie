@@ -1,32 +1,32 @@
-// glTF 2.0 loader (.glb, or .gltf with its .bin and images), like three's GLTFLoader, on
-// cgltf (third_party/cgltf, through generated/cgltf.c3).
+// glTF 2.0 loader (`.glb` and `.gltf` with external `.bin` and images) built on `third_party/cgltf`
+// via `generated/cgltf.c3`. Supports node hierarchies, triangle meshes (positions, normals, tangents,
+// two UV sets, vertex colors, sparse and quantized accessors), PBR metallic-roughness materials,
+// `KHR_texture_transform`, `KHR_materials_unlit`, and volume/transmission/specular/clearcoat/sheen/
+// iridescence/anisotropy/emissive_strength extensions. Skins, animations, morph targets, cameras,
+// lights, Draco/meshopt compression, and `KHR_texture_basisu` are not implemented.
+//
 //   GltfModel* model = loaders::load_gltf("assets/models/tree.glb")!!;
 //   scene.add(model.scene);
-// Supported: the node hierarchy, triangle meshes (positions, normals, tangents, two uv sets,
-// vertex colors; sparse and quantized accessors), metallic-roughness materials with their base color,
-// metallic-roughness, normal, occlusion and emissive textures (embedded, files or data: URIs,
-// with their samplers' wrapping and KHR_texture_transform), alpha modes, double sided
-// materials, KHR_materials_unlit, and the transmission / volume / ior / dispersion / specular /
-// clearcoat / sheen / iridescence / anisotropy / emissive_strength extensions (see
-// Material.transmission, specular_color, clearcoat, sheen, iridescence and anisotropy). Not yet: skins, animations, morph targets,
-// cameras, lights, Draco and meshopt compression, KHR_texture_basisu.
 module drie::loaders;
 import std::io, std::math, std::collections::list, libc;
 import drie, drie::cgltf;
 
+// Returned when a glTF file cannot be parsed, lacks buffer data, or references a broken image.
 faultdef GLTF_INVALID;
 
+// Loaded glTF scene graph together with flat lists of its materials and meshes.
 struct GltfModel {
-    // Root of the loaded node hierarchy. Each glTF node is an Object3D named like the node,
-    // with one child Mesh per material it uses.
+    // Root of the loaded node hierarchy. Each glTF node becomes a named Group containing one
+    // child Mesh per primitive.
     Group* scene;
-    // the glTF's materials in its order, then the copies made of those with normal maps for
-    // meshes without tangents (see GltfReader.untangented_material)
+    // Loaded glTF materials in file order, followed by cloned normal-map variants generated for
+    // primitives that omit vertex tangents.
     List{Material*} materials;
+    // All Mesh instances created across the loaded scene graph.
     List{Mesh*} meshes;
 }
 
-// The node (or mesh) with this name, or null.
+// Returns the first node or mesh in `scene` with `name`, or null if none matches.
 fn Object3D* GltfModel.get(&self, String name) => self.scene.get_object_by_name(name);
 
 struct GltfReader @local {
@@ -129,6 +129,7 @@ fn Color linear_color(float r, float g, float b) @local {
     return result;
 }
 
+// Converts a glTF material into a `MeshBasicMaterial` (if unlit) or `MeshStandardMaterial`.
 fn Material*? GltfReader.material(&self, CgltfMaterial* m) {
     CgltfPbrMetallicRoughness* pbr = &m.pbr_metallic_roughness;
     float[4] base = m.has_pbr_metallic_roughness ? pbr.base_color_factor : { 1, 1, 1, 1 };
@@ -324,6 +325,7 @@ fn BufferGeometry* primitive_geometry(CgltfPrimitive* p) @local {
     return g;
 }
 
+// Recursively converts a glTF node, its decomposed local transform, meshes, and children.
 fn Object3D*? GltfReader.node(&self, CgltfNode* n) {
     Group* obj = drie::group();
     if (n.name) obj.name = text(n.name).copy(mem);
@@ -373,6 +375,8 @@ fn Object3D*? GltfReader.node(&self, CgltfNode* n) {
     return obj;
 }
 
+// Loads a `.glb` or `.gltf` asset from `path` (resolving external `.bin` and image URIs relative
+// to `path`'s directory) and returns the constructed `GltfModel`.
 fn GltfModel*? load_gltf(String path) {
     CgltfOptions options;
     CgltfData* data;

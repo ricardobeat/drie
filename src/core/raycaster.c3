@@ -1,68 +1,77 @@
-// Raycasting, like three's Raycaster: what a ray from a point, or from the camera through a
-// point of the picture, runs into.
-//
-//   Raycaster ray = drie::raycaster();
-//   ray.set_from_camera({ x, y }, camera);           // x, y: -1..1 across and up the view
-//   List{Intersection} hits;
-//   ray.intersect_objects(scene.children.array_view(), &hits);
-//   if (hits.len()) hits[0].object.visible = false; // the nearest first
-//   hits.clear();
-//
-//   Intersection hit;
-//   if (ray.intersect_first(scene, &hit)) aim_at(hit.point);   // only the nearest, no list
-//
-// It tests the triangles of meshes (each instance of an instanced mesh, the posed geometry of
-// a skinned one) against the ray, after their bounding spheres, honouring the material's
-// `side`. Of a Lod, only the level the ray's origin would see is tested. Like three, it looks
-// at every triangle of the meshes the ray comes near: for big meshes that is linear in their
-// size. World matrices are used as they are: update_matrix_world() (or a render) first.
+// World-space raycasting against `Object3D` hierarchies: meshes, instanced meshes, posed
+// `SkinnedMesh` geometry, and the active distance level of `Lod` nodes. Rejects meshes by
+// bounding sphere then runs Möller-Trumbore linearly over triangles, honoring `Material.side`
+// and skipping `shadow_only` meshes and lines. Reads `matrix_world` as stored (call
+// `update_matrix_world()` or `Renderer.render()` first); hit lists belong to the caller.
 module drie;
 import std::collections::list, std::math, std::sort;
 
-// A ray: `origin` and a `direction` of length 1, like three's Ray.
+// Half-line defined by a world-space `origin` and unit `direction`.
 struct Ray {
+    // Ray starting point in world space.
     Vector3 origin;
+    // Unit direction vector in world space.
     Vector3 direction;
 }
 
+// Evaluates the point at distance `t` along the ray (`origin + direction * t`).
 fn Vector3 Ray.at(&self, float t) => self.origin + self.direction * t;
 
-// The triangle that was hit: its vertices (indices into the geometry) and its normal in the
-// object's own space, like three's `face`.
+// Triangle hit by a ray: vertex indices into `BufferGeometry` and object-space face normal.
 struct Face {
+    // First triangle vertex index.
     uint a;
+    // Second triangle vertex index.
     uint b;
+    // Third triangle vertex index.
     uint c;
+    // Unit geometric normal of the triangle in object space.
     Vector3 normal;
 }
 
-// One hit, like three's intersection objects.
+// Single ray-triangle hit returned by `Raycaster`.
 struct Intersection {
-    // from the ray's origin, in world units
+    // Distance from `Ray.origin` to `point` in world units.
     float distance;
-    // where, in world space
+    // Hit position in world space.
     Vector3 point;
+    // Scene object (`Mesh*`) that was hit.
     Object3D* object;
+    // Hit triangle indices and object-space face normal.
     Face face;
+    // Zero-based triangle index within `BufferGeometry.indices` (`indices[face_index * 3]`).
     int face_index;
-    // the texture coordinates there
+    // Barycentrically interpolated texture coordinates at the hit point.
     Vector2 uv;
-    // the geometry's normal there (between the vertices' normals), in world space. three's
-    // `normal` is in the object's space.
+    // Interpolated vertex normal transformed into world space.
     Vector3 normal;
-    // which instance of an instanced mesh (-1: not instanced)
+    // Instance index for an `InstancedMesh`, or `-1` for a non-instanced mesh.
     int instance_id;
 }
 
+// Ray intersection query over scene objects within `[near, far]`.
+//
+//   Raycaster ray = drie::raycaster();
+//   ray.set_from_camera({ x, y }, camera);            // x, y in -1..1 NDC
+//   List{Intersection} hits;
+//   ray.intersect_objects(scene.children.array_view(), &hits);
+//   if (hits.len()) hits[0].object.visible = false;   // sorted nearest first
+//   hits.clear();
+//
+//   Intersection hit;
+//   if (ray.intersect_first(scene, &hit)) aim_at(hit.point);
 struct Raycaster {
+    // World-space ray tested against scene geometry.
     Ray ray;
-    // only hits between these distances count
+    // Minimum hit distance accepted along the ray.
     float near;
+    // Maximum hit distance accepted along the ray.
     float far;
-    // skip what is not `visible` (and everything under it). three tests every object.
+    // When true, skips objects with `visible == false` and their subtrees.
     bool visible_only;
 }
 
+// Creates a `Raycaster` with normalized `direction` and distance bounds `[near, far]`.
 fn Raycaster raycaster(
     Vector3 origin = { 0, 0, 0 },
     Vector3 direction = { 0, 0, -1 },
@@ -74,14 +83,13 @@ fn Raycaster raycaster(
     return r;
 }
 
-// `direction` need not be of length 1.
+// Sets the ray origin and normalizes `direction`.
 fn void Raycaster.set(&self, Vector3 origin, Vector3 direction) {
     self.ray = { origin, direction.normalize() };
 }
 
-// The ray from the camera through a point of its picture: `coords` from -1 to 1, left to
-// right and bottom to top (three's normalized device coordinates). For a point in the
-// window: x = 2 * px / width - 1, y = 1 - 2 * py / height.
+// Aim the ray from `camera` through normalized device coordinates `coords` (`-1..1` left to
+// right, bottom to top; from window pixels: `x = 2 * px / w - 1`, `y = 1 - 2 * py / h`).
 fn void Raycaster.set_from_camera(&self, Vector2 coords, Camera* camera) {
     Mat4 w        = camera.matrix_world;
     Vector3 right = { w[0][0], w[0][1], w[0][2] };
@@ -104,13 +112,14 @@ fn void Raycaster.set_from_camera(&self, Vector2 coords, Camera* camera) {
     }
 }
 
-// Where the hits go: all of them into a list, or only the nearest.
+// Destination for ray hits: appends all hits to `list`, or tracks only the closest in `nearest`.
 struct HitSink @local {
     List{Intersection}* list;
     Intersection* nearest;
     bool found;
 }
 
+// Records `hit` into the list or replaces `nearest` if closer.
 fn void HitSink.add(&self, Intersection hit) {
     if (self.list) {
         self.list.push(hit);
@@ -122,7 +131,7 @@ fn void HitSink.add(&self, Intersection hit) {
     }
 }
 
-// Whether the sink can still take a hit at this distance (for skipping a far-off object).
+// Returns true if a hit at `distance` could still be kept (for early bounding-sphere rejection).
 fn bool HitSink.wants(&self, float distance) => self.list || !self.found || distance < self.nearest.distance;
 
 fn int cmp_hits(
@@ -130,9 +139,8 @@ fn int cmp_hits(
     Intersection b
 ) @local => a.distance < b.distance ? -1 : (a.distance > b.distance ? 1 : 0);
 
-// Adds what the ray hits of `object` (and of its descendants, with `recursive`) to `intersects`,
-// keeping the list sorted nearest first, and returns how many hits it has. The list is the
-// caller's: clear() it between rays, free() it at the end.
+// Appends all hits on `object` (and descendants when `recursive`) to `intersects`, sorts the
+// list nearest-first, and returns its length. Caller owns `intersects` (`clear`/`free`).
 fn usz Raycaster.intersect_object(&self, Object3D* object, List{Intersection}* intersects, bool recursive = true) {
     HitSink sink = { .list = intersects };
     self.visit(object, &sink, recursive);
@@ -140,7 +148,8 @@ fn usz Raycaster.intersect_object(&self, Object3D* object, List{Intersection}* i
     return (usz)intersects.len();
 }
 
-// The same for several objects (scene.children.array_view(), say).
+// Appends hits across every root in `objects`, sorts `intersects` nearest-first, and returns
+// its total length. Caller owns `intersects`.
 fn usz Raycaster.intersect_objects(&self, Object3D*[] objects, List{Intersection}* intersects, bool recursive = true) {
     HitSink sink = { .list = intersects };
     foreach (o : objects) self.visit(o, &sink, recursive);
@@ -148,20 +157,22 @@ fn usz Raycaster.intersect_objects(&self, Object3D*[] objects, List{Intersection
     return (usz)intersects.len();
 }
 
-// Only the nearest hit, into `hit`, without a list. False if the ray hits nothing.
+// Writes the nearest hit on `object` (and descendants when `recursive`) to `hit` without
+// allocating a list. Returns false when nothing is hit.
 fn bool Raycaster.intersect_first(&self, Object3D* object, Intersection* hit, bool recursive = true) {
     HitSink sink = { .nearest = hit };
     self.visit(object, &sink, recursive);
     return sink.found;
 }
 
+// Recursively traverses `object`, testing meshes and selecting the active `Lod` level.
 fn void Raycaster.visit(&self, Object3D* object, HitSink* sink, bool recursive) {
     if (self.visible_only && !object.visible) return;
     switch (object.kind) {
         case MESH:
             if (!((Mesh*)object).shadow_only) self.intersect_mesh((Mesh*)object, sink);
         case LOD:
-            // the level the ray's origin sees, as the renderer would pick it for a camera there
+            // Pick the level visible from the ray origin using the renderer's LOD distance scale.
             Lod* l = (Lod*)object;
             float scale = lod_distance_scale();
             float d = (l.matrix_world.get_position() - self.ray.origin).length() / scale;
@@ -183,21 +194,23 @@ fn float scale_of(Mat4 m) @local {
     return math::max(sx, math::max(sy, sc));
 }
 
-// Whether the ray passes through the sphere within near..far (and the sink still wants it).
+// Returns true if the ray intersects the sphere `(center, radius)` within `[near, far]` and
+// closer than any hit `sink` already requires.
 fn bool Raycaster.near_sphere(&self, Vector3 center, float radius, HitSink* sink) {
     Vector3 to  = center - self.ray.origin;
     float along = to.dot(self.ray.direction);
     float off2  = to.dot(to) - along * along;
     if (off2 > radius * radius) return false;
     float half = math::sqrt(radius * radius - off2);
-    // the stretch of the ray inside the sphere: along - half .. along + half
+    // Ray segment inside the sphere spans `[along - half, along + half]`.
     if (along + half < self.near || along - half > self.far) return false;
     return sink.wants(math::max(along - half, self.near));
 }
 
+// Intersects a single `Mesh` (or every instance of an `InstancedMesh`), skipping lines.
 fn void Raycaster.intersect_mesh(&self, Mesh* m, HitSink* sink) {
     BufferGeometry* g = m.geometry;
-    // (lines are not hit: their indices are no triangles)
+    // Lines have segment/strip indices rather than triangles.
     if (!g || g.indices.len() < 3 || m.is_line()) return;
     if (g.bounds_radius == 0) g.compute_bounding_sphere();
     Side side = m.material ? m.material.side : FRONT_SIDE;
@@ -207,7 +220,7 @@ fn void Raycaster.intersect_mesh(&self, Mesh* m, HitSink* sink) {
     }
     for (int i = 0; i < m.instance_count; i++) {
         float* d = &m.instance_data[(sz)i * 12];
-        // the instance's rows of a 3x4 matrix (InstancedMesh.set_matrix_at)
+        // Unpack row-major 3x4 instance matrix from `InstancedMesh.set_matrix_at`.
         Mat4 inst = {
             { d[0], d[4], d[8], 0 },
             { d[1], d[5], d[9], 0 },
@@ -218,8 +231,7 @@ fn void Raycaster.intersect_mesh(&self, Mesh* m, HitSink* sink) {
     }
 }
 
-// The triangles of `m`'s geometry placed by `world` (Möller-Trumbore, in the geometry's own
-// space).
+// Runs Möller-Trumbore ray-triangle tests in `m`'s local space for transform `world`.
 fn void Raycaster.intersect_geometry(&self, Mesh* m, Mat4 world, int instance, Side side, HitSink* sink) {
     BufferGeometry* g = m.geometry;
     if (!self.near_sphere(world.transform_point(g.bounds_center), g.bounds_radius * scale_of(world), sink)) return;
@@ -236,7 +248,7 @@ fn void Raycaster.intersect_geometry(&self, Mesh* m, Mat4 world, int instance, S
         Vector3 e2 = g.get_position(ic) - a;
         Vector3 p  = dir.cross(e2);
         float det  = e1.dot(p);
-        // counter-clockwise is the front, as in three
+        // Counter-clockwise winding defines the front face.
         if (det > -1e-12f && det < 1e-12f) continue;
         if (side == FRONT_SIDE && det < 0) continue;
         if (side == BACK_SIDE && det > 0) continue;
@@ -254,7 +266,7 @@ fn void Raycaster.intersect_geometry(&self, Mesh* m, Mat4 world, int instance, S
         if (distance < self.near || distance > self.far || !sink.wants(distance)) continue;
         float w         = 1 - u - v;
         Vector3 local_n = g.get_normal(ia) * w + g.get_normal(ib) * u + g.get_normal(ic) * v;
-        // normals go through the inverse transpose
+        // Transform normal by the inverse-transpose of `world`.
         Vector3 n = {
             inv[0][0] * local_n.x + inv[0][1] * local_n.y + inv[0][2] * local_n.z,
             inv[1][0] * local_n.x + inv[1][1] * local_n.y + inv[1][2] * local_n.z,

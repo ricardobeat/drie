@@ -1,7 +1,6 @@
-// The uber shader, shader_core.glsl. drie's materials draw with generated programs
-// (materials_nodes.c3); of this build drie uses the structs and binding slots, the depth and
-// shadow programs (Renderer.render_back_faces, the shadow atlas's clears) and clear_rect.
-// Regenerate generated/shader.c3 with: just shaders
+// Main shader entry around shaders/shader_core.glsl. Material draws use runtime node programs
+// (drie::nodes); this build supplies shared uniform/SSBO structs and binding slots, plus the
+// depth, shadow, and clear_rect programs. Regenerate generated/shader.c3 with `just shaders`.
 @header module drie::shaders;
 @header import drie;
 

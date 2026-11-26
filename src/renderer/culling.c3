@@ -1,28 +1,22 @@
-// GPU instance culling (extension, Renderer.gpu_culling). The CPU culls whole meshes by the
-// sphere around all their instances (collect in renderer.c3); for an instanced mesh that is
-// in view, a compute kernel (cull_cs in kernels.glsl) then tests each instance's sphere against
-// the view (the camera's frustum, or a shadow map's box) and writes the ones that are inside,
-// in order, to a list. The draw reads its instance matrices through that list (fetch_instance
-// in shader.glsl).
-//
-// sokol has no indirect draws, so the CPU does not know this frame's count when it draws: it
-// asks for as many instances as the cull of an earlier frame kept (read back without waiting,
-// usually from the frame before), with some room to spare, and the vertex shader drops those
-// past this frame's count. Until the readback arrives, a draw asks for every instance.
-//
-// Instance matrices of all instanced meshes live in one buffer (the arena), uploaded when it
-// changes; a mesh whose instances change after their first upload (set_matrix_at every frame)
-// gets a buffer of its own instead and is not culled per instance.
+// GPU per-instance frustum culling (Renderer.gpu_culling) and shared instance matrix arena.
+// CPU collect() culls whole meshes by aggregate bounding sphere; cull_dispatch() then runs
+// cull_cs (shaders/kernels.glsl) to test each instance sphere against camera and shadow frusta
+// and compact visible indices for fetch_instance() in shaders/shader.glsl. Because sokol lacks
+// indirect draws, draw counts come from a 3-frame async readback ring with padding, and the
+// vertex shader discards excess instances. Static meshes live in one shared InstanceArena; meshes
+// whose instances change after two uploads get dedicated buffers and skip per-instance culling.
 module drie;
 import std::collections::list, std::math, std::io;
 import sokol;
 
-// Meshes with fewer instances than this are drawn whole.
+// ---- Instance arena
+
+// Minimum instance count required to submit a mesh for GPU per-instance culling.
 const int CULL_MIN_INSTANCES @private = 8;
-// Renders per frame that can cull (each needs buffers and readback slots of its own).
+// Maximum renders per frame that can run GPU culling (each owns buffers and readback slots).
 const int CULL_MAX_SETS @private      = 16;
 
-// Views of one render: the camera and the shadow maps drawn with it.
+// Maximum views culled in a single render (camera plus shadow maps drawn that render).
 const int CULL_MAX_VIEWS @private = 8;
 
 struct InstanceArena @private {
@@ -33,8 +27,9 @@ struct InstanceArena @private {
 
 InstanceArena arena @private;
 
-// The instance matrices of `m` as the GPU has them, for drawing: the buffer and the offset of
-// its first instance. Puts them in the arena on their first upload.
+// Recomputes aggregate instance bounds for `m` and uploads its 3x4 instance matrices to the GPU.
+// Places matrices in the shared arena on first upload (updating in place on a single same-size
+// re-upload), or switches to a dedicated vertex buffer for frequently updated meshes.
 fn void upload_instances_gpu(Mesh* m) @private {
     if (m.instances_uploaded) return;
     m.instance_uploads++;
@@ -63,7 +58,7 @@ fn void upload_instances_gpu(Mesh* m) @private {
     m.instance_radius = (hi - lo).length() * 0.5f;
     m.instances_uploaded = true;
     if (m.instance_uploads == 1 && !m.in_arena) {
-        // the first upload: into the arena
+        // First upload: append to the shared arena.
         arena.data.allocator = mem;
         m.arena_base = (int)(arena.data.len() / 12);
         m.in_arena = true;
@@ -73,7 +68,7 @@ fn void upload_instances_gpu(Mesh* m) @private {
         return;
     }
     if (m.in_arena && m.instance_uploads == 2 && m.arena_size == m.instance_count) {
-        // changed once (instances placed over two frames, say): in place
+        // One same-size update (e.g. instances finalized over two frames): overwrite in place.
         mem::copy(
             &arena.data[(sz)m.arena_base * 12],
             m.instance_data.entries,
@@ -82,7 +77,7 @@ fn void upload_instances_gpu(Mesh* m) @private {
         arena.dirty = true;
         return;
     }
-    // changes often: a buffer of its own (what it had in the arena stays there unused)
+    // Frequently updated mesh: allocate a dedicated buffer (arena slice remains unused).
     m.in_arena = false;
     if (m.instance_buf.id) sg::destroy_buffer(m.instance_buf);
     m.instance_buf = sg::make_buffer(
@@ -92,7 +87,7 @@ fn void upload_instances_gpu(Mesh* m) @private {
     );
 }
 
-// The arena's GPU buffer, uploaded if it changed.
+// Returns the shared arena StorageBuffer, re-uploading if dirty.
 fn StorageBuffer* arena_buffer() @private {
     if (!arena.buffer) arena.buffer = storage_buffer(16, false, true, "drie-instances");
     if (arena.dirty) {
@@ -102,7 +97,7 @@ fn StorageBuffer* arena_buffer() @private {
     return arena.buffer;
 }
 
-// Instance buffer of a mesh for the draw: vertex buffer and offset.
+// Returns the vertex buffer and byte offset for `m`'s instance matrices.
 fn SgBuffer instance_vertex_buffer(Mesh* m, int* offset) @private {
     *offset = 0;
     if (!m.in_arena) return m.instance_buf;
@@ -110,29 +105,27 @@ fn SgBuffer instance_vertex_buffer(Mesh* m, int* offset) @private {
     return arena_buffer().buffer;
 }
 
+// ---- GPU culling ring and dispatch
+
 struct CullJobInfo @private {
     Mesh* mesh;
     int view;
-    // instances asked for in the draw
-    int draw_count;
-    // the CPU's own count (Renderer.check_compute)
-    int cpu_count;
+    int draw_count;  // Padded instance count submitted to sg::draw().
+    int cpu_count;   // CPU reference count when Renderer.check_compute is enabled (-1 otherwise).
 }
 
-// One render's buffers. counts[] rotate by frame: the CPU reads one back while the GPU fills
-// another.
+// Per-render culling buffers. The 3-slot `counts` ring lets the GPU write the current frame
+// while the CPU reads back a completed earlier frame without stalling.
 struct CullSet @private {
     StorageBuffer* jobs;
     StorageBuffer* planes;
     StorageBuffer* visible;
     StorageBuffer*[3] counts;
     int[3] slots;
-    // per ring entry: the frame and the jobs it had
     uint[3] frames;
     List{CullJobInfo}[3] infos;
     bool[3] tracked;
-    // the counts read back (from `fetched_ring`), valid for this frame
-    List{uint} fetched;
+    List{uint} fetched;    // Most recent readback counts (from `fetched_ring`) for this frame.
     int fetched_ring;
     uint fetched_frame;
     bool[3] checked;
@@ -144,7 +137,6 @@ struct CullState @private {
     int used;
     CullSet* current;
     int ring;
-    // this render's views and jobs
     CullPlane[CULL_MAX_VIEWS * 6] planes;
     int views;
     List{CullJob} jobs;
@@ -152,16 +144,15 @@ struct CullState @private {
     ComputePass* kernel;
     bool active;
     bool check;
-    // Renderer.check_compute: jobs compared, and how many differed
-    int checks;
-    int check_failures;
-    int short_draws;
-    int short_instances;
+    int checks;            // Renderer.check_compute: total jobs verified against CPU.
+    int check_failures;    // Renderer.check_compute: frames with a CPU/GPU mismatch.
+    int short_draws;       // Draws whose lagged draw_count was smaller than actual visible count.
+    int short_instances;   // Total instances clipped across short_draws.
 }
 
 CullState cull @private;
 
-// Starts a render's culling (`enabled`: Renderer.gpu_culling and compute shaders).
+// Initializes culling state for the current render (`enabled` = Renderer.gpu_culling && compute).
 fn void cull_begin(bool enabled, bool check) @private {
     cull.active = false;
     cull.views = 0;
@@ -198,7 +189,7 @@ fn void cull_begin(bool enabled, bool check) @private {
     cull.active = true;
 }
 
-// A view to cull for; -1 if there's no room.
+// Registers a frustum view (up to CULL_MAX_VIEWS) and returns its view index, or -1 if full.
 fn int cull_view(Frustum* f) @private {
     if (!cull.active || cull.views >= CULL_MAX_VIEWS) return -1;
     int v = cull.views++;
@@ -206,14 +197,15 @@ fn int cull_view(Frustum* f) @private {
         Vec4 p = f.planes[k];
         cull.planes[v * 6 + k].plane = { p.x, p.y, p.z, p.w };
     }
-    // (one plane that keeps everything)
+    // Sixth plane is a dummy always-inside plane to pad to 6 planes per view.
     cull.planes[v * 6 + 5].plane = { 0, 0, 0, 1 };
     return v;
 }
 
-// Culls the instances of `m` for view `view`; returns its job, or -1 if `m` is drawn whole.
+// Queues GPU per-instance culling for `m` against `view`. Returns the job index, or -1 if `m`
+// is drawn without per-instance culling.
 fn int cull_job(Mesh* m, int view) @private {
-    // (instance colors are not compacted with the matrices: drawn whole)
+    // Per-instance colors are not compacted alongside matrices, so colored instanced meshes draw whole.
     if (!cull.active || view < 0 || !m.in_arena || !m.frustum_culled
         || m.instance_count < CULL_MIN_INSTANCES || m.instance_colors.len()) return -1;
     int j             = (int)cull.jobs.len();
@@ -241,7 +233,8 @@ fn float max_scale_of(Mat4 m) @private {
     return math::max(sx, math::max(sy, sc));
 }
 
-// Runs the culling of this render's jobs, and picks how many instances each draw asks for.
+// Dispatches `cull_cs` for all queued views/jobs, tracks count readback, and computes each job's
+// padded `draw_count` from the newest completed readback frame.
 fn void cull_dispatch() @private {
     if (!cull.active || !cull.jobs.len()) return;
     CullSet* s = cull.current;
@@ -261,7 +254,7 @@ fn void cull_dispatch() @private {
     k.dispatch((int)cull.jobs.len());
     s.tracked[cull.ring] = counts.track(s.slots[cull.ring]);
     end_compute();
-    // what an earlier frame kept: the newest one the GPU has finished
+    // Fetch the newest completed readback from 1 or 2 frames back.
     if (s.fetched_frame != cull.frame || s.fetched_ring < 0) {
         s.fetched_frame = cull.frame;
         s.fetched_ring = -1;
@@ -271,7 +264,7 @@ fn void cull_dispatch() @private {
             sz n = s.infos[r].len();
             s.fetched.clear();
             for (sz i = 0; i < n; i++) s.fetched.push(0);
-            // checking: wait for the frame before, to compare every frame
+            // Under check_compute, block on frame-1 so every frame is compared.
             bool wait = cull.check && back == 1;
             if (n && read_back(s.slots[r], s.fetched.entries, n * (sz)uint::size, wait)) {
                 s.fetched_ring = r;
@@ -288,15 +281,16 @@ fn void cull_dispatch() @private {
         CullJobInfo* b = &before.entries[j];
         if (b.mesh != info.mesh || b.view != info.view) continue;
         int kept = (int)s.fetched[j];
-        // room for the view to have moved
+        // Pad the lagged count so camera motion does not clip newly visible instances.
         info.draw_count = math::min(info.mesh.instance_count, kept + math::max(kept / 8, 4));
     }
 }
 
-// How many instances a draw asks for (its job's draw_count).
+// Returns the instance count to submit to sg::draw() for `job`.
 fn int cull_draw_count(int job) @private => cull.current.infos[cull.ring][job].draw_count;
 
-// The bindings and the vertex shader's inst_cull of a draw (job -1: not culled on the GPU).
+// Binds instance culling buffers to `bind` and returns the `inst_cull` vertex uniform (`job == -1`
+// binds dummy buffers and returns zeros).
 fn Vec4 cull_bind(SgBindings* bind, int job) @private {
     if (job < 0 || !cull.active) {
         StorageBuffer* dummy = arena_buffer();
@@ -312,7 +306,9 @@ fn Vec4 cull_bind(SgBindings* bind, int job) @private {
     return { 1, (float)cull.jobs[job].range[2], (float)job, 0 };
 }
 
-// The instances of a job the CPU finds inside its view (the same test as the kernel's).
+// ---- CPU verification
+
+// Reference CPU sphere-vs-frustum count matching `cull_cs` (used by Renderer.check_compute).
 fn int cpu_cull_count(CullJob* job) @private {
     int kept;
     CullPlane* planes = &cull.planes[job.range[3] * 6];
@@ -345,7 +341,7 @@ fn int cpu_cull_count(CullJob* job) @private {
     return kept;
 }
 
-// Renderer.check_compute: compares the counts read back from ring `r` with the CPU's.
+// Compares GPU readback counts in ring `r` against CPU reference counts (Renderer.check_compute).
 fn void cull_compare(CullSet* s, int r) @private {
     int bad;
     int worst;
@@ -353,8 +349,7 @@ fn void cull_compare(CullSet* s, int r) @private {
         if (info.cpu_count < 0) continue;
         int d = math::abs((int)s.fetched[j] - info.cpu_count);
         cull.checks++;
-        // a draw that asked for fewer instances than its cull kept (the count it went by was
-        // an earlier frame's): some were left out for a frame
+        // Record when the lagged padded draw_count fell below the actual visible instance count.
         if (info.draw_count < (int)s.fetched[j]) {
             cull.short_draws++;
             cull.short_instances += (int)s.fetched[j] - info.draw_count;
@@ -375,7 +370,8 @@ fn void cull_compare(CullSet* s, int r) @private {
     }
 }
 
-// Renderer.check_compute: how the comparisons went, on stderr.
+// Prints accumulated Renderer.check_compute statistics for cluster grids and instance culling
+// to stderr.
 fn void print_compute_checks() {
     io::eprintfn(
         "drie: check_compute: %d cluster grids compared (%d differed), %d culled draws compared (%d frames differed); "

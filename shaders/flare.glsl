@@ -1,9 +1,7 @@
-// LensFlarePass (postprocessing.c3): the ghosts and halo a lens makes of what is bright. Light
-// reflected between a lens's elements lands mirrored through the picture's middle, so each
-// pixel of the flare looks along the line through the picture's middle at `ghosts` places of the bright picture (the bloom's glow, over
-// `threshold`), each fainter the further from the middle it is, its red, green and blue a
-// little apart (the glass's dispersion), and at a ring round the middle (the halo, fainter).
-// Regenerate generated/flare.c3 with: just shaders
+// LensFlarePass (drie::postprocessing): lens ghosts and halo from bright areas of the image.
+// Internal reflections land mirrored across the center, so each pixel samples `ghosts` points
+// along that line from the bloom image above `threshold`, fading toward the edges with RGB
+// dispersion, plus a fainter halo ring. Regenerate generated/flare.c3 with `just shaders`.
 @header module drie::postprocessing;
 @header import drie;
 

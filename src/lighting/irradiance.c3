@@ -1,47 +1,49 @@
-// Irradiance volumes: light that has bounced around a room, stored in a grid of probes.
-// (Not in three.js itself; its LightProbe is a single probe.)
-//
-//   IrradianceVolume* v = drie::irradiance_volume(room_min, room_max, 0.5f);
-//   for every probe (x, y, z) and each of the six axis directions `dir` (+x -x +y -y +z -z):
-//       v.set(x, y, z, dir, light arriving at v.probe_position(x, y, z) on a surface facing dir);
-//   scene.irradiance = v;
-//
-// Lit materials inside the box then receive that light on top of the scene's lights, blended
-// between the probes around them and between the directions by their normal. What goes into
-// the probes is up to the application (see IrradianceVolume.sample for bounce after bounce).
-// Values are irradiance: a white surface facing `dir` shows `value / PI`.
+// 3D grid of 6-axis diffuse irradiance probes (`IrradianceVolume`) for bounced indirect light.
+// Values are linear irradiance in RGB along `+x`, `-x`, `+y`, `-y`, `+z`, `-z` (a white Lambertian
+// surface facing `dir` reflects `value / PI`), and positions and `normal_offset` are in meters.
+// Assign to `Scene.irradiance`; lit shaders blend the eight surrounding probes and weight axis
+// faces by `normal^2`. `upload()` packs the six directional slabs along X into an `RGBA16F` 3D
+// texture lazily on the GPU whenever `set()` marks the volume dirty.
+
 module drie;
 import std::math;
 import sokol;
 
-// Directions of the six values of a probe.
+// Unit axis vectors corresponding to probe direction indices 0..5 (`+x`, `-x`, `+y`, `-y`, `+z`, `-z`).
 const Vector3[6] IRRADIANCE_AXES = { { 1, 0, 0 }, { -1, 0, 0 }, { 0, 1, 0 }, { 0, -1, 0 }, { 0, 0, 1 }, { 0, 0, -1 } };
 
+// Axis-aligned 3D grid of 6-axis irradiance probes attached via `Scene.irradiance`.
+//
+//   IrradianceVolume* v = drie::irradiance_volume(room_min, room_max, 0.5f);
+//   // For every probe (x, y, z) and direction dir in 0..5 (IRRADIANCE_AXES):
+//   v.set(x, y, z, dir, irradiance_at_probe);
+//   scene.irradiance = v;
+//
+// Lit materials inside `[min, max]` receive this light on top of scene lights unless
+// `replaces_ambient` is set. Use `sample()` on the CPU to feed one bounce into the next.
 struct IrradianceVolume {
-    Vector3 min;
-    Vector3 max;
-    // probes along x, y and z; they sit in the middle of their cells
-    int nx;
-    int ny;
-    int nz;
-    // rgb per direction per probe
-    float[] data;
-    float intensity;
-    // Surfaces look up the volume this far off along their normal (meters), so that a wall
-    // takes its light from the room it faces and not from the probes behind it.
+    Vector3 min; // World-space minimum corner of the volume (m).
+    Vector3 max; // World-space maximum corner of the volume (m).
+    int nx; // Probe count along X; probes sit at cell centers.
+    int ny; // Probe count along Y; probes sit at cell centers.
+    int nz; // Probe count along Z; probes sit at cell centers.
+    float[] data; // Linear RGB irradiance per direction per probe (`nx * ny * nz * 18` floats).
+    float intensity; // Scalar multiplier applied to sampled irradiance.
+    // Distance along the surface normal (m) applied before lookup so walls sample the room they
+    // face rather than probes behind them.
     float normal_offset;
-    // Extension: the probes hold all the light from around them, the sky's included, instead of
-    // what bounces on top of it. Inside the box they take the place of the scene's ambient and
-    // hemisphere lights, which then light only what is outside it: a building's shade and its
-    // dark corners, out of doors.
+    // When true, probes hold total indirect light including sky; inside the box they replace
+    // the scene's ambient and hemisphere lights instead of adding on top of them.
     bool replaces_ambient;
-    SgImage image;
-    SgView view;
-    SgSampler sampler;
-    bool uploaded;
+    SgImage image; // Uploaded `RGBA16F` 3D texture (`nx * 6` x `ny` x `nz`).
+    SgView view; // Texture view bound by lit shaders.
+    SgSampler sampler; // Trilinear clamp-to-edge sampler created on first upload.
+    bool uploaded; // True when GPU texture matches `data`.
 }
 
-// A volume over the box min..max with probes about `spacing` apart.
+// ---- Construction & access
+
+// Allocates a volume covering `min..max` with probes spaced approximately `spacing` meters apart.
 fn IrradianceVolume* irradiance_volume(Vector3 min, Vector3 max, float spacing = 0.5) {
     IrradianceVolume* v = mem::new(IrradianceVolume);
     Vector3 size        = max - min;
@@ -58,8 +60,7 @@ fn IrradianceVolume* irradiance_volume(Vector3 min, Vector3 max, float spacing =
     return v;
 }
 
-// A volume over the box min..max with nx by ny by nz probes (three's LightProbeGrid and its
-// resolution).
+// Allocates a volume covering `min..max` with an explicit `nx` x `ny` x `nz` probe resolution.
 fn IrradianceVolume* irradiance_grid(Vector3 min, Vector3 max, int nx, int ny, int nz) {
     IrradianceVolume* v = mem::new(IrradianceVolume);
     *v = {
@@ -76,20 +77,25 @@ fn IrradianceVolume* irradiance_grid(Vector3 min, Vector3 max, int nx, int ny, i
     return v;
 }
 
+// Returns the world-space dimensions of one grid cell in meters.
 fn Vector3 IrradianceVolume.cell(&self) {
     Vector3 size = self.max - self.min;
     return { size.x / self.nx, size.y / self.ny, size.z / self.nz };
 }
 
+// Returns the world-space center of probe `(x, y, z)` in meters.
 fn Vector3 IrradianceVolume.probe_position(&self, int x, int y, int z) {
     Vector3 c = self.cell();
     return self.min + (Vector3) { ((float)x + 0.5f) * c.x, ((float)y + 0.5f) * c.y, ((float)z + 0.5f) * c.z };
 }
 
+// Returns the starting float index in `data` for probe `(x, y, z)` and direction `dir` (0..5).
 fn sz IrradianceVolume.offset(&self, int x, int y, int z, int dir) {
     return ((((sz)z * self.ny + y) * self.nx + x) * 6 + dir) * 3;
 }
 
+// Writes linear RGB `irradiance` for probe `(x, y, z)` along direction `dir` (0..5)
+// and marks the GPU texture dirty.
 fn void IrradianceVolume.set(&self, int x, int y, int z, int dir, Vector3 irradiance) {
     sz o = self.offset(x, y, z, dir);
     self.data[o] = irradiance.x;
@@ -98,13 +104,16 @@ fn void IrradianceVolume.set(&self, int x, int y, int z, int dir, Vector3 irradi
     self.uploaded = false;
 }
 
+// Reads the stored linear RGB irradiance for probe `(x, y, z)` along direction `dir` (0..5).
 fn Vector3 IrradianceVolume.get(&self, int x, int y, int z, int dir) {
     sz o = self.offset(x, y, z, dir);
     return { self.data[o], self.data[o + 1], self.data[o + 2] };
 }
 
-// The light a surface at `pos` facing `normal` gets from the volume, as the shader sees it.
-// Lets a bake feed one bounce into the next.
+// ---- Sampling
+
+// Evaluates trilinearly interpolated irradiance at `pos` for a surface facing `normal`, matching
+// the GPU shader lookup so multi-bounce bakers can feed one bounce into the next.
 fn Vector3 IrradianceVolume.sample(&self, Vector3 pos, Vector3 normal) {
     Vector3 c  = self.cell();
     Vector3 p  = pos + normal * self.normal_offset - self.min;
@@ -128,8 +137,8 @@ fn Vector3 IrradianceVolume.sample(&self, Vector3 pos, Vector3 normal) {
     return sum * (fade * self.intensity);
 }
 
-// 1 inside the volume's box, falling to 0 over half a cell outside it: a room-sized volume
-// lights the room up to its walls, floor and ceiling. `p` is relative to min.
+// Returns 1 inside `[min, max]` and fades linearly to 0 over half a cell outside the box so a
+// room-sized volume illuminates its walls, floor, and ceiling (`p` is relative to `min`).
 fn float IrradianceVolume.edge_fade(&self, Vector3 p) {
     Vector3 c    = self.cell();
     Vector3 size = self.max - self.min;
@@ -141,6 +150,8 @@ fn float IrradianceVolume.edge_fade(&self, Vector3 p) {
     return fade;
 }
 
+// ---- GPU upload
+
 fn ushort half_float(float f) @local {
     uint x    = bitcast(f, uint);
     uint sign = (x >> 16) & 0x8000;
@@ -151,10 +162,9 @@ fn ushort half_float(float f) @local {
     return (ushort)(sign | ((uint)e << 10) | (m >> 13));
 }
 
-// Uploads the probes as a 3D texture: the six directions side by side along x.
-// Writes the probes into px, the half-float RGBA pixels of a 3D texture `width` by `height`
-// (by at least nz) pixels, from column x0: the light from each of the six directions in a
-// slab nx pixels wide, side by side.
+// Packs probe irradiance as half-float RGBA into `px` for a 3D texture of dimensions `width` x
+// `height` x `nz`, starting at column `x0` with the six directional slabs laid out side by side
+// along X (`nx` texels per direction).
 fn void IrradianceVolume.fill(&self, ushort[] px, int width, int height, int x0) {
     for (int z = 0; z < self.nz; z++) {
         for (int y = 0; y < self.ny; y++) {
@@ -172,6 +182,8 @@ fn void IrradianceVolume.fill(&self, ushort[] px, int width, int height, int x0)
     }
 }
 
+// Uploads `data` to the GPU as an `RGBA16F` 3D texture (`nx * 6` x `ny` x `nz`) when dirty,
+// recreating any prior image and view. Called lazily by the renderer.
 fn void IrradianceVolume.upload(&self) {
     if (self.uploaded) return;
     if (self.image.id) {

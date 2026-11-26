@@ -1,6 +1,6 @@
-// The shadow atlas (renderer.c3): copies a part of one depth texture into another, texel for
-// texel, as depth: the atlas into a larger one, and a light's maps of its still casters into
-// the atlas (see AtlasSlot). Regenerate generated/atlas.c3 with: just shaders
+// Shadow atlas depth copy (Renderer): copies a region of one depth texture into another, texel
+// for texel, as depth. Used when growing the atlas and when copying a light's cached static
+// shadow tiles into the live atlas (AtlasSlot). Regenerate generated/atlas.c3 with `just shaders`.
 @header module drie::shaders;
 @header import drie;
 

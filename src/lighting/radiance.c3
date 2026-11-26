@@ -1,206 +1,186 @@
-// Radiance cascades (Sannikov 2023) in world space: light that bounces around, and the glow
-// of emissive things, worked out anew every frame on the GPU. (Not in three.js.)
-// 
-//   RadianceCascades* rc = drie::radiance_cascades(room_min, room_max);
-//   rc.voxelize(scene);              // once, and again when the solid things in the box change
-//   scene.radiance = rc;
-//   // each frame, before render():
-//   rc.update(scene);
-// 
-// A grid of probes fills the box. Cascade 0 has one every `spacing` meters, each looking in
-// 4 x 4 directions for a short way (`interval`); each cascade above has an eighth of the
-// probes, four times the directions and looks four times as far, from where the one below
-// stopped. A ray that finds nothing in its stretch goes on in the cascade above, so cascade 0
-// ends up with all the light from around each probe: near things in detail, far things
-// coarsely, which is about what their penumbras need.
-// 
-// The rays are marched through a voxel copy of the scene (voxelize: each solid mesh's color
-// and glow; see-through materials leave no voxels). A voxel that a ray hits gives off its
-// glow, plus what the scene's point, spot and directional lights put on it (shadowed through
-// the voxels: a directional light's shadow ray goes to the edge of the box)
-// and what the probes found the frame before: bounce after bounce over the frames. Rays that
-// leave the box see the sky (the scene's hemisphere and ambient lights, or sky_color and
-// ground_color).
-// 
-// Lit materials inside the box take their indirect light from the probes instead of the
-// scene's ambient, hemisphere and irradiance volume. Directions are jittered and blended over
-// frames (`blend`), so the result takes some frames to settle after a change.
+// World-space Radiance Cascades global illumination (Sannikov 2023) with dense
+// (`shaders/radiance_cs.glsl`) and sparse Split Radiance Cascades (`shaders/radiance_rays_cs.glsl`,
+// arXiv:2607.20384) GPU compute paths. Voxelize solid meshes into a linear albedo/emissive grid
+// with `voxelize()`, assign to `Scene.radiance`, then call `update()` before `Renderer.render()`
+// for dense volumes (sparse volumes update automatically from the G-Buffer during rendering).
+// Distances are in meters and lighting values are linear radiance; lit materials inside
+// `[min, max]` take indirect light here instead of ambient, hemisphere, or irradiance-volume
+// lighting. GPU resources allocate lazily in `upload()`, and `dispose()` releases them.
+
 module drie;
 import std::math, std::collections::list;
+// `drie_shaders::rc_rays` lives outside `drie::*` because its generated shader structs share
+// names with `drie::shaders` that collide under recursive imports.
 import sokol, drie_shaders::rc_rays;
 
+// ---- Constants & configuration
+
+// Maximum cascade levels supported by uniform offsets and per-level arrays.
 const int RC_MAX_LEVELS     = 8;
+// Maximum scene lights uploaded per frame to the cascade trace shader.
 const int RC_MAX_LIGHTS     = 64;
+// Maximum surface rays stored in `rc_shared_rays` for one split-cascade trace dispatch.
 const int RC_MAX_TRACE_RAYS = 1048576;
 
 StorageBuffer* rc_shared_acc @local;
 StorageBuffer* rc_shared_rays @local;
-// How often (in frames) a pass swept the hash table for stale probes (the dense path's
-// rc_evict_cs): the split path rebuilds the table every frame instead.
+// Default frame interval for periodic hash-table eviction; the split path rebuilds the hash
+// table every frame instead.
 const int RC_EVICT_PERIOD = 8;
-// free_buf's counters (radiance_rays_cs.glsl, RC_FREE_BASE): below it, the free-stack tops,
-// bump counts and ray counters of both the primary and the cache; from there on, the free
-// slot lists, the primary's then the cache's.
+// Start offset of recycled slot lists in `free_buf` (`RC_FREE_BASE` in
+// `shaders/radiance_rays_cs.glsl`): indices below hold free-stack tops, bump counters, and ray
+// counters for the primary volume and secondary cache.
 const int RC_FREE_BASE    = 40;
 
-// The kernels RadianceCascades.skip_kernels can leave out, for benches (tests/
-// radiance_split_bench.c3): each kernel's cost shows as the time saved without it. The sparse
-// path runs all six; the dense one TRACE and GATHER.
+// Kernel bitmask flag for `RadianceCascades.skip_kernels` (used by
+// `tests/radiance_split_bench.c3` to isolate per-kernel GPU timings): skips the clear pass.
 const int RC_KERNEL_CLEAR     = 1;
+// `skip_kernels` flag: skips the hash-table rebuild and eviction pass (sparse path).
 const int RC_KERNEL_EVICT     = 2;
+// `skip_kernels` flag: skips G-Buffer and secondary-cache probe allocation passes (sparse path).
 const int RC_KERNEL_ALLOC     = 4;
+// `skip_kernels` flag: skips hierarchy propagation, R2 offset, and indirect-arg passes (sparse).
 const int RC_KERNEL_PROPAGATE = 8;
+// `skip_kernels` flag: skips ray marching passes (dense and sparse paths).
 const int RC_KERNEL_TRACE     = 16;
+// `skip_kernels` flag: skips cascade merge and 6-face irradiance gather passes (dense and sparse).
 const int RC_KERNEL_GATHER    = 32;
 
+// World-space Radiance Cascades volume for real-time bounced indirect lighting and emissive glow.
+//
+//   RadianceCascades* rc = drie::radiance_cascades(room_min, room_max);
+//   rc.voxelize(scene);
+//   scene.radiance = rc;
+//   // Each frame before render() (dense mode):
+//   rc.update(scene);
+//
+// Cascade 0 places probes at `spacing` meters with `base_directions`^2 rays over `interval`
+// meters; each coarser level doubles spacing, quadruples angular resolution, and quadruples ray
+// length. Rays march through a 4x-resolution voxel copy of solid meshes and blend temporally
+// across frames (`blend`).
 struct RadianceCascades {
-    Vector3 min;
-    Vector3 max;
-    // between cascade 0's probes (m)
-    float spacing;
-    int nx;
-    int ny;
-    int nz;
-    int levels;
-    // directions across cascade 0's square (4: 16 directions)
-    int base_directions;
-    // how far cascade 0's rays reach (m)
-    float interval;
-    float voxel_size;
-    int vx;
-    int vy;
-    int vz;
-    // the share of each new frame in the probes
-    float blend;
-    // the rays a direction bin takes in a frame for that frame to count `blend` (split
-    // cascades); a bin with fewer counts less, so level 0's bins, a ray or so each a frame,
-    // settle smoothly while the coarser levels' still follow a change. 1: every bin `blend`
+    Vector3 min; // World-space volume minimum corner (m).
+    Vector3 max; // World-space volume maximum corner snapped to whole probe cells (m).
+    float spacing; // Distance between cascade 0 probes (m).
+    int nx; // Cascade 0 probe count along X (also brick count along X).
+    int ny; // Cascade 0 probe count along Y (also brick count along Y).
+    int nz; // Cascade 0 probe count along Z (also brick count along Z).
+    int levels; // Configured cascade count (`1..RC_MAX_LEVELS`).
+    int base_directions; // Directional grid width at cascade 0 (`4` gives 16 directions in dense mode).
+    float interval; // Cascade 0 ray march distance (m).
+    float voxel_size; // Edge length of one voxel (`spacing / 4`, in meters).
+    int vx; // Voxel grid resolution along X (`nx * 4`).
+    int vy; // Voxel grid resolution along Y (`ny * 4`).
+    int vz; // Voxel grid resolution along Z (`nz * 4`).
+    float blend; // Temporal blend weight of each new frame in probe history (`0..1`).
+    // Ray-count threshold per direction bin at which a frame reaches full `blend` weight in split
+    // mode; bins receiving fewer rays scale down proportionally (`1` applies full `blend` to all).
     float blend_rays;
-    // multiplies the light the probes give to the materials
-    float intensity;
-    // how much of the probes' light bounces on (1: all of it)
-    float bounce;
-    // the sky's radiance overhead and from below, linear; taken from the scene's hemisphere
-    // and ambient lights while sky_from_scene is on
-    Vector3 sky_color;
-    Vector3 ground_color;
-    bool sky_from_scene;
-    // The most a voxel glows (the brightest of r, g and b, linear; 0: no limit), set before
-    // voxelize(). A lamp's bulb made bright enough to burn out in the camera is only a voxel
-    // or two that most rays miss: whichever probes' rays find it light up and go dark again
-    // from frame to frame, patches of light that wander around the lamp. The lamp's own
-    // light (a PointLight or SpotLight) lights the room without that.
+    float intensity; // Scalar multiplier on indirect light sampled by lit materials.
+    float bounce; // Fraction of previous-frame probe irradiance bounced on voxel hits (`0..1`).
+    Vector3 sky_color; // Overhead linear sky radiance for rays exiting the box.
+    Vector3 ground_color; // Lower-hemisphere linear ground radiance for rays exiting the box.
+    bool sky_from_scene; // When true, derives `sky_color` and `ground_color` from scene ambient/hemisphere lights.
+    // Maximum linear RGB component allowed in voxel emissive glow (`0` = unlimited), applied
+    // during `voxelize()`. Clamping tiny bright bulbs avoids wandering fireflies while scene
+    // point/spot lights handle their direct illumination.
     float max_glow;
-    // Surfaces look the probes up this far off along their normal (m).
-    float normal_offset;
-    // two numbers per voxel: rgb8 color and bit 24 = solid; the glow as rgb8 with an exponent
+    float normal_offset; // World-space offset along surface normal (m) applied when sampling probes.
+    // CPU voxel array: 2 `uint`s per voxel (`rgb8` albedo + bit 24 solid flag; RGBE8 linear glow).
     uint[] voxels;
-    bool voxels_changed;
-    // one ray in this many is traced each frame (1: all of them; more is cheaper and slower
-    // to follow a change)
-    int update_every;
-    // shadow rays marched per hit (1: pure RIS; >1: first shadow_rays-1 deterministic + 1 RIS)
-    int shadow_rays;
-    StorageBuffer* voxel_buf;
-    StorageBuffer* brick_buf;
-    StorageBuffer* cascade_buf;
-    StorageBuffer* irradiance_buf;
-    StorageBuffer* light_buf;
-    ComputePass* trace;
-    ComputePass* gather;
-    int[RC_MAX_LEVELS] offsets;
-    int[RC_MAX_LEVELS] counts;
-    int frame;
-    // RC_KERNEL_* bits of kernels not to dispatch (0: all of them). For benches only: the light
-    // goes wrong without them.
-    int skip_kernels;
+    bool voxels_changed; // True when `voxels` needs re-uploading and brick-mask rebuilding on GPU.
+    int update_every; // Trace stride (`1` traces every ray/pixel; larger values amortize cost across frames).
+    int shadow_rays; // Shadow rays per voxel hit (`1` = pure RIS; `> 1` = `shadow_rays - 1` deterministic + 1 RIS).
+    StorageBuffer* voxel_buf; // GPU voxel albedo and glow storage buffer.
+    StorageBuffer* brick_buf; // GPU 64-bit 4x4x4 brick occupancy bitmasks.
+    StorageBuffer* cascade_buf; // GPU cascade radiance intervals (dense) or merged bins (split).
+    StorageBuffer* irradiance_buf; // GPU 6-face probe irradiance (preceded by hash table in sparse mode).
+    StorageBuffer* light_buf; // GPU per-frame scene light array (`RC_MAX_LIGHTS` entries).
+    ComputePass* trace; // Dense cascade trace compute pass.
+    ComputePass* gather; // Dense cascade 6-face irradiance gather pass.
+    int[RC_MAX_LEVELS] offsets; // Starting ray/bin index per cascade level in dense mode.
+    int[RC_MAX_LEVELS] counts; // Ray/bin count per cascade level in dense mode.
+    int frame; // Frame counter driving jitter rotation and initial blend ramp.
+    int skip_kernels; // Bitmask of `RC_KERNEL_*` stages to skip for benchmarking (`0` runs all).
 
-    // Sparse / Split Radiance Cascades mode (arXiv:2607.20384): probes are allocated on the
-    // GPU near visible G-Buffer surfaces in a hash table stored at the front of
-    // `irradiance_buf`, followed by the L0 and L1 6-face irradiance and the cache's.
+    // Enables sparse Split Radiance Cascades (arXiv:2607.20384), allocating probes near visible
+    // G-Buffer surfaces in a GPU hash table at the front of `irradiance_buf`.
     bool sparse;
-    int rays_per_probe; // max rays traced per L0 probe per frame in split mode (default 64)
-    bool multibounce; // secondary cache multibounce in split mode (default true)
-    float lod_distance; // Chebyshev base distance for LOD rings (0: auto)
-    int max_lod; // max LOD ring index (0: off)
-    bool freeze_alloc; // pauses rc_alloc_cs so debug cameras don't allocate probes
-    bool sparse_dirty; // clears sparse hash table + probe counters on next update
-    int hash_cap; // power of 2 (e.g. 65536)
-    int[RC_MAX_LEVELS] level_cap; // max allocated probes per cascade level
-    int[RC_MAX_LEVELS] probe_base; // start offset in meta_buf per cascade level
-    int split_levels; // effective cascade levels in split mode (drops levels past box diagonal)
-    int[RC_MAX_LEVELS] split_cap; // max probes per level in split mode: max(P0 >> 2n, 64)
-    int[RC_MAX_LEVELS] split_pbase; // start offset in meta_buf per level in split mode
-    int[RC_MAX_LEVELS] split_offsets; // bin offset per level in split mode
-    int[RC_MAX_LEVELS] split_counts; // bin count per level in split mode
-    // The secondary cache (split mode, multibounce): a second set of probes at 4x the spacing,
-    // seeded from the rays' hits, sampled for the light that bounces more than once. Its pools
-    // follow the primary ones in meta_buf and the bin buffers; its 6-face irradiance follows
-    // the L0 one in irradiance_buf.
+    int rays_per_probe; // Maximum surface rays traced per L0 probe per frame in split mode (default 64).
+    bool multibounce; // Enables the secondary 4x-spacing cache for multi-bounce light in split mode.
+    float lod_distance; // Chebyshev base distance (m) for LOD rings (`0` = automatic).
+    int max_lod; // Maximum LOD ring index (`0` disables LOD rings).
+    bool freeze_alloc; // Pauses `update_sparse()` so debug cameras do not reallocate or advance probes.
+    bool sparse_dirty; // Triggers full clear of hash table, metadata, and history on next split update.
+    int hash_cap; // Power-of-two probe hash-table capacity in slots.
+    int[RC_MAX_LEVELS] level_cap; // Per-level probe capacities for sparse layout sizing.
+    int[RC_MAX_LEVELS] probe_base; // Per-level base probe index for sparse layout sizing.
+    int split_levels; // Effective cascade count in split mode (drops levels starting past box diagonal).
+    int[RC_MAX_LEVELS] split_cap; // Maximum primary probes per level in split mode: `max(P0 >> 2n, 64)`.
+    int[RC_MAX_LEVELS] split_pbase; // Primary probe metadata start index per level in `meta_buf`.
+    int[RC_MAX_LEVELS] split_offsets; // Primary bin start offset per level in `cascade_buf`/`hist_buf`.
+    int[RC_MAX_LEVELS] split_counts; // Primary bin count per level in split mode.
+    // Secondary multi-bounce cache (4x spacing, 1/16 primary L0 probe cap) seeded from primary
+    // trace hits; its pools follow the primary pools in `meta_buf`, bin buffers, and `irradiance_buf`.
     int cache_levels;
-    int[RC_MAX_LEVELS] cache_cap; // max probes per level in the cache
-    int[RC_MAX_LEVELS] cache_pbase; // start offset in meta_buf per level in the cache
-    int[RC_MAX_LEVELS] cache_offsets; // bin offset per level in the cache
-    int[RC_MAX_LEVELS] cache_counts; // bin count per level in the cache
-    int cache_meta_base; // = total primary meta
-    int cache_bin_base; // = total primary bins
-    int cache_irr_base; // start of the cache's 6-face irradiance in irradiance_buf
-    int hits_cap; // hit records the primary trace writes for the cache to seed from
-    StorageBuffer* meta_buf;
-    // Per-level free lists of recycled data slots (rc_evict_cs pushes, rc_touch_probe/
-    // rc_prop_touch pop): 8 uint free-list tops, then one region per level (sized like
-    // meta_buf/probe_base) holding the recycled slot ids.
+    int[RC_MAX_LEVELS] cache_cap; // Maximum secondary cache probes per level.
+    int[RC_MAX_LEVELS] cache_pbase; // Secondary cache metadata start index per level in `meta_buf`.
+    int[RC_MAX_LEVELS] cache_offsets; // Secondary cache bin start offset per level.
+    int[RC_MAX_LEVELS] cache_counts; // Secondary cache bin count per level.
+    int cache_meta_base; // Start index of secondary cache metadata in `meta_buf` (total primary probes).
+    int cache_bin_base; // Start index of secondary cache bins (total primary bins).
+    int cache_irr_base; // Start offset of secondary cache 6-face irradiance in `irradiance_buf`.
+    int hits_cap; // Maximum primary trace hit records stored in `hits_buf` to seed the cache.
+    StorageBuffer* meta_buf; // Per-probe metadata (`32 B`/probe) for primary and secondary cache pools.
+    // Counters (`0..RC_FREE_BASE-1`) followed by per-level free-slot stacks sized to match
+    // `meta_buf` for recycling evicted probe slots.
     StorageBuffer* free_buf;
-    int free_buf_len; // 8 + total probe slots across all levels
-    StorageBuffer* hist_buf; // per-bin (J, beta, count) history in split mode (8 B/bin)
-    StorageBuffer* args_buf; // indirect dispatch group counts in split mode
-    StorageBuffer* hits_buf; // surface hits the primary trace leaves for the secondary cache
-    ComputePass* rays_clear_pass;
-    ComputePass* rays_rebuild_pass;
-    ComputePass* rays_alloc_pass;
-    ComputePass* rays_alloc_ms_pass;
-    ComputePass* rays_cache_alloc_pass;
-    ComputePass* rays_propagate_pass;
-    ComputePass* rays_offsets_pass;
-    ComputePass* rays_args_pass;
-    ComputePass* rays_trace_pass;
-    ComputePass* rays_merge_pass;
-    ComputePass* rays_gather_pass;
-    // the root last voxelized into this volume (see recenter(): a different root forces a
-    // full re-voxelize even when the snapped center didn't move)
+    int free_buf_len; // Element count (`uint`s) allocated in `free_buf`.
+    StorageBuffer* hist_buf; // Per-bin temporal `(J, beta, count)` history in split mode (`8 B`/bin).
+    StorageBuffer* args_buf; // Indirect compute dispatch arguments written on the GPU in split mode.
+    StorageBuffer* hits_buf; // Surface hit positions written by primary trace for cache probe seeding.
+    ComputePass* rays_clear_pass; // Split-mode buffer clear pass.
+    ComputePass* rays_rebuild_pass; // Split-mode per-frame hash-table rebuild and eviction pass.
+    ComputePass* rays_alloc_pass; // Split-mode single-sample G-Buffer probe allocation pass.
+    ComputePass* rays_alloc_ms_pass; // Split-mode MSAA G-Buffer probe allocation pass.
+    ComputePass* rays_cache_alloc_pass; // Split-mode secondary cache probe seeding pass.
+    ComputePass* rays_propagate_pass; // Split-mode bottom-up parent probe propagation pass.
+    ComputePass* rays_offsets_pass; // Split-mode top-down R2 ray-segment prefix-offset pass.
+    ComputePass* rays_args_pass; // Split-mode indirect dispatch argument builder pass.
+    ComputePass* rays_trace_pass; // Split-mode R2 surface ray marching pass.
+    ComputePass* rays_merge_pass; // Split-mode top-down cascade resolve and merge pass.
+    ComputePass* rays_gather_pass; // Split-mode 6-face irradiance gather pass.
+    // Scene root last passed to `voxelize()` or `recenter()`; a different root forces a full
+    // re-voxelize even when the snapped box origin did not move.
     Object3D* voxelized_root;
-    // set by voxelize_region() while it's adding triangles, so set_voxel/add_triangle leave
-    // voxels outside [clip_min, clip_max] alone instead of clearing the whole grid
+    // Active while `voxelize_region()` runs so `set_voxel()` and `add_triangle()` only modify
+    // voxels inside `[clip_min, clip_max]`.
     bool clip_region;
-    Vector3 clip_min;
-    Vector3 clip_max;
+    Vector3 clip_min; // World-space minimum corner of the active partial-voxelization box (m).
+    Vector3 clip_max; // World-space maximum corner of the active partial-voxelization box (m).
 
-    // The view that places probes and traces/gathers them (update_sparse()'s GPU work);
-    // renders from any other camera just read the irradiance it left, instead of redoing
-    // that work with their own G-Buffer. Leave null to update from whichever call turns out
-    // to be the frame's last (see update_sparse()): the common case of one camera a frame
-    // needs nothing set, and a multi-camera frame (a portal, a security feed, the player's
-    // own view) still updates once, from the view that matters, instead of once per call.
+    // Camera whose render drives sparse probe allocation and tracing. Leave null to defer the
+    // update to `flush_pending_sparse()` at `drie::commit()` using the frame's last render.
     Camera* camera;
-    bool pending_sparse; // an update_sparse() call this engine frame awaits flush_pending_sparse()
-    Scene* pending_scene;
-    SgView pending_depth_tex;
-    SgView pending_normal_tex;
-    SgSampler pending_gb_sampler;
-    Mat4 pending_inv_view_proj;
-    Vector3 pending_cam_pos;
-    int pending_width;
-    int pending_height;
+    bool pending_sparse; // True when a deferred `update_sparse()` awaits `flush_pending_sparse()`.
+    Scene* pending_scene; // Scene recorded for the deferred sparse update.
+    SgView pending_depth_tex; // G-Buffer depth view recorded for the deferred sparse update.
+    SgView pending_normal_tex; // G-Buffer normal view recorded for the deferred sparse update.
+    SgSampler pending_gb_sampler; // G-Buffer sampler recorded for the deferred sparse update.
+    Mat4 pending_inv_view_proj; // Inverse view-projection recorded for the deferred sparse update.
+    Vector3 pending_cam_pos; // Camera world position recorded for the deferred sparse update.
+    int pending_width; // G-Buffer width recorded for the deferred sparse update.
+    int pending_height; // G-Buffer height recorded for the deferred sparse update.
 }
 
-// The 32-bit probe key packs a cell per axis in 9 bits, and the box's far edge has to have a
-// cell of its own: past that, two cells would share one key and one probe.
+// ---- Construction
+
+// Maximum probe cells per axis supported by the 32-bit probe key (9 bits per axis, keeping one
+// boundary cell at the box's far edge to avoid key collisions).
 const int RC_KEY_CELLS = 480;
 
-// `spacing` and its voxels, as close to what was asked for as the key allows: a box too big
-// for it at that spacing gets one twice as coarse, and so on (the paper's LOD rings would keep
-// the detail near the camera and coarsen only the far field; this coarsens the whole volume,
-// which is all one box can do without a second set of pool offsets in the uniform block).
+// Doubles `spacing` up to 8 times until `size / spacing` fits within `RC_KEY_CELLS` on every
+// axis so 32-bit probe keys stay collision-free across the box.
 fn float rc_fit_spacing(Vector3 size, float spacing) {
     for (int i = 0; i < 8; i++) {
         Vector3 cells = size / spacing;
@@ -210,6 +190,8 @@ fn float rc_fit_spacing(Vector3 size, float spacing) {
     return spacing;
 }
 
+// Allocates a dense Radiance Cascades volume covering `min..max` with L0 probe `spacing` (m)
+// and `levels` cascades (`1..RC_MAX_LEVELS`). No GPU resources are allocated until `upload()`.
 fn RadianceCascades* radiance_cascades(Vector3 min, Vector3 max, float spacing = 0.25, int levels = 4) {
     RadianceCascades* r = mem::new(RadianceCascades);
     Vector3 size        = max - min;
@@ -252,9 +234,9 @@ fn RadianceCascades* radiance_cascades(Vector3 min, Vector3 max, float spacing =
     return r;
 }
 
-// Creates a Sparse / Split Radiance Cascades volume: probes are allocated on the GPU around
-// visible surfaces in a hash table instead of a dense 3D probe grid, enabling large open
-// areas with bounded VRAM (`max_probes` for L0, halved per coarser cascade level).
+// Allocates a sparse Split Radiance Cascades volume over `min..max`. Probes are allocated on the
+// GPU near visible G-Buffer surfaces in a hash table (`hash_cap`, rounded up to a power of two)
+// with bounded per-level probe pools starting at `max_probes` for L0.
 fn RadianceCascades* radiance_cascades_sparse(
     Vector3 min,
     Vector3 max,
@@ -265,14 +247,14 @@ fn RadianceCascades* radiance_cascades_sparse(
 ) {
     RadianceCascades* r = radiance_cascades(min, max, spacing, levels);
     r.sparse = true;
-    // round hash_cap up to power of 2
+    // Round `hash_cap` up to a power of two in `[1024, 1 << 20]`.
     int hc = 1024;
     while (hc < hash_cap && hc < 1 << 20) hc <<= 1;
     r.hash_cap = hc;
     int pbase  = 0;
     int ray_at = 0;
     for (int l = 0; l < r.levels; l++) {
-        // Surface probe counts drop ~4x per level as spacing doubles (keeping ray budgets flat & lean)
+        // Surface probe density drops roughly 4x per level as spacing doubles.
         int cap;
         switch (l) {
             case 0: cap = max_probes;
@@ -289,8 +271,8 @@ fn RadianceCascades* radiance_cascades_sparse(
         r.counts[l] = cap * d * d;
         ray_at += r.counts[l];
     }
-    // Split RC (radiance_rays_cs.glsl) layout: P_n = max(P0 >> 2n, 64), |Omega_n| = 2 * (Theta0 * 2^n)^2.
-    // Drop cascades whose start distance t_{n-1} = t0 * 4^(n-1) reaches the box diagonal (D12).
+    // Split RC layout (`shaders/radiance_rays_cs.glsl`): `P_n = max(P0 >> 2n, 64)`,
+    // `|Omega_n| = 2 * (Theta0 * 2^n)^2`. Drop levels whose start distance reaches the box diagonal.
     float diag     = (r.max - r.min).length();
     float t0       = r.spacing * 1.6f;
     int eff_levels = 1;
@@ -313,8 +295,8 @@ fn RadianceCascades* radiance_cascades_sparse(
         r.split_counts[l] = scap * dirs;
         sbin_at += r.split_counts[l];
     }
-    // The secondary cache: 4x the spacing, its level 0 with 1/16 of the primary's probes, the
-    // same cascades, its pools after the primary's in the same buffers.
+    // Secondary multi-bounce cache: 4x spacing, 1/16 primary L0 probe cap, packed immediately
+    // after the primary pools in `meta_buf` and the bin buffers.
     r.cache_levels = eff_levels;
     r.cache_meta_base = sp_base;
     r.cache_bin_base = sbin_at;
@@ -330,13 +312,16 @@ fn RadianceCascades* radiance_cascades_sparse(
         cmeta += ccap;
         cbin += r.cache_counts[l];
     }
-    // irradiance_buf: hash table, L0 6-face, L1 6-face (the fallback where no L0 probe is
-    // near), then the cache's 6-face.
+    // `irradiance_buf` layout: hash table, L0 6-face, L1 6-face fallback, then cache 6-face.
     r.cache_irr_base = r.hash_cap + r.split_cap[0] * 6 + (eff_levels > 1 ? r.split_cap[1] * 6 : 0);
     r.hits_cap = math::max(r.cache_cap[0] * 4, 1024);
     return r;
 }
 
+// ---- GPU resource upload
+
+// Allocates GPU storage buffers and compute passes for sparse Split Radiance Cascades if not yet
+// initialized, and marks the hash table dirty for initial clearing.
 fn void RadianceCascades.upload_split(&self) {
     if (self.rays_alloc_pass) return;
     int eff        = math::max(self.split_levels, 1);
@@ -396,9 +381,8 @@ fn void RadianceCascades.upload_split(&self) {
     self.sparse_dirty = true;
 }
 
-// Makes the GPU's part (the buffers and the passes), if it isn't made yet. update() and the
-// renderer call it; until then the cascades touch no GPU, so they can be made and voxelized
-// on a thread that doesn't draw.
+// Lazily creates GPU buffers and compute passes for dense or sparse mode. Deferred until the
+// first `update()` or render so construction and `voxelize()` can run off the render thread.
 fn void RadianceCascades.upload(&self) {
     if (self.sparse) {
         self.upload_split();
@@ -416,7 +400,7 @@ fn void RadianceCascades.upload(&self) {
     self.gather = compute_pass(shaders::rc_gather_shader_desc(backend), "drie-rc-gather");
 }
 
-// The probes of a cascade along each axis.
+// Returns the probe grid dimensions `(nx, ny, nz)` at cascade `level`.
 fn int[<3>] RadianceCascades.level_dims(&self, int level) {
     int add = (1 << level) - 1;
     return {
@@ -426,6 +410,9 @@ fn int[<3>] RadianceCascades.level_dims(&self, int level) {
     };
 }
 
+// ---- Voxelization
+
+// Clears all CPU voxels to empty and marks the GPU voxel buffer dirty.
 fn void RadianceCascades.clear_voxels(&self) {
     self.voxels[..] = 0;
     self.voxels_changed = true;
@@ -443,10 +430,9 @@ fn uint rc_pack_glow(Vector3 c) @local {
     return r | (g << 8) | (b << 16) | ((uint)(e + 128) << 24);
 }
 
-// Makes the voxel at `p` solid, with this color (linear, 0..1) and glow (linear radiance).
-// Where two things share a voxel, the one that glows more keeps it. While `clip_region` is
-// set (voxelize_region()), `p` outside it is left alone: the caller is re-voxelizing only a
-// sub-box (a slab newly exposed by recenter()'s scroll) and the rest of the grid must stand.
+// Marks the voxel at world position `p` solid with linear `albedo` (`0..1`) and linear emissive
+// `glow`. When two surfaces occupy the same voxel, the higher glow exponent wins. Respects
+// `[clip_min, clip_max]` while `clip_region` is active during `voxelize_region()`.
 fn void RadianceCascades.set_voxel(&self, Vector3 p, Vector3 albedo, Vector3 glow) {
     if (self.clip_region) {
         for (int k = 0; k < 3; k++) if (p[k] < self.clip_min[k] || p[k] > self.clip_max[k]) return;
@@ -467,7 +453,8 @@ fn void RadianceCascades.set_voxel(&self, Vector3 p, Vector3 albedo, Vector3 glo
     self.voxels_changed = true;
 }
 
-// Adds a triangle (world space) to the voxels.
+// Rasterizes a world-space triangle `(a, b, c)` into the voxel grid with linear `albedo` and
+// `glow`, sampling points spaced at most half a voxel apart.
 fn void RadianceCascades.add_triangle(&self, Vector3 a, Vector3 b, Vector3 c, Vector3 albedo, Vector3 glow) {
     Vector3 bmin = self.clip_region ? self.clip_min : self.min;
     Vector3 bmax = self.clip_region ? self.clip_max : self.max;
@@ -476,7 +463,7 @@ fn void RadianceCascades.add_triangle(&self, Vector3 a, Vector3 b, Vector3 c, Ve
         float hi = math::max(a[k], math::max(b[k], c[k]));
         if (hi < bmin[k] || lo > bmax[k]) return;
     }
-    // points on it no further apart than half a voxel
+    // Sample barycentric grid at half-voxel step so thin triangles do not leave gaps.
     float h    = self.voxel_size * 0.5f;
     Vector3 ab = b - a;
     Vector3 ac = c - a;
@@ -492,7 +479,7 @@ fn void RadianceCascades.add_triangle(&self, Vector3 a, Vector3 b, Vector3 c, Ve
     }
 }
 
-// Whether a sphere of the mesh's geometry under `m` touches the box.
+// Returns true if `g`'s bounding sphere transformed by `m` overlaps `[min, max]`.
 fn bool RadianceCascades.touches(&self, BufferGeometry* g, Mat4 m) {
     Vector3 c = m.transform_point(g.bounds_center);
     float scale = math::max(
@@ -505,14 +492,14 @@ fn bool RadianceCascades.touches(&self, BufferGeometry* g, Mat4 m) {
     return self.reaches(c, g.bounds_radius * scale + 1e-3f);
 }
 
-// Adds a mesh as it stands now (its world matrix must be up to date). See-through, cut-out
-// and hidden materials are left out; an unlit one (MeshBasicMaterial) glows with its color.
-// The color is the material's times its map's average. `albedo_scale` scales it.
+// Voxelizes a single opaque mesh using its current `matrix_world` (and any instance transforms).
+// Skips hidden, transparent, alpha-tested, glass, shadow-only, and line meshes; `BASIC`
+// materials emit their albedo as glow. `albedo_scale` multiplies the linear surface color.
 fn void RadianceCascades.add_mesh(&self, Mesh* mesh, Vector3 albedo_scale = { 1, 1, 1 }) {
     Material* mat     = mesh.material;
     BufferGeometry* g = mesh.geometry;
     if (!mat || !g || mesh.shadow_only || !mat.visible || mat.transparent || mat.opacity < 1 || mat.alpha_test > 0 || mat.glass) return;
-    // lines have no surface to light or glow from
+    // Line geometry has no surface area for indirect bounce or emission.
     if (mesh.is_line()) return;
     if (g.bounds_radius <= 0) g.compute_bounding_sphere();
     if (mesh.instance_count <= 0 && !self.touches(g, mesh.matrix_world)) return;
@@ -530,7 +517,7 @@ fn void RadianceCascades.add_mesh(&self, Mesh* mesh, Vector3 albedo_scale = { 1,
     for (int n = 0; n < instances; n++) {
         Mat4 m = mesh.matrix_world;
         if (mesh.instance_count > 0) {
-            // 12 floats per instance: the rows of a 3x4 matrix
+            // 12 floats per instance stored as row-major 3x4 affine matrices.
             float[] row = mesh.instance_data.entries[(sz)n * 12:12];
             Mat4 im     = mat4_identity();
             for (int r = 0; r < 3; r++) {
@@ -557,8 +544,8 @@ fn void rc_add_tree(RadianceCascades* self, Object3D* o) @local {
     foreach (c : o.children) rc_add_tree(self, c);
 }
 
-// Fills the voxels from every visible mesh under `root` (after clearing them). Call it when
-// the world matrices are up to date (after a render, or root.update_matrix_world()).
+// Clears the voxel grid, updates world matrices under `root`, and voxelizes all visible opaque
+// meshes beneath it. Call initially and whenever static solid geometry inside the box changes.
 fn void RadianceCascades.voxelize(&self, Object3D* root) {
     root.update_matrix_world();
     self.clear_voxels();
@@ -566,9 +553,9 @@ fn void RadianceCascades.voxelize(&self, Object3D* root) {
     self.voxelized_root = root;
 }
 
-// Re-voxelizes only the sub-box [region_min, region_max] (world space), leaving every other
-// voxel as it stood. Used by recenter() to fill in the slab newly exposed by a scroll, without
-// clearing (and re-filling) the whole grid. `root`'s world matrices must be up to date.
+// Voxelizes meshes into `[region_min, region_max]` (world space) without clearing voxels outside
+// that box. Used by `recenter()` to populate newly exposed slabs; caller must keep `root`'s
+// world matrices up to date.
 fn void RadianceCascades.voxelize_region(&self, Object3D* root, Vector3 region_min, Vector3 region_max) {
     self.clip_region = true;
     self.clip_min = region_min;
@@ -577,6 +564,8 @@ fn void RadianceCascades.voxelize_region(&self, Object3D* root, Vector3 region_m
     self.clip_region = false;
     self.voxels_changed = true;
 }
+
+// ---- Light collection & voxel upload
 
 struct RcLightList @local {
     shaders::RcLight[RC_MAX_LIGHTS] lights;
@@ -640,7 +629,8 @@ fn void rc_collect_lights(RadianceCascades* self, Object3D* o, RcLightList* out)
     foreach (c : o.children) rc_collect_lights(self, c, out);
 }
 
-// Whether a light at `p` that shines `distance` far (0: without end) reaches the box.
+// Returns true if a sphere centered at `p` with radius `distance` (`<= 0` = infinite) overlaps
+// the volume's `[min, max]` box.
 fn bool RadianceCascades.reaches(&self, Vector3 p, float distance) {
     if (distance <= 0) return true;
     float d2 = 0;
@@ -651,7 +641,8 @@ fn bool RadianceCascades.reaches(&self, Vector3 p, float distance) {
     return d2 < distance * distance;
 }
 
-// Uploads voxels and rebuilds the 64-bit 4x4x4 brick occupancy masks on the GPU when changed.
+// Uploads the CPU voxel array and rebuilds the 64-bit 4x4x4 brick occupancy masks on the GPU
+// when `voxels_changed` is set.
 fn void rc_upload_voxels(RadianceCascades* self) @local {
     if (!self.voxels_changed) return;
     self.voxel_buf.write(self.voxels.ptr, (sz)self.voxels.len * uint::size);
@@ -678,8 +669,11 @@ fn void rc_upload_voxels(RadianceCascades* self) @local {
     self.voxels_changed = false;
 }
 
-// Traces the cascades for this frame with the scene's lights as they are. Call it once a
-// frame before render(), outside of any pass.
+// ---- Dense cascade update
+
+// Dispatches dense cascade tracing and 6-face irradiance gathering (`shaders/radiance_cs.glsl`)
+// for the current `scene` lights. Call once per frame before `Renderer.render()`, outside any
+// active render pass.
 fn void RadianceCascades.update(&self, Scene* scene) {
     self.upload();
     rc_upload_voxels(self);
@@ -687,8 +681,7 @@ fn void RadianceCascades.update(&self, Scene* scene) {
     defer free(list);
     rc_collect_lights(self, scene, list);
     if (self.sky_from_scene) {
-        // the lights give what arrives on a surface; the sky that puts that much on one
-        // facing it is that over pi
+        // Convert scene irradiance (hemisphere/ambient lights) to isotropic sky radiance (/ PI).
         self.sky_color = list.sky / (float)PI;
         self.ground_color = list.ground / (float)PI;
     }
@@ -704,7 +697,7 @@ fn void RadianceCascades.update(&self, Scene* scene) {
             self.ny,
             self.nz,
             0
-        }, // the first frames take all of what they find, so that it doesn't start from black
+        }, // Ramp blend from 1.0 on early turns so probes converge immediately instead of from black.
         .rc_tune = {
             self.interval,
             math::max(self.blend, 1.0f / (float)(turn + 1)),
@@ -734,7 +727,7 @@ fn void RadianceCascades.update(&self, Scene* scene) {
     g.set_buffer(shaders::VIEW_RC_BRICKS, self.brick_buf);
     g.set_buffer(shaders::VIEW_RC_GATHER_CASCADES, self.cascade_buf);
     g.set_buffer(shaders::VIEW_RC_GATHER_IRRADIANCE, self.irradiance_buf);
-    // each cascade in a pass of its own: it reads what the one above just wrote
+    // Dispatch each level in its own compute pass so level `l` reads freshly written level `l + 1`.
     for (int l = self.levels - 1; l >= 0; l--) {
         p.rc_dims[3] = l;
         p.rc_info[3] = self.counts[l];
@@ -753,13 +746,12 @@ fn void RadianceCascades.update(&self, Scene* scene) {
     self.frame++;
 }
 
-// Runs the sparse Split Radiance Cascades passes (alloc -> trace -> gather) using the
-// current frame's G-Buffer depth and normal textures. Called automatically by Renderer.render()
-// between the G-Buffer pass and the deferred lighting pass when `scene.radiance.sparse` is true.
-// Runs the sparse Split Radiance Cascades passes (alloc -> trace -> gather) using depth_tex/
-// normal_tex as the G-Buffer to place probes around. Called once per engine frame, either
-// directly from update_sparse() (when self.camera names the render that drives it) or from
-// flush_pending_sparse() at the end of the frame (the default: whichever call turns out last).
+// ---- Sparse split cascade update
+
+// Runs the full sparse Split Radiance Cascades pipeline (`shaders/radiance_rays_cs.glsl`:
+// rebuild, alloc, propagate, trace, merge, gather, plus optional secondary cache passes) from
+// `depth_tex` and `normal_tex`. Invoked once per engine frame by `update_sparse()` or
+// `flush_pending_sparse()`.
 fn void RadianceCascades.run_split_update(
     &self,
     Scene* scene,
@@ -791,7 +783,7 @@ fn void RadianceCascades.run_split_update(
     int stride = math::clamp(self.update_every, 1, 0xffff);
     int sr     = math::clamp(self.shadow_rays, 1, 0xffff);
     bool zo    = depth_zero_to_one();
-    // Default interval in split mode is 1.6 * spacing unless caller explicitly changed it
+    // Default split-mode interval is `1.6 * spacing` unless caller set a custom `interval`.
     float t0   = (math::abs(self.interval - self.spacing) < 1e-5f) ? (self.spacing * 1.6f) : self.interval;
     rc_rays::RcRaysParams p = {
         .rc_min = { ...self.min, self.spacing },
@@ -827,7 +819,7 @@ fn void RadianceCascades.run_split_update(
         }
     }
 
-    // 0. Clear on reset() / first frame
+    // 0. Clear on `reset()` or first frame.
     if (self.sparse_dirty && !(self.skip_kernels & RC_KERNEL_CLEAR)) {
         ComputePass* cp = self.rays_clear_pass;
         cp.set_buffer(rc_rays::VIEW_RC_HT_CLEAR, self.irradiance_buf);
@@ -845,7 +837,7 @@ fn void RadianceCascades.run_split_update(
         self.sparse_dirty = false;
     }
 
-    // 1. Rebuild hash table from meta_buf every frame (2 dispatches in 1 pass)
+    // 1. Rebuild hash table from `meta_buf` every frame (2 dispatches in 1 pass).
     if (!(self.skip_kernels & RC_KERNEL_EVICT)) {
         ComputePass* rp = self.rays_rebuild_pass;
         rp.set_buffer(rc_rays::VIEW_RC_HT_REB, self.irradiance_buf);
@@ -863,7 +855,7 @@ fn void RadianceCascades.run_split_update(
         p.rc_dims[3] = 0;
     }
 
-    // 2. Allocate/touch nearest L0 probe per traced pixel
+    // 2. Allocate or touch nearest L0 probe per traced G-Buffer pixel.
     if (!(self.skip_kernels & RC_KERNEL_ALLOC)) {
         bool ms         = sg::query_image_sample_count(sg::query_view_image(depth_tex)) > 1;
         ComputePass* ap = ms ? self.rays_alloc_ms_pass : self.rays_alloc_pass;
@@ -882,7 +874,7 @@ fn void RadianceCascades.run_split_update(
         end_compute();
     }
 
-    // 3 & 4. Propagate bottom-up, compute R2 segments top-down, and write indirect args
+    // 3 & 4. Propagate bottom-up, compute R2 segments top-down, and write indirect args.
     if (!(self.skip_kernels & RC_KERNEL_PROPAGATE)) {
         ComputePass* pp = self.rays_propagate_pass;
         pp.set_buffer(rc_rays::VIEW_RC_HT_PROP, self.irradiance_buf);
@@ -920,7 +912,7 @@ fn void RadianceCascades.run_split_update(
         end_compute();
     }
 
-    // 5. Trace R2 surface rays and deposit into cascade intervals (indirectly dispatched)
+    // 5. Trace R2 surface rays and deposit into cascade intervals (indirect dispatch).
     if (!(self.skip_kernels & RC_KERNEL_TRACE)) {
         ComputePass* tp = self.rays_trace_pass;
         tp.set_buffer(rc_rays::VIEW_RC_TRACE_VOXELS, self.voxel_buf);
@@ -931,14 +923,14 @@ fn void RadianceCascades.run_split_update(
         tp.set_buffer(rc_rays::VIEW_RC_RAYS_TRACE, rc_shared_rays);
         tp.set_buffer(rc_rays::VIEW_RC_ACC_TRACE, rc_shared_acc);
         tp.set_buffer(rc_rays::VIEW_RC_TRACE_HITS, self.hits_buf);
-        p.rc_dims[3] = cache_on ? 64 : 0; // read the cache's bounce light
+        p.rc_dims[3] = cache_on ? 64 : 0; // Bit 64 enables reading secondary-cache bounce light.
         tp.set_uniforms(rc_rays::UB_RC_RAYS_PARAMS, &p, rc_rays::RcRaysParams::size);
         begin_compute("drie-rc-split-trace");
         tp.dispatch_indirect(self.args_buf, 0);
         end_compute();
     }
 
-    // 6. Top-down merge across levels + L0 6-face irradiance gather (indirectly dispatched)
+    // 6. Top-down merge across levels and L0/L1 6-face irradiance gather (indirect dispatch).
     if (!(self.skip_kernels & RC_KERNEL_GATHER)) {
         ComputePass* mp = self.rays_merge_pass;
         mp.set_buffer(rc_rays::VIEW_RC_MERGE_CASCADES, self.cascade_buf);
@@ -965,7 +957,7 @@ fn void RadianceCascades.run_split_update(
         p.rc_dims[3] = 0;
         gp.set_uniforms(rc_rays::UB_RC_RAYS_PARAMS, &p, rc_rays::RcRaysParams::size);
         gp.dispatch_indirect(self.args_buf, 9 * 16);
-        // the coarser 6-face irradiance the materials fall back to where no L0 probe is near
+        // Gather L1 6-face irradiance as a fallback where no L0 probe is allocated nearby.
         if (eff > 1) {
             p.rc_dims[3] = 1;
             gp.set_uniforms(rc_rays::UB_RC_RAYS_PARAMS, &p, rc_rays::RcRaysParams::size);
@@ -974,8 +966,7 @@ fn void RadianceCascades.run_split_update(
         end_compute();
     }
 
-    // 7. Seed the secondary cache's L0 probes from this frame's hits (indirectly dispatched).
-    // It comes after the primary trace, which leaves them, and before its own propagation.
+    // 7. Seed secondary cache L0 probes from primary trace hits before cache propagation.
     if (cache_on && !(self.skip_kernels & RC_KERNEL_ALLOC)) {
         ComputePass* cap = self.rays_cache_alloc_pass;
         cap.set_buffer(rc_rays::VIEW_RC_HITS_ALLOC, self.hits_buf);
@@ -989,7 +980,7 @@ fn void RadianceCascades.run_split_update(
         end_compute();
     }
 
-    // 8. The cache's propagate, R2 segments and dispatch counts
+    // 8. Secondary cache propagation, R2 offsets, and indirect dispatch counts.
     if (cache_on && !(self.skip_kernels & RC_KERNEL_PROPAGATE)) {
         ComputePass* pp   = self.rays_propagate_pass;
         ComputePass* op   = self.rays_offsets_pass;
@@ -1008,14 +999,13 @@ fn void RadianceCascades.run_split_update(
             op.set_uniforms(rc_rays::UB_RC_RAYS_PARAMS, &p, rc_rays::RcRaysParams::size);
             op.dispatch((self.cache_cap[l] + 63) / 64);
         }
-        p.rc_dims[3] = 1; // publish the cache's ray count
+        p.rc_dims[3] = 1; // Publish secondary cache ray count into `args_buf`.
         argp.set_uniforms(rc_rays::UB_RC_RAYS_PARAMS, &p, rc_rays::RcRaysParams::size);
         argp.dispatch(1);
         end_compute();
     }
 
-    // 9. The cache's trace: rays from its probes, seeded by its own irradiance (last frame's),
-    // so bounces go on accumulating over the frames.
+    // 9. Secondary cache trace, reading previous-frame cache irradiance to accumulate bounces.
     if (cache_on && !(self.skip_kernels & RC_KERNEL_TRACE)) {
         p.rc_dims[3] = 16;
         ComputePass* tp = self.rays_trace_pass;
@@ -1025,7 +1015,7 @@ fn void RadianceCascades.run_split_update(
         end_compute();
     }
 
-    // 10. The cache's merge and gather into its own 6-face irradiance
+    // 10. Secondary cache merge and 6-face irradiance gather.
     if (cache_on && !(self.skip_kernels & RC_KERNEL_GATHER)) {
         ComputePass* mp = self.rays_merge_pass;
         ComputePass* gp = self.rays_gather_pass;
@@ -1044,6 +1034,7 @@ fn void RadianceCascades.run_split_update(
     self.frame++;
 }
 
+// Dispatches `run_split_update()` for the sparse volume.
 fn void RadianceCascades.run_sparse_update(
     &self,
     Scene* scene,
@@ -1058,18 +1049,12 @@ fn void RadianceCascades.run_sparse_update(
     self.run_split_update(scene, depth_tex, normal_tex, gb_sampler, inv_view_proj, cam_pos, width, height);
 }
 
-// Called automatically by Renderer.render() between the G-Buffer pass and the deferred
-// lighting pass, for every non-reflecting render of a scene whose radiance is a sparse
-// volume: `camera` is the view that just rendered. The house renders its scene more than
-// once a frame (a portal, a security feed, the player's own view); without this, a sparse
-// volume updated on every one of those (three times the GPU cost, probes allocated from
-// whichever camera called last, the blend ramp and update_every's rotation advanced three
-// times too fast). Set `self.camera` to the view that should drive it (its own render
-// updates probes and traces/gathers them immediately; every other camera just reads the
-// irradiance it left). Leave `self.camera` null (the default) to update once a frame from
-// whichever call turns out to be the last — usually the player's own view, rendered after
-// a portal or a camera feed — by deferring the actual work to flush_pending_sparse() at
-// drie::commit(), when the G-Buffer the last call wrote is still there, untouched since.
+// Called by `Renderer.render()` between the G-Buffer pass and deferred lighting for every
+// non-reflecting render of a scene with a sparse volume. When `self.camera` is set, only that
+// camera's render executes `run_sparse_update()` immediately and all other views reuse its
+// irradiance. When `self.camera` is null, parameters are recorded and deferred to
+// `flush_pending_sparse()` at `drie::commit()` so multi-camera frames still update once using
+// the frame's final view.
 fn void RadianceCascades.update_sparse(
     &self,
     Scene* scene,
@@ -1102,17 +1087,13 @@ fn void RadianceCascades.update_sparse(
     }
 }
 
-// Runs the update a pending update_sparse() call (with no `camera` set) deferred, with the
-// parameters its last call this engine frame recorded. Called once per frame by commit(),
-// after every render() so the view that update_sparse() must use (usually the main view,
-// rendered after a portal or a camera feed) has already overwritten the shared G-Buffer
-// — and before the next frame's first render() pass overwrites it again.
+// Executes the sparse update deferred by `update_sparse()` using the last render's G-Buffer
+// views. Called once per frame by `drie::commit()` before the next frame overwrites the shared
+// G-Buffer; skips silently if the recorded views are no longer valid.
 fn void RadianceCascades.flush_pending_sparse(&self) {
     if (!self.pending_sparse) return;
     self.pending_sparse = false;
-    // the render target the last call drew into may be gone by now (a target made for one
-    // render and destroyed before commit(), or the G-Buffer made anew at another size):
-    // skip this frame's update rather than read a dead view
+    // Skip if the target from the recorded render was destroyed or resized before `commit()`.
     if (sg::query_view_state(
         self.pending_depth_tex
     ) != SgResourceState.VALID || sg::query_view_state(self.pending_normal_tex) != SgResourceState.VALID) return;
@@ -1128,12 +1109,12 @@ fn void RadianceCascades.flush_pending_sparse(&self) {
     );
 }
 
-// Re-centers the voxel volume around `center` (snapped to probe spacing) and re-voxelizes
-// `root` — for sliding open-world GI volumes that follow the player. Scrolls the existing
-// voxels by the shift (in whole voxels) and re-voxelizes only the slab the scroll newly
-// exposed; a full re-voxelize only happens when `root` differs from the one last voxelized
-// into this volume (several scenes sharing one sliding volume) or the shift is bigger than
-// the box (a cut, or recenter() called rarely enough that the snapping no longer holds).
+// ---- Recentering & lifecycle
+
+// Re-centers the volume horizontally around `center` (snapped to `spacing`) for sliding GI
+// volumes. Scrolls existing voxels in whole-voxel steps and re-voxelizes only the newly exposed
+// slabs while preserving sparse world-space probes; performs a full `voxelize()` and probe clear
+// if `root` changed or the shift exceeds the box size.
 fn void RadianceCascades.recenter(&self, Object3D* root, Vector3 center) {
     Vector3 size = self.max - self.min;
     Vector3 new_min = {
@@ -1155,10 +1136,8 @@ fn void RadianceCascades.recenter(&self, Object3D* root, Vector3 center) {
         if (self.sparse) self.sparse_dirty = true;
         return;
     }
-    // A scroll keeps the sparse probes: they're keyed and placed in world space, so they
-    // stand where they were. Those the box leaves behind are evicted once nothing sees them,
-    // and the new slab's get light as the camera finds them. Clearing them (as a cut or a
-    // change of scene still does) would put the GI back to nothing at every step of the box.
+    // Keep live sparse probes across incremental scrolls: probes are keyed in world space, so
+    // probes leaving the box age out naturally while newly visible slabs allocate on demand.
     if (shift_vx == 0 && shift_vz == 0) return;
 
     uint[] scrolled = mem::new_array(uint, (sz)self.voxels.len);
@@ -1180,8 +1159,7 @@ fn void RadianceCascades.recenter(&self, Object3D* root, Vector3 center) {
     self.voxels = scrolled;
     self.voxels_changed = true;
 
-    // Re-voxelize the slab(s) the scroll newly exposed (world space), with a small margin so
-    // a triangle straddling the seam isn't missed on either side.
+    // Re-voxelize each newly exposed world-space slab with a 2-voxel margin along seams.
     float margin = self.voxel_size * 2;
     if (shift_vx != 0) {
         float shift_x = new_min.x - old_min.x;
@@ -1212,12 +1190,14 @@ fn void RadianceCascades.recenter(&self, Object3D* root, Vector3 center) {
     self.voxelized_root = root;
 }
 
-// Start over (after a cut, or when much has changed): the next frame takes all it finds.
+// Resets temporal accumulation (and schedules a full sparse hash-table clear) so the next frame
+// converges fresh after a camera cut or major lighting change.
 fn void RadianceCascades.reset(&self) {
     self.frame = 0;
     if (self.sparse) self.sparse_dirty = true;
 }
 
+// Unregisters any pending sparse flush and frees the CPU voxel array and owned GPU buffers.
 fn void RadianceCascades.dispose(&self) {
     if (self.pending_sparse) unqueue_sparse_flush(self);
     self.pending_sparse = false;

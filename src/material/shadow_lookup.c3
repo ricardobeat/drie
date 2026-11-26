@@ -1,6 +1,11 @@
-// The lit materials' shadows as node functions (shader_core.glsl's light_shadow_of,
-// dir_shadow_in, dir_tile_shadow and the taps they read), built once per program and called
-// from the light loops of materials_nodes.c3.
+// Shadow lookup node-function builders matching shaders/shader_core.glsl's `light_shadow_of`,
+// `dir_shadow_in`, `dir_tile_shadow`, and PCF/PCSS/VSM taps.
+//
+// Each function ID in `ShadowFns` starts at -1 and emits its helper function once per program.
+// `VIEW_SPOT_SHADOWS` packs 7 Vec4 rows per `GpuSpotShadow` (4 matrix columns, params, rect,
+// soft); atlas tile lookups clamp UVs half a texel inward to prevent neighbor bleeding, and
+// `soft.w < 0` selects GLSL [-1, 1] NDC depth vs Metal/HLSL [0, 1]. Instantiated by
+// src/material/material_graph.c3; called by src/material/material_lit.c3 and src/material/layers.c3.
 module drie;
 import drie::nodes, drie::shading;
 
@@ -133,6 +138,7 @@ fn Node ShadowFns.light(&self, Node light_pos, Node si, Node n, Node world, Node
     return node_call_fn(self.light_fn, &args);
 }
 
+// Builds and registers the `light_shadow_of` shader function for spot, point, and rect shadows.
 fn int ShadowFns.make_light(&self) {
     NodeType[7] types = { VEC3, INT, VEC3, VEC3, VEC3, VEC3, VEC2 };
     int f = node_func("light_shadow_of", FLOAT, &types);
@@ -414,9 +420,9 @@ fn Node ShadowFns.dir_tile(&self, Node si, Node n, Node l, Node world, Node frag
     return node_call_fn(self.dir_tile_fn, &args);
 }
 
-// Shadow of a rect area light (half sides `hw` and `hh`): the map that the point is in of its
-// cube turned with the light (renderer.c3's rect_shadow_view_proj: its front, 0, and the front
-// halves of its sides, +x, -x, +y and -y, 1 to 4).
+// Shadow of a rect area light (half sides `hw` and `hh`): selects the matching face of its
+// light-aligned cube (see `rect_shadow_view_proj` in src/renderer/shadows.c3: front is 0, and
+// +x, -x, +y, -y side half-frustums are 1..4).
 fn Node ShadowFns.rect(&self, Node pos, Node hw, Node hh, Node si, Node n, Node world, Node dpdx, Node dpdy, Node frag) {
     Node d = world - pos;
     Node x = nodes::dot(d, hw / nodes::max(nodes::length(hw), 1e-6f));

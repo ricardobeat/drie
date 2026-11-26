@@ -1,9 +1,17 @@
-// Vertex and fragment graph builders for unlit, depth, normal, matcap, toon, G-buffer,
-// shadow, and bake material programs.
+// Vertex and fragment node-graph builders for forward materials, depth prepasses, shadow maps,
+// lightmap baking, and the deferred G-buffer.
+//
+// `vertex_stage` evaluates morph targets, vertex displacement, instance transforms, position_node,
+// model transforms, and sway in order. When `key.prepassed` is set, the depth prepass fragment
+// stage is built first so its varyings lead the main pass's varying list. `atlas_depth` linearizes
+// window depth using backend clip Z (`[-1, 1]` on GLSL, `[0, 1]` on Metal/HLSL). Invoked by
+// `material_program` (src/material/material_key.c3); delegates lit shading to `Lit`
+// (src/material/material_lit.c3), fog/reflection helpers to src/material/layers.c3, shadows to
+// src/material/shadow_lookup.c3, and shared shading math to `drie::shading` (src/nodes/shading.c3).
 module drie;
 import sokol, drie::nodes, drie::shading, std::collections::map, std::io, std::os::env, std::thread;
 
-// ---- the vertex stage
+// ---- Vertex stage
 
 // What the vertex stage works out (its nodes): the fragment stage reads them as varyings.
 struct VertexValues @private {
@@ -32,11 +40,13 @@ struct Instance @local {
     Node m2;
 }
 
+// Transforms local-space point `p` by the 3x4 affine instance matrix.
 fn Node Instance.point(&self, Node p) {
     Node l = nodes::vec4(p, 1);
     return nodes::vec3(nodes::dot(self.m0, l), nodes::dot(self.m1, l), nodes::dot(self.m2, l));
 }
 
+// Transforms local-space direction `d` by the upper 3x3 of the instance matrix.
 fn Node Instance.dir(&self, Node d) {
     return nodes::vec3(nodes::dot(self.m0.xyz(), d), nodes::dot(self.m1.xyz(), d), nodes::dot(self.m2.xyz(), d));
 }
@@ -106,9 +116,9 @@ fn VertexValues vertex_stage(MaterialKey key, NodeBuild* build = null, UserBinds
     Node model = vs_in("model", MAT4);
     Node dir = inst.dir(normal);
     if (build) {
-        // a node material's builtins (run_node_vertex's), and position_node in ip's place:
-        // after the displacement and the instance's matrix, before the model matrix and sway.
-        // From there on its builtins read the moved vertex (the varyings it carries)
+        // Bind vertex-stage builtins for node graphs and evaluate position_node in `ip`'s place
+        // (after displacement and instance transform, before model transform and sway). Rebind
+        // position and view builtins afterward so downstream varyings see the moved vertex.
         Node[NodeBuiltin::len]* b = &binds.v;
         user_header(b);
         Node world0 = (model * nodes::vec4(ip, 1)).xyz();
@@ -201,7 +211,7 @@ fn VertexValues vertex_stage(MaterialKey key, NodeBuild* build = null, UserBinds
     return o;
 }
 
-// ---- the material
+// ---- Fragment stage and G-buffer
 
 // Parallax occlusion mapping (Material.parallax_map): the uv where the view ray meets the
 // height map, which the material's maps are read at (with the derivatives of v_uv: the offset
@@ -307,11 +317,11 @@ fn Node parallax_shadow(Parallax* px, FragUv* f, Node n, Node l) @private {
         shade.assign(strength.negate() * nodes::clamp(block, 0, 1) + 1.0f)))), shade);
 }
 
-// The shadow maps' program: the material's vertex stage placed by the light (VsParams filled
-// for it: see draw_shadow_item), and the alpha test's cut-out as shader_core.glsl's shadow_fs
-// (the color map's alpha, the opacity and the alpha map's green, ShadowFsParams). A node
-// material's (`build`) moves its vertices as its main program does, and cuts the holes its
-// color step cuts (mask_node's, color_node's and opacity_node's).
+// Shadow map program: runs the material's vertex stage from the light (VsParams filled by
+// draw_shadow_item) and the alpha-test cutout matching shaders/shader_core.glsl's shadow_fs
+// (color map alpha, opacity, and alpha map green via ShadowFsParams). A node material (`build`)
+// applies position_node and cuts the same holes as its color step (mask_node, color_node,
+// opacity_node).
 fn void build_shadow_graph(MaterialKey key, ProgramGraph* graph, NodeBuild* build, UserBinds* binds) @private {
     VertexValues vtx = vertex_stage(key, build, binds);
     graph.position = vtx.position;
@@ -516,8 +526,8 @@ fn void build_material_graph(MaterialKey key, ProgramGraph* graph, ProgramGraph*
     // three's alphaMap: its green channel
     if (key.slot(MAP_ALPHA)) a = a * role_texel(key, &f, MAP_ALPHA).y();
     if (build) {
-        // the node material's color step (node_color): its holes cut in the depth prepass when
-        // it has one (the main pass draws only where that drew)
+        // Node material color step (mask_node, color_node, opacity_node): cut holes in the depth
+        // prepass when present, since the main pass only draws where the prepass wrote depth.
         if (key.prepassed) {
             user_color(build, user_n, &rgb, &a, &holes, &nholes);
         } else {
@@ -593,7 +603,7 @@ fn void build_material_graph(MaterialKey key, ProgramGraph* graph, ProgramGraph*
         n = nodes::normalize(n * nodes::abs(det) - grad);
     }
     if (user[2].id && key.type != (char)MaterialType.BASIC) {
-        // normal_node (node_normal), after the normal map and the bump map
+        // Apply normal_node after tangent-space normal mapping and bump mapping.
         n = nodes::normalize(bound(nodes::convert(user[2], VEC3), { rebind(NORMAL_WORLD, n), rebind(NORMAL_GEOMETRY, geo_n) }));
     }
     if (key.mrt) mrt_normal = nodes::vec4(shading::pack_normal_octahedral(n), 0, 1);
@@ -635,9 +645,8 @@ fn void build_material_graph(MaterialKey key, ProgramGraph* graph, ProgramGraph*
     }
     // three's aoMap and aoMapIntensity
     if (key.slot(MAP_AO)) ao = ao * ((role_texel(key, &f, MAP_AO).x() - 1.0f) * fs_in("ext_params", FLOAT, 1) + 1.0f);
-    // a node material's surface step (node_surface, node_specular): roughness_node,
-    // metalness_node, emissive_node (in place of all the material's glow) and phong's
-    // specular_node and shininess_node, read with NORMAL_WORLD the shaded normal
+    // Node material surface step: roughness_node, metalness_node, ao_node, emissive_node (in place
+    // of material emissive), and Phong specular_node/shininess_node, with NORMAL_WORLD shaded.
     Node user_glow;
     Node phong_specular = fs_in("specular", VEC3);
     Node shininess = fs_in("mat_params", FLOAT, 3);
@@ -741,7 +750,7 @@ fn void build_material_graph(MaterialKey key, ProgramGraph* graph, ProgramGraph*
         }
     }
 
-    // a node material's output_node (node_output): what the light made of it, and its alpha
+    // Node material output_node: overrides the lit color and alpha before fog and tone mapping.
     if (user[7].id) {
         Node o = bound(user[7], { rebind(OUTPUT, nodes::vec4(outc, alpha)), rebind(NORMAL_WORLD, n), rebind(NORMAL_GEOMETRY, geo_n) });
         if (user[7].type() == VEC4) {
@@ -853,10 +862,9 @@ fn void build_material_graph(MaterialKey key, ProgramGraph* graph, ProgramGraph*
     if (ncuts) graph.fragment = drie::node_block(cuts[:ncuts]);
 }
 
-// The deferred G-buffer's four targets (MaterialKey.gbuffer, shader_core.glsl's GBUFFER): the
-// color and ambient occlusion; the shaded normal, roughness and metalness; the light the
-// surface gives off itself and the lighting pass's flags for it; the motion and the surface's
-// own normal.
+// Deferred G-buffer's four targets (MaterialKey.gbuffer, matching shaders/shader_core.glsl's
+// GBUFFER): albedo and AO; octahedral shaded normal, roughness, and metalness; self-emitted
+// light and lighting-pass flags; motion vectors and octahedral geometry normal.
 fn void gbuffer_out(MaterialKey key, ProgramGraph* graph, FragUv* f, VertexValues vtx, Node rgb, Node map_rgb, Node v_color,
                     Node n, Node geo_n, Node rough, Node metal, Node ao, Node user_glow) @local {
     int mode = key.type;
@@ -907,6 +915,6 @@ fn void gbuffer_out(MaterialKey key, ProgramGraph* graph, FragUv* f, VertexValue
 // Whether the key holds a slot for any map role.
 fn bool MaterialKey.has_maps(self) => (bitcast(self, KeyWords).hi >> 64) != 0;
 
-// Role `role`'s map at the material's uv (shader_core.glsl's material_map).
+// Samples map role `role` at the material's UV (matching shaders/shader_core.glsl's material_map).
 fn Node role_texel(MaterialKey key, FragUv* f, int role) @private => shading::ext_texel(f, key.slot(role) - 1);
 

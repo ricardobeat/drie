@@ -1,5 +1,9 @@
-// Deferred fullscreen lighting pass shaders (clustered lights, shadows, GI, probes, SSR, fog).
-// Regenerate generated/shader_deferred.c3 with: just shaders
+// Deferred fullscreen lighting pass shaders (Renderer): evaluates clustered lights, shadows (PCF
+// and VSM), GI, reflection probes, SSR, and fog over the G-Buffer using shaders/shader_core.glsl
+// with DEFERRED_LIGHT. Regenerate generated/shader_deferred.c3 with `just shaders`.
+//
+// Kept in `drie_shaders::deferred` outside `drie::*` because C3 imports `drie::*` recursively;
+// placing it under `drie::shaders::*` would collide generated uniform/SSBO types with drie::shaders.
 @header module drie_shaders::deferred;
 @header import drie;
 

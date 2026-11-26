@@ -1,8 +1,7 @@
-// Renderer.shadow_type = VSM (renderer.c3, vsm_blur): a shadow map's tile, from its depths to
-// their moments, blurred as three's VSMPass: a box of `samples` taps spread over +-`radius`
-// texels, first along y (from the depths), then along x (from the first pass's moments).
-// Each pass writes r = the mean depth, g = its standard deviation. Regenerate
-// generated/vsm.c3 with: just shaders
+// Variance shadow map blur (Renderer, shadow_type = VSM): converts a shadow atlas or map tile
+// from depths into two-channel moments (r = mean depth, g = standard deviation) via a separable
+// box filter over +-radius texels (y from depth, then x from moments), matching three.js's
+// VSMPass. Regenerate generated/vsm.c3 with `just shaders`.
 @header module drie::shaders;
 @header import drie;
 

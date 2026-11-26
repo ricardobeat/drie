@@ -1,44 +1,40 @@
-module drie::controls;
-import std::math, std::collections::list;
-import sokol, drie;
-
-// WalkControls: look round with the mouse (the pointer locked to the window from the first
-// update, no button held; Esc frees it, a click locks it again) and walk with W, A, S and D
-// along the ground, E and Q up and down. Where the view points and how fast the eye moves
-// each follow what the mouse and keys ask for on a damped spring, without overshoot: `spring`
-// is how fast (per second; the gap left after t seconds is e^(-spring t)). With `bounded`, the
-// eye stays inside min..max. Call update(dt) every frame.
+// First-person walk controller: mouse look (pointer locked on first update; Esc releases, click
+// re-locks) with WASD horizontal movement and E/Q vertical movement. Look angles and velocity
+// follow input on exponential springs without overshoot. Call `update(dt)` once per frame.
 //
+//   import drie::controls;
 //   WalkControls* c = controls::walk_controls(camera, { 1, 2, -3 });
 //   c.bounded = true;
 //   c.min = { -5, 0.2, -5 };
 //   c.max = { 5, 3, 5 };
-struct WalkControls {
-    Camera* camera;
-    bool enabled;
-    // radians a pixel of mouse movement turns the view, and its spring
-    float look_speed;
-    float look_spring;
-    // metres a second, and its spring
-    float walk_speed;
-    float walk_spring;
-    bool bounded;
-    Vector3 min;
-    Vector3 max;
+module drie::controls;
+import std::math, std::collections::list;
+import sokol, drie;
 
-    // internal
-    float yaw;
-    float pitch;
-    float want_yaw;
-    float want_pitch;
-    Vector3 velocity;
-    bool[6] held;
-    bool locked_once;
+// First-person mouse-look and keyboard movement controller with damped spring smoothing.
+struct WalkControls {
+    Camera* camera; // Controlled camera.
+    bool enabled; // Ignores input and skips camera updates when false.
+    float look_speed; // Radians of yaw/pitch turned per pixel of mouse movement.
+    float look_spring; // Look spring rate per second (gap decays as e^(-look_spring * dt)).
+    float walk_speed; // Target movement speed in meters per second.
+    float walk_spring; // Velocity spring rate per second (gap decays as e^(-walk_spring * dt)).
+    bool bounded; // Clamps camera position inside `min`..`max` when true.
+    Vector3 min; // Lower world-space position bound when `bounded` is true.
+    Vector3 max; // Upper world-space position bound when `bounded` is true.
+
+    float yaw; // Current smoothed yaw in radians.
+    float pitch; // Current smoothed pitch in radians, clamped to [-1.5, 1.5].
+    float want_yaw; // Target yaw accumulated from mouse motion.
+    float want_pitch; // Target pitch accumulated from mouse motion.
+    Vector3 velocity; // Current smoothed world-space velocity in meters per second.
+    bool[6] held; // Key state for W, S, A, D, E, Q in that order.
+    bool locked_once; // True after the initial pointer lock in `update()`.
 }
 
 List{WalkControls*} walkers @local;
 
-// Controls for `camera` (where it is now), looking at `at`.
+// Creates a WalkControls for `camera` initially oriented toward `at` and registers its listener.
 fn WalkControls* walk_controls(Camera* camera, Vector3 at) {
     WalkControls* c = mem::new(WalkControls);
     *c = {
@@ -55,18 +51,19 @@ fn WalkControls* walk_controls(Camera* camera, Vector3 at) {
     return c;
 }
 
-// Turns the view (at once, no spring) to look at `at`.
+// Snaps yaw and pitch immediately (without spring lag) so the camera looks at `at`.
 fn void WalkControls.look_at(&self, Vector3 at) {
     Vector3 d = (at - self.camera.position).normalize();
     self.yaw = self.want_yaw = math::atan2(d.x, -d.z);
     self.pitch = self.want_pitch = math::asin(math::clamp(d.y, -1.0f, 1.0f));
 }
 
-// Where the view points, a unit vector.
+// Returns the current unit forward direction derived from `yaw` and `pitch`.
 fn Vector3 WalkControls.direction(&self) {
     return { math::sin(self.yaw) * math::cos(self.pitch), math::sin(self.pitch), -math::cos(self.yaw) * math::cos(self.pitch) };
 }
 
+// Processes keyboard, mouse, and focus events into target look angles and held movement keys.
 fn void WalkControls.handle_event(&self, SappEvent* e) {
     if (!self.enabled) return;
     switch (e.type) {
@@ -95,6 +92,7 @@ fn void WalkControls.handle_event(&self, SappEvent* e) {
     }
 }
 
+// Advances look and movement springs by `dt` seconds and updates the camera transform.
 fn void WalkControls.update(&self, float dt) {
     if (!self.enabled) return;
     if (!self.locked_once) {

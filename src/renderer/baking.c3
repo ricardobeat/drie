@@ -1,13 +1,20 @@
-// Offscreen baking and capture: progressive lightmaps, irradiance probes, and environment maps.
+// Offscreen baking and environment capture: lightmaps, irradiance probes, and env maps.
+// Implements progressive UV1 lightmap baking (Renderer.render_bake, called by ProgressiveLightMap
+// in src/lighting/lightmap.c3, with seam dilation via shaders/lightmap.glsl), 6-direction
+// IrradianceVolume baking (bake_irradiance), CPU-readback equirectangular capture
+// (capture_environment), procedural GPU env rendering (render_environment), and GPU cubemap
+// probe resampling (render_probe via drie::nodes). Restores renderer target/viewport state after
+// each pass and accounts for backend row-origin orientation (depth_zero_to_one()).
 module drie;
 import std::collections::list, std::math, std::io;
 import sokol, drie::readback, drie::nodes;
 
-// A light map's pipeline for the bake's objects (render_bake): a material's generated program
-// (one with MaterialKey.bake) into `format`, no depth, no culling (the uv unwrap decides which
-// way a face turns), no blending.
+// ---- Progressive lightmap baking
+
+// Creates or retrieves the UV1 lightmap baking pipeline for `gen` (`MaterialKey.bake`): no depth
+// buffer, no face culling (UV unwrap winding varies), and no blending.
 fn SgPipeline gen_bake_pipeline(MaterialProgram* gen, SgPixelFormat format) @private {
-    // (a key get_pipeline's never take: bit 63)
+    // Bit 63 keeps bake keys disjoint from get_pipeline() keys on the same MaterialProgram.
     ulong key = 1ul << 63 | (ulong)(uint)format;
     SgPipeline? found = gen.pipelines[key];
     if (try found) return found;
@@ -42,7 +49,7 @@ fn SgPipeline gen_bake_pipeline(MaterialProgram* gen, SgPixelFormat format) @pri
     return pip;
 }
 
-// Draws the seams' pass of a bake (lightmap.glsl): the whole map from `prev`'s neighbours.
+// Runs the seam-dilation fullscreen pass (shaders/lightmap.glsl) from `prev` into the active bake target.
 fn void draw_bake_seams(SgPixelFormat format, SgView prev, int width, int height) @local {
     if (!state.seam_shader.id) state.seam_shader = make_program(shaders::lm_seam_shader_desc(sg::query_backend()));
     SgPipeline* pip = &state.seam_pipelines[format == RGBA32F ? 1 : 0];
@@ -67,22 +74,19 @@ fn void draw_bake_seams(SgPixelFormat format, SgView prev, int width, int height
     sg::draw(0, 3, 1);
 }
 
-// The lights under `obj`, into state.lights.
+// Collects all visible lights in the subtree rooted at `obj` into `state.lights`.
 fn void collect_lights(Object3D* obj) @local {
     if (!obj.visible) return;
     if (obj.kind == LIGHT) state.lights.push((Light*)obj);
     foreach (c : obj.children) collect_lights(c);
 }
 
-// Bakes light into a light map, as three's ProgressiveLightMap does (see lightmap.c3, which
-// calls it): each mesh of `objects` is drawn with `material` where its uv1 is in `target`
-// (RGBA32F or RGBA16F, without depth), lit by the lights of `lights` and shadowed by
-// `objects`, and blended into what `prev` (the last map, the size of `target`) has there:
-// 1 / blend_window of the new light. With `seams` the whole map first takes the average of
-// its neighbours in `prev`, which spreads the islands' light past their edges; without it
-// starts black. `camera` is where the highlights are seen from.
-// It is not a render: info, time, the motion vectors' and the reflections' frames are left
-// alone, and it needs no commit of its own (call it before render() in a frame).
+// Runs one progressive lightmap accumulation pass (used by ProgressiveLightMap). Draws each mesh
+// in `objects` into `target` (RGBA32F or RGBA16F, no depth) at its UV1 coordinates using `material`,
+// lit by `lights`, shadowed by `objects`, and blended into `prev` with weight `1 / blend_window`.
+// When `seams` is true, pre-fills the target by dilating `prev` across UV island borders.
+// Leaves `info`, `time`, motion vectors, and reflections untouched; call before render() without
+// a separate commit().
 fn void Renderer.render_bake(
     &self,
     Scene* lights,
@@ -128,7 +132,7 @@ fn void Renderer.render_bake(
     state.radiance_view = lights.radiance ? lights.radiance.irradiance_buf.view : state.no_radiance.view;
     state.scene = lights;
     FsParams fs = build_light_params(lights, camera, null);
-    // linear light, as it is; nothing cut away
+    // Output raw linear light with cull box disabled.
     fs.output_params = { 1, 0, 0, 0 };
     fs.cull_min.w = 0;
     fs.bake_params = { 1, 1 / math::max(blend_window, 1e-6f), 0, 0 };
@@ -184,31 +188,28 @@ fn void Renderer.render_bake(
     self.info = info;
 }
 
-// Ends the frame. Only needed when the last render() went to a render target.
-// Called once per cube face by capture_environment, after the camera is pointed (to aim a
-// light with the view, for example).
+// ---- Irradiance volume baking
+
+// Callback invoked per cubemap face in capture_environment() after orienting the camera.
 alias EnvFaceFn = fn void(Camera* camera);
-// How far it is from `origin` along `dir` to the nearest surface (for capture_environment).
-// Called once for every texel of the map, row by row from the top, always in the same order.
+// Ray-distance callback for capture_environment(), called per output texel in top-to-bottom row order.
 alias EnvDistanceFn = fn float(Vector3 origin, Vector3 dir);
 
-// Fills the volume with the light at each probe, as three's LightProbeGrid.bake does: the
-// scene drawn all around the probe (six faces of `face_size` pixels, `near` to `far`), and
-// for each of the six directions the light it brings to a surface facing that way. Then,
-// with `bounces`, again that many times with the scene lit by the volume as it is, each time
-// one more bounce of light. The volume does not light the first pass, whether or not the
-// scene has it; the passes after it have it light the scene with the scene's own volumes.
+// Bakes directional irradiance for every probe in `v` by rendering 6 linear HDR cube faces
+// (`face_size` pixels each, `near`..`far`) per probe and integrating cosine-weighted radiance
+// along +/-X, +/-Y, +/-Z. With `bounces > 0`, runs extra passes with `v` illuminating the scene
+// (the initial direct pass excludes `v` even if attached to `scene`).
 fn void Renderer.bake_irradiance(&self, Scene* scene, IrradianceVolume* v, int face_size = 8, float near = 0.1,
                                  float far = 100, int bounces = 0) {
     Vector3[6] fwd = { { 1, 0, 0 }, { -1, 0, 0 }, { 0, 1, 0 }, { 0, -1, 0 }, { 0, 0, 1 }, { 0, 0, -1 } };
     Vector3[6] ups = { { 0, 1, 0 }, { 0, 1, 0 }, { 0, 0, -1 }, { 0, 0, 1 }, { 0, 1, 0 }, { 0, 1, 0 } };
     int fs = math::max(face_size, 1);
-    // the six faces side by side, in linear light
+    // Pack all six linear HDR faces side by side into a single strip for one readback per probe.
     RenderTarget* rt = render_target(fs * 6, fs, 1, SgPixelFormat.RGBA16F);
     PerspectiveCamera* cam = perspective_camera(90, 1, near, far);
     ushort[] pixels = mem::new_array(ushort, (sz)fs * 6 * fs * 4);
     float[] baked = mem::new_array(float, v.data.len);
-    // each texel's direction and the solid angle it covers, for the faces' integrals
+    // Precompute unit direction and solid angle per cubemap texel.
     Vector3[] dirs = mem::new_array(Vector3, (sz)fs * fs * 6);
     float[] solid = mem::new_array(float, (sz)fs * fs);
     defer {
@@ -225,7 +226,7 @@ fn void Renderer.bake_irradiance(&self, Scene* scene, IrradianceVolume* v, int f
         for (int sy = 0; sy < fs; sy++) {
             for (int sx = 0; sx < fs; sx++) {
                 float fx = ((float)sx + 0.5f) / fs * 2 - 1;
-                // (the first row is the top, as capture_environment reads them)
+                // Row 0 of read_image() is the top of the face.
                 float fy = 1 - ((float)sy + 0.5f) / fs * 2;
                 Vector3 d = fwd[i] + right * fx + ups[i] * fy;
                 dirs[((sz)i * fs + sy) * fs + sx] = d.normalize();
@@ -272,7 +273,7 @@ fn void Renderer.bake_irradiance(&self, Scene* scene, IrradianceVolume* v, int f
                                 Vector3 light = { half_to_float(pixels[p]), half_to_float(pixels[p + 1]), half_to_float(pixels[p + 2]) };
                                 Vector3 d = dirs[((sz)i * fs + sy) * fs + sx];
                                 float w = solid[(sz)sy * fs + sx];
-                                // the cosine of each axis: + or - of one of d's components
+                                // Accumulate cosine-weighted irradiance along each positive/negative axis.
                                 for (int a = 0; a < 3; a++) {
                                     float c = d[a];
                                     if (c > 0) sum[a * 2] += light * (c * w);
@@ -303,15 +304,13 @@ fn void Renderer.bake_irradiance(&self, Scene* scene, IrradianceVolume* v, int f
     self.scissor = prev_scissor;
 }
 
-// Renders the scene in every direction from `position`, like a light probe, into an
-// equirectangular texture for Material.env_map or Scene.environment. With `hdr` the scene is
-// rendered in linear light, without tone mapping, into a half-float texture: light brighter
-// than white keeps its brightness (three's PMREMGenerator.fromScene). Needs the GPU (call it from a frame, or after
-// init_headless) and reads the result back, so do it once at load, not every frame.
-// With `distance` (the application's own ray caster) the map also holds how far away each
-// direction's surface is, up to `distance_range` meters. A box-projected material then follows
-// its reflected rays through the room as the map saw it, instead of taking everything to be on
-// the walls: furniture in the middle of the room is mirrored where it stands.
+// ---- Environment map and probe capture
+
+// Renders `scene` into 6 cubemap faces from `position`, reads them back, and resamples into an
+// equirectangular Texture (`width` x `width / 2`) for Scene.environment or Material.env_map.
+// With `hdr`, captures linear RGBA16F radiance into a float texture. When `distance` is given,
+// stores normalized ray hit distance (clamped to `distance_range`) in alpha for parallax-corrected
+// reflections. Synchronous GPU readback; call at load time rather than every frame.
 fn Texture* Renderer.capture_environment(
     &self,
     Scene* scene,
@@ -356,7 +355,7 @@ fn Texture* Renderer.capture_environment(
     free(rt);
     free(cam);
 
-    // resample the six faces into longitude/latitude
+    // Resample the six cube faces into equirectangular longitude/latitude layout.
     int height = width / 2;
     char[] px;
     float[] fpx;
@@ -405,8 +404,7 @@ fn Texture* Renderer.capture_environment(
     return map;
 }
 
-// A map Renderer.render_environment draws into: the drawing, and the map's levels to draw into
-// and read from.
+// Persistent RGBA16F mipmapped render target backing a Renderer.render_environment() texture.
 struct EnvTarget @private {
     Texture* texture;
     RenderTarget* rt;
@@ -415,24 +413,17 @@ struct EnvTarget @private {
     SgView[12] attachments;
 }
 
-// Draws `material` into an equirectangular environment map `width` texels around, all on the
-// GPU, for Scene.environment or a material's env_map: each texel is the material as it is in
-// that direction, which its node graph reads from normal_geometry (it is drawn on a grid whose
-// normals are the map's directions, from straight ahead; a basic material is unlit). three's
-// scene.environmentNode, worked out once per texel of a map rather than for every pixel
-// drawn with it; rough surfaces read its mip levels as they do any environment map's.
-// Into `into`, a map this drew before (drawn again: an animated graph, every frame), or a new
-// map. With `diffuse`, its light on surfaces (Texture.env_light) is worked out from a 64 x 32
-// drawing of it read back from the GPU, which waits for it; without, the map keeps the light it
-// had (none, the first time).
+// Renders `material` onto a directional grid directly into a mipmapped RGBA16F equirectangular
+// environment Texture (`width` x `width / 2`) on the GPU; node graphs read the unit ray direction
+// from `normal_geometry`. Pass an existing texture in `into` to update it in place. With `diffuse`,
+// also renders a 64x32 pass and reads it back synchronously to compute `Texture.env_light` SH.
 fn Texture* Renderer.render_environment(&self, Material* material, Texture* into = null, int width = 512, bool diffuse = true) {
     width = math::max(width & ~1, 8);
     int height = width / 2;
     if (!state.env_scene) {
         const int COLS = 128;
         const int ROWS = 64;
-        // (the map's first row, straight up, at the top of the drawing, which is its first
-        // row in memory but in GL)
+        // Align row 0 (zenith, phi = 0) with top of texture memory on [0,1] depth backends.
         float up = depth_zero_to_one() ? 1 : -1;
         BufferGeometry* g = mem::new(BufferGeometry);
         for (int j = 0; j <= ROWS; j++) {
@@ -449,7 +440,7 @@ fn Texture* Renderer.render_environment(&self, Material* material, Texture* into
             for (uint i = 0; i < COLS; i++) {
                 uint a = j * (COLS + 1) + i;
                 uint c = a + COLS + 1;
-                // (counterclockwise as the camera sees them)
+                // Keep CCW winding facing the orthographic camera after Y orientation flip.
                 if (up > 0) {
                     g.add_triangle(a, c, a + 1);
                     g.add_triangle(a + 1, c, c + 1);
@@ -565,16 +556,14 @@ fn Texture* Renderer.render_environment(&self, Material* material, Texture* into
     return t;
 }
 
-// The six views of render_probe (and capture_environment): straight ahead, and up.
+// Forward directions (+X, -X, +Y, -Y, +Z, -Z) for render_probe() cubemap capture.
 const Vector3[6] PROBE_AHEAD = { { 1, 0, 0 }, { -1, 0, 0 }, { 0, 1, 0 }, { 0, -1, 0 }, { 0, 0, 1 }, { 0, 0, -1 } };
+// Up vectors matching PROBE_AHEAD for render_probe() cubemap capture.
 const Vector3[6] PROBE_UP = { { 0, 1, 0 }, { 0, 1, 0 }, { 0, 0, -1 }, { 0, 0, 1 }, { 0, 1, 0 }, { 0, 1, 0 } };
 
-// Renders the scene in every direction from `position` into an environment map, all on the
-// GPU, for Scene.environment or a material's env_map: six views `face_size` texels across, in
-// linear light, read into an equirectangular map 4 * face_size texels around (as
-// render_environment draws a material). Like three's CubeCamera.update with its render target,
-// and cheap enough for every frame; `into`: a map this drew before, drawn again. `diffuse` as
-// render_environment's (it waits for the GPU).
+// Renders `scene` into 6 linear RGBA16F cubemap faces (`face_size` px, 4x MSAA) from `position`
+// and resamples them on the GPU into an equirectangular environment map (`4 * face_size` wide).
+// Pass an existing texture in `into` to update it in place; `diffuse` triggers SH readback.
 fn Texture* Renderer.render_probe(
     &self,
     Scene* scene,
@@ -625,9 +614,8 @@ fn Texture* Renderer.render_probe(
 
 fn Node vec3_node(Vector3 v) @local => node_const(VEC3, { v.x, v.y, v.z, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 });
 
-// The graph that reads render_probe's six views in each direction: the view the direction
-// is most along, where the direction meets it (first row at the top of a view's texture but
-// in GL), without mip levels.
+// Builds the node material that selects the dominant cubemap face from `normal_geometry` and
+// samples `state.probe_faces` at mip 0 for render_probe().
 fn MeshBasicMaterial* probe_resample() @private {
     Node d = nodes::normal_geometry();
     Node a = node_call(ABS, d);
