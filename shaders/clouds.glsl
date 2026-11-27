@@ -75,13 +75,14 @@ float cl_profile(vec3 w, float h) {
 float cl_density(vec3 p, float h, vec3 w, bool fine) {
     float dim = cl_profile(w, h);
     if (dim <= 0.0) return 0.0;
-    vec3 drift = vec3(cl_weather.x, 0.0, cl_weather.y);
+    // drifting with the wind, and rising through it: the clouds change shape as they go
+    vec3 drift = vec3(cl_weather.x, -cl_fwd.w * 4.0, cl_weather.y);
     vec4 n = textureLod(sampler3D(cl_noise, cl_smp), (p + drift) * cl_shape.x, 0.0);
     float fbm = n.g * 0.625 + n.b * 0.25 + n.a * 0.125;
     float shape = remap(n.r, fbm - 1.0, 1.0, 0.0, 1.0);
     float d = clamp(remap(shape, 1.0 - dim, 1.0, 0.0, 1.0), 0.0, 1.0);
     if (fine && d > 0.0) {
-        vec3 q = textureLod(sampler3D(cl_detail, cl_smp), (p + drift * 1.6) * cl_shape.y, 0.0).rgb;
+        vec3 q = textureLod(sampler3D(cl_detail, cl_smp), (p + drift * 1.6 + vec3(0.0, -cl_fwd.w * 6.0, 0.0)) * cl_shape.y, 0.0).rgb;
         float det = q.r * 0.625 + q.g * 0.25 + q.b * 0.125;
         // wispy at the bottoms, billowing above
         det = mix(det, 1.0 - det, clamp(h * 4.0, 0.0, 1.0));
@@ -141,7 +142,7 @@ void main() {
     l.y = max(l.y, 0.05);
     l = normalize(l);
     float len = (cl_layer.y - cl_layer.x) / l.y;
-    const int STEPS = 16;
+    const int STEPS = 12;
     float ds = len / float(STEPS);
     // four columns over the texel and around it, averaged: soft edges, not the texels' steps
     float texel = 1.0 / (cl_shadow.y * float(size.x));
@@ -153,7 +154,7 @@ void main() {
         for (int i = 0; i < STEPS; i++) {
             vec3 p = p0 + l * ((float(i) + 0.5 + 0.25 * float(c)) * ds);
             float h = (p.y - cl_layer.x) / (cl_layer.y - cl_layer.x);
-            sum += cl_density(p, h, cl_weather_at(p), true);
+            sum += cl_density(p, h, cl_weather_at(p), false);
         }
         t += exp(-sum * ds * cl_sun_color.w) * 0.25;
     }
@@ -197,7 +198,7 @@ float light_march(vec3 p, vec3 l, float h0) {
         vec3 q = p + l * (t - ds * 0.5);
         float h = cl_height(q);
         if (h > 1.0) break;
-        sum += cl_density(q, h, cl_weather_at(q), i < 3) * ds;
+        sum += cl_density(q, h, cl_weather_at(q), i < 1) * ds;
     }
     return sum;
 }
@@ -239,6 +240,8 @@ void main() {
         float dt = max(cl_step.x, sqrt(t) * cl_step.y);
         t += dt * bn;
         int most = int(cl_amb_bottom.w);
+        bool coarse = true;
+        int empty = 0;
         for (int i = 0; i < most; i++) {
             if (t >= t1 || trans < 0.01) break;
             dt = max(cl_step.x, sqrt(t) * cl_step.y);
@@ -251,7 +254,23 @@ void main() {
                 t += max(dt, w.z * 0.9);
                 continue;
             }
+            // cheap until it finds cloud: the shape alone, longer steps; then back a step, fine
+            if (coarse) {
+                if (cl_density(p, h, w, false) <= 0.0) {
+                    t += dt * 2.0;
+                    continue;
+                }
+                coarse = false;
+                empty = 0;
+                t = max(t - dt, t0);
+                continue;
+            }
             float dens = cl_density(p, h, w, true);
+            if (dens <= 0.0) {
+                if (++empty >= 6) coarse = true;
+            } else {
+                empty = 0;
+            }
             if (dens > 0.0) {
                 float od = light_march(p, l, h) * sigma;
                 vec3 sun = cl_sun_color.rgb * (exp(-od) * ph0 + 0.6 * exp(-od * 0.3) * ph1 + 0.35 * exp(-od * 0.1) * ph2);
@@ -464,8 +483,13 @@ void main() {
         cloud = nearest;
         dist = nearest_dist;
     }
+    // nothing (no cloud: not even the fog in front of where one might be)
+    if (cloud.a > 0.995) {
+        frag_color = vec4(0.0, 0.0, 0.0, 1.0);
+        return;
+    }
     // the froxel fog in front of the cloud
-    if (cc_clip.w > 0.5 && cloud.a < 0.999) {
+    if (cc_clip.w > 0.5) {
         vec4 fog = fog_at(vec2(uv.x, cc_up.w > 0.5 ? 1.0 - uv.y : uv.y), dist / ray_len);
         cloud.rgb = cloud.rgb * fog.a + fog.rgb * (1.0 - cloud.a);
     }

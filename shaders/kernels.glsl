@@ -299,7 +299,10 @@ float vf_cloud(vec3 p) {
     vec3 l = vf_sun_dir.xyz;
     vec2 q = p.xz + l.xz / max(l.y, 0.05) * (vf_cloud_shadow.w - p.y);
     vec2 uv = (q - vf_cloud_shadow.xz) * vf_cloud_shadow.y + 0.5;
-    return textureLod(sampler2D(vf_cloud_map, vf_cookie_smp), uv, 0.0).r;
+    float e = min(min(uv.x, uv.y), min(1.0 - uv.x, 1.0 - uv.y));
+    // (less of it up in the clouds, none above them: 2.5 km for the layer, as CloudPass's)
+    float under = clamp(1.0 - (p.y - vf_cloud_shadow.w) / 2500.0, 0.0, 1.0);
+    return mix(1.0, textureLod(sampler2D(vf_cloud_map, vf_cookie_smp), uv, 0.0).r, clamp(e * 12.0, 0.0, 1.0) * under);
 }
 
 // How much of the sun gets to p (1 outside of its shadow map).

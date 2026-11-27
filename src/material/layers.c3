@@ -858,10 +858,15 @@ fn Node ssr_march(Node n, Node geo_n, Node v, Node rough, Node world, Node frag)
 // The share of the sun the clouds let through to `p`, along `l` (towards the light) to the plane
 // of their shadow map (Renderer.cloud_shadow; cloud_shadow_cs in shaders/clouds.glsl).
 fn Node cloud_shadow_at(Node p, Node l) @private {
-    Node cs = fs_in("cloud_shadow");
-    Node q  = p.swizzle("xz") + l.swizzle("xz") / nodes::max(l.y(), 0.05f) * (cs.w() - p.y());
-    Node uv = (q - cs.swizzle("xz")) * cs.y() + 0.5f;
-    return node_sample(LEVEL, shaders::VIEW_CLOUD_SHADOW, shaders::SMP_SSR_SMP, TEX_2D, uv, nodes::num(0)).x();
+    Node cs    = fs_in("cloud_shadow");
+    Node q     = p.swizzle("xz") + l.swizzle("xz") / nodes::max(l.y(), 0.05f) * (cs.w() - p.y());
+    Node uv    = (q - cs.swizzle("xz")) * cs.y() + 0.5f;
+    Node t     = node_sample(LEVEL, shaders::VIEW_CLOUD_SHADOW, shaders::SMP_SSR_SMP, TEX_2D, uv, nodes::num(0)).x();
+    // none beyond the map (its edge texels would streak out to the horizon), faded in
+    Node e     = nodes::min(nodes::min(uv.x(), uv.y()), nodes::min(1.0f - uv.x(), 1.0f - uv.y()));
+    // less of it up in the clouds, none above them (2.5 km for the layer)
+    Node under = nodes::clamp(1.0f - (p.y() - cs.w()) / 2500.0f, 0, 1);
+    return nodes::mix(1, t, nodes::clamp(e * 12.0f, 0, 1) * under);
 }
 
 // Volumetric fog in front of world position `p`: rgb = in-scattered light toward the camera,

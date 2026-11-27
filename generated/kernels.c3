@@ -575,27 +575,27 @@ uniform vec4 fog_cs_params[43];
 layout(binding = 5, std430) readonly buffer vf_spots
 {
     vf_spot_light spots[];
-} _663;
+} _694;
 
 layout(binding = 6, std430) readonly buffer vf_shadows
 {
     vf_spot_shadow spot_shadows[];
-} _680;
+} _711;
 
 layout(binding = 7, std430) readonly buffer vf_light_clusters
 {
     vf_cluster clusters[];
-} _1488;
+} _1519;
 
 layout(binding = 4, std430) readonly buffer vf_points
 {
     vf_point_light points[];
-} _1545;
+} _1576;
 
 layout(binding = 8, std430) readonly buffer vf_light_indices
 {
     vf_index cluster_lights[];
-} _1550;
+} _1581;
 
 layout(binding = 0, rgba16f) uniform writeonly image2D vf_out;
 layout(binding = 0) uniform sampler2D vf_cloud_map_vf_cookie_smp;
@@ -712,7 +712,10 @@ float vf_cloud(vec3 p)
     {
         return 1.0;
     }
-    return textureLod(vf_cloud_map_vf_cookie_smp, (((p.xz + ((fog_cs_params[12].xz / vec2(max(fog_cs_params[12].y, 0.0500000007450580596923828125))) * (fog_cs_params[42].w - p.y))) - fog_cs_params[42].xz) * fog_cs_params[42].y) + vec2(0.5), 0.0).x;
+    vec2 _484 = (((p.xz + ((fog_cs_params[12].xz / vec2(max(fog_cs_params[12].y, 0.0500000007450580596923828125))) * (fog_cs_params[42].w - p.y))) - fog_cs_params[42].xz) * fog_cs_params[42].y) + vec2(0.5);
+    float _487 = _484.x;
+    float _489 = _484.y;
+    return mix(1.0, textureLod(vf_cloud_map_vf_cookie_smp, _484, 0.0).x, clamp(min(min(_487, _489), min(1.0 - _487, 1.0 - _489)) * 12.0, 0.0, 1.0) * clamp(1.0 - ((p.y - fog_cs_params[42].w) * 0.00039999998989515006542205810546875), 0.0, 1.0));
 }
 
 float vf_depth_tap(vec2 uv, float z, sampler2DShadow SPIRV_Cross_Combinedmapvf_shadow_smp)
@@ -750,72 +753,72 @@ float vf_sun(vec3 p, float depth)
     {
         return 1.0;
     }
-    vec4 _558 = mat4(fog_cs_params[k * 4 + 16], fog_cs_params[k * 4 + 17], fog_cs_params[k * 4 + 18], fog_cs_params[k * 4 + 19]) * vec4(p, 1.0);
-    float _561 = _558.x;
-    bool _562 = _561 <= 0.0;
-    bool _569;
-    if (!_562)
+    vec4 _589 = mat4(fog_cs_params[k * 4 + 16], fog_cs_params[k * 4 + 17], fog_cs_params[k * 4 + 18], fog_cs_params[k * 4 + 19]) * vec4(p, 1.0);
+    float _592 = _589.x;
+    bool _593 = _592 <= 0.0;
+    bool _600;
+    if (!_593)
     {
-        _569 = _561 >= 1.0;
+        _600 = _592 >= 1.0;
     }
     else
     {
-        _569 = _562;
+        _600 = _593;
     }
-    bool _576;
-    if (!_569)
+    bool _607;
+    if (!_600)
     {
-        _576 = _558.y <= 0.0;
+        _607 = _589.y <= 0.0;
     }
     else
     {
-        _576 = _569;
+        _607 = _600;
     }
-    bool _583;
-    if (!_576)
+    bool _614;
+    if (!_607)
     {
-        _583 = _558.y >= 1.0;
+        _614 = _589.y >= 1.0;
     }
     else
     {
-        _583 = _576;
+        _614 = _607;
     }
-    bool _590;
-    if (!_583)
+    bool _621;
+    if (!_614)
     {
-        _590 = _558.z <= 0.0;
+        _621 = _589.z <= 0.0;
     }
     else
     {
-        _590 = _583;
+        _621 = _614;
     }
-    bool _597;
-    if (!_590)
+    bool _628;
+    if (!_621)
     {
-        _597 = _558.z >= 1.0;
+        _628 = _589.z >= 1.0;
     }
     else
     {
-        _597 = _590;
+        _628 = _621;
     }
-    if (_597)
+    if (_628)
     {
         return 1.0;
     }
-    vec2 _618 = _558.xy;
-    vec2 _620 = (vec2(fog_cs_params[32].z) / fog_cs_params[k * 1 + 33].zw) * 0.5;
-    vec2 param = fog_cs_params[k * 1 + 33].xy + (clamp(_618, _620, vec2(1.0) - _620) * fog_cs_params[k * 1 + 33].zw);
-    float param_1 = _558.z;
-    vec2 _645 = min(_618, vec2(1.0) - _618);
-    return mix(1.0, vf_depth_tap(param, param_1, vf_sun_map_vf_shadow_smp), clamp(min(_645.x, _645.y) * 10.0, 0.0, 1.0));
+    vec2 _649 = _589.xy;
+    vec2 _651 = (vec2(fog_cs_params[32].z) / fog_cs_params[k * 1 + 33].zw) * 0.5;
+    vec2 param = fog_cs_params[k * 1 + 33].xy + (clamp(_649, _651, vec2(1.0) - _651) * fog_cs_params[k * 1 + 33].zw);
+    float param_1 = _589.z;
+    vec2 _676 = min(_649, vec2(1.0) - _649);
+    return mix(1.0, vf_depth_tap(param, param_1, vf_sun_map_vf_shadow_smp), clamp(min(_676.x, _676.y) * 10.0, 0.0, 1.0));
 }
 
 float vf_inverse_square(vec3 o, vec3 dir, float s0, float s1, vec3 lp, float radius)
 {
-    vec3 _974 = lp - o;
-    float _978 = dot(_974, dir);
-    float _992 = max(sqrt(max(dot(_974, _974) - (_978 * _978), 0.0)), max(radius, 0.25));
-    return (atan((s1 - _978) / _992) - atan((s0 - _978) / _992)) / _992;
+    vec3 _1005 = lp - o;
+    float _1009 = dot(_1005, dir);
+    float _1023 = max(sqrt(max(dot(_1005, _1005) - (_1009 * _1009), 0.0)), max(radius, 0.25));
+    return (atan((s1 - _1009) / _1023) - atan((s0 - _1009) / _1023)) / _1023;
 }
 
 float vf_window(float d, float cutoff)
@@ -824,86 +827,86 @@ float vf_window(float d, float cutoff)
     {
         return 1.0;
     }
-    float _955 = d / cutoff;
-    float _965 = clamp(1.0 - (((_955 * _955) * _955) * _955), 0.0, 1.0);
-    return _965 * _965;
+    float _986 = d / cutoff;
+    float _996 = clamp(1.0 - (((_986 * _986) * _986) * _986), 0.0, 1.0);
+    return _996 * _996;
 }
 
 float vf_spot_lit(int s, vec3 p)
 {
-    int _667 = int(_663.spots[s].shadow.x);
-    if (_667 < 0)
+    int _698 = int(_694.spots[s].shadow.x);
+    if (_698 < 0)
     {
         return 1.0;
     }
-    vec4 _707 = _680.spot_shadows[_667].mat * vec4(p - _663.spots[s].pos.xyz, 1.0);
-    float _709 = _707.w;
-    if (_709 <= 0.0)
+    vec4 _738 = _711.spot_shadows[_698].mat * vec4(p - _694.spots[s].pos.xyz, 1.0);
+    float _740 = _738.w;
+    if (_740 <= 0.0)
     {
         return 1.0;
     }
-    vec3 c = _707.xyz / vec3(_709);
-    bool _724 = _680.spot_shadows[_667].params.x > 1.5;
-    bool _731;
-    if (_724)
-    {
-        _731 = _680.spot_shadows[_667].params.x < 2.5;
-    }
-    else
-    {
-        _731 = _724;
-    }
-    if (_731)
-    {
-        vec3 _1951 = c;
-        _1951.z = (_709 - _680.spot_shadows[_667].soft.y) / (_680.spot_shadows[_667].soft.z - _680.spot_shadows[_667].soft.y);
-        c = _1951;
-    }
-    bool _748 = c.x < 0.0;
-    bool _755;
-    if (!_748)
-    {
-        _755 = c.x > 1.0;
-    }
-    else
-    {
-        _755 = _748;
-    }
+    vec3 c = _738.xyz / vec3(_740);
+    bool _755 = _711.spot_shadows[_698].params.x > 1.5;
     bool _762;
-    if (!_755)
+    if (_755)
     {
-        _762 = c.y < 0.0;
+        _762 = _711.spot_shadows[_698].params.x < 2.5;
     }
     else
     {
         _762 = _755;
     }
-    bool _769;
-    if (!_762)
+    if (_762)
     {
-        _769 = c.y > 1.0;
+        vec3 _1986 = c;
+        _1986.z = (_740 - _711.spot_shadows[_698].soft.y) / (_711.spot_shadows[_698].soft.z - _711.spot_shadows[_698].soft.y);
+        c = _1986;
+    }
+    bool _779 = c.x < 0.0;
+    bool _786;
+    if (!_779)
+    {
+        _786 = c.x > 1.0;
     }
     else
     {
-        _769 = _762;
+        _786 = _779;
     }
-    bool _776;
-    if (!_769)
+    bool _793;
+    if (!_786)
     {
-        _776 = c.z > 1.0;
+        _793 = c.y < 0.0;
     }
     else
     {
-        _776 = _769;
+        _793 = _786;
     }
-    if (_776)
+    bool _800;
+    if (!_793)
+    {
+        _800 = c.y > 1.0;
+    }
+    else
+    {
+        _800 = _793;
+    }
+    bool _807;
+    if (!_800)
+    {
+        _807 = c.z > 1.0;
+    }
+    else
+    {
+        _807 = _800;
+    }
+    if (_807)
     {
         return 1.0;
     }
     float seen;
-    if (_724)
+    if (_755)
     {
-        vec2 param = _680.spot_shadows[_667].rect.xy + (clamp(c.xy, vec2(_680.spot_shadows[_667].params.z), vec2(1.0 - _680.spot_shadows[_667].params.z)) * _680.spot_shadows[_667].rect.zw);
+        vec2 param = _711.spot_shadows[_698].rect.xy + (clamp(c.xy, vec2(_711.spot_shadows[_698].params.z), vec2(1.0 - _711.spot_shadows[_698].params.z)) * _711.spot_shadows[_698].rect.zw);
         float param_1 = c.z;
         seen = vf_depth_tap(param, param_1, vf_spot_atlas_vf_shadow_smp);
     }
@@ -913,296 +916,296 @@ float vf_spot_lit(int s, vec3 p)
         float param_3 = c.z;
         seen = vf_depth_tap(param_2, param_3, vf_spot_map_vf_shadow_smp);
     }
-    return mix(1.0, seen, _663.spots[s].shadow.y);
+    return mix(1.0, seen, _694.spots[s].shadow.y);
 }
 
 float vf_spot_cookie(int s, vec3 p)
 {
-    if (_663.spots[s].map.z <= 0.0)
+    if (_694.spots[s].map.z <= 0.0)
     {
         return 1.0;
     }
-    vec3 _844 = p - _663.spots[s].pos.xyz;
-    vec2 _884 = vec2(0.5) + ((vec2(dot(_844, _663.spots[s].map_u.xyz), dot(_844, vec3(_663.spots[s].map_u.w, _663.spots[s].map_v.xy))) * 0.5) / vec2(max(dot(_844, _663.spots[s].dir.xyz), 9.9999997473787516355514526367188e-05)));
-    float _886 = _884.x;
-    bool _887 = _886 < 0.0;
-    bool _894;
-    if (!_887)
+    vec3 _875 = p - _694.spots[s].pos.xyz;
+    vec2 _915 = vec2(0.5) + ((vec2(dot(_875, _694.spots[s].map_u.xyz), dot(_875, vec3(_694.spots[s].map_u.w, _694.spots[s].map_v.xy))) * 0.5) / vec2(max(dot(_875, _694.spots[s].dir.xyz), 9.9999997473787516355514526367188e-05)));
+    float _917 = _915.x;
+    bool _918 = _917 < 0.0;
+    bool _925;
+    if (!_918)
     {
-        _894 = _886 > 1.0;
+        _925 = _917 > 1.0;
     }
     else
     {
-        _894 = _887;
+        _925 = _918;
     }
-    bool _901;
-    if (!_894)
+    bool _932;
+    if (!_925)
     {
-        _901 = _884.y < 0.0;
+        _932 = _915.y < 0.0;
     }
     else
     {
-        _901 = _894;
+        _932 = _925;
     }
-    bool _908;
-    if (!_901)
+    bool _939;
+    if (!_932)
     {
-        _908 = _884.y > 1.0;
+        _939 = _915.y > 1.0;
     }
     else
     {
-        _908 = _901;
+        _939 = _932;
     }
-    if (_908)
+    if (_939)
     {
         return 0.0;
     }
-    return dot(textureLod(vf_cookies_vf_cookie_smp, _663.spots[s].map.xy + (vec2(_886, 1.0 - _884.y) * _663.spots[s].map.zw), max(_663.spots[s].map_v.z - 7.5, 0.0)).xyz, vec3(0.2125999927520751953125, 0.715200006961822509765625, 0.072200000286102294921875));
+    return dot(textureLod(vf_cookies_vf_cookie_smp, _694.spots[s].map.xy + (vec2(_917, 1.0 - _915.y) * _694.spots[s].map.zw), max(_694.spots[s].map_v.z - 7.5, 0.0)).xyz, vec3(0.2125999927520751953125, 0.715200006961822509765625, 0.072200000286102294921875));
 }
 
 void main()
 {
-    ivec2 _1019 = ivec2(gl_GlobalInvocationID.xy);
-    ivec3 _1026 = ivec3(fog_cs_params[4].xyz);
-    int _1030 = _1026.x;
-    bool _1031 = _1019.x >= _1030;
-    bool _1040;
-    if (!_1031)
+    ivec2 _1050 = ivec2(gl_GlobalInvocationID.xy);
+    ivec3 _1057 = ivec3(fog_cs_params[4].xyz);
+    int _1061 = _1057.x;
+    bool _1062 = _1050.x >= _1061;
+    bool _1071;
+    if (!_1062)
     {
-        _1040 = _1019.y >= _1026.y;
+        _1071 = _1050.y >= _1057.y;
     }
     else
     {
-        _1040 = _1031;
+        _1071 = _1062;
     }
-    if (_1040)
+    if (_1071)
     {
         return;
     }
-    int _1047 = int(fog_cs_params[4].w);
-    vec2 _1055 = vec2(_1026.xy);
-    vec2 _1059 = (((vec2(_1019) + vec2(0.5)) / _1055) * 2.0) - vec2(1.0);
-    vec2 _1065 = vec2(0.5) / _1055;
-    float _1078;
-    float _1091;
+    int _1078 = int(fog_cs_params[4].w);
+    vec2 _1086 = vec2(_1057.xy);
+    vec2 _1090 = (((vec2(_1050) + vec2(0.5)) / _1086) * 2.0) - vec2(1.0);
+    vec2 _1096 = vec2(0.5) / _1086;
+    float _1109;
+    float _1122;
     vec3 sub_ray[4];
     for (int i = 0; i < 4; i++)
     {
         if ((i & 1) == 0)
         {
-            _1078 = -_1065.x;
+            _1109 = -_1096.x;
         }
         else
         {
-            _1078 = _1065.x;
+            _1109 = _1096.x;
         }
         if ((i & 2) == 0)
         {
-            _1091 = -_1065.y;
+            _1122 = -_1096.y;
         }
         else
         {
-            _1091 = _1065.y;
+            _1122 = _1096.y;
         }
-        sub_ray[i] = (fog_cs_params[1].xyz + (fog_cs_params[2].xyz * (_1059.x + _1078))) + (fog_cs_params[3].xyz * (_1059.y + _1091));
+        sub_ray[i] = (fog_cs_params[1].xyz + (fog_cs_params[2].xyz * (_1090.x + _1109))) + (fog_cs_params[3].xyz * (_1090.y + _1122));
     }
-    vec3 _1149 = (fog_cs_params[1].xyz + (fog_cs_params[2].xyz * _1059.x)) + (fog_cs_params[3].xyz * _1059.y);
-    float _1152 = length(_1149);
-    vec3 _1157 = _1149 / vec3(_1152);
+    vec3 _1180 = (fog_cs_params[1].xyz + (fog_cs_params[2].xyz * _1090.x)) + (fog_cs_params[3].xyz * _1090.y);
+    float _1183 = length(_1180);
+    vec3 _1188 = _1180 / vec3(_1183);
     float side_density = 1.0;
     float sun_glow = 0.0;
     if (fog_cs_params[12].w > 0.0)
     {
-        side_density = mix(fog_cs_params[11].w, 1.0, smoothstep(-0.300000011920928955078125, 0.699999988079071044921875, dot(normalize(_1157.xz + vec2(9.9999997473787516355514526367188e-06)), normalize(fog_cs_params[12].xz + vec2(9.9999997473787516355514526367188e-06)))));
-        sun_glow = pow(max(dot(_1157, fog_cs_params[12].xyz), 0.0), fog_cs_params[12].w);
+        side_density = mix(fog_cs_params[11].w, 1.0, smoothstep(-0.300000011920928955078125, 0.699999988079071044921875, dot(normalize(_1188.xz + vec2(9.9999997473787516355514526367188e-06)), normalize(fog_cs_params[12].xz + vec2(9.9999997473787516355514526367188e-06)))));
+        sun_glow = pow(max(dot(_1188, fog_cs_params[12].xyz), 0.0), fog_cs_params[12].w);
     }
-    bool _1206 = (fog_cs_params[13].w > 0.0) && (sun_glow > 0.0);
-    bool _1213;
-    if (_1206)
+    bool _1237 = (fog_cs_params[13].w > 0.0) && (sun_glow > 0.0);
+    bool _1244;
+    if (_1237)
     {
-        _1213 = int(fog_cs_params[8].w) == 3;
+        _1244 = int(fog_cs_params[8].w) == 3;
     }
     else
     {
-        _1213 = _1206;
+        _1244 = _1237;
     }
-    ivec2 _1236 = clamp(ivec2(floor(((_1059 * 0.5) + vec2(0.5)) * fog_cs_params[14].xy)), ivec2(0), ivec2(fog_cs_params[14].xy) - ivec2(1));
-    int _1240 = int(fog_cs_params[14].x);
-    int _1244 = int(fog_cs_params[14].y);
-    int _1248 = int(fog_cs_params[14].z);
+    ivec2 _1267 = clamp(ivec2(floor(((_1090 * 0.5) + vec2(0.5)) * fog_cs_params[14].xy)), ivec2(0), ivec2(fog_cs_params[14].xy) - ivec2(1));
+    int _1271 = int(fog_cs_params[14].x);
+    int _1275 = int(fog_cs_params[14].y);
+    int _1279 = int(fog_cs_params[14].z);
     float fd = 0.0;
     float last_t = 1.0;
     vec3 light = vec3(0.0);
     float z0 = 0.0;
     vec3 p0 = fog_cs_params[0].xyz;
     int k = 0;
-    float _1271;
-    int _1462;
+    float _1302;
+    int _1493;
     for (;;)
     {
-        int _1263 = _1026.z;
-        if (k < _1263)
+        int _1294 = _1057.z;
+        if (k < _1294)
         {
-            if ((k + 1) >= _1263)
+            if ((k + 1) >= _1294)
             {
-                _1271 = fog_cs_params[5].z;
+                _1302 = fog_cs_params[5].z;
             }
             else
             {
-                _1271 = fog_cs_params[5].x * exp(float(k + 1) / fog_cs_params[5].y);
+                _1302 = fog_cs_params[5].x * exp(float(k + 1) / fog_cs_params[5].y);
             }
-            vec3 _1293 = fog_cs_params[0].xyz + (_1149 * _1271);
-            float _1304 = 0.5 * (z0 + _1271);
-            vec3 _1310 = fog_cs_params[0].xyz + (_1149 * _1304);
-            float _1314 = mix(z0, _1271, 0.25);
-            float _1319 = mix(z0, _1271, 0.75);
-            vec3 _1325 = fog_cs_params[0].xyz + (_1149 * _1314);
-            vec3 _1331 = fog_cs_params[0].xyz + (_1149 * _1319);
+            vec3 _1324 = fog_cs_params[0].xyz + (_1180 * _1302);
+            float _1335 = 0.5 * (z0 + _1302);
+            vec3 _1341 = fog_cs_params[0].xyz + (_1180 * _1335);
+            float _1345 = mix(z0, _1302, 0.25);
+            float _1350 = mix(z0, _1302, 0.75);
+            vec3 _1356 = fog_cs_params[0].xyz + (_1180 * _1345);
+            vec3 _1362 = fog_cs_params[0].xyz + (_1180 * _1350);
             float param = p0.y;
-            float param_1 = _1293.y;
-            float _1339 = vf_height_mean(param, param_1);
+            float param_1 = _1324.y;
+            float _1370 = vf_height_mean(param, param_1);
             vec3 param_2 = p0;
-            vec3 param_3 = _1293;
-            vec3 param_4 = _1310;
-            float _1351 = ((_1339 * vf_box_fraction(param_2, param_3)) * side_density) * vf_mist(param_4);
-            float _1353 = fd;
-            float _1356 = ((_1271 - z0) * _1152) * _1351;
-            float _1358 = _1353 + (_1356 * 0.5);
-            float _1363 = _1353 + _1356;
-            fd = _1363;
-            float param_5 = _1363;
-            float _1367 = vf_transmittance(param_5);
+            vec3 param_3 = _1324;
+            vec3 param_4 = _1341;
+            float _1382 = ((_1370 * vf_box_fraction(param_2, param_3)) * side_density) * vf_mist(param_4);
+            float _1384 = fd;
+            float _1387 = ((_1302 - z0) * _1183) * _1382;
+            float _1389 = _1384 + (_1387 * 0.5);
+            float _1394 = _1384 + _1387;
+            fd = _1394;
+            float param_5 = _1394;
+            float _1398 = vf_transmittance(param_5);
             vec3 own = fog_cs_params[7].xyz;
             if (sun_glow > 0.0)
             {
-                vec3 param_6 = _1310;
+                vec3 param_6 = _1341;
                 float lit = sun_glow * vf_cloud(param_6);
-                if (_1213)
+                if (_1244)
                 {
                     float seen = 0.0;
                     for (int i_1 = 0; i_1 < 4; i_1++)
                     {
-                        vec3 param_7 = fog_cs_params[0].xyz + (sub_ray[i_1] * _1314);
-                        float param_8 = _1314;
-                        vec3 param_9 = fog_cs_params[0].xyz + (sub_ray[i_1] * _1319);
-                        float param_10 = _1319;
+                        vec3 param_7 = fog_cs_params[0].xyz + (sub_ray[i_1] * _1345);
+                        float param_8 = _1345;
+                        vec3 param_9 = fog_cs_params[0].xyz + (sub_ray[i_1] * _1350);
+                        float param_10 = _1350;
                         seen += (vf_sun(param_7, param_8) + vf_sun(param_9, param_10));
                     }
                     lit *= mix(1.0, seen * 0.125, fog_cs_params[13].w);
                 }
                 own = mix(own, fog_cs_params[13].xyz, vec3(lit));
             }
-            light += (own * (last_t - _1367));
-            bool _1447 = (fog_cs_params[7].w > 0.0) && (_1351 > 0.0);
-            bool _1453;
-            if (_1447)
+            light += (own * (last_t - _1398));
+            bool _1478 = (fog_cs_params[7].w > 0.0) && (_1382 > 0.0);
+            bool _1484;
+            if (_1478)
             {
-                _1453 = fog_cs_params[14].w > 0.5;
+                _1484 = fog_cs_params[14].w > 0.5;
             }
             else
             {
-                _1453 = _1447;
+                _1484 = _1478;
             }
-            if (_1453)
+            if (_1484)
             {
-                if (_1304 <= fog_cs_params[15].x)
+                if (_1335 <= fog_cs_params[15].x)
                 {
-                    _1462 = 0;
+                    _1493 = 0;
                 }
                 else
                 {
-                    _1462 = int(floor(log(_1304 / fog_cs_params[15].x) * fog_cs_params[15].y));
+                    _1493 = int(floor(log(_1335 / fog_cs_params[15].x) * fog_cs_params[15].y));
                 }
-                int _1499 = _1236.x + (_1240 * (_1236.y + (_1244 * clamp(_1462, 0, _1248 - 1))));
-                int _1507 = int(_1488.clusters[_1499].range.x);
-                int _1511 = int(_1488.clusters[_1499].range.y);
-                int _1515 = int(_1488.clusters[_1499].range.z);
-                float _1519 = z0 * _1152;
-                float _1523 = _1304 * _1152;
-                float _1527 = _1271 * _1152;
+                int _1530 = _1267.x + (_1271 * (_1267.y + (_1275 * clamp(_1493, 0, _1279 - 1))));
+                int _1538 = int(_1519.clusters[_1530].range.x);
+                int _1542 = int(_1519.clusters[_1530].range.y);
+                int _1546 = int(_1519.clusters[_1530].range.z);
+                float _1550 = z0 * _1183;
+                float _1554 = _1335 * _1183;
+                float _1558 = _1302 * _1183;
                 vec3 glow = vec3(0.0);
-                for (int i_2 = 0; i_2 < _1511; i_2++)
+                for (int i_2 = 0; i_2 < _1542; i_2++)
                 {
-                    int _1553 = _1507 + i_2;
-                    float _1572 = length(_1545.points[_1550.cluster_lights[_1553].index].pos.xyz - _1310);
+                    int _1584 = _1538 + i_2;
+                    float _1603 = length(_1576.points[_1581.cluster_lights[_1584].index].pos.xyz - _1341);
                     vec3 param_11 = fog_cs_params[0].xyz;
-                    vec3 param_12 = _1157;
-                    float param_13 = _1519;
-                    float param_14 = _1527;
-                    vec3 param_15 = _1545.points[_1550.cluster_lights[_1553].index].pos.xyz;
-                    float param_16 = _1545.points[_1550.cluster_lights[_1553].index].params.x;
-                    float param_17 = _1572;
-                    float param_18 = _1545.points[_1550.cluster_lights[_1553].index].pos.w;
-                    float param_19 = _1358 + (_1572 * _1351);
-                    glow += (((_1545.points[_1550.cluster_lights[_1553].index].color.xyz * vf_inverse_square(param_11, param_12, param_13, param_14, param_15, param_16)) * vf_window(param_17, param_18)) * vf_transmittance(param_19));
+                    vec3 param_12 = _1188;
+                    float param_13 = _1550;
+                    float param_14 = _1558;
+                    vec3 param_15 = _1576.points[_1581.cluster_lights[_1584].index].pos.xyz;
+                    float param_16 = _1576.points[_1581.cluster_lights[_1584].index].params.x;
+                    float param_17 = _1603;
+                    float param_18 = _1576.points[_1581.cluster_lights[_1584].index].pos.w;
+                    float param_19 = _1389 + (_1603 * _1382);
+                    glow += (((_1576.points[_1581.cluster_lights[_1584].index].color.xyz * vf_inverse_square(param_11, param_12, param_13, param_14, param_15, param_16)) * vf_window(param_17, param_18)) * vf_transmittance(param_19));
                 }
-                for (int i_3 = 0; i_3 < _1515; i_3++)
+                for (int i_3 = 0; i_3 < _1546; i_3++)
                 {
-                    int _1631 = int(_1550.cluster_lights[(_1507 + _1511) + i_3].index);
-                    if (_663.spots[_1631].params.w <= 0.0)
+                    int _1662 = int(_1581.cluster_lights[(_1538 + _1542) + i_3].index);
+                    if (_694.spots[_1662].params.w <= 0.0)
                     {
                         continue;
                     }
                     float acc = 0.0;
-                    vec3 _1669 = _1325 - _663.spots[_1631].pos.xyz;
-                    float _1672 = length(_1669);
-                    float _1683 = smoothstep(_663.spots[_1631].dir.w, _663.spots[_1631].params.x, dot(_1669 / vec3(max(_1672, 9.9999997473787516355514526367188e-05)), _663.spots[_1631].dir.xyz));
-                    if (_1683 > 0.0)
+                    vec3 _1700 = _1356 - _694.spots[_1662].pos.xyz;
+                    float _1703 = length(_1700);
+                    float _1714 = smoothstep(_694.spots[_1662].dir.w, _694.spots[_1662].params.x, dot(_1700 / vec3(max(_1703, 9.9999997473787516355514526367188e-05)), _694.spots[_1662].dir.xyz));
+                    if (_1714 > 0.0)
                     {
-                        int param_20 = _1631;
-                        vec3 param_21 = _1325;
-                        int param_22 = _1631;
-                        vec3 param_23 = _1325;
-                        float _1701 = (_1683 * vf_spot_lit(param_20, param_21)) * vf_spot_cookie(param_22, param_23);
-                        if (_1701 > 0.0)
+                        int param_20 = _1662;
+                        vec3 param_21 = _1356;
+                        int param_22 = _1662;
+                        vec3 param_23 = _1356;
+                        float _1732 = (_1714 * vf_spot_lit(param_20, param_21)) * vf_spot_cookie(param_22, param_23);
+                        if (_1732 > 0.0)
                         {
                             vec3 param_24 = fog_cs_params[0].xyz;
-                            vec3 param_25 = _1157;
-                            float param_26 = _1519;
-                            float param_27 = _1523;
-                            vec3 param_28 = _663.spots[_1631].pos.xyz;
-                            float param_29 = _663.spots[_1631].params.y;
-                            float param_30 = _1672;
-                            float param_31 = _663.spots[_1631].pos.w;
-                            float param_32 = (fd - (_1356 * 0.75)) + (_1672 * _1351);
-                            acc += (((_1701 * vf_inverse_square(param_24, param_25, param_26, param_27, param_28, param_29)) * vf_window(param_30, param_31)) * vf_transmittance(param_32));
+                            vec3 param_25 = _1188;
+                            float param_26 = _1550;
+                            float param_27 = _1554;
+                            vec3 param_28 = _694.spots[_1662].pos.xyz;
+                            float param_29 = _694.spots[_1662].params.y;
+                            float param_30 = _1703;
+                            float param_31 = _694.spots[_1662].pos.w;
+                            float param_32 = (fd - (_1387 * 0.75)) + (_1703 * _1382);
+                            acc += (((_1732 * vf_inverse_square(param_24, param_25, param_26, param_27, param_28, param_29)) * vf_window(param_30, param_31)) * vf_transmittance(param_32));
                         }
                     }
-                    vec3 _1745 = _1331 - _663.spots[_1631].pos.xyz;
-                    float _1748 = length(_1745);
-                    float _1759 = smoothstep(_663.spots[_1631].dir.w, _663.spots[_1631].params.x, dot(_1745 / vec3(max(_1748, 9.9999997473787516355514526367188e-05)), _663.spots[_1631].dir.xyz));
-                    if (_1759 > 0.0)
+                    vec3 _1776 = _1362 - _694.spots[_1662].pos.xyz;
+                    float _1779 = length(_1776);
+                    float _1790 = smoothstep(_694.spots[_1662].dir.w, _694.spots[_1662].params.x, dot(_1776 / vec3(max(_1779, 9.9999997473787516355514526367188e-05)), _694.spots[_1662].dir.xyz));
+                    if (_1790 > 0.0)
                     {
-                        int param_33 = _1631;
-                        vec3 param_34 = _1331;
-                        int param_35 = _1631;
-                        vec3 param_36 = _1331;
-                        float _1777 = (_1759 * vf_spot_lit(param_33, param_34)) * vf_spot_cookie(param_35, param_36);
-                        if (_1777 > 0.0)
+                        int param_33 = _1662;
+                        vec3 param_34 = _1362;
+                        int param_35 = _1662;
+                        vec3 param_36 = _1362;
+                        float _1808 = (_1790 * vf_spot_lit(param_33, param_34)) * vf_spot_cookie(param_35, param_36);
+                        if (_1808 > 0.0)
                         {
                             vec3 param_37 = fog_cs_params[0].xyz;
-                            vec3 param_38 = _1157;
-                            float param_39 = _1523;
-                            float param_40 = _1527;
-                            vec3 param_41 = _663.spots[_1631].pos.xyz;
-                            float param_42 = _663.spots[_1631].params.y;
-                            float param_43 = _1748;
-                            float param_44 = _663.spots[_1631].pos.w;
-                            float param_45 = (fd - (_1356 * 0.25)) + (_1748 * _1351);
-                            acc += (((_1777 * vf_inverse_square(param_37, param_38, param_39, param_40, param_41, param_42)) * vf_window(param_43, param_44)) * vf_transmittance(param_45));
+                            vec3 param_38 = _1188;
+                            float param_39 = _1554;
+                            float param_40 = _1558;
+                            vec3 param_41 = _694.spots[_1662].pos.xyz;
+                            float param_42 = _694.spots[_1662].params.y;
+                            float param_43 = _1779;
+                            float param_44 = _694.spots[_1662].pos.w;
+                            float param_45 = (fd - (_1387 * 0.25)) + (_1779 * _1382);
+                            acc += (((_1808 * vf_inverse_square(param_37, param_38, param_39, param_40, param_41, param_42)) * vf_window(param_43, param_44)) * vf_transmittance(param_45));
                         }
                     }
                     if (acc > 0.0)
                     {
-                        glow += (_663.spots[_1631].color.xyz * (_663.spots[_1631].params.w * acc));
+                        glow += (_694.spots[_1662].color.xyz * (_694.spots[_1662].params.w * acc));
                     }
                 }
-                light += ((glow * fog_cs_params[7].w) * _1351);
+                light += ((glow * fog_cs_params[7].w) * _1382);
             }
-            last_t = _1367;
-            imageStore(vf_out, ivec2((k % _1047) * _1030, (k / _1047) * _1026.y) + _1019, vec4(light, _1367));
-            z0 = _1271;
-            p0 = _1293;
+            last_t = _1398;
+            imageStore(vf_out, ivec2((k % _1078) * _1061, (k / _1078) * _1057.y) + _1050, vec4(light, _1398));
+            z0 = _1302;
+            p0 = _1324;
             k++;
             continue;
         }
@@ -1604,11 +1607,11 @@ cbuffer fog_cs_params : register(b0)
     float4 _86_vf_cloud_shadow : packoffset(c42);
 };
 
-ByteAddressBuffer _663 : register(t4);
-ByteAddressBuffer _680 : register(t5);
-ByteAddressBuffer _1488 : register(t6);
-ByteAddressBuffer _1545 : register(t3);
-ByteAddressBuffer _1550 : register(t7);
+ByteAddressBuffer _694 : register(t4);
+ByteAddressBuffer _711 : register(t5);
+ByteAddressBuffer _1519 : register(t6);
+ByteAddressBuffer _1576 : register(t3);
+ByteAddressBuffer _1581 : register(t7);
 SamplerComparisonState vf_shadow_smp : register(s0);
 Texture2D<float4> vf_cloud_map : register(t9);
 SamplerState vf_cookie_smp : register(s1);
@@ -1732,7 +1735,10 @@ float vf_cloud(float3 p)
     {
         return 1.0f;
     }
-    return vf_cloud_map.SampleLevel(vf_cookie_smp, (((p.xz + ((_86_vf_sun_dir.xz / max(_86_vf_sun_dir.y, 0.0500000007450580596923828125f).xx) * (_86_vf_cloud_shadow.w - p.y))) - _86_vf_cloud_shadow.xz) * _86_vf_cloud_shadow.y) + 0.5f.xx, 0.0f).x;
+    float2 _484 = (((p.xz + ((_86_vf_sun_dir.xz / max(_86_vf_sun_dir.y, 0.0500000007450580596923828125f).xx) * (_86_vf_cloud_shadow.w - p.y))) - _86_vf_cloud_shadow.xz) * _86_vf_cloud_shadow.y) + 0.5f.xx;
+    float _487 = _484.x;
+    float _489 = _484.y;
+    return lerp(1.0f, vf_cloud_map.SampleLevel(vf_cookie_smp, _484, 0.0f).x, clamp(min(min(_487, _489), min(1.0f - _487, 1.0f - _489)) * 12.0f, 0.0f, 1.0f) * clamp(1.0f - ((p.y - _86_vf_cloud_shadow.w) * 0.00039999998989515006542205810546875f), 0.0f, 1.0f));
 }
 
 float vf_depth_tap(Texture2D<float4> map, float2 uv, float z)
@@ -1770,72 +1776,72 @@ float vf_sun(float3 p, float depth)
     {
         return 1.0f;
     }
-    float4 _558 = mul(float4(p, 1.0f), _86_vf_shadow_mat[k]);
-    float _561 = _558.x;
-    bool _562 = _561 <= 0.0f;
-    bool _569;
-    if (!_562)
+    float4 _589 = mul(float4(p, 1.0f), _86_vf_shadow_mat[k]);
+    float _592 = _589.x;
+    bool _593 = _592 <= 0.0f;
+    bool _600;
+    if (!_593)
     {
-        _569 = _561 >= 1.0f;
+        _600 = _592 >= 1.0f;
     }
     else
     {
-        _569 = _562;
+        _600 = _593;
     }
-    bool _576;
-    if (!_569)
+    bool _607;
+    if (!_600)
     {
-        _576 = _558.y <= 0.0f;
+        _607 = _589.y <= 0.0f;
     }
     else
     {
-        _576 = _569;
+        _607 = _600;
     }
-    bool _583;
-    if (!_576)
+    bool _614;
+    if (!_607)
     {
-        _583 = _558.y >= 1.0f;
+        _614 = _589.y >= 1.0f;
     }
     else
     {
-        _583 = _576;
+        _614 = _607;
     }
-    bool _590;
-    if (!_583)
+    bool _621;
+    if (!_614)
     {
-        _590 = _558.z <= 0.0f;
+        _621 = _589.z <= 0.0f;
     }
     else
     {
-        _590 = _583;
+        _621 = _614;
     }
-    bool _597;
-    if (!_590)
+    bool _628;
+    if (!_621)
     {
-        _597 = _558.z >= 1.0f;
+        _628 = _589.z >= 1.0f;
     }
     else
     {
-        _597 = _590;
+        _628 = _621;
     }
-    if (_597)
+    if (_628)
     {
         return 1.0f;
     }
-    float2 _618 = _558.xy;
-    float2 _620 = (_86_vf_shadow_params.z.xx / _86_vf_cascade_rect[k].zw) * 0.5f;
-    float2 param = _86_vf_cascade_rect[k].xy + (clamp(_618, _620, 1.0f.xx - _620) * _86_vf_cascade_rect[k].zw);
-    float param_1 = _558.z;
-    float2 _645 = min(_618, 1.0f.xx - _618);
-    return lerp(1.0f, vf_depth_tap(vf_sun_map, param, param_1), clamp(min(_645.x, _645.y) * 10.0f, 0.0f, 1.0f));
+    float2 _649 = _589.xy;
+    float2 _651 = (_86_vf_shadow_params.z.xx / _86_vf_cascade_rect[k].zw) * 0.5f;
+    float2 param = _86_vf_cascade_rect[k].xy + (clamp(_649, _651, 1.0f.xx - _651) * _86_vf_cascade_rect[k].zw);
+    float param_1 = _589.z;
+    float2 _676 = min(_649, 1.0f.xx - _649);
+    return lerp(1.0f, vf_depth_tap(vf_sun_map, param, param_1), clamp(min(_676.x, _676.y) * 10.0f, 0.0f, 1.0f));
 }
 
 float vf_inverse_square(float3 o, float3 dir, float s0, float s1, float3 lp, float radius)
 {
-    float3 _974 = lp - o;
-    float _978 = dot(_974, dir);
-    float _992 = max(sqrt(max(dot(_974, _974) - (_978 * _978), 0.0f)), max(radius, 0.25f));
-    return (atan((s1 - _978) / _992) - atan((s0 - _978) / _992)) / _992;
+    float3 _1005 = lp - o;
+    float _1009 = dot(_1005, dir);
+    float _1023 = max(sqrt(max(dot(_1005, _1005) - (_1009 * _1009), 0.0f)), max(radius, 0.25f));
+    return (atan((s1 - _1009) / _1023) - atan((s0 - _1009) / _1023)) / _1023;
 }
 
 float vf_window(float d, float cutoff)
@@ -1844,91 +1850,91 @@ float vf_window(float d, float cutoff)
     {
         return 1.0f;
     }
-    float _955 = d / cutoff;
-    float _965 = clamp(1.0f - (((_955 * _955) * _955) * _955), 0.0f, 1.0f);
-    return _965 * _965;
+    float _986 = d / cutoff;
+    float _996 = clamp(1.0f - (((_986 * _986) * _986) * _986), 0.0f, 1.0f);
+    return _996 * _996;
 }
 
 float vf_spot_lit(int s, float3 p)
 {
-    int _667 = int(asfloat(_663.Load(s * 128 + 64)));
-    if (_667 < 0)
+    int _698 = int(asfloat(_694.Load(s * 128 + 64)));
+    if (_698 < 0)
     {
         return 1.0f;
     }
-    vf_spot_shadow _684;
-    _684.mat = asfloat(uint4x4(_680.Load4(_667 * 112 + 0), _680.Load4(_667 * 112 + 16), _680.Load4(_667 * 112 + 32), _680.Load4(_667 * 112 + 48)));
-    _684.params = asfloat(_680.Load4(_667 * 112 + 64));
-    _684.rect = asfloat(_680.Load4(_667 * 112 + 80));
-    _684.soft = asfloat(_680.Load4(_667 * 112 + 96));
-    float4 _707 = mul(float4(p - asfloat(_663.Load4(s * 128 + 0)).xyz, 1.0f), _684.mat);
-    float _709 = _707.w;
-    if (_709 <= 0.0f)
+    vf_spot_shadow _715;
+    _715.mat = asfloat(uint4x4(_711.Load4(_698 * 112 + 0), _711.Load4(_698 * 112 + 16), _711.Load4(_698 * 112 + 32), _711.Load4(_698 * 112 + 48)));
+    _715.params = asfloat(_711.Load4(_698 * 112 + 64));
+    _715.rect = asfloat(_711.Load4(_698 * 112 + 80));
+    _715.soft = asfloat(_711.Load4(_698 * 112 + 96));
+    float4 _738 = mul(float4(p - asfloat(_694.Load4(s * 128 + 0)).xyz, 1.0f), _715.mat);
+    float _740 = _738.w;
+    if (_740 <= 0.0f)
     {
         return 1.0f;
     }
-    float3 c = _707.xyz / _709.xxx;
-    bool _724 = _684.params.x > 1.5f;
-    bool _731;
-    if (_724)
-    {
-        _731 = _684.params.x < 2.5f;
-    }
-    else
-    {
-        _731 = _724;
-    }
-    if (_731)
-    {
-        float3 _1951 = c;
-        _1951.z = (_709 - _684.soft.y) / (_684.soft.z - _684.soft.y);
-        c = _1951;
-    }
-    bool _748 = c.x < 0.0f;
-    bool _755;
-    if (!_748)
-    {
-        _755 = c.x > 1.0f;
-    }
-    else
-    {
-        _755 = _748;
-    }
+    float3 c = _738.xyz / _740.xxx;
+    bool _755 = _715.params.x > 1.5f;
     bool _762;
-    if (!_755)
+    if (_755)
     {
-        _762 = c.y < 0.0f;
+        _762 = _715.params.x < 2.5f;
     }
     else
     {
         _762 = _755;
     }
-    bool _769;
-    if (!_762)
+    if (_762)
     {
-        _769 = c.y > 1.0f;
+        float3 _1986 = c;
+        _1986.z = (_740 - _715.soft.y) / (_715.soft.z - _715.soft.y);
+        c = _1986;
+    }
+    bool _779 = c.x < 0.0f;
+    bool _786;
+    if (!_779)
+    {
+        _786 = c.x > 1.0f;
     }
     else
     {
-        _769 = _762;
+        _786 = _779;
     }
-    bool _776;
-    if (!_769)
+    bool _793;
+    if (!_786)
     {
-        _776 = c.z > 1.0f;
+        _793 = c.y < 0.0f;
     }
     else
     {
-        _776 = _769;
+        _793 = _786;
     }
-    if (_776)
+    bool _800;
+    if (!_793)
+    {
+        _800 = c.y > 1.0f;
+    }
+    else
+    {
+        _800 = _793;
+    }
+    bool _807;
+    if (!_800)
+    {
+        _807 = c.z > 1.0f;
+    }
+    else
+    {
+        _807 = _800;
+    }
+    if (_807)
     {
         return 1.0f;
     }
     float seen;
-    if (_724)
+    if (_755)
     {
-        float2 param = _684.rect.xy + (clamp(c.xy, _684.params.z.xx, (1.0f - _684.params.z).xx) * _684.rect.zw);
+        float2 param = _715.rect.xy + (clamp(c.xy, _715.params.z.xx, (1.0f - _715.params.z).xx) * _715.rect.zw);
         float param_1 = c.z;
         seen = vf_depth_tap(vf_spot_atlas, param, param_1);
     }
@@ -1938,299 +1944,299 @@ float vf_spot_lit(int s, float3 p)
         float param_3 = c.z;
         seen = vf_depth_tap(vf_spot_map, param_2, param_3);
     }
-    return lerp(1.0f, seen, asfloat(_663.Load(s * 128 + 68)));
+    return lerp(1.0f, seen, asfloat(_694.Load(s * 128 + 68)));
 }
 
 float vf_spot_cookie(int s, float3 p)
 {
-    if (asfloat(_663.Load4(s * 128 + 80)).z <= 0.0f)
+    if (asfloat(_694.Load4(s * 128 + 80)).z <= 0.0f)
     {
         return 1.0f;
     }
-    float3 _844 = p - asfloat(_663.Load4(s * 128 + 0)).xyz;
-    float2 _884 = 0.5f.xx + ((float2(dot(_844, asfloat(_663.Load4(s * 128 + 96)).xyz), dot(_844, float3(asfloat(_663.Load(s * 128 + 108)), asfloat(_663.Load4(s * 128 + 112)).xy))) * 0.5f) / max(dot(_844, asfloat(_663.Load4(s * 128 + 16)).xyz), 9.9999997473787516355514526367188e-05f).xx);
-    float _886 = _884.x;
-    bool _887 = _886 < 0.0f;
-    bool _894;
-    if (!_887)
+    float3 _875 = p - asfloat(_694.Load4(s * 128 + 0)).xyz;
+    float2 _915 = 0.5f.xx + ((float2(dot(_875, asfloat(_694.Load4(s * 128 + 96)).xyz), dot(_875, float3(asfloat(_694.Load(s * 128 + 108)), asfloat(_694.Load4(s * 128 + 112)).xy))) * 0.5f) / max(dot(_875, asfloat(_694.Load4(s * 128 + 16)).xyz), 9.9999997473787516355514526367188e-05f).xx);
+    float _917 = _915.x;
+    bool _918 = _917 < 0.0f;
+    bool _925;
+    if (!_918)
     {
-        _894 = _886 > 1.0f;
+        _925 = _917 > 1.0f;
     }
     else
     {
-        _894 = _887;
+        _925 = _918;
     }
-    bool _901;
-    if (!_894)
+    bool _932;
+    if (!_925)
     {
-        _901 = _884.y < 0.0f;
+        _932 = _915.y < 0.0f;
     }
     else
     {
-        _901 = _894;
+        _932 = _925;
     }
-    bool _908;
-    if (!_901)
+    bool _939;
+    if (!_932)
     {
-        _908 = _884.y > 1.0f;
+        _939 = _915.y > 1.0f;
     }
     else
     {
-        _908 = _901;
+        _939 = _932;
     }
-    if (_908)
+    if (_939)
     {
         return 0.0f;
     }
-    return dot(vf_cookies.SampleLevel(vf_cookie_smp, asfloat(_663.Load4(s * 128 + 80)).xy + (float2(_886, 1.0f - _884.y) * asfloat(_663.Load4(s * 128 + 80)).zw), max(asfloat(_663.Load(s * 128 + 120)) - 7.5f, 0.0f)).xyz, float3(0.2125999927520751953125f, 0.715200006961822509765625f, 0.072200000286102294921875f));
+    return dot(vf_cookies.SampleLevel(vf_cookie_smp, asfloat(_694.Load4(s * 128 + 80)).xy + (float2(_917, 1.0f - _915.y) * asfloat(_694.Load4(s * 128 + 80)).zw), max(asfloat(_694.Load(s * 128 + 120)) - 7.5f, 0.0f)).xyz, float3(0.2125999927520751953125f, 0.715200006961822509765625f, 0.072200000286102294921875f));
 }
 
 void comp_main()
 {
-    int2 _1019 = int2(gl_GlobalInvocationID.xy);
-    int3 _1026 = int3(_86_vf_grid.xyz);
-    int _1030 = _1026.x;
-    bool _1031 = _1019.x >= _1030;
-    bool _1040;
-    if (!_1031)
+    int2 _1050 = int2(gl_GlobalInvocationID.xy);
+    int3 _1057 = int3(_86_vf_grid.xyz);
+    int _1061 = _1057.x;
+    bool _1062 = _1050.x >= _1061;
+    bool _1071;
+    if (!_1062)
     {
-        _1040 = _1019.y >= _1026.y;
+        _1071 = _1050.y >= _1057.y;
     }
     else
     {
-        _1040 = _1031;
+        _1071 = _1062;
     }
-    if (_1040)
+    if (_1071)
     {
         return;
     }
-    int _1047 = int(_86_vf_grid.w);
-    float2 _1055 = float2(_1026.xy);
-    float2 _1059 = (((float2(_1019) + 0.5f.xx) / _1055) * 2.0f) - 1.0f.xx;
-    float2 _1065 = 0.5f.xx / _1055;
-    float _1078;
-    float _1091;
+    int _1078 = int(_86_vf_grid.w);
+    float2 _1086 = float2(_1057.xy);
+    float2 _1090 = (((float2(_1050) + 0.5f.xx) / _1086) * 2.0f) - 1.0f.xx;
+    float2 _1096 = 0.5f.xx / _1086;
+    float _1109;
+    float _1122;
     float3 sub_ray[4];
     for (int i = 0; i < 4; i++)
     {
         if ((i & 1) == 0)
         {
-            _1078 = -_1065.x;
+            _1109 = -_1096.x;
         }
         else
         {
-            _1078 = _1065.x;
+            _1109 = _1096.x;
         }
         if ((i & 2) == 0)
         {
-            _1091 = -_1065.y;
+            _1122 = -_1096.y;
         }
         else
         {
-            _1091 = _1065.y;
+            _1122 = _1096.y;
         }
-        sub_ray[i] = (_86_vf_fwd.xyz + (_86_vf_right.xyz * (_1059.x + _1078))) + (_86_vf_up.xyz * (_1059.y + _1091));
+        sub_ray[i] = (_86_vf_fwd.xyz + (_86_vf_right.xyz * (_1090.x + _1109))) + (_86_vf_up.xyz * (_1090.y + _1122));
     }
-    float3 _1149 = (_86_vf_fwd.xyz + (_86_vf_right.xyz * _1059.x)) + (_86_vf_up.xyz * _1059.y);
-    float _1152 = length(_1149);
-    float3 _1157 = _1149 / _1152.xxx;
+    float3 _1180 = (_86_vf_fwd.xyz + (_86_vf_right.xyz * _1090.x)) + (_86_vf_up.xyz * _1090.y);
+    float _1183 = length(_1180);
+    float3 _1188 = _1180 / _1183.xxx;
     float side_density = 1.0f;
     float sun_glow = 0.0f;
     if (_86_vf_sun_dir.w > 0.0f)
     {
-        side_density = lerp(_86_vf_height.w, 1.0f, smoothstep(-0.300000011920928955078125f, 0.699999988079071044921875f, dot(normalize(_1157.xz + 9.9999997473787516355514526367188e-06f.xx), normalize(_86_vf_sun_dir.xz + 9.9999997473787516355514526367188e-06f.xx))));
-        sun_glow = pow(max(dot(_1157, _86_vf_sun_dir.xyz), 0.0f), _86_vf_sun_dir.w);
+        side_density = lerp(_86_vf_height.w, 1.0f, smoothstep(-0.300000011920928955078125f, 0.699999988079071044921875f, dot(normalize(_1188.xz + 9.9999997473787516355514526367188e-06f.xx), normalize(_86_vf_sun_dir.xz + 9.9999997473787516355514526367188e-06f.xx))));
+        sun_glow = pow(max(dot(_1188, _86_vf_sun_dir.xyz), 0.0f), _86_vf_sun_dir.w);
     }
-    bool _1206 = (_86_vf_sun_color.w > 0.0f) && (sun_glow > 0.0f);
-    bool _1213;
-    if (_1206)
+    bool _1237 = (_86_vf_sun_color.w > 0.0f) && (sun_glow > 0.0f);
+    bool _1244;
+    if (_1237)
     {
-        _1213 = int(_86_vf_params.w) == 3;
+        _1244 = int(_86_vf_params.w) == 3;
     }
     else
     {
-        _1213 = _1206;
+        _1244 = _1237;
     }
-    int2 _1236 = clamp(int2(floor(((_1059 * 0.5f) + 0.5f.xx) * _86_vf_clusters.xy)), int2(0, 0), int2(_86_vf_clusters.xy) - int2(1, 1));
-    int _1240 = int(_86_vf_clusters.x);
-    int _1244 = int(_86_vf_clusters.y);
-    int _1248 = int(_86_vf_clusters.z);
+    int2 _1267 = clamp(int2(floor(((_1090 * 0.5f) + 0.5f.xx) * _86_vf_clusters.xy)), int2(0, 0), int2(_86_vf_clusters.xy) - int2(1, 1));
+    int _1271 = int(_86_vf_clusters.x);
+    int _1275 = int(_86_vf_clusters.y);
+    int _1279 = int(_86_vf_clusters.z);
     float fd = 0.0f;
     float last_t = 1.0f;
     float3 light = 0.0f.xxx;
     float z0 = 0.0f;
     float3 p0 = _86_vf_cam.xyz;
     int k = 0;
-    float _1271;
-    int _1462;
+    float _1302;
+    int _1493;
     for (;;)
     {
-        int _1263 = _1026.z;
-        if (k < _1263)
+        int _1294 = _1057.z;
+        if (k < _1294)
         {
-            if ((k + 1) >= _1263)
+            if ((k + 1) >= _1294)
             {
-                _1271 = _86_vf_depth.z;
+                _1302 = _86_vf_depth.z;
             }
             else
             {
-                _1271 = _86_vf_depth.x * exp(float(k + 1) / _86_vf_depth.y);
+                _1302 = _86_vf_depth.x * exp(float(k + 1) / _86_vf_depth.y);
             }
-            float3 _1293 = _86_vf_cam.xyz + (_1149 * _1271);
-            float _1304 = 0.5f * (z0 + _1271);
-            float3 _1310 = _86_vf_cam.xyz + (_1149 * _1304);
-            float _1314 = lerp(z0, _1271, 0.25f);
-            float _1319 = lerp(z0, _1271, 0.75f);
-            float3 _1325 = _86_vf_cam.xyz + (_1149 * _1314);
-            float3 _1331 = _86_vf_cam.xyz + (_1149 * _1319);
+            float3 _1324 = _86_vf_cam.xyz + (_1180 * _1302);
+            float _1335 = 0.5f * (z0 + _1302);
+            float3 _1341 = _86_vf_cam.xyz + (_1180 * _1335);
+            float _1345 = lerp(z0, _1302, 0.25f);
+            float _1350 = lerp(z0, _1302, 0.75f);
+            float3 _1356 = _86_vf_cam.xyz + (_1180 * _1345);
+            float3 _1362 = _86_vf_cam.xyz + (_1180 * _1350);
             float param = p0.y;
-            float param_1 = _1293.y;
-            float _1339 = vf_height_mean(param, param_1);
+            float param_1 = _1324.y;
+            float _1370 = vf_height_mean(param, param_1);
             float3 param_2 = p0;
-            float3 param_3 = _1293;
-            float3 param_4 = _1310;
-            float _1351 = ((_1339 * vf_box_fraction(param_2, param_3)) * side_density) * vf_mist(param_4);
-            float _1353 = fd;
-            float _1356 = ((_1271 - z0) * _1152) * _1351;
-            float _1358 = _1353 + (_1356 * 0.5f);
-            float _1363 = _1353 + _1356;
-            fd = _1363;
-            float param_5 = _1363;
-            float _1367 = vf_transmittance(param_5);
+            float3 param_3 = _1324;
+            float3 param_4 = _1341;
+            float _1382 = ((_1370 * vf_box_fraction(param_2, param_3)) * side_density) * vf_mist(param_4);
+            float _1384 = fd;
+            float _1387 = ((_1302 - z0) * _1183) * _1382;
+            float _1389 = _1384 + (_1387 * 0.5f);
+            float _1394 = _1384 + _1387;
+            fd = _1394;
+            float param_5 = _1394;
+            float _1398 = vf_transmittance(param_5);
             float3 own = _86_vf_color.xyz;
             if (sun_glow > 0.0f)
             {
-                float3 param_6 = _1310;
+                float3 param_6 = _1341;
                 float lit = sun_glow * vf_cloud(param_6);
-                if (_1213)
+                if (_1244)
                 {
                     float seen = 0.0f;
                     for (int i_1 = 0; i_1 < 4; i_1++)
                     {
-                        float3 param_7 = _86_vf_cam.xyz + (sub_ray[i_1] * _1314);
-                        float param_8 = _1314;
-                        float3 param_9 = _86_vf_cam.xyz + (sub_ray[i_1] * _1319);
-                        float param_10 = _1319;
+                        float3 param_7 = _86_vf_cam.xyz + (sub_ray[i_1] * _1345);
+                        float param_8 = _1345;
+                        float3 param_9 = _86_vf_cam.xyz + (sub_ray[i_1] * _1350);
+                        float param_10 = _1350;
                         seen += (vf_sun(param_7, param_8) + vf_sun(param_9, param_10));
                     }
                     lit *= lerp(1.0f, seen * 0.125f, _86_vf_sun_color.w);
                 }
                 own = lerp(own, _86_vf_sun_color.xyz, lit.xxx);
             }
-            light += (own * (last_t - _1367));
-            bool _1447 = (_86_vf_color.w > 0.0f) && (_1351 > 0.0f);
-            bool _1453;
-            if (_1447)
+            light += (own * (last_t - _1398));
+            bool _1478 = (_86_vf_color.w > 0.0f) && (_1382 > 0.0f);
+            bool _1484;
+            if (_1478)
             {
-                _1453 = _86_vf_clusters.w > 0.5f;
+                _1484 = _86_vf_clusters.w > 0.5f;
             }
             else
             {
-                _1453 = _1447;
+                _1484 = _1478;
             }
-            if (_1453)
+            if (_1484)
             {
-                if (_1304 <= _86_vf_cluster_depth.x)
+                if (_1335 <= _86_vf_cluster_depth.x)
                 {
-                    _1462 = 0;
+                    _1493 = 0;
                 }
                 else
                 {
-                    _1462 = int(floor(log(_1304 / _86_vf_cluster_depth.x) * _86_vf_cluster_depth.y));
+                    _1493 = int(floor(log(_1335 / _86_vf_cluster_depth.x) * _86_vf_cluster_depth.y));
                 }
-                int _1499 = _1236.x + (_1240 * (_1236.y + (_1244 * clamp(_1462, 0, _1248 - 1))));
-                int _1507 = int(_1488.Load4(_1499 * 16 + 0).x);
-                int _1511 = int(_1488.Load4(_1499 * 16 + 0).y);
-                int _1515 = int(_1488.Load4(_1499 * 16 + 0).z);
-                float _1519 = z0 * _1152;
-                float _1523 = _1304 * _1152;
-                float _1527 = _1271 * _1152;
+                int _1530 = _1267.x + (_1271 * (_1267.y + (_1275 * clamp(_1493, 0, _1279 - 1))));
+                int _1538 = int(_1519.Load4(_1530 * 16 + 0).x);
+                int _1542 = int(_1519.Load4(_1530 * 16 + 0).y);
+                int _1546 = int(_1519.Load4(_1530 * 16 + 0).z);
+                float _1550 = z0 * _1183;
+                float _1554 = _1335 * _1183;
+                float _1558 = _1302 * _1183;
                 float3 glow = 0.0f.xxx;
-                for (int i_2 = 0; i_2 < _1511; i_2++)
+                for (int i_2 = 0; i_2 < _1542; i_2++)
                 {
-                    vf_point_light _1559;
-                    _1559.pos = asfloat(_1545.Load4(_1550.Load((_1507 + i_2) * 4 + 0) * 48 + 0));
-                    _1559.color = asfloat(_1545.Load4(_1550.Load((_1507 + i_2) * 4 + 0) * 48 + 16));
-                    _1559.params = asfloat(_1545.Load4(_1550.Load((_1507 + i_2) * 4 + 0) * 48 + 32));
-                    float _1572 = length(_1559.pos.xyz - _1310);
+                    vf_point_light _1590;
+                    _1590.pos = asfloat(_1576.Load4(_1581.Load((_1538 + i_2) * 4 + 0) * 48 + 0));
+                    _1590.color = asfloat(_1576.Load4(_1581.Load((_1538 + i_2) * 4 + 0) * 48 + 16));
+                    _1590.params = asfloat(_1576.Load4(_1581.Load((_1538 + i_2) * 4 + 0) * 48 + 32));
+                    float _1603 = length(_1590.pos.xyz - _1341);
                     float3 param_11 = _86_vf_cam.xyz;
-                    float3 param_12 = _1157;
-                    float param_13 = _1519;
-                    float param_14 = _1527;
-                    float3 param_15 = _1559.pos.xyz;
-                    float param_16 = _1559.params.x;
-                    float param_17 = _1572;
-                    float param_18 = _1559.pos.w;
-                    float param_19 = _1358 + (_1572 * _1351);
-                    glow += (((_1559.color.xyz * vf_inverse_square(param_11, param_12, param_13, param_14, param_15, param_16)) * vf_window(param_17, param_18)) * vf_transmittance(param_19));
+                    float3 param_12 = _1188;
+                    float param_13 = _1550;
+                    float param_14 = _1558;
+                    float3 param_15 = _1590.pos.xyz;
+                    float param_16 = _1590.params.x;
+                    float param_17 = _1603;
+                    float param_18 = _1590.pos.w;
+                    float param_19 = _1389 + (_1603 * _1382);
+                    glow += (((_1590.color.xyz * vf_inverse_square(param_11, param_12, param_13, param_14, param_15, param_16)) * vf_window(param_17, param_18)) * vf_transmittance(param_19));
                 }
-                for (int i_3 = 0; i_3 < _1515; i_3++)
+                for (int i_3 = 0; i_3 < _1546; i_3++)
                 {
-                    int _1631 = int(_1550.Load(((_1507 + _1511) + i_3) * 4 + 0));
-                    if (asfloat(_663.Load(_1631 * 128 + 60)) <= 0.0f)
+                    int _1662 = int(_1581.Load(((_1538 + _1542) + i_3) * 4 + 0));
+                    if (asfloat(_694.Load(_1662 * 128 + 60)) <= 0.0f)
                     {
                         continue;
                     }
                     float acc = 0.0f;
-                    float3 _1669 = _1325 - asfloat(_663.Load4(_1631 * 128 + 0)).xyz;
-                    float _1672 = length(_1669);
-                    float _1683 = smoothstep(asfloat(_663.Load(_1631 * 128 + 28)), asfloat(_663.Load(_1631 * 128 + 48)), dot(_1669 / max(_1672, 9.9999997473787516355514526367188e-05f).xxx, asfloat(_663.Load4(_1631 * 128 + 16)).xyz));
-                    if (_1683 > 0.0f)
+                    float3 _1700 = _1356 - asfloat(_694.Load4(_1662 * 128 + 0)).xyz;
+                    float _1703 = length(_1700);
+                    float _1714 = smoothstep(asfloat(_694.Load(_1662 * 128 + 28)), asfloat(_694.Load(_1662 * 128 + 48)), dot(_1700 / max(_1703, 9.9999997473787516355514526367188e-05f).xxx, asfloat(_694.Load4(_1662 * 128 + 16)).xyz));
+                    if (_1714 > 0.0f)
                     {
-                        int param_20 = _1631;
-                        float3 param_21 = _1325;
-                        int param_22 = _1631;
-                        float3 param_23 = _1325;
-                        float _1701 = (_1683 * vf_spot_lit(param_20, param_21)) * vf_spot_cookie(param_22, param_23);
-                        if (_1701 > 0.0f)
+                        int param_20 = _1662;
+                        float3 param_21 = _1356;
+                        int param_22 = _1662;
+                        float3 param_23 = _1356;
+                        float _1732 = (_1714 * vf_spot_lit(param_20, param_21)) * vf_spot_cookie(param_22, param_23);
+                        if (_1732 > 0.0f)
                         {
                             float3 param_24 = _86_vf_cam.xyz;
-                            float3 param_25 = _1157;
-                            float param_26 = _1519;
-                            float param_27 = _1523;
-                            float3 param_28 = asfloat(_663.Load4(_1631 * 128 + 0)).xyz;
-                            float param_29 = asfloat(_663.Load(_1631 * 128 + 52));
-                            float param_30 = _1672;
-                            float param_31 = asfloat(_663.Load(_1631 * 128 + 12));
-                            float param_32 = (fd - (_1356 * 0.75f)) + (_1672 * _1351);
-                            acc += (((_1701 * vf_inverse_square(param_24, param_25, param_26, param_27, param_28, param_29)) * vf_window(param_30, param_31)) * vf_transmittance(param_32));
+                            float3 param_25 = _1188;
+                            float param_26 = _1550;
+                            float param_27 = _1554;
+                            float3 param_28 = asfloat(_694.Load4(_1662 * 128 + 0)).xyz;
+                            float param_29 = asfloat(_694.Load(_1662 * 128 + 52));
+                            float param_30 = _1703;
+                            float param_31 = asfloat(_694.Load(_1662 * 128 + 12));
+                            float param_32 = (fd - (_1387 * 0.75f)) + (_1703 * _1382);
+                            acc += (((_1732 * vf_inverse_square(param_24, param_25, param_26, param_27, param_28, param_29)) * vf_window(param_30, param_31)) * vf_transmittance(param_32));
                         }
                     }
-                    float3 _1745 = _1331 - asfloat(_663.Load4(_1631 * 128 + 0)).xyz;
-                    float _1748 = length(_1745);
-                    float _1759 = smoothstep(asfloat(_663.Load(_1631 * 128 + 28)), asfloat(_663.Load(_1631 * 128 + 48)), dot(_1745 / max(_1748, 9.9999997473787516355514526367188e-05f).xxx, asfloat(_663.Load4(_1631 * 128 + 16)).xyz));
-                    if (_1759 > 0.0f)
+                    float3 _1776 = _1362 - asfloat(_694.Load4(_1662 * 128 + 0)).xyz;
+                    float _1779 = length(_1776);
+                    float _1790 = smoothstep(asfloat(_694.Load(_1662 * 128 + 28)), asfloat(_694.Load(_1662 * 128 + 48)), dot(_1776 / max(_1779, 9.9999997473787516355514526367188e-05f).xxx, asfloat(_694.Load4(_1662 * 128 + 16)).xyz));
+                    if (_1790 > 0.0f)
                     {
-                        int param_33 = _1631;
-                        float3 param_34 = _1331;
-                        int param_35 = _1631;
-                        float3 param_36 = _1331;
-                        float _1777 = (_1759 * vf_spot_lit(param_33, param_34)) * vf_spot_cookie(param_35, param_36);
-                        if (_1777 > 0.0f)
+                        int param_33 = _1662;
+                        float3 param_34 = _1362;
+                        int param_35 = _1662;
+                        float3 param_36 = _1362;
+                        float _1808 = (_1790 * vf_spot_lit(param_33, param_34)) * vf_spot_cookie(param_35, param_36);
+                        if (_1808 > 0.0f)
                         {
                             float3 param_37 = _86_vf_cam.xyz;
-                            float3 param_38 = _1157;
-                            float param_39 = _1523;
-                            float param_40 = _1527;
-                            float3 param_41 = asfloat(_663.Load4(_1631 * 128 + 0)).xyz;
-                            float param_42 = asfloat(_663.Load(_1631 * 128 + 52));
-                            float param_43 = _1748;
-                            float param_44 = asfloat(_663.Load(_1631 * 128 + 12));
-                            float param_45 = (fd - (_1356 * 0.25f)) + (_1748 * _1351);
-                            acc += (((_1777 * vf_inverse_square(param_37, param_38, param_39, param_40, param_41, param_42)) * vf_window(param_43, param_44)) * vf_transmittance(param_45));
+                            float3 param_38 = _1188;
+                            float param_39 = _1554;
+                            float param_40 = _1558;
+                            float3 param_41 = asfloat(_694.Load4(_1662 * 128 + 0)).xyz;
+                            float param_42 = asfloat(_694.Load(_1662 * 128 + 52));
+                            float param_43 = _1779;
+                            float param_44 = asfloat(_694.Load(_1662 * 128 + 12));
+                            float param_45 = (fd - (_1387 * 0.25f)) + (_1779 * _1382);
+                            acc += (((_1808 * vf_inverse_square(param_37, param_38, param_39, param_40, param_41, param_42)) * vf_window(param_43, param_44)) * vf_transmittance(param_45));
                         }
                     }
                     if (acc > 0.0f)
                     {
-                        glow += (asfloat(_663.Load4(_1631 * 128 + 32)).xyz * (asfloat(_663.Load(_1631 * 128 + 60)) * acc));
+                        glow += (asfloat(_694.Load4(_1662 * 128 + 32)).xyz * (asfloat(_694.Load(_1662 * 128 + 60)) * acc));
                     }
                 }
-                light += ((glow * _86_vf_color.w) * _1351);
+                light += ((glow * _86_vf_color.w) * _1382);
             }
-            last_t = _1367;
-            vf_out[int2((k % _1047) * _1030, (k / _1047) * _1026.y) + _1019] = float4(light, _1367);
-            z0 = _1271;
-            p0 = _1293;
+            last_t = _1398;
+            vf_out[int2((k % _1078) * _1061, (k / _1078) * _1057.y) + _1050] = float4(light, _1398);
+            z0 = _1302;
+            p0 = _1324;
             k++;
             continue;
         }
@@ -2936,7 +2942,10 @@ float vf_cloud(thread const float3& p, constant fog_cs_params& _86, texture2d<fl
     {
         return 1.0;
     }
-    return vf_cloud_map.sample(vf_cookie_smp, ((((p.xz + ((_86.vf_sun_dir.xz / float2(fast::max(_86.vf_sun_dir.y, 0.0500000007450580596923828125))) * (_86.vf_cloud_shadow.w - p.y))) - _86.vf_cloud_shadow.xz) * _86.vf_cloud_shadow.y) + float2(0.5)), level(0.0)).x;
+    float2 _484 = (((p.xz + ((_86.vf_sun_dir.xz / float2(fast::max(_86.vf_sun_dir.y, 0.0500000007450580596923828125))) * (_86.vf_cloud_shadow.w - p.y))) - _86.vf_cloud_shadow.xz) * _86.vf_cloud_shadow.y) + float2(0.5);
+    float _487 = _484.x;
+    float _489 = _484.y;
+    return mix(1.0, vf_cloud_map.sample(vf_cookie_smp, _484, level(0.0)).x, fast::clamp(fast::min(fast::min(_487, _489), fast::min(1.0 - _487, 1.0 - _489)) * 12.0, 0.0, 1.0) * fast::clamp(1.0 - ((p.y - _86.vf_cloud_shadow.w) * 0.00039999998989515006542205810546875), 0.0, 1.0));
 }
 
 static inline __attribute__((always_inline))
@@ -2976,73 +2985,73 @@ float vf_sun(thread const float3& p, thread const float& depth, constant fog_cs_
     {
         return 1.0;
     }
-    float4 _558 = _86.vf_shadow_mat[k] * float4(p, 1.0);
-    float _561 = _558.x;
-    bool _562 = _561 <= 0.0;
-    bool _569;
-    if (!_562)
+    float4 _589 = _86.vf_shadow_mat[k] * float4(p, 1.0);
+    float _592 = _589.x;
+    bool _593 = _592 <= 0.0;
+    bool _600;
+    if (!_593)
     {
-        _569 = _561 >= 1.0;
+        _600 = _592 >= 1.0;
     }
     else
     {
-        _569 = _562;
+        _600 = _593;
     }
-    bool _576;
-    if (!_569)
+    bool _607;
+    if (!_600)
     {
-        _576 = _558.y <= 0.0;
+        _607 = _589.y <= 0.0;
     }
     else
     {
-        _576 = _569;
+        _607 = _600;
     }
-    bool _583;
-    if (!_576)
+    bool _614;
+    if (!_607)
     {
-        _583 = _558.y >= 1.0;
+        _614 = _589.y >= 1.0;
     }
     else
     {
-        _583 = _576;
+        _614 = _607;
     }
-    bool _590;
-    if (!_583)
+    bool _621;
+    if (!_614)
     {
-        _590 = _558.z <= 0.0;
+        _621 = _589.z <= 0.0;
     }
     else
     {
-        _590 = _583;
+        _621 = _614;
     }
-    bool _597;
-    if (!_590)
+    bool _628;
+    if (!_621)
     {
-        _597 = _558.z >= 1.0;
+        _628 = _589.z >= 1.0;
     }
     else
     {
-        _597 = _590;
+        _628 = _621;
     }
-    if (_597)
+    if (_628)
     {
         return 1.0;
     }
-    float2 _618 = _558.xy;
-    float2 _620 = (float2(_86.vf_shadow_params.z) / _86.vf_cascade_rect[k].zw) * 0.5;
-    float2 param = _86.vf_cascade_rect[k].xy + (fast::clamp(_618, _620, float2(1.0) - _620) * _86.vf_cascade_rect[k].zw);
-    float param_1 = _558.z;
-    float2 _645 = fast::min(_618, float2(1.0) - _618);
-    return mix(1.0, vf_depth_tap(vf_sun_map, param, param_1, vf_shadow_smp), fast::clamp(fast::min(_645.x, _645.y) * 10.0, 0.0, 1.0));
+    float2 _649 = _589.xy;
+    float2 _651 = (float2(_86.vf_shadow_params.z) / _86.vf_cascade_rect[k].zw) * 0.5;
+    float2 param = _86.vf_cascade_rect[k].xy + (fast::clamp(_649, _651, float2(1.0) - _651) * _86.vf_cascade_rect[k].zw);
+    float param_1 = _589.z;
+    float2 _676 = fast::min(_649, float2(1.0) - _649);
+    return mix(1.0, vf_depth_tap(vf_sun_map, param, param_1, vf_shadow_smp), fast::clamp(fast::min(_676.x, _676.y) * 10.0, 0.0, 1.0));
 }
 
 static inline __attribute__((always_inline))
 float vf_inverse_square(thread const float3& o, thread const float3& dir, thread const float& s0, thread const float& s1, thread const float3& lp, thread const float& radius)
 {
-    float3 _974 = lp - o;
-    float _978 = dot(_974, dir);
-    float _992 = fast::max(sqrt(fast::max(dot(_974, _974) - (_978 * _978), 0.0)), fast::max(radius, 0.25));
-    return (atan((s1 - _978) / _992) - atan((s0 - _978) / _992)) / _992;
+    float3 _1005 = lp - o;
+    float _1009 = dot(_1005, dir);
+    float _1023 = fast::max(sqrt(fast::max(dot(_1005, _1005) - (_1009 * _1009), 0.0)), fast::max(radius, 0.25));
+    return (atan((s1 - _1009) / _1023) - atan((s0 - _1009) / _1023)) / _1023;
 }
 
 static inline __attribute__((always_inline))
@@ -3052,87 +3061,87 @@ float vf_window(thread const float& d, thread const float& cutoff)
     {
         return 1.0;
     }
-    float _955 = d / cutoff;
-    float _965 = fast::clamp(1.0 - (((_955 * _955) * _955) * _955), 0.0, 1.0);
-    return _965 * _965;
+    float _986 = d / cutoff;
+    float _996 = fast::clamp(1.0 - (((_986 * _986) * _986) * _986), 0.0, 1.0);
+    return _996 * _996;
 }
 
 static inline __attribute__((always_inline))
-float vf_spot_lit(thread const int& s, thread const float3& p, sampler vf_shadow_smp, const device vf_spots& _663, const device vf_shadows& _680, depth2d<float> vf_spot_atlas, depth2d<float> vf_spot_map)
+float vf_spot_lit(thread const int& s, thread const float3& p, sampler vf_shadow_smp, const device vf_spots& _694, const device vf_shadows& _711, depth2d<float> vf_spot_atlas, depth2d<float> vf_spot_map)
 {
-    int _667 = int(((device float*)&_663.spots[s].shadow)[0u]);
-    if (_667 < 0)
+    int _698 = int(((device float*)&_694.spots[s].shadow)[0u]);
+    if (_698 < 0)
     {
         return 1.0;
     }
-    float4 _707 = _680.spot_shadows[_667].mat * float4(p - _663.spots[s].pos.xyz, 1.0);
-    float _709 = _707.w;
-    if (_709 <= 0.0)
+    float4 _738 = _711.spot_shadows[_698].mat * float4(p - _694.spots[s].pos.xyz, 1.0);
+    float _740 = _738.w;
+    if (_740 <= 0.0)
     {
         return 1.0;
     }
-    float3 c = _707.xyz / float3(_709);
-    bool _724 = _680.spot_shadows[_667].params.x > 1.5;
-    bool _731;
-    if (_724)
-    {
-        _731 = _680.spot_shadows[_667].params.x < 2.5;
-    }
-    else
-    {
-        _731 = _724;
-    }
-    if (_731)
-    {
-        float3 _1951 = c;
-        _1951.z = (_709 - _680.spot_shadows[_667].soft.y) / (_680.spot_shadows[_667].soft.z - _680.spot_shadows[_667].soft.y);
-        c = _1951;
-    }
-    bool _748 = c.x < 0.0;
-    bool _755;
-    if (!_748)
-    {
-        _755 = c.x > 1.0;
-    }
-    else
-    {
-        _755 = _748;
-    }
+    float3 c = _738.xyz / float3(_740);
+    bool _755 = _711.spot_shadows[_698].params.x > 1.5;
     bool _762;
-    if (!_755)
+    if (_755)
     {
-        _762 = c.y < 0.0;
+        _762 = _711.spot_shadows[_698].params.x < 2.5;
     }
     else
     {
         _762 = _755;
     }
-    bool _769;
-    if (!_762)
+    if (_762)
     {
-        _769 = c.y > 1.0;
+        float3 _1986 = c;
+        _1986.z = (_740 - _711.spot_shadows[_698].soft.y) / (_711.spot_shadows[_698].soft.z - _711.spot_shadows[_698].soft.y);
+        c = _1986;
+    }
+    bool _779 = c.x < 0.0;
+    bool _786;
+    if (!_779)
+    {
+        _786 = c.x > 1.0;
     }
     else
     {
-        _769 = _762;
+        _786 = _779;
     }
-    bool _776;
-    if (!_769)
+    bool _793;
+    if (!_786)
     {
-        _776 = c.z > 1.0;
+        _793 = c.y < 0.0;
     }
     else
     {
-        _776 = _769;
+        _793 = _786;
     }
-    if (_776)
+    bool _800;
+    if (!_793)
+    {
+        _800 = c.y > 1.0;
+    }
+    else
+    {
+        _800 = _793;
+    }
+    bool _807;
+    if (!_800)
+    {
+        _807 = c.z > 1.0;
+    }
+    else
+    {
+        _807 = _800;
+    }
+    if (_807)
     {
         return 1.0;
     }
     float seen;
-    if (_724)
+    if (_755)
     {
-        float2 param = _680.spot_shadows[_667].rect.xy + (fast::clamp(c.xy, float2(_680.spot_shadows[_667].params.z), float2(1.0 - _680.spot_shadows[_667].params.z)) * _680.spot_shadows[_667].rect.zw);
+        float2 param = _711.spot_shadows[_698].rect.xy + (fast::clamp(c.xy, float2(_711.spot_shadows[_698].params.z), float2(1.0 - _711.spot_shadows[_698].params.z)) * _711.spot_shadows[_698].rect.zw);
         float param_1 = c.z;
         seen = vf_depth_tap(vf_spot_atlas, param, param_1, vf_shadow_smp);
     }
@@ -3142,297 +3151,297 @@ float vf_spot_lit(thread const int& s, thread const float3& p, sampler vf_shadow
         float param_3 = c.z;
         seen = vf_depth_tap(vf_spot_map, param_2, param_3, vf_shadow_smp);
     }
-    return mix(1.0, seen, ((device float*)&_663.spots[s].shadow)[1u]);
+    return mix(1.0, seen, ((device float*)&_694.spots[s].shadow)[1u]);
 }
 
 static inline __attribute__((always_inline))
-float vf_spot_cookie(thread const int& s, thread const float3& p, sampler vf_cookie_smp, const device vf_spots& _663, texture2d<float> vf_cookies)
+float vf_spot_cookie(thread const int& s, thread const float3& p, sampler vf_cookie_smp, const device vf_spots& _694, texture2d<float> vf_cookies)
 {
-    if (_663.spots[s].map.z <= 0.0)
+    if (_694.spots[s].map.z <= 0.0)
     {
         return 1.0;
     }
-    float3 _844 = p - _663.spots[s].pos.xyz;
-    float2 _884 = float2(0.5) + ((float2(dot(_844, _663.spots[s].map_u.xyz), dot(_844, float3(((device float*)&_663.spots[s].map_u)[3u], _663.spots[s].map_v.xy))) * 0.5) / float2(fast::max(dot(_844, _663.spots[s].dir.xyz), 9.9999997473787516355514526367188e-05)));
-    float _886 = _884.x;
-    bool _887 = _886 < 0.0;
-    bool _894;
-    if (!_887)
+    float3 _875 = p - _694.spots[s].pos.xyz;
+    float2 _915 = float2(0.5) + ((float2(dot(_875, _694.spots[s].map_u.xyz), dot(_875, float3(((device float*)&_694.spots[s].map_u)[3u], _694.spots[s].map_v.xy))) * 0.5) / float2(fast::max(dot(_875, _694.spots[s].dir.xyz), 9.9999997473787516355514526367188e-05)));
+    float _917 = _915.x;
+    bool _918 = _917 < 0.0;
+    bool _925;
+    if (!_918)
     {
-        _894 = _886 > 1.0;
+        _925 = _917 > 1.0;
     }
     else
     {
-        _894 = _887;
+        _925 = _918;
     }
-    bool _901;
-    if (!_894)
+    bool _932;
+    if (!_925)
     {
-        _901 = _884.y < 0.0;
+        _932 = _915.y < 0.0;
     }
     else
     {
-        _901 = _894;
+        _932 = _925;
     }
-    bool _908;
-    if (!_901)
+    bool _939;
+    if (!_932)
     {
-        _908 = _884.y > 1.0;
+        _939 = _915.y > 1.0;
     }
     else
     {
-        _908 = _901;
+        _939 = _932;
     }
-    if (_908)
+    if (_939)
     {
         return 0.0;
     }
-    return dot(vf_cookies.sample(vf_cookie_smp, (_663.spots[s].map.xy + (float2(_886, 1.0 - _884.y) * _663.spots[s].map.zw)), level(fast::max(((device float*)&_663.spots[s].map_v)[2u] - 7.5, 0.0))).xyz, float3(0.2125999927520751953125, 0.715200006961822509765625, 0.072200000286102294921875));
+    return dot(vf_cookies.sample(vf_cookie_smp, (_694.spots[s].map.xy + (float2(_917, 1.0 - _915.y) * _694.spots[s].map.zw)), level(fast::max(((device float*)&_694.spots[s].map_v)[2u] - 7.5, 0.0))).xyz, float3(0.2125999927520751953125, 0.715200006961822509765625, 0.072200000286102294921875));
 }
 
-kernel void main0(constant fog_cs_params& _86 [[buffer(0)]], const device vf_points& _1545 [[buffer(8)]], const device vf_spots& _663 [[buffer(9)]], const device vf_shadows& _680 [[buffer(10)]], const device vf_light_clusters& _1488 [[buffer(11)]], const device vf_light_indices& _1550 [[buffer(12)]], texture2d<float, access::write> vf_out [[texture(0)]], depth2d<float> vf_spot_map [[texture(1)]], depth2d<float> vf_spot_atlas [[texture(2)]], depth2d<float> vf_sun_map [[texture(3)]], texture2d<float> vf_cookies [[texture(4)]], texture2d<float> vf_cloud_map [[texture(5)]], sampler vf_shadow_smp [[sampler(0)]], sampler vf_cookie_smp [[sampler(1)]], uint3 gl_GlobalInvocationID [[thread_position_in_grid]])
+kernel void main0(constant fog_cs_params& _86 [[buffer(0)]], const device vf_points& _1576 [[buffer(8)]], const device vf_spots& _694 [[buffer(9)]], const device vf_shadows& _711 [[buffer(10)]], const device vf_light_clusters& _1519 [[buffer(11)]], const device vf_light_indices& _1581 [[buffer(12)]], texture2d<float, access::write> vf_out [[texture(0)]], depth2d<float> vf_spot_map [[texture(1)]], depth2d<float> vf_spot_atlas [[texture(2)]], depth2d<float> vf_sun_map [[texture(3)]], texture2d<float> vf_cookies [[texture(4)]], texture2d<float> vf_cloud_map [[texture(5)]], sampler vf_shadow_smp [[sampler(0)]], sampler vf_cookie_smp [[sampler(1)]], uint3 gl_GlobalInvocationID [[thread_position_in_grid]])
 {
-    int2 _1019 = int2(gl_GlobalInvocationID.xy);
-    int3 _1026 = int3(_86.vf_grid.xyz);
-    int _1030 = _1026.x;
-    bool _1031 = _1019.x >= _1030;
-    bool _1040;
-    if (!_1031)
+    int2 _1050 = int2(gl_GlobalInvocationID.xy);
+    int3 _1057 = int3(_86.vf_grid.xyz);
+    int _1061 = _1057.x;
+    bool _1062 = _1050.x >= _1061;
+    bool _1071;
+    if (!_1062)
     {
-        _1040 = _1019.y >= _1026.y;
+        _1071 = _1050.y >= _1057.y;
     }
     else
     {
-        _1040 = _1031;
+        _1071 = _1062;
     }
-    if (_1040)
+    if (_1071)
     {
         return;
     }
-    int _1047 = int(_86.vf_grid.w);
-    float2 _1055 = float2(_1026.xy);
-    float2 _1059 = (((float2(_1019) + float2(0.5)) / _1055) * 2.0) - float2(1.0);
-    float2 _1065 = float2(0.5) / _1055;
-    float _1078;
-    float _1091;
+    int _1078 = int(_86.vf_grid.w);
+    float2 _1086 = float2(_1057.xy);
+    float2 _1090 = (((float2(_1050) + float2(0.5)) / _1086) * 2.0) - float2(1.0);
+    float2 _1096 = float2(0.5) / _1086;
+    float _1109;
+    float _1122;
     spvUnsafeArray<float3, 4> sub_ray;
     for (int i = 0; i < 4; i++)
     {
         if ((i & 1) == 0)
         {
-            _1078 = -_1065.x;
+            _1109 = -_1096.x;
         }
         else
         {
-            _1078 = _1065.x;
+            _1109 = _1096.x;
         }
         if ((i & 2) == 0)
         {
-            _1091 = -_1065.y;
+            _1122 = -_1096.y;
         }
         else
         {
-            _1091 = _1065.y;
+            _1122 = _1096.y;
         }
-        sub_ray[i] = (_86.vf_fwd.xyz + (_86.vf_right.xyz * (_1059.x + _1078))) + (_86.vf_up.xyz * (_1059.y + _1091));
+        sub_ray[i] = (_86.vf_fwd.xyz + (_86.vf_right.xyz * (_1090.x + _1109))) + (_86.vf_up.xyz * (_1090.y + _1122));
     }
-    float3 _1149 = (_86.vf_fwd.xyz + (_86.vf_right.xyz * _1059.x)) + (_86.vf_up.xyz * _1059.y);
-    float _1152 = length(_1149);
-    float3 _1157 = _1149 / float3(_1152);
+    float3 _1180 = (_86.vf_fwd.xyz + (_86.vf_right.xyz * _1090.x)) + (_86.vf_up.xyz * _1090.y);
+    float _1183 = length(_1180);
+    float3 _1188 = _1180 / float3(_1183);
     float side_density = 1.0;
     float sun_glow = 0.0;
     if (_86.vf_sun_dir.w > 0.0)
     {
-        side_density = mix(_86.vf_height.w, 1.0, smoothstep(-0.300000011920928955078125, 0.699999988079071044921875, dot(fast::normalize(_1157.xz + float2(9.9999997473787516355514526367188e-06)), fast::normalize(_86.vf_sun_dir.xz + float2(9.9999997473787516355514526367188e-06)))));
-        sun_glow = powr(fast::max(dot(_1157, _86.vf_sun_dir.xyz), 0.0), _86.vf_sun_dir.w);
+        side_density = mix(_86.vf_height.w, 1.0, smoothstep(-0.300000011920928955078125, 0.699999988079071044921875, dot(fast::normalize(_1188.xz + float2(9.9999997473787516355514526367188e-06)), fast::normalize(_86.vf_sun_dir.xz + float2(9.9999997473787516355514526367188e-06)))));
+        sun_glow = powr(fast::max(dot(_1188, _86.vf_sun_dir.xyz), 0.0), _86.vf_sun_dir.w);
     }
-    bool _1206 = (_86.vf_sun_color.w > 0.0) && (sun_glow > 0.0);
-    bool _1213;
-    if (_1206)
+    bool _1237 = (_86.vf_sun_color.w > 0.0) && (sun_glow > 0.0);
+    bool _1244;
+    if (_1237)
     {
-        _1213 = int(_86.vf_params.w) == 3;
+        _1244 = int(_86.vf_params.w) == 3;
     }
     else
     {
-        _1213 = _1206;
+        _1244 = _1237;
     }
-    int2 _1236 = clamp(int2(floor(((_1059 * 0.5) + float2(0.5)) * _86.vf_clusters.xy)), int2(0), int2(_86.vf_clusters.xy) - int2(1));
-    int _1240 = int(_86.vf_clusters.x);
-    int _1244 = int(_86.vf_clusters.y);
-    int _1248 = int(_86.vf_clusters.z);
+    int2 _1267 = clamp(int2(floor(((_1090 * 0.5) + float2(0.5)) * _86.vf_clusters.xy)), int2(0), int2(_86.vf_clusters.xy) - int2(1));
+    int _1271 = int(_86.vf_clusters.x);
+    int _1275 = int(_86.vf_clusters.y);
+    int _1279 = int(_86.vf_clusters.z);
     float fd = 0.0;
     float last_t = 1.0;
     float3 light = float3(0.0);
     float z0 = 0.0;
     float3 p0 = _86.vf_cam.xyz;
     int k = 0;
-    float _1271;
-    int _1462;
+    float _1302;
+    int _1493;
     for (;;)
     {
-        int _1263 = _1026.z;
-        if (k < _1263)
+        int _1294 = _1057.z;
+        if (k < _1294)
         {
-            if ((k + 1) >= _1263)
+            if ((k + 1) >= _1294)
             {
-                _1271 = _86.vf_depth.z;
+                _1302 = _86.vf_depth.z;
             }
             else
             {
-                _1271 = _86.vf_depth.x * exp(float(k + 1) / _86.vf_depth.y);
+                _1302 = _86.vf_depth.x * exp(float(k + 1) / _86.vf_depth.y);
             }
-            float3 _1293 = _86.vf_cam.xyz + (_1149 * _1271);
-            float _1304 = 0.5 * (z0 + _1271);
-            float3 _1310 = _86.vf_cam.xyz + (_1149 * _1304);
-            float _1314 = mix(z0, _1271, 0.25);
-            float _1319 = mix(z0, _1271, 0.75);
-            float3 _1325 = _86.vf_cam.xyz + (_1149 * _1314);
-            float3 _1331 = _86.vf_cam.xyz + (_1149 * _1319);
+            float3 _1324 = _86.vf_cam.xyz + (_1180 * _1302);
+            float _1335 = 0.5 * (z0 + _1302);
+            float3 _1341 = _86.vf_cam.xyz + (_1180 * _1335);
+            float _1345 = mix(z0, _1302, 0.25);
+            float _1350 = mix(z0, _1302, 0.75);
+            float3 _1356 = _86.vf_cam.xyz + (_1180 * _1345);
+            float3 _1362 = _86.vf_cam.xyz + (_1180 * _1350);
             float param = p0.y;
-            float param_1 = _1293.y;
-            float _1339 = vf_height_mean(param, param_1, _86);
+            float param_1 = _1324.y;
+            float _1370 = vf_height_mean(param, param_1, _86);
             float3 param_2 = p0;
-            float3 param_3 = _1293;
-            float3 param_4 = _1310;
-            float _1351 = ((_1339 * vf_box_fraction(param_2, param_3, _86)) * side_density) * vf_mist(param_4, _86);
-            float _1353 = fd;
-            float _1356 = ((_1271 - z0) * _1152) * _1351;
-            float _1358 = _1353 + (_1356 * 0.5);
-            float _1363 = _1353 + _1356;
-            fd = _1363;
-            float param_5 = _1363;
-            float _1367 = vf_transmittance(param_5, _86);
+            float3 param_3 = _1324;
+            float3 param_4 = _1341;
+            float _1382 = ((_1370 * vf_box_fraction(param_2, param_3, _86)) * side_density) * vf_mist(param_4, _86);
+            float _1384 = fd;
+            float _1387 = ((_1302 - z0) * _1183) * _1382;
+            float _1389 = _1384 + (_1387 * 0.5);
+            float _1394 = _1384 + _1387;
+            fd = _1394;
+            float param_5 = _1394;
+            float _1398 = vf_transmittance(param_5, _86);
             float3 own = _86.vf_color.xyz;
             if (sun_glow > 0.0)
             {
-                float3 param_6 = _1310;
+                float3 param_6 = _1341;
                 float lit = sun_glow * vf_cloud(param_6, _86, vf_cloud_map, vf_cookie_smp);
-                if (_1213)
+                if (_1244)
                 {
                     float seen = 0.0;
                     for (int i_1 = 0; i_1 < 4; i_1++)
                     {
-                        float3 param_7 = _86.vf_cam.xyz + (sub_ray[i_1] * _1314);
-                        float param_8 = _1314;
-                        float3 param_9 = _86.vf_cam.xyz + (sub_ray[i_1] * _1319);
-                        float param_10 = _1319;
+                        float3 param_7 = _86.vf_cam.xyz + (sub_ray[i_1] * _1345);
+                        float param_8 = _1345;
+                        float3 param_9 = _86.vf_cam.xyz + (sub_ray[i_1] * _1350);
+                        float param_10 = _1350;
                         seen += (vf_sun(param_7, param_8, _86, vf_shadow_smp, vf_sun_map) + vf_sun(param_9, param_10, _86, vf_shadow_smp, vf_sun_map));
                     }
                     lit *= mix(1.0, seen * 0.125, _86.vf_sun_color.w);
                 }
                 own = mix(own, _86.vf_sun_color.xyz, float3(lit));
             }
-            light += (own * (last_t - _1367));
-            bool _1447 = (_86.vf_color.w > 0.0) && (_1351 > 0.0);
-            bool _1453;
-            if (_1447)
+            light += (own * (last_t - _1398));
+            bool _1478 = (_86.vf_color.w > 0.0) && (_1382 > 0.0);
+            bool _1484;
+            if (_1478)
             {
-                _1453 = _86.vf_clusters.w > 0.5;
+                _1484 = _86.vf_clusters.w > 0.5;
             }
             else
             {
-                _1453 = _1447;
+                _1484 = _1478;
             }
-            if (_1453)
+            if (_1484)
             {
-                if (_1304 <= _86.vf_cluster_depth.x)
+                if (_1335 <= _86.vf_cluster_depth.x)
                 {
-                    _1462 = 0;
+                    _1493 = 0;
                 }
                 else
                 {
-                    _1462 = int(floor(log(_1304 / _86.vf_cluster_depth.x) * _86.vf_cluster_depth.y));
+                    _1493 = int(floor(log(_1335 / _86.vf_cluster_depth.x) * _86.vf_cluster_depth.y));
                 }
-                int _1499 = _1236.x + (_1240 * (_1236.y + (_1244 * clamp(_1462, 0, _1248 - 1))));
-                int _1507 = int(_1488.clusters[_1499].range.x);
-                int _1511 = int(_1488.clusters[_1499].range.y);
-                int _1515 = int(_1488.clusters[_1499].range.z);
-                float _1519 = z0 * _1152;
-                float _1523 = _1304 * _1152;
-                float _1527 = _1271 * _1152;
+                int _1530 = _1267.x + (_1271 * (_1267.y + (_1275 * clamp(_1493, 0, _1279 - 1))));
+                int _1538 = int(_1519.clusters[_1530].range.x);
+                int _1542 = int(_1519.clusters[_1530].range.y);
+                int _1546 = int(_1519.clusters[_1530].range.z);
+                float _1550 = z0 * _1183;
+                float _1554 = _1335 * _1183;
+                float _1558 = _1302 * _1183;
                 float3 glow = float3(0.0);
-                for (int i_2 = 0; i_2 < _1511; i_2++)
+                for (int i_2 = 0; i_2 < _1542; i_2++)
                 {
-                    int _1553 = _1507 + i_2;
-                    float _1572 = length(_1545.points[_1550.cluster_lights[_1553].index].pos.xyz - _1310);
+                    int _1584 = _1538 + i_2;
+                    float _1603 = length(_1576.points[_1581.cluster_lights[_1584].index].pos.xyz - _1341);
                     float3 param_11 = _86.vf_cam.xyz;
-                    float3 param_12 = _1157;
-                    float param_13 = _1519;
-                    float param_14 = _1527;
-                    float3 param_15 = _1545.points[_1550.cluster_lights[_1553].index].pos.xyz;
-                    float param_16 = _1545.points[_1550.cluster_lights[_1553].index].params.x;
-                    float param_17 = _1572;
-                    float param_18 = _1545.points[_1550.cluster_lights[_1553].index].pos.w;
-                    float param_19 = _1358 + (_1572 * _1351);
-                    glow += (((_1545.points[_1550.cluster_lights[_1553].index].color.xyz * vf_inverse_square(param_11, param_12, param_13, param_14, param_15, param_16)) * vf_window(param_17, param_18)) * vf_transmittance(param_19, _86));
+                    float3 param_12 = _1188;
+                    float param_13 = _1550;
+                    float param_14 = _1558;
+                    float3 param_15 = _1576.points[_1581.cluster_lights[_1584].index].pos.xyz;
+                    float param_16 = _1576.points[_1581.cluster_lights[_1584].index].params.x;
+                    float param_17 = _1603;
+                    float param_18 = _1576.points[_1581.cluster_lights[_1584].index].pos.w;
+                    float param_19 = _1389 + (_1603 * _1382);
+                    glow += (((_1576.points[_1581.cluster_lights[_1584].index].color.xyz * vf_inverse_square(param_11, param_12, param_13, param_14, param_15, param_16)) * vf_window(param_17, param_18)) * vf_transmittance(param_19, _86));
                 }
-                for (int i_3 = 0; i_3 < _1515; i_3++)
+                for (int i_3 = 0; i_3 < _1546; i_3++)
                 {
-                    int _1631 = int(_1550.cluster_lights[(_1507 + _1511) + i_3].index);
-                    if (((device float*)&_663.spots[_1631].params)[3u] <= 0.0)
+                    int _1662 = int(_1581.cluster_lights[(_1538 + _1542) + i_3].index);
+                    if (((device float*)&_694.spots[_1662].params)[3u] <= 0.0)
                     {
                         continue;
                     }
                     float acc = 0.0;
-                    float3 _1669 = _1325 - _663.spots[_1631].pos.xyz;
-                    float _1672 = length(_1669);
-                    float _1683 = smoothstep(((device float*)&_663.spots[_1631].dir)[3u], ((device float*)&_663.spots[_1631].params)[0u], dot(_1669 / float3(fast::max(_1672, 9.9999997473787516355514526367188e-05)), _663.spots[_1631].dir.xyz));
-                    if (_1683 > 0.0)
+                    float3 _1700 = _1356 - _694.spots[_1662].pos.xyz;
+                    float _1703 = length(_1700);
+                    float _1714 = smoothstep(((device float*)&_694.spots[_1662].dir)[3u], ((device float*)&_694.spots[_1662].params)[0u], dot(_1700 / float3(fast::max(_1703, 9.9999997473787516355514526367188e-05)), _694.spots[_1662].dir.xyz));
+                    if (_1714 > 0.0)
                     {
-                        int param_20 = _1631;
-                        float3 param_21 = _1325;
-                        int param_22 = _1631;
-                        float3 param_23 = _1325;
-                        float _1701 = (_1683 * vf_spot_lit(param_20, param_21, vf_shadow_smp, _663, _680, vf_spot_atlas, vf_spot_map)) * vf_spot_cookie(param_22, param_23, vf_cookie_smp, _663, vf_cookies);
-                        if (_1701 > 0.0)
+                        int param_20 = _1662;
+                        float3 param_21 = _1356;
+                        int param_22 = _1662;
+                        float3 param_23 = _1356;
+                        float _1732 = (_1714 * vf_spot_lit(param_20, param_21, vf_shadow_smp, _694, _711, vf_spot_atlas, vf_spot_map)) * vf_spot_cookie(param_22, param_23, vf_cookie_smp, _694, vf_cookies);
+                        if (_1732 > 0.0)
                         {
                             float3 param_24 = _86.vf_cam.xyz;
-                            float3 param_25 = _1157;
-                            float param_26 = _1519;
-                            float param_27 = _1523;
-                            float3 param_28 = _663.spots[_1631].pos.xyz;
-                            float param_29 = ((device float*)&_663.spots[_1631].params)[1u];
-                            float param_30 = _1672;
-                            float param_31 = ((device float*)&_663.spots[_1631].pos)[3u];
-                            float param_32 = (fd - (_1356 * 0.75)) + (_1672 * _1351);
-                            acc += (((_1701 * vf_inverse_square(param_24, param_25, param_26, param_27, param_28, param_29)) * vf_window(param_30, param_31)) * vf_transmittance(param_32, _86));
+                            float3 param_25 = _1188;
+                            float param_26 = _1550;
+                            float param_27 = _1554;
+                            float3 param_28 = _694.spots[_1662].pos.xyz;
+                            float param_29 = ((device float*)&_694.spots[_1662].params)[1u];
+                            float param_30 = _1703;
+                            float param_31 = ((device float*)&_694.spots[_1662].pos)[3u];
+                            float param_32 = (fd - (_1387 * 0.75)) + (_1703 * _1382);
+                            acc += (((_1732 * vf_inverse_square(param_24, param_25, param_26, param_27, param_28, param_29)) * vf_window(param_30, param_31)) * vf_transmittance(param_32, _86));
                         }
                     }
-                    float3 _1745 = _1331 - _663.spots[_1631].pos.xyz;
-                    float _1748 = length(_1745);
-                    float _1759 = smoothstep(((device float*)&_663.spots[_1631].dir)[3u], ((device float*)&_663.spots[_1631].params)[0u], dot(_1745 / float3(fast::max(_1748, 9.9999997473787516355514526367188e-05)), _663.spots[_1631].dir.xyz));
-                    if (_1759 > 0.0)
+                    float3 _1776 = _1362 - _694.spots[_1662].pos.xyz;
+                    float _1779 = length(_1776);
+                    float _1790 = smoothstep(((device float*)&_694.spots[_1662].dir)[3u], ((device float*)&_694.spots[_1662].params)[0u], dot(_1776 / float3(fast::max(_1779, 9.9999997473787516355514526367188e-05)), _694.spots[_1662].dir.xyz));
+                    if (_1790 > 0.0)
                     {
-                        int param_33 = _1631;
-                        float3 param_34 = _1331;
-                        int param_35 = _1631;
-                        float3 param_36 = _1331;
-                        float _1777 = (_1759 * vf_spot_lit(param_33, param_34, vf_shadow_smp, _663, _680, vf_spot_atlas, vf_spot_map)) * vf_spot_cookie(param_35, param_36, vf_cookie_smp, _663, vf_cookies);
-                        if (_1777 > 0.0)
+                        int param_33 = _1662;
+                        float3 param_34 = _1362;
+                        int param_35 = _1662;
+                        float3 param_36 = _1362;
+                        float _1808 = (_1790 * vf_spot_lit(param_33, param_34, vf_shadow_smp, _694, _711, vf_spot_atlas, vf_spot_map)) * vf_spot_cookie(param_35, param_36, vf_cookie_smp, _694, vf_cookies);
+                        if (_1808 > 0.0)
                         {
                             float3 param_37 = _86.vf_cam.xyz;
-                            float3 param_38 = _1157;
-                            float param_39 = _1523;
-                            float param_40 = _1527;
-                            float3 param_41 = _663.spots[_1631].pos.xyz;
-                            float param_42 = ((device float*)&_663.spots[_1631].params)[1u];
-                            float param_43 = _1748;
-                            float param_44 = ((device float*)&_663.spots[_1631].pos)[3u];
-                            float param_45 = (fd - (_1356 * 0.25)) + (_1748 * _1351);
-                            acc += (((_1777 * vf_inverse_square(param_37, param_38, param_39, param_40, param_41, param_42)) * vf_window(param_43, param_44)) * vf_transmittance(param_45, _86));
+                            float3 param_38 = _1188;
+                            float param_39 = _1554;
+                            float param_40 = _1558;
+                            float3 param_41 = _694.spots[_1662].pos.xyz;
+                            float param_42 = ((device float*)&_694.spots[_1662].params)[1u];
+                            float param_43 = _1779;
+                            float param_44 = ((device float*)&_694.spots[_1662].pos)[3u];
+                            float param_45 = (fd - (_1387 * 0.25)) + (_1779 * _1382);
+                            acc += (((_1808 * vf_inverse_square(param_37, param_38, param_39, param_40, param_41, param_42)) * vf_window(param_43, param_44)) * vf_transmittance(param_45, _86));
                         }
                     }
                     if (acc > 0.0)
                     {
-                        glow += (_663.spots[_1631].color.xyz * (((device float*)&_663.spots[_1631].params)[3u] * acc));
+                        glow += (_694.spots[_1662].color.xyz * (((device float*)&_694.spots[_1662].params)[3u] * acc));
                     }
                 }
-                light += ((glow * _86.vf_color.w) * _1351);
+                light += ((glow * _86.vf_color.w) * _1382);
             }
-            last_t = _1367;
-            vf_out.write(float4(light, _1367), uint2((int2((k % _1047) * _1030, (k / _1047) * _1026.y) + _1019)));
-            z0 = _1271;
-            p0 = _1293;
+            last_t = _1398;
+            vf_out.write(float4(light, _1398), uint2((int2((k % _1078) * _1061, (k / _1078) * _1057.y) + _1050)));
+            z0 = _1302;
+            p0 = _1324;
             k++;
             continue;
         }
@@ -4121,7 +4130,10 @@ float vf_cloud(thread const float3& p, constant fog_cs_params& _86, texture2d<fl
     {
         return 1.0;
     }
-    return vf_cloud_map.sample(vf_cookie_smp, ((((p.xz + ((_86.vf_sun_dir.xz / float2(fast::max(_86.vf_sun_dir.y, 0.0500000007450580596923828125))) * (_86.vf_cloud_shadow.w - p.y))) - _86.vf_cloud_shadow.xz) * _86.vf_cloud_shadow.y) + float2(0.5)), level(0.0)).x;
+    float2 _484 = (((p.xz + ((_86.vf_sun_dir.xz / float2(fast::max(_86.vf_sun_dir.y, 0.0500000007450580596923828125))) * (_86.vf_cloud_shadow.w - p.y))) - _86.vf_cloud_shadow.xz) * _86.vf_cloud_shadow.y) + float2(0.5);
+    float _487 = _484.x;
+    float _489 = _484.y;
+    return mix(1.0, vf_cloud_map.sample(vf_cookie_smp, _484, level(0.0)).x, fast::clamp(fast::min(fast::min(_487, _489), fast::min(1.0 - _487, 1.0 - _489)) * 12.0, 0.0, 1.0) * fast::clamp(1.0 - ((p.y - _86.vf_cloud_shadow.w) * 0.00039999998989515006542205810546875), 0.0, 1.0));
 }
 
 static inline __attribute__((always_inline))
@@ -4161,73 +4173,73 @@ float vf_sun(thread const float3& p, thread const float& depth, constant fog_cs_
     {
         return 1.0;
     }
-    float4 _558 = _86.vf_shadow_mat[k] * float4(p, 1.0);
-    float _561 = _558.x;
-    bool _562 = _561 <= 0.0;
-    bool _569;
-    if (!_562)
+    float4 _589 = _86.vf_shadow_mat[k] * float4(p, 1.0);
+    float _592 = _589.x;
+    bool _593 = _592 <= 0.0;
+    bool _600;
+    if (!_593)
     {
-        _569 = _561 >= 1.0;
+        _600 = _592 >= 1.0;
     }
     else
     {
-        _569 = _562;
+        _600 = _593;
     }
-    bool _576;
-    if (!_569)
+    bool _607;
+    if (!_600)
     {
-        _576 = _558.y <= 0.0;
+        _607 = _589.y <= 0.0;
     }
     else
     {
-        _576 = _569;
+        _607 = _600;
     }
-    bool _583;
-    if (!_576)
+    bool _614;
+    if (!_607)
     {
-        _583 = _558.y >= 1.0;
+        _614 = _589.y >= 1.0;
     }
     else
     {
-        _583 = _576;
+        _614 = _607;
     }
-    bool _590;
-    if (!_583)
+    bool _621;
+    if (!_614)
     {
-        _590 = _558.z <= 0.0;
+        _621 = _589.z <= 0.0;
     }
     else
     {
-        _590 = _583;
+        _621 = _614;
     }
-    bool _597;
-    if (!_590)
+    bool _628;
+    if (!_621)
     {
-        _597 = _558.z >= 1.0;
+        _628 = _589.z >= 1.0;
     }
     else
     {
-        _597 = _590;
+        _628 = _621;
     }
-    if (_597)
+    if (_628)
     {
         return 1.0;
     }
-    float2 _618 = _558.xy;
-    float2 _620 = (float2(_86.vf_shadow_params.z) / _86.vf_cascade_rect[k].zw) * 0.5;
-    float2 param = _86.vf_cascade_rect[k].xy + (fast::clamp(_618, _620, float2(1.0) - _620) * _86.vf_cascade_rect[k].zw);
-    float param_1 = _558.z;
-    float2 _645 = fast::min(_618, float2(1.0) - _618);
-    return mix(1.0, vf_depth_tap(vf_sun_map, param, param_1, vf_shadow_smp), fast::clamp(fast::min(_645.x, _645.y) * 10.0, 0.0, 1.0));
+    float2 _649 = _589.xy;
+    float2 _651 = (float2(_86.vf_shadow_params.z) / _86.vf_cascade_rect[k].zw) * 0.5;
+    float2 param = _86.vf_cascade_rect[k].xy + (fast::clamp(_649, _651, float2(1.0) - _651) * _86.vf_cascade_rect[k].zw);
+    float param_1 = _589.z;
+    float2 _676 = fast::min(_649, float2(1.0) - _649);
+    return mix(1.0, vf_depth_tap(vf_sun_map, param, param_1, vf_shadow_smp), fast::clamp(fast::min(_676.x, _676.y) * 10.0, 0.0, 1.0));
 }
 
 static inline __attribute__((always_inline))
 float vf_inverse_square(thread const float3& o, thread const float3& dir, thread const float& s0, thread const float& s1, thread const float3& lp, thread const float& radius)
 {
-    float3 _974 = lp - o;
-    float _978 = dot(_974, dir);
-    float _992 = fast::max(sqrt(fast::max(dot(_974, _974) - (_978 * _978), 0.0)), fast::max(radius, 0.25));
-    return (atan((s1 - _978) / _992) - atan((s0 - _978) / _992)) / _992;
+    float3 _1005 = lp - o;
+    float _1009 = dot(_1005, dir);
+    float _1023 = fast::max(sqrt(fast::max(dot(_1005, _1005) - (_1009 * _1009), 0.0)), fast::max(radius, 0.25));
+    return (atan((s1 - _1009) / _1023) - atan((s0 - _1009) / _1023)) / _1023;
 }
 
 static inline __attribute__((always_inline))
@@ -4237,87 +4249,87 @@ float vf_window(thread const float& d, thread const float& cutoff)
     {
         return 1.0;
     }
-    float _955 = d / cutoff;
-    float _965 = fast::clamp(1.0 - (((_955 * _955) * _955) * _955), 0.0, 1.0);
-    return _965 * _965;
+    float _986 = d / cutoff;
+    float _996 = fast::clamp(1.0 - (((_986 * _986) * _986) * _986), 0.0, 1.0);
+    return _996 * _996;
 }
 
 static inline __attribute__((always_inline))
-float vf_spot_lit(thread const int& s, thread const float3& p, sampler vf_shadow_smp, const device vf_spots& _663, const device vf_shadows& _680, depth2d<float> vf_spot_atlas, depth2d<float> vf_spot_map)
+float vf_spot_lit(thread const int& s, thread const float3& p, sampler vf_shadow_smp, const device vf_spots& _694, const device vf_shadows& _711, depth2d<float> vf_spot_atlas, depth2d<float> vf_spot_map)
 {
-    int _667 = int(((device float*)&_663.spots[s].shadow)[0u]);
-    if (_667 < 0)
+    int _698 = int(((device float*)&_694.spots[s].shadow)[0u]);
+    if (_698 < 0)
     {
         return 1.0;
     }
-    float4 _707 = _680.spot_shadows[_667].mat * float4(p - _663.spots[s].pos.xyz, 1.0);
-    float _709 = _707.w;
-    if (_709 <= 0.0)
+    float4 _738 = _711.spot_shadows[_698].mat * float4(p - _694.spots[s].pos.xyz, 1.0);
+    float _740 = _738.w;
+    if (_740 <= 0.0)
     {
         return 1.0;
     }
-    float3 c = _707.xyz / float3(_709);
-    bool _724 = _680.spot_shadows[_667].params.x > 1.5;
-    bool _731;
-    if (_724)
-    {
-        _731 = _680.spot_shadows[_667].params.x < 2.5;
-    }
-    else
-    {
-        _731 = _724;
-    }
-    if (_731)
-    {
-        float3 _1951 = c;
-        _1951.z = (_709 - _680.spot_shadows[_667].soft.y) / (_680.spot_shadows[_667].soft.z - _680.spot_shadows[_667].soft.y);
-        c = _1951;
-    }
-    bool _748 = c.x < 0.0;
-    bool _755;
-    if (!_748)
-    {
-        _755 = c.x > 1.0;
-    }
-    else
-    {
-        _755 = _748;
-    }
+    float3 c = _738.xyz / float3(_740);
+    bool _755 = _711.spot_shadows[_698].params.x > 1.5;
     bool _762;
-    if (!_755)
+    if (_755)
     {
-        _762 = c.y < 0.0;
+        _762 = _711.spot_shadows[_698].params.x < 2.5;
     }
     else
     {
         _762 = _755;
     }
-    bool _769;
-    if (!_762)
+    if (_762)
     {
-        _769 = c.y > 1.0;
+        float3 _1986 = c;
+        _1986.z = (_740 - _711.spot_shadows[_698].soft.y) / (_711.spot_shadows[_698].soft.z - _711.spot_shadows[_698].soft.y);
+        c = _1986;
+    }
+    bool _779 = c.x < 0.0;
+    bool _786;
+    if (!_779)
+    {
+        _786 = c.x > 1.0;
     }
     else
     {
-        _769 = _762;
+        _786 = _779;
     }
-    bool _776;
-    if (!_769)
+    bool _793;
+    if (!_786)
     {
-        _776 = c.z > 1.0;
+        _793 = c.y < 0.0;
     }
     else
     {
-        _776 = _769;
+        _793 = _786;
     }
-    if (_776)
+    bool _800;
+    if (!_793)
+    {
+        _800 = c.y > 1.0;
+    }
+    else
+    {
+        _800 = _793;
+    }
+    bool _807;
+    if (!_800)
+    {
+        _807 = c.z > 1.0;
+    }
+    else
+    {
+        _807 = _800;
+    }
+    if (_807)
     {
         return 1.0;
     }
     float seen;
-    if (_724)
+    if (_755)
     {
-        float2 param = _680.spot_shadows[_667].rect.xy + (fast::clamp(c.xy, float2(_680.spot_shadows[_667].params.z), float2(1.0 - _680.spot_shadows[_667].params.z)) * _680.spot_shadows[_667].rect.zw);
+        float2 param = _711.spot_shadows[_698].rect.xy + (fast::clamp(c.xy, float2(_711.spot_shadows[_698].params.z), float2(1.0 - _711.spot_shadows[_698].params.z)) * _711.spot_shadows[_698].rect.zw);
         float param_1 = c.z;
         seen = vf_depth_tap(vf_spot_atlas, param, param_1, vf_shadow_smp);
     }
@@ -4327,297 +4339,297 @@ float vf_spot_lit(thread const int& s, thread const float3& p, sampler vf_shadow
         float param_3 = c.z;
         seen = vf_depth_tap(vf_spot_map, param_2, param_3, vf_shadow_smp);
     }
-    return mix(1.0, seen, ((device float*)&_663.spots[s].shadow)[1u]);
+    return mix(1.0, seen, ((device float*)&_694.spots[s].shadow)[1u]);
 }
 
 static inline __attribute__((always_inline))
-float vf_spot_cookie(thread const int& s, thread const float3& p, sampler vf_cookie_smp, const device vf_spots& _663, texture2d<float> vf_cookies)
+float vf_spot_cookie(thread const int& s, thread const float3& p, sampler vf_cookie_smp, const device vf_spots& _694, texture2d<float> vf_cookies)
 {
-    if (_663.spots[s].map.z <= 0.0)
+    if (_694.spots[s].map.z <= 0.0)
     {
         return 1.0;
     }
-    float3 _844 = p - _663.spots[s].pos.xyz;
-    float2 _884 = float2(0.5) + ((float2(dot(_844, _663.spots[s].map_u.xyz), dot(_844, float3(((device float*)&_663.spots[s].map_u)[3u], _663.spots[s].map_v.xy))) * 0.5) / float2(fast::max(dot(_844, _663.spots[s].dir.xyz), 9.9999997473787516355514526367188e-05)));
-    float _886 = _884.x;
-    bool _887 = _886 < 0.0;
-    bool _894;
-    if (!_887)
+    float3 _875 = p - _694.spots[s].pos.xyz;
+    float2 _915 = float2(0.5) + ((float2(dot(_875, _694.spots[s].map_u.xyz), dot(_875, float3(((device float*)&_694.spots[s].map_u)[3u], _694.spots[s].map_v.xy))) * 0.5) / float2(fast::max(dot(_875, _694.spots[s].dir.xyz), 9.9999997473787516355514526367188e-05)));
+    float _917 = _915.x;
+    bool _918 = _917 < 0.0;
+    bool _925;
+    if (!_918)
     {
-        _894 = _886 > 1.0;
+        _925 = _917 > 1.0;
     }
     else
     {
-        _894 = _887;
+        _925 = _918;
     }
-    bool _901;
-    if (!_894)
+    bool _932;
+    if (!_925)
     {
-        _901 = _884.y < 0.0;
+        _932 = _915.y < 0.0;
     }
     else
     {
-        _901 = _894;
+        _932 = _925;
     }
-    bool _908;
-    if (!_901)
+    bool _939;
+    if (!_932)
     {
-        _908 = _884.y > 1.0;
+        _939 = _915.y > 1.0;
     }
     else
     {
-        _908 = _901;
+        _939 = _932;
     }
-    if (_908)
+    if (_939)
     {
         return 0.0;
     }
-    return dot(vf_cookies.sample(vf_cookie_smp, (_663.spots[s].map.xy + (float2(_886, 1.0 - _884.y) * _663.spots[s].map.zw)), level(fast::max(((device float*)&_663.spots[s].map_v)[2u] - 7.5, 0.0))).xyz, float3(0.2125999927520751953125, 0.715200006961822509765625, 0.072200000286102294921875));
+    return dot(vf_cookies.sample(vf_cookie_smp, (_694.spots[s].map.xy + (float2(_917, 1.0 - _915.y) * _694.spots[s].map.zw)), level(fast::max(((device float*)&_694.spots[s].map_v)[2u] - 7.5, 0.0))).xyz, float3(0.2125999927520751953125, 0.715200006961822509765625, 0.072200000286102294921875));
 }
 
-kernel void main0(constant fog_cs_params& _86 [[buffer(0)]], const device vf_points& _1545 [[buffer(8)]], const device vf_spots& _663 [[buffer(9)]], const device vf_shadows& _680 [[buffer(10)]], const device vf_light_clusters& _1488 [[buffer(11)]], const device vf_light_indices& _1550 [[buffer(12)]], texture2d<float, access::write> vf_out [[texture(0)]], depth2d<float> vf_spot_map [[texture(1)]], depth2d<float> vf_spot_atlas [[texture(2)]], depth2d<float> vf_sun_map [[texture(3)]], texture2d<float> vf_cookies [[texture(4)]], texture2d<float> vf_cloud_map [[texture(5)]], sampler vf_shadow_smp [[sampler(0)]], sampler vf_cookie_smp [[sampler(1)]], uint3 gl_GlobalInvocationID [[thread_position_in_grid]])
+kernel void main0(constant fog_cs_params& _86 [[buffer(0)]], const device vf_points& _1576 [[buffer(8)]], const device vf_spots& _694 [[buffer(9)]], const device vf_shadows& _711 [[buffer(10)]], const device vf_light_clusters& _1519 [[buffer(11)]], const device vf_light_indices& _1581 [[buffer(12)]], texture2d<float, access::write> vf_out [[texture(0)]], depth2d<float> vf_spot_map [[texture(1)]], depth2d<float> vf_spot_atlas [[texture(2)]], depth2d<float> vf_sun_map [[texture(3)]], texture2d<float> vf_cookies [[texture(4)]], texture2d<float> vf_cloud_map [[texture(5)]], sampler vf_shadow_smp [[sampler(0)]], sampler vf_cookie_smp [[sampler(1)]], uint3 gl_GlobalInvocationID [[thread_position_in_grid]])
 {
-    int2 _1019 = int2(gl_GlobalInvocationID.xy);
-    int3 _1026 = int3(_86.vf_grid.xyz);
-    int _1030 = _1026.x;
-    bool _1031 = _1019.x >= _1030;
-    bool _1040;
-    if (!_1031)
+    int2 _1050 = int2(gl_GlobalInvocationID.xy);
+    int3 _1057 = int3(_86.vf_grid.xyz);
+    int _1061 = _1057.x;
+    bool _1062 = _1050.x >= _1061;
+    bool _1071;
+    if (!_1062)
     {
-        _1040 = _1019.y >= _1026.y;
+        _1071 = _1050.y >= _1057.y;
     }
     else
     {
-        _1040 = _1031;
+        _1071 = _1062;
     }
-    if (_1040)
+    if (_1071)
     {
         return;
     }
-    int _1047 = int(_86.vf_grid.w);
-    float2 _1055 = float2(_1026.xy);
-    float2 _1059 = (((float2(_1019) + float2(0.5)) / _1055) * 2.0) - float2(1.0);
-    float2 _1065 = float2(0.5) / _1055;
-    float _1078;
-    float _1091;
+    int _1078 = int(_86.vf_grid.w);
+    float2 _1086 = float2(_1057.xy);
+    float2 _1090 = (((float2(_1050) + float2(0.5)) / _1086) * 2.0) - float2(1.0);
+    float2 _1096 = float2(0.5) / _1086;
+    float _1109;
+    float _1122;
     spvUnsafeArray<float3, 4> sub_ray;
     for (int i = 0; i < 4; i++)
     {
         if ((i & 1) == 0)
         {
-            _1078 = -_1065.x;
+            _1109 = -_1096.x;
         }
         else
         {
-            _1078 = _1065.x;
+            _1109 = _1096.x;
         }
         if ((i & 2) == 0)
         {
-            _1091 = -_1065.y;
+            _1122 = -_1096.y;
         }
         else
         {
-            _1091 = _1065.y;
+            _1122 = _1096.y;
         }
-        sub_ray[i] = (_86.vf_fwd.xyz + (_86.vf_right.xyz * (_1059.x + _1078))) + (_86.vf_up.xyz * (_1059.y + _1091));
+        sub_ray[i] = (_86.vf_fwd.xyz + (_86.vf_right.xyz * (_1090.x + _1109))) + (_86.vf_up.xyz * (_1090.y + _1122));
     }
-    float3 _1149 = (_86.vf_fwd.xyz + (_86.vf_right.xyz * _1059.x)) + (_86.vf_up.xyz * _1059.y);
-    float _1152 = length(_1149);
-    float3 _1157 = _1149 / float3(_1152);
+    float3 _1180 = (_86.vf_fwd.xyz + (_86.vf_right.xyz * _1090.x)) + (_86.vf_up.xyz * _1090.y);
+    float _1183 = length(_1180);
+    float3 _1188 = _1180 / float3(_1183);
     float side_density = 1.0;
     float sun_glow = 0.0;
     if (_86.vf_sun_dir.w > 0.0)
     {
-        side_density = mix(_86.vf_height.w, 1.0, smoothstep(-0.300000011920928955078125, 0.699999988079071044921875, dot(fast::normalize(_1157.xz + float2(9.9999997473787516355514526367188e-06)), fast::normalize(_86.vf_sun_dir.xz + float2(9.9999997473787516355514526367188e-06)))));
-        sun_glow = powr(fast::max(dot(_1157, _86.vf_sun_dir.xyz), 0.0), _86.vf_sun_dir.w);
+        side_density = mix(_86.vf_height.w, 1.0, smoothstep(-0.300000011920928955078125, 0.699999988079071044921875, dot(fast::normalize(_1188.xz + float2(9.9999997473787516355514526367188e-06)), fast::normalize(_86.vf_sun_dir.xz + float2(9.9999997473787516355514526367188e-06)))));
+        sun_glow = powr(fast::max(dot(_1188, _86.vf_sun_dir.xyz), 0.0), _86.vf_sun_dir.w);
     }
-    bool _1206 = (_86.vf_sun_color.w > 0.0) && (sun_glow > 0.0);
-    bool _1213;
-    if (_1206)
+    bool _1237 = (_86.vf_sun_color.w > 0.0) && (sun_glow > 0.0);
+    bool _1244;
+    if (_1237)
     {
-        _1213 = int(_86.vf_params.w) == 3;
+        _1244 = int(_86.vf_params.w) == 3;
     }
     else
     {
-        _1213 = _1206;
+        _1244 = _1237;
     }
-    int2 _1236 = clamp(int2(floor(((_1059 * 0.5) + float2(0.5)) * _86.vf_clusters.xy)), int2(0), int2(_86.vf_clusters.xy) - int2(1));
-    int _1240 = int(_86.vf_clusters.x);
-    int _1244 = int(_86.vf_clusters.y);
-    int _1248 = int(_86.vf_clusters.z);
+    int2 _1267 = clamp(int2(floor(((_1090 * 0.5) + float2(0.5)) * _86.vf_clusters.xy)), int2(0), int2(_86.vf_clusters.xy) - int2(1));
+    int _1271 = int(_86.vf_clusters.x);
+    int _1275 = int(_86.vf_clusters.y);
+    int _1279 = int(_86.vf_clusters.z);
     float fd = 0.0;
     float last_t = 1.0;
     float3 light = float3(0.0);
     float z0 = 0.0;
     float3 p0 = _86.vf_cam.xyz;
     int k = 0;
-    float _1271;
-    int _1462;
+    float _1302;
+    int _1493;
     for (;;)
     {
-        int _1263 = _1026.z;
-        if (k < _1263)
+        int _1294 = _1057.z;
+        if (k < _1294)
         {
-            if ((k + 1) >= _1263)
+            if ((k + 1) >= _1294)
             {
-                _1271 = _86.vf_depth.z;
+                _1302 = _86.vf_depth.z;
             }
             else
             {
-                _1271 = _86.vf_depth.x * exp(float(k + 1) / _86.vf_depth.y);
+                _1302 = _86.vf_depth.x * exp(float(k + 1) / _86.vf_depth.y);
             }
-            float3 _1293 = _86.vf_cam.xyz + (_1149 * _1271);
-            float _1304 = 0.5 * (z0 + _1271);
-            float3 _1310 = _86.vf_cam.xyz + (_1149 * _1304);
-            float _1314 = mix(z0, _1271, 0.25);
-            float _1319 = mix(z0, _1271, 0.75);
-            float3 _1325 = _86.vf_cam.xyz + (_1149 * _1314);
-            float3 _1331 = _86.vf_cam.xyz + (_1149 * _1319);
+            float3 _1324 = _86.vf_cam.xyz + (_1180 * _1302);
+            float _1335 = 0.5 * (z0 + _1302);
+            float3 _1341 = _86.vf_cam.xyz + (_1180 * _1335);
+            float _1345 = mix(z0, _1302, 0.25);
+            float _1350 = mix(z0, _1302, 0.75);
+            float3 _1356 = _86.vf_cam.xyz + (_1180 * _1345);
+            float3 _1362 = _86.vf_cam.xyz + (_1180 * _1350);
             float param = p0.y;
-            float param_1 = _1293.y;
-            float _1339 = vf_height_mean(param, param_1, _86);
+            float param_1 = _1324.y;
+            float _1370 = vf_height_mean(param, param_1, _86);
             float3 param_2 = p0;
-            float3 param_3 = _1293;
-            float3 param_4 = _1310;
-            float _1351 = ((_1339 * vf_box_fraction(param_2, param_3, _86)) * side_density) * vf_mist(param_4, _86);
-            float _1353 = fd;
-            float _1356 = ((_1271 - z0) * _1152) * _1351;
-            float _1358 = _1353 + (_1356 * 0.5);
-            float _1363 = _1353 + _1356;
-            fd = _1363;
-            float param_5 = _1363;
-            float _1367 = vf_transmittance(param_5, _86);
+            float3 param_3 = _1324;
+            float3 param_4 = _1341;
+            float _1382 = ((_1370 * vf_box_fraction(param_2, param_3, _86)) * side_density) * vf_mist(param_4, _86);
+            float _1384 = fd;
+            float _1387 = ((_1302 - z0) * _1183) * _1382;
+            float _1389 = _1384 + (_1387 * 0.5);
+            float _1394 = _1384 + _1387;
+            fd = _1394;
+            float param_5 = _1394;
+            float _1398 = vf_transmittance(param_5, _86);
             float3 own = _86.vf_color.xyz;
             if (sun_glow > 0.0)
             {
-                float3 param_6 = _1310;
+                float3 param_6 = _1341;
                 float lit = sun_glow * vf_cloud(param_6, _86, vf_cloud_map, vf_cookie_smp);
-                if (_1213)
+                if (_1244)
                 {
                     float seen = 0.0;
                     for (int i_1 = 0; i_1 < 4; i_1++)
                     {
-                        float3 param_7 = _86.vf_cam.xyz + (sub_ray[i_1] * _1314);
-                        float param_8 = _1314;
-                        float3 param_9 = _86.vf_cam.xyz + (sub_ray[i_1] * _1319);
-                        float param_10 = _1319;
+                        float3 param_7 = _86.vf_cam.xyz + (sub_ray[i_1] * _1345);
+                        float param_8 = _1345;
+                        float3 param_9 = _86.vf_cam.xyz + (sub_ray[i_1] * _1350);
+                        float param_10 = _1350;
                         seen += (vf_sun(param_7, param_8, _86, vf_shadow_smp, vf_sun_map) + vf_sun(param_9, param_10, _86, vf_shadow_smp, vf_sun_map));
                     }
                     lit *= mix(1.0, seen * 0.125, _86.vf_sun_color.w);
                 }
                 own = mix(own, _86.vf_sun_color.xyz, float3(lit));
             }
-            light += (own * (last_t - _1367));
-            bool _1447 = (_86.vf_color.w > 0.0) && (_1351 > 0.0);
-            bool _1453;
-            if (_1447)
+            light += (own * (last_t - _1398));
+            bool _1478 = (_86.vf_color.w > 0.0) && (_1382 > 0.0);
+            bool _1484;
+            if (_1478)
             {
-                _1453 = _86.vf_clusters.w > 0.5;
+                _1484 = _86.vf_clusters.w > 0.5;
             }
             else
             {
-                _1453 = _1447;
+                _1484 = _1478;
             }
-            if (_1453)
+            if (_1484)
             {
-                if (_1304 <= _86.vf_cluster_depth.x)
+                if (_1335 <= _86.vf_cluster_depth.x)
                 {
-                    _1462 = 0;
+                    _1493 = 0;
                 }
                 else
                 {
-                    _1462 = int(floor(log(_1304 / _86.vf_cluster_depth.x) * _86.vf_cluster_depth.y));
+                    _1493 = int(floor(log(_1335 / _86.vf_cluster_depth.x) * _86.vf_cluster_depth.y));
                 }
-                int _1499 = _1236.x + (_1240 * (_1236.y + (_1244 * clamp(_1462, 0, _1248 - 1))));
-                int _1507 = int(_1488.clusters[_1499].range.x);
-                int _1511 = int(_1488.clusters[_1499].range.y);
-                int _1515 = int(_1488.clusters[_1499].range.z);
-                float _1519 = z0 * _1152;
-                float _1523 = _1304 * _1152;
-                float _1527 = _1271 * _1152;
+                int _1530 = _1267.x + (_1271 * (_1267.y + (_1275 * clamp(_1493, 0, _1279 - 1))));
+                int _1538 = int(_1519.clusters[_1530].range.x);
+                int _1542 = int(_1519.clusters[_1530].range.y);
+                int _1546 = int(_1519.clusters[_1530].range.z);
+                float _1550 = z0 * _1183;
+                float _1554 = _1335 * _1183;
+                float _1558 = _1302 * _1183;
                 float3 glow = float3(0.0);
-                for (int i_2 = 0; i_2 < _1511; i_2++)
+                for (int i_2 = 0; i_2 < _1542; i_2++)
                 {
-                    int _1553 = _1507 + i_2;
-                    float _1572 = length(_1545.points[_1550.cluster_lights[_1553].index].pos.xyz - _1310);
+                    int _1584 = _1538 + i_2;
+                    float _1603 = length(_1576.points[_1581.cluster_lights[_1584].index].pos.xyz - _1341);
                     float3 param_11 = _86.vf_cam.xyz;
-                    float3 param_12 = _1157;
-                    float param_13 = _1519;
-                    float param_14 = _1527;
-                    float3 param_15 = _1545.points[_1550.cluster_lights[_1553].index].pos.xyz;
-                    float param_16 = _1545.points[_1550.cluster_lights[_1553].index].params.x;
-                    float param_17 = _1572;
-                    float param_18 = _1545.points[_1550.cluster_lights[_1553].index].pos.w;
-                    float param_19 = _1358 + (_1572 * _1351);
-                    glow += (((_1545.points[_1550.cluster_lights[_1553].index].color.xyz * vf_inverse_square(param_11, param_12, param_13, param_14, param_15, param_16)) * vf_window(param_17, param_18)) * vf_transmittance(param_19, _86));
+                    float3 param_12 = _1188;
+                    float param_13 = _1550;
+                    float param_14 = _1558;
+                    float3 param_15 = _1576.points[_1581.cluster_lights[_1584].index].pos.xyz;
+                    float param_16 = _1576.points[_1581.cluster_lights[_1584].index].params.x;
+                    float param_17 = _1603;
+                    float param_18 = _1576.points[_1581.cluster_lights[_1584].index].pos.w;
+                    float param_19 = _1389 + (_1603 * _1382);
+                    glow += (((_1576.points[_1581.cluster_lights[_1584].index].color.xyz * vf_inverse_square(param_11, param_12, param_13, param_14, param_15, param_16)) * vf_window(param_17, param_18)) * vf_transmittance(param_19, _86));
                 }
-                for (int i_3 = 0; i_3 < _1515; i_3++)
+                for (int i_3 = 0; i_3 < _1546; i_3++)
                 {
-                    int _1631 = int(_1550.cluster_lights[(_1507 + _1511) + i_3].index);
-                    if (((device float*)&_663.spots[_1631].params)[3u] <= 0.0)
+                    int _1662 = int(_1581.cluster_lights[(_1538 + _1542) + i_3].index);
+                    if (((device float*)&_694.spots[_1662].params)[3u] <= 0.0)
                     {
                         continue;
                     }
                     float acc = 0.0;
-                    float3 _1669 = _1325 - _663.spots[_1631].pos.xyz;
-                    float _1672 = length(_1669);
-                    float _1683 = smoothstep(((device float*)&_663.spots[_1631].dir)[3u], ((device float*)&_663.spots[_1631].params)[0u], dot(_1669 / float3(fast::max(_1672, 9.9999997473787516355514526367188e-05)), _663.spots[_1631].dir.xyz));
-                    if (_1683 > 0.0)
+                    float3 _1700 = _1356 - _694.spots[_1662].pos.xyz;
+                    float _1703 = length(_1700);
+                    float _1714 = smoothstep(((device float*)&_694.spots[_1662].dir)[3u], ((device float*)&_694.spots[_1662].params)[0u], dot(_1700 / float3(fast::max(_1703, 9.9999997473787516355514526367188e-05)), _694.spots[_1662].dir.xyz));
+                    if (_1714 > 0.0)
                     {
-                        int param_20 = _1631;
-                        float3 param_21 = _1325;
-                        int param_22 = _1631;
-                        float3 param_23 = _1325;
-                        float _1701 = (_1683 * vf_spot_lit(param_20, param_21, vf_shadow_smp, _663, _680, vf_spot_atlas, vf_spot_map)) * vf_spot_cookie(param_22, param_23, vf_cookie_smp, _663, vf_cookies);
-                        if (_1701 > 0.0)
+                        int param_20 = _1662;
+                        float3 param_21 = _1356;
+                        int param_22 = _1662;
+                        float3 param_23 = _1356;
+                        float _1732 = (_1714 * vf_spot_lit(param_20, param_21, vf_shadow_smp, _694, _711, vf_spot_atlas, vf_spot_map)) * vf_spot_cookie(param_22, param_23, vf_cookie_smp, _694, vf_cookies);
+                        if (_1732 > 0.0)
                         {
                             float3 param_24 = _86.vf_cam.xyz;
-                            float3 param_25 = _1157;
-                            float param_26 = _1519;
-                            float param_27 = _1523;
-                            float3 param_28 = _663.spots[_1631].pos.xyz;
-                            float param_29 = ((device float*)&_663.spots[_1631].params)[1u];
-                            float param_30 = _1672;
-                            float param_31 = ((device float*)&_663.spots[_1631].pos)[3u];
-                            float param_32 = (fd - (_1356 * 0.75)) + (_1672 * _1351);
-                            acc += (((_1701 * vf_inverse_square(param_24, param_25, param_26, param_27, param_28, param_29)) * vf_window(param_30, param_31)) * vf_transmittance(param_32, _86));
+                            float3 param_25 = _1188;
+                            float param_26 = _1550;
+                            float param_27 = _1554;
+                            float3 param_28 = _694.spots[_1662].pos.xyz;
+                            float param_29 = ((device float*)&_694.spots[_1662].params)[1u];
+                            float param_30 = _1703;
+                            float param_31 = ((device float*)&_694.spots[_1662].pos)[3u];
+                            float param_32 = (fd - (_1387 * 0.75)) + (_1703 * _1382);
+                            acc += (((_1732 * vf_inverse_square(param_24, param_25, param_26, param_27, param_28, param_29)) * vf_window(param_30, param_31)) * vf_transmittance(param_32, _86));
                         }
                     }
-                    float3 _1745 = _1331 - _663.spots[_1631].pos.xyz;
-                    float _1748 = length(_1745);
-                    float _1759 = smoothstep(((device float*)&_663.spots[_1631].dir)[3u], ((device float*)&_663.spots[_1631].params)[0u], dot(_1745 / float3(fast::max(_1748, 9.9999997473787516355514526367188e-05)), _663.spots[_1631].dir.xyz));
-                    if (_1759 > 0.0)
+                    float3 _1776 = _1362 - _694.spots[_1662].pos.xyz;
+                    float _1779 = length(_1776);
+                    float _1790 = smoothstep(((device float*)&_694.spots[_1662].dir)[3u], ((device float*)&_694.spots[_1662].params)[0u], dot(_1776 / float3(fast::max(_1779, 9.9999997473787516355514526367188e-05)), _694.spots[_1662].dir.xyz));
+                    if (_1790 > 0.0)
                     {
-                        int param_33 = _1631;
-                        float3 param_34 = _1331;
-                        int param_35 = _1631;
-                        float3 param_36 = _1331;
-                        float _1777 = (_1759 * vf_spot_lit(param_33, param_34, vf_shadow_smp, _663, _680, vf_spot_atlas, vf_spot_map)) * vf_spot_cookie(param_35, param_36, vf_cookie_smp, _663, vf_cookies);
-                        if (_1777 > 0.0)
+                        int param_33 = _1662;
+                        float3 param_34 = _1362;
+                        int param_35 = _1662;
+                        float3 param_36 = _1362;
+                        float _1808 = (_1790 * vf_spot_lit(param_33, param_34, vf_shadow_smp, _694, _711, vf_spot_atlas, vf_spot_map)) * vf_spot_cookie(param_35, param_36, vf_cookie_smp, _694, vf_cookies);
+                        if (_1808 > 0.0)
                         {
                             float3 param_37 = _86.vf_cam.xyz;
-                            float3 param_38 = _1157;
-                            float param_39 = _1523;
-                            float param_40 = _1527;
-                            float3 param_41 = _663.spots[_1631].pos.xyz;
-                            float param_42 = ((device float*)&_663.spots[_1631].params)[1u];
-                            float param_43 = _1748;
-                            float param_44 = ((device float*)&_663.spots[_1631].pos)[3u];
-                            float param_45 = (fd - (_1356 * 0.25)) + (_1748 * _1351);
-                            acc += (((_1777 * vf_inverse_square(param_37, param_38, param_39, param_40, param_41, param_42)) * vf_window(param_43, param_44)) * vf_transmittance(param_45, _86));
+                            float3 param_38 = _1188;
+                            float param_39 = _1554;
+                            float param_40 = _1558;
+                            float3 param_41 = _694.spots[_1662].pos.xyz;
+                            float param_42 = ((device float*)&_694.spots[_1662].params)[1u];
+                            float param_43 = _1779;
+                            float param_44 = ((device float*)&_694.spots[_1662].pos)[3u];
+                            float param_45 = (fd - (_1387 * 0.25)) + (_1779 * _1382);
+                            acc += (((_1808 * vf_inverse_square(param_37, param_38, param_39, param_40, param_41, param_42)) * vf_window(param_43, param_44)) * vf_transmittance(param_45, _86));
                         }
                     }
                     if (acc > 0.0)
                     {
-                        glow += (_663.spots[_1631].color.xyz * (((device float*)&_663.spots[_1631].params)[3u] * acc));
+                        glow += (_694.spots[_1662].color.xyz * (((device float*)&_694.spots[_1662].params)[3u] * acc));
                     }
                 }
-                light += ((glow * _86.vf_color.w) * _1351);
+                light += ((glow * _86.vf_color.w) * _1382);
             }
-            last_t = _1367;
-            vf_out.write(float4(light, _1367), uint2((int2((k % _1047) * _1030, (k / _1047) * _1026.y) + _1019)));
-            z0 = _1271;
-            p0 = _1293;
+            last_t = _1398;
+            vf_out.write(float4(light, _1398), uint2((int2((k % _1078) * _1061, (k / _1078) * _1057.y) + _1050)));
+            z0 = _1302;
+            p0 = _1324;
             k++;
             continue;
         }
@@ -5306,7 +5318,10 @@ float vf_cloud(thread const float3& p, constant fog_cs_params& _86, texture2d<fl
     {
         return 1.0;
     }
-    return vf_cloud_map.sample(vf_cookie_smp, ((((p.xz + ((_86.vf_sun_dir.xz / float2(fast::max(_86.vf_sun_dir.y, 0.0500000007450580596923828125))) * (_86.vf_cloud_shadow.w - p.y))) - _86.vf_cloud_shadow.xz) * _86.vf_cloud_shadow.y) + float2(0.5)), level(0.0)).x;
+    float2 _484 = (((p.xz + ((_86.vf_sun_dir.xz / float2(fast::max(_86.vf_sun_dir.y, 0.0500000007450580596923828125))) * (_86.vf_cloud_shadow.w - p.y))) - _86.vf_cloud_shadow.xz) * _86.vf_cloud_shadow.y) + float2(0.5);
+    float _487 = _484.x;
+    float _489 = _484.y;
+    return mix(1.0, vf_cloud_map.sample(vf_cookie_smp, _484, level(0.0)).x, fast::clamp(fast::min(fast::min(_487, _489), fast::min(1.0 - _487, 1.0 - _489)) * 12.0, 0.0, 1.0) * fast::clamp(1.0 - ((p.y - _86.vf_cloud_shadow.w) * 0.00039999998989515006542205810546875), 0.0, 1.0));
 }
 
 static inline __attribute__((always_inline))
@@ -5346,73 +5361,73 @@ float vf_sun(thread const float3& p, thread const float& depth, constant fog_cs_
     {
         return 1.0;
     }
-    float4 _558 = _86.vf_shadow_mat[k] * float4(p, 1.0);
-    float _561 = _558.x;
-    bool _562 = _561 <= 0.0;
-    bool _569;
-    if (!_562)
+    float4 _589 = _86.vf_shadow_mat[k] * float4(p, 1.0);
+    float _592 = _589.x;
+    bool _593 = _592 <= 0.0;
+    bool _600;
+    if (!_593)
     {
-        _569 = _561 >= 1.0;
+        _600 = _592 >= 1.0;
     }
     else
     {
-        _569 = _562;
+        _600 = _593;
     }
-    bool _576;
-    if (!_569)
+    bool _607;
+    if (!_600)
     {
-        _576 = _558.y <= 0.0;
+        _607 = _589.y <= 0.0;
     }
     else
     {
-        _576 = _569;
+        _607 = _600;
     }
-    bool _583;
-    if (!_576)
+    bool _614;
+    if (!_607)
     {
-        _583 = _558.y >= 1.0;
+        _614 = _589.y >= 1.0;
     }
     else
     {
-        _583 = _576;
+        _614 = _607;
     }
-    bool _590;
-    if (!_583)
+    bool _621;
+    if (!_614)
     {
-        _590 = _558.z <= 0.0;
+        _621 = _589.z <= 0.0;
     }
     else
     {
-        _590 = _583;
+        _621 = _614;
     }
-    bool _597;
-    if (!_590)
+    bool _628;
+    if (!_621)
     {
-        _597 = _558.z >= 1.0;
+        _628 = _589.z >= 1.0;
     }
     else
     {
-        _597 = _590;
+        _628 = _621;
     }
-    if (_597)
+    if (_628)
     {
         return 1.0;
     }
-    float2 _618 = _558.xy;
-    float2 _620 = (float2(_86.vf_shadow_params.z) / _86.vf_cascade_rect[k].zw) * 0.5;
-    float2 param = _86.vf_cascade_rect[k].xy + (fast::clamp(_618, _620, float2(1.0) - _620) * _86.vf_cascade_rect[k].zw);
-    float param_1 = _558.z;
-    float2 _645 = fast::min(_618, float2(1.0) - _618);
-    return mix(1.0, vf_depth_tap(vf_sun_map, param, param_1, vf_shadow_smp), fast::clamp(fast::min(_645.x, _645.y) * 10.0, 0.0, 1.0));
+    float2 _649 = _589.xy;
+    float2 _651 = (float2(_86.vf_shadow_params.z) / _86.vf_cascade_rect[k].zw) * 0.5;
+    float2 param = _86.vf_cascade_rect[k].xy + (fast::clamp(_649, _651, float2(1.0) - _651) * _86.vf_cascade_rect[k].zw);
+    float param_1 = _589.z;
+    float2 _676 = fast::min(_649, float2(1.0) - _649);
+    return mix(1.0, vf_depth_tap(vf_sun_map, param, param_1, vf_shadow_smp), fast::clamp(fast::min(_676.x, _676.y) * 10.0, 0.0, 1.0));
 }
 
 static inline __attribute__((always_inline))
 float vf_inverse_square(thread const float3& o, thread const float3& dir, thread const float& s0, thread const float& s1, thread const float3& lp, thread const float& radius)
 {
-    float3 _974 = lp - o;
-    float _978 = dot(_974, dir);
-    float _992 = fast::max(sqrt(fast::max(dot(_974, _974) - (_978 * _978), 0.0)), fast::max(radius, 0.25));
-    return (atan((s1 - _978) / _992) - atan((s0 - _978) / _992)) / _992;
+    float3 _1005 = lp - o;
+    float _1009 = dot(_1005, dir);
+    float _1023 = fast::max(sqrt(fast::max(dot(_1005, _1005) - (_1009 * _1009), 0.0)), fast::max(radius, 0.25));
+    return (atan((s1 - _1009) / _1023) - atan((s0 - _1009) / _1023)) / _1023;
 }
 
 static inline __attribute__((always_inline))
@@ -5422,87 +5437,87 @@ float vf_window(thread const float& d, thread const float& cutoff)
     {
         return 1.0;
     }
-    float _955 = d / cutoff;
-    float _965 = fast::clamp(1.0 - (((_955 * _955) * _955) * _955), 0.0, 1.0);
-    return _965 * _965;
+    float _986 = d / cutoff;
+    float _996 = fast::clamp(1.0 - (((_986 * _986) * _986) * _986), 0.0, 1.0);
+    return _996 * _996;
 }
 
 static inline __attribute__((always_inline))
-float vf_spot_lit(thread const int& s, thread const float3& p, sampler vf_shadow_smp, const device vf_spots& _663, const device vf_shadows& _680, depth2d<float> vf_spot_atlas, depth2d<float> vf_spot_map)
+float vf_spot_lit(thread const int& s, thread const float3& p, sampler vf_shadow_smp, const device vf_spots& _694, const device vf_shadows& _711, depth2d<float> vf_spot_atlas, depth2d<float> vf_spot_map)
 {
-    int _667 = int(((device float*)&_663.spots[s].shadow)[0u]);
-    if (_667 < 0)
+    int _698 = int(((device float*)&_694.spots[s].shadow)[0u]);
+    if (_698 < 0)
     {
         return 1.0;
     }
-    float4 _707 = _680.spot_shadows[_667].mat * float4(p - _663.spots[s].pos.xyz, 1.0);
-    float _709 = _707.w;
-    if (_709 <= 0.0)
+    float4 _738 = _711.spot_shadows[_698].mat * float4(p - _694.spots[s].pos.xyz, 1.0);
+    float _740 = _738.w;
+    if (_740 <= 0.0)
     {
         return 1.0;
     }
-    float3 c = _707.xyz / float3(_709);
-    bool _724 = _680.spot_shadows[_667].params.x > 1.5;
-    bool _731;
-    if (_724)
-    {
-        _731 = _680.spot_shadows[_667].params.x < 2.5;
-    }
-    else
-    {
-        _731 = _724;
-    }
-    if (_731)
-    {
-        float3 _1951 = c;
-        _1951.z = (_709 - _680.spot_shadows[_667].soft.y) / (_680.spot_shadows[_667].soft.z - _680.spot_shadows[_667].soft.y);
-        c = _1951;
-    }
-    bool _748 = c.x < 0.0;
-    bool _755;
-    if (!_748)
-    {
-        _755 = c.x > 1.0;
-    }
-    else
-    {
-        _755 = _748;
-    }
+    float3 c = _738.xyz / float3(_740);
+    bool _755 = _711.spot_shadows[_698].params.x > 1.5;
     bool _762;
-    if (!_755)
+    if (_755)
     {
-        _762 = c.y < 0.0;
+        _762 = _711.spot_shadows[_698].params.x < 2.5;
     }
     else
     {
         _762 = _755;
     }
-    bool _769;
-    if (!_762)
+    if (_762)
     {
-        _769 = c.y > 1.0;
+        float3 _1986 = c;
+        _1986.z = (_740 - _711.spot_shadows[_698].soft.y) / (_711.spot_shadows[_698].soft.z - _711.spot_shadows[_698].soft.y);
+        c = _1986;
+    }
+    bool _779 = c.x < 0.0;
+    bool _786;
+    if (!_779)
+    {
+        _786 = c.x > 1.0;
     }
     else
     {
-        _769 = _762;
+        _786 = _779;
     }
-    bool _776;
-    if (!_769)
+    bool _793;
+    if (!_786)
     {
-        _776 = c.z > 1.0;
+        _793 = c.y < 0.0;
     }
     else
     {
-        _776 = _769;
+        _793 = _786;
     }
-    if (_776)
+    bool _800;
+    if (!_793)
+    {
+        _800 = c.y > 1.0;
+    }
+    else
+    {
+        _800 = _793;
+    }
+    bool _807;
+    if (!_800)
+    {
+        _807 = c.z > 1.0;
+    }
+    else
+    {
+        _807 = _800;
+    }
+    if (_807)
     {
         return 1.0;
     }
     float seen;
-    if (_724)
+    if (_755)
     {
-        float2 param = _680.spot_shadows[_667].rect.xy + (fast::clamp(c.xy, float2(_680.spot_shadows[_667].params.z), float2(1.0 - _680.spot_shadows[_667].params.z)) * _680.spot_shadows[_667].rect.zw);
+        float2 param = _711.spot_shadows[_698].rect.xy + (fast::clamp(c.xy, float2(_711.spot_shadows[_698].params.z), float2(1.0 - _711.spot_shadows[_698].params.z)) * _711.spot_shadows[_698].rect.zw);
         float param_1 = c.z;
         seen = vf_depth_tap(vf_spot_atlas, param, param_1, vf_shadow_smp);
     }
@@ -5512,297 +5527,297 @@ float vf_spot_lit(thread const int& s, thread const float3& p, sampler vf_shadow
         float param_3 = c.z;
         seen = vf_depth_tap(vf_spot_map, param_2, param_3, vf_shadow_smp);
     }
-    return mix(1.0, seen, ((device float*)&_663.spots[s].shadow)[1u]);
+    return mix(1.0, seen, ((device float*)&_694.spots[s].shadow)[1u]);
 }
 
 static inline __attribute__((always_inline))
-float vf_spot_cookie(thread const int& s, thread const float3& p, sampler vf_cookie_smp, const device vf_spots& _663, texture2d<float> vf_cookies)
+float vf_spot_cookie(thread const int& s, thread const float3& p, sampler vf_cookie_smp, const device vf_spots& _694, texture2d<float> vf_cookies)
 {
-    if (_663.spots[s].map.z <= 0.0)
+    if (_694.spots[s].map.z <= 0.0)
     {
         return 1.0;
     }
-    float3 _844 = p - _663.spots[s].pos.xyz;
-    float2 _884 = float2(0.5) + ((float2(dot(_844, _663.spots[s].map_u.xyz), dot(_844, float3(((device float*)&_663.spots[s].map_u)[3u], _663.spots[s].map_v.xy))) * 0.5) / float2(fast::max(dot(_844, _663.spots[s].dir.xyz), 9.9999997473787516355514526367188e-05)));
-    float _886 = _884.x;
-    bool _887 = _886 < 0.0;
-    bool _894;
-    if (!_887)
+    float3 _875 = p - _694.spots[s].pos.xyz;
+    float2 _915 = float2(0.5) + ((float2(dot(_875, _694.spots[s].map_u.xyz), dot(_875, float3(((device float*)&_694.spots[s].map_u)[3u], _694.spots[s].map_v.xy))) * 0.5) / float2(fast::max(dot(_875, _694.spots[s].dir.xyz), 9.9999997473787516355514526367188e-05)));
+    float _917 = _915.x;
+    bool _918 = _917 < 0.0;
+    bool _925;
+    if (!_918)
     {
-        _894 = _886 > 1.0;
+        _925 = _917 > 1.0;
     }
     else
     {
-        _894 = _887;
+        _925 = _918;
     }
-    bool _901;
-    if (!_894)
+    bool _932;
+    if (!_925)
     {
-        _901 = _884.y < 0.0;
+        _932 = _915.y < 0.0;
     }
     else
     {
-        _901 = _894;
+        _932 = _925;
     }
-    bool _908;
-    if (!_901)
+    bool _939;
+    if (!_932)
     {
-        _908 = _884.y > 1.0;
+        _939 = _915.y > 1.0;
     }
     else
     {
-        _908 = _901;
+        _939 = _932;
     }
-    if (_908)
+    if (_939)
     {
         return 0.0;
     }
-    return dot(vf_cookies.sample(vf_cookie_smp, (_663.spots[s].map.xy + (float2(_886, 1.0 - _884.y) * _663.spots[s].map.zw)), level(fast::max(((device float*)&_663.spots[s].map_v)[2u] - 7.5, 0.0))).xyz, float3(0.2125999927520751953125, 0.715200006961822509765625, 0.072200000286102294921875));
+    return dot(vf_cookies.sample(vf_cookie_smp, (_694.spots[s].map.xy + (float2(_917, 1.0 - _915.y) * _694.spots[s].map.zw)), level(fast::max(((device float*)&_694.spots[s].map_v)[2u] - 7.5, 0.0))).xyz, float3(0.2125999927520751953125, 0.715200006961822509765625, 0.072200000286102294921875));
 }
 
-kernel void main0(constant fog_cs_params& _86 [[buffer(0)]], const device vf_points& _1545 [[buffer(8)]], const device vf_spots& _663 [[buffer(9)]], const device vf_shadows& _680 [[buffer(10)]], const device vf_light_clusters& _1488 [[buffer(11)]], const device vf_light_indices& _1550 [[buffer(12)]], texture2d<float, access::write> vf_out [[texture(0)]], depth2d<float> vf_spot_map [[texture(1)]], depth2d<float> vf_spot_atlas [[texture(2)]], depth2d<float> vf_sun_map [[texture(3)]], texture2d<float> vf_cookies [[texture(4)]], texture2d<float> vf_cloud_map [[texture(5)]], sampler vf_shadow_smp [[sampler(0)]], sampler vf_cookie_smp [[sampler(1)]], uint3 gl_GlobalInvocationID [[thread_position_in_grid]])
+kernel void main0(constant fog_cs_params& _86 [[buffer(0)]], const device vf_points& _1576 [[buffer(8)]], const device vf_spots& _694 [[buffer(9)]], const device vf_shadows& _711 [[buffer(10)]], const device vf_light_clusters& _1519 [[buffer(11)]], const device vf_light_indices& _1581 [[buffer(12)]], texture2d<float, access::write> vf_out [[texture(0)]], depth2d<float> vf_spot_map [[texture(1)]], depth2d<float> vf_spot_atlas [[texture(2)]], depth2d<float> vf_sun_map [[texture(3)]], texture2d<float> vf_cookies [[texture(4)]], texture2d<float> vf_cloud_map [[texture(5)]], sampler vf_shadow_smp [[sampler(0)]], sampler vf_cookie_smp [[sampler(1)]], uint3 gl_GlobalInvocationID [[thread_position_in_grid]])
 {
-    int2 _1019 = int2(gl_GlobalInvocationID.xy);
-    int3 _1026 = int3(_86.vf_grid.xyz);
-    int _1030 = _1026.x;
-    bool _1031 = _1019.x >= _1030;
-    bool _1040;
-    if (!_1031)
+    int2 _1050 = int2(gl_GlobalInvocationID.xy);
+    int3 _1057 = int3(_86.vf_grid.xyz);
+    int _1061 = _1057.x;
+    bool _1062 = _1050.x >= _1061;
+    bool _1071;
+    if (!_1062)
     {
-        _1040 = _1019.y >= _1026.y;
+        _1071 = _1050.y >= _1057.y;
     }
     else
     {
-        _1040 = _1031;
+        _1071 = _1062;
     }
-    if (_1040)
+    if (_1071)
     {
         return;
     }
-    int _1047 = int(_86.vf_grid.w);
-    float2 _1055 = float2(_1026.xy);
-    float2 _1059 = (((float2(_1019) + float2(0.5)) / _1055) * 2.0) - float2(1.0);
-    float2 _1065 = float2(0.5) / _1055;
-    float _1078;
-    float _1091;
+    int _1078 = int(_86.vf_grid.w);
+    float2 _1086 = float2(_1057.xy);
+    float2 _1090 = (((float2(_1050) + float2(0.5)) / _1086) * 2.0) - float2(1.0);
+    float2 _1096 = float2(0.5) / _1086;
+    float _1109;
+    float _1122;
     spvUnsafeArray<float3, 4> sub_ray;
     for (int i = 0; i < 4; i++)
     {
         if ((i & 1) == 0)
         {
-            _1078 = -_1065.x;
+            _1109 = -_1096.x;
         }
         else
         {
-            _1078 = _1065.x;
+            _1109 = _1096.x;
         }
         if ((i & 2) == 0)
         {
-            _1091 = -_1065.y;
+            _1122 = -_1096.y;
         }
         else
         {
-            _1091 = _1065.y;
+            _1122 = _1096.y;
         }
-        sub_ray[i] = (_86.vf_fwd.xyz + (_86.vf_right.xyz * (_1059.x + _1078))) + (_86.vf_up.xyz * (_1059.y + _1091));
+        sub_ray[i] = (_86.vf_fwd.xyz + (_86.vf_right.xyz * (_1090.x + _1109))) + (_86.vf_up.xyz * (_1090.y + _1122));
     }
-    float3 _1149 = (_86.vf_fwd.xyz + (_86.vf_right.xyz * _1059.x)) + (_86.vf_up.xyz * _1059.y);
-    float _1152 = length(_1149);
-    float3 _1157 = _1149 / float3(_1152);
+    float3 _1180 = (_86.vf_fwd.xyz + (_86.vf_right.xyz * _1090.x)) + (_86.vf_up.xyz * _1090.y);
+    float _1183 = length(_1180);
+    float3 _1188 = _1180 / float3(_1183);
     float side_density = 1.0;
     float sun_glow = 0.0;
     if (_86.vf_sun_dir.w > 0.0)
     {
-        side_density = mix(_86.vf_height.w, 1.0, smoothstep(-0.300000011920928955078125, 0.699999988079071044921875, dot(fast::normalize(_1157.xz + float2(9.9999997473787516355514526367188e-06)), fast::normalize(_86.vf_sun_dir.xz + float2(9.9999997473787516355514526367188e-06)))));
-        sun_glow = powr(fast::max(dot(_1157, _86.vf_sun_dir.xyz), 0.0), _86.vf_sun_dir.w);
+        side_density = mix(_86.vf_height.w, 1.0, smoothstep(-0.300000011920928955078125, 0.699999988079071044921875, dot(fast::normalize(_1188.xz + float2(9.9999997473787516355514526367188e-06)), fast::normalize(_86.vf_sun_dir.xz + float2(9.9999997473787516355514526367188e-06)))));
+        sun_glow = powr(fast::max(dot(_1188, _86.vf_sun_dir.xyz), 0.0), _86.vf_sun_dir.w);
     }
-    bool _1206 = (_86.vf_sun_color.w > 0.0) && (sun_glow > 0.0);
-    bool _1213;
-    if (_1206)
+    bool _1237 = (_86.vf_sun_color.w > 0.0) && (sun_glow > 0.0);
+    bool _1244;
+    if (_1237)
     {
-        _1213 = int(_86.vf_params.w) == 3;
+        _1244 = int(_86.vf_params.w) == 3;
     }
     else
     {
-        _1213 = _1206;
+        _1244 = _1237;
     }
-    int2 _1236 = clamp(int2(floor(((_1059 * 0.5) + float2(0.5)) * _86.vf_clusters.xy)), int2(0), int2(_86.vf_clusters.xy) - int2(1));
-    int _1240 = int(_86.vf_clusters.x);
-    int _1244 = int(_86.vf_clusters.y);
-    int _1248 = int(_86.vf_clusters.z);
+    int2 _1267 = clamp(int2(floor(((_1090 * 0.5) + float2(0.5)) * _86.vf_clusters.xy)), int2(0), int2(_86.vf_clusters.xy) - int2(1));
+    int _1271 = int(_86.vf_clusters.x);
+    int _1275 = int(_86.vf_clusters.y);
+    int _1279 = int(_86.vf_clusters.z);
     float fd = 0.0;
     float last_t = 1.0;
     float3 light = float3(0.0);
     float z0 = 0.0;
     float3 p0 = _86.vf_cam.xyz;
     int k = 0;
-    float _1271;
-    int _1462;
+    float _1302;
+    int _1493;
     for (;;)
     {
-        int _1263 = _1026.z;
-        if (k < _1263)
+        int _1294 = _1057.z;
+        if (k < _1294)
         {
-            if ((k + 1) >= _1263)
+            if ((k + 1) >= _1294)
             {
-                _1271 = _86.vf_depth.z;
+                _1302 = _86.vf_depth.z;
             }
             else
             {
-                _1271 = _86.vf_depth.x * exp(float(k + 1) / _86.vf_depth.y);
+                _1302 = _86.vf_depth.x * exp(float(k + 1) / _86.vf_depth.y);
             }
-            float3 _1293 = _86.vf_cam.xyz + (_1149 * _1271);
-            float _1304 = 0.5 * (z0 + _1271);
-            float3 _1310 = _86.vf_cam.xyz + (_1149 * _1304);
-            float _1314 = mix(z0, _1271, 0.25);
-            float _1319 = mix(z0, _1271, 0.75);
-            float3 _1325 = _86.vf_cam.xyz + (_1149 * _1314);
-            float3 _1331 = _86.vf_cam.xyz + (_1149 * _1319);
+            float3 _1324 = _86.vf_cam.xyz + (_1180 * _1302);
+            float _1335 = 0.5 * (z0 + _1302);
+            float3 _1341 = _86.vf_cam.xyz + (_1180 * _1335);
+            float _1345 = mix(z0, _1302, 0.25);
+            float _1350 = mix(z0, _1302, 0.75);
+            float3 _1356 = _86.vf_cam.xyz + (_1180 * _1345);
+            float3 _1362 = _86.vf_cam.xyz + (_1180 * _1350);
             float param = p0.y;
-            float param_1 = _1293.y;
-            float _1339 = vf_height_mean(param, param_1, _86);
+            float param_1 = _1324.y;
+            float _1370 = vf_height_mean(param, param_1, _86);
             float3 param_2 = p0;
-            float3 param_3 = _1293;
-            float3 param_4 = _1310;
-            float _1351 = ((_1339 * vf_box_fraction(param_2, param_3, _86)) * side_density) * vf_mist(param_4, _86);
-            float _1353 = fd;
-            float _1356 = ((_1271 - z0) * _1152) * _1351;
-            float _1358 = _1353 + (_1356 * 0.5);
-            float _1363 = _1353 + _1356;
-            fd = _1363;
-            float param_5 = _1363;
-            float _1367 = vf_transmittance(param_5, _86);
+            float3 param_3 = _1324;
+            float3 param_4 = _1341;
+            float _1382 = ((_1370 * vf_box_fraction(param_2, param_3, _86)) * side_density) * vf_mist(param_4, _86);
+            float _1384 = fd;
+            float _1387 = ((_1302 - z0) * _1183) * _1382;
+            float _1389 = _1384 + (_1387 * 0.5);
+            float _1394 = _1384 + _1387;
+            fd = _1394;
+            float param_5 = _1394;
+            float _1398 = vf_transmittance(param_5, _86);
             float3 own = _86.vf_color.xyz;
             if (sun_glow > 0.0)
             {
-                float3 param_6 = _1310;
+                float3 param_6 = _1341;
                 float lit = sun_glow * vf_cloud(param_6, _86, vf_cloud_map, vf_cookie_smp);
-                if (_1213)
+                if (_1244)
                 {
                     float seen = 0.0;
                     for (int i_1 = 0; i_1 < 4; i_1++)
                     {
-                        float3 param_7 = _86.vf_cam.xyz + (sub_ray[i_1] * _1314);
-                        float param_8 = _1314;
-                        float3 param_9 = _86.vf_cam.xyz + (sub_ray[i_1] * _1319);
-                        float param_10 = _1319;
+                        float3 param_7 = _86.vf_cam.xyz + (sub_ray[i_1] * _1345);
+                        float param_8 = _1345;
+                        float3 param_9 = _86.vf_cam.xyz + (sub_ray[i_1] * _1350);
+                        float param_10 = _1350;
                         seen += (vf_sun(param_7, param_8, _86, vf_shadow_smp, vf_sun_map) + vf_sun(param_9, param_10, _86, vf_shadow_smp, vf_sun_map));
                     }
                     lit *= mix(1.0, seen * 0.125, _86.vf_sun_color.w);
                 }
                 own = mix(own, _86.vf_sun_color.xyz, float3(lit));
             }
-            light += (own * (last_t - _1367));
-            bool _1447 = (_86.vf_color.w > 0.0) && (_1351 > 0.0);
-            bool _1453;
-            if (_1447)
+            light += (own * (last_t - _1398));
+            bool _1478 = (_86.vf_color.w > 0.0) && (_1382 > 0.0);
+            bool _1484;
+            if (_1478)
             {
-                _1453 = _86.vf_clusters.w > 0.5;
+                _1484 = _86.vf_clusters.w > 0.5;
             }
             else
             {
-                _1453 = _1447;
+                _1484 = _1478;
             }
-            if (_1453)
+            if (_1484)
             {
-                if (_1304 <= _86.vf_cluster_depth.x)
+                if (_1335 <= _86.vf_cluster_depth.x)
                 {
-                    _1462 = 0;
+                    _1493 = 0;
                 }
                 else
                 {
-                    _1462 = int(floor(log(_1304 / _86.vf_cluster_depth.x) * _86.vf_cluster_depth.y));
+                    _1493 = int(floor(log(_1335 / _86.vf_cluster_depth.x) * _86.vf_cluster_depth.y));
                 }
-                int _1499 = _1236.x + (_1240 * (_1236.y + (_1244 * clamp(_1462, 0, _1248 - 1))));
-                int _1507 = int(_1488.clusters[_1499].range.x);
-                int _1511 = int(_1488.clusters[_1499].range.y);
-                int _1515 = int(_1488.clusters[_1499].range.z);
-                float _1519 = z0 * _1152;
-                float _1523 = _1304 * _1152;
-                float _1527 = _1271 * _1152;
+                int _1530 = _1267.x + (_1271 * (_1267.y + (_1275 * clamp(_1493, 0, _1279 - 1))));
+                int _1538 = int(_1519.clusters[_1530].range.x);
+                int _1542 = int(_1519.clusters[_1530].range.y);
+                int _1546 = int(_1519.clusters[_1530].range.z);
+                float _1550 = z0 * _1183;
+                float _1554 = _1335 * _1183;
+                float _1558 = _1302 * _1183;
                 float3 glow = float3(0.0);
-                for (int i_2 = 0; i_2 < _1511; i_2++)
+                for (int i_2 = 0; i_2 < _1542; i_2++)
                 {
-                    int _1553 = _1507 + i_2;
-                    float _1572 = length(_1545.points[_1550.cluster_lights[_1553].index].pos.xyz - _1310);
+                    int _1584 = _1538 + i_2;
+                    float _1603 = length(_1576.points[_1581.cluster_lights[_1584].index].pos.xyz - _1341);
                     float3 param_11 = _86.vf_cam.xyz;
-                    float3 param_12 = _1157;
-                    float param_13 = _1519;
-                    float param_14 = _1527;
-                    float3 param_15 = _1545.points[_1550.cluster_lights[_1553].index].pos.xyz;
-                    float param_16 = _1545.points[_1550.cluster_lights[_1553].index].params.x;
-                    float param_17 = _1572;
-                    float param_18 = _1545.points[_1550.cluster_lights[_1553].index].pos.w;
-                    float param_19 = _1358 + (_1572 * _1351);
-                    glow += (((_1545.points[_1550.cluster_lights[_1553].index].color.xyz * vf_inverse_square(param_11, param_12, param_13, param_14, param_15, param_16)) * vf_window(param_17, param_18)) * vf_transmittance(param_19, _86));
+                    float3 param_12 = _1188;
+                    float param_13 = _1550;
+                    float param_14 = _1558;
+                    float3 param_15 = _1576.points[_1581.cluster_lights[_1584].index].pos.xyz;
+                    float param_16 = _1576.points[_1581.cluster_lights[_1584].index].params.x;
+                    float param_17 = _1603;
+                    float param_18 = _1576.points[_1581.cluster_lights[_1584].index].pos.w;
+                    float param_19 = _1389 + (_1603 * _1382);
+                    glow += (((_1576.points[_1581.cluster_lights[_1584].index].color.xyz * vf_inverse_square(param_11, param_12, param_13, param_14, param_15, param_16)) * vf_window(param_17, param_18)) * vf_transmittance(param_19, _86));
                 }
-                for (int i_3 = 0; i_3 < _1515; i_3++)
+                for (int i_3 = 0; i_3 < _1546; i_3++)
                 {
-                    int _1631 = int(_1550.cluster_lights[(_1507 + _1511) + i_3].index);
-                    if (((device float*)&_663.spots[_1631].params)[3u] <= 0.0)
+                    int _1662 = int(_1581.cluster_lights[(_1538 + _1542) + i_3].index);
+                    if (((device float*)&_694.spots[_1662].params)[3u] <= 0.0)
                     {
                         continue;
                     }
                     float acc = 0.0;
-                    float3 _1669 = _1325 - _663.spots[_1631].pos.xyz;
-                    float _1672 = length(_1669);
-                    float _1683 = smoothstep(((device float*)&_663.spots[_1631].dir)[3u], ((device float*)&_663.spots[_1631].params)[0u], dot(_1669 / float3(fast::max(_1672, 9.9999997473787516355514526367188e-05)), _663.spots[_1631].dir.xyz));
-                    if (_1683 > 0.0)
+                    float3 _1700 = _1356 - _694.spots[_1662].pos.xyz;
+                    float _1703 = length(_1700);
+                    float _1714 = smoothstep(((device float*)&_694.spots[_1662].dir)[3u], ((device float*)&_694.spots[_1662].params)[0u], dot(_1700 / float3(fast::max(_1703, 9.9999997473787516355514526367188e-05)), _694.spots[_1662].dir.xyz));
+                    if (_1714 > 0.0)
                     {
-                        int param_20 = _1631;
-                        float3 param_21 = _1325;
-                        int param_22 = _1631;
-                        float3 param_23 = _1325;
-                        float _1701 = (_1683 * vf_spot_lit(param_20, param_21, vf_shadow_smp, _663, _680, vf_spot_atlas, vf_spot_map)) * vf_spot_cookie(param_22, param_23, vf_cookie_smp, _663, vf_cookies);
-                        if (_1701 > 0.0)
+                        int param_20 = _1662;
+                        float3 param_21 = _1356;
+                        int param_22 = _1662;
+                        float3 param_23 = _1356;
+                        float _1732 = (_1714 * vf_spot_lit(param_20, param_21, vf_shadow_smp, _694, _711, vf_spot_atlas, vf_spot_map)) * vf_spot_cookie(param_22, param_23, vf_cookie_smp, _694, vf_cookies);
+                        if (_1732 > 0.0)
                         {
                             float3 param_24 = _86.vf_cam.xyz;
-                            float3 param_25 = _1157;
-                            float param_26 = _1519;
-                            float param_27 = _1523;
-                            float3 param_28 = _663.spots[_1631].pos.xyz;
-                            float param_29 = ((device float*)&_663.spots[_1631].params)[1u];
-                            float param_30 = _1672;
-                            float param_31 = ((device float*)&_663.spots[_1631].pos)[3u];
-                            float param_32 = (fd - (_1356 * 0.75)) + (_1672 * _1351);
-                            acc += (((_1701 * vf_inverse_square(param_24, param_25, param_26, param_27, param_28, param_29)) * vf_window(param_30, param_31)) * vf_transmittance(param_32, _86));
+                            float3 param_25 = _1188;
+                            float param_26 = _1550;
+                            float param_27 = _1554;
+                            float3 param_28 = _694.spots[_1662].pos.xyz;
+                            float param_29 = ((device float*)&_694.spots[_1662].params)[1u];
+                            float param_30 = _1703;
+                            float param_31 = ((device float*)&_694.spots[_1662].pos)[3u];
+                            float param_32 = (fd - (_1387 * 0.75)) + (_1703 * _1382);
+                            acc += (((_1732 * vf_inverse_square(param_24, param_25, param_26, param_27, param_28, param_29)) * vf_window(param_30, param_31)) * vf_transmittance(param_32, _86));
                         }
                     }
-                    float3 _1745 = _1331 - _663.spots[_1631].pos.xyz;
-                    float _1748 = length(_1745);
-                    float _1759 = smoothstep(((device float*)&_663.spots[_1631].dir)[3u], ((device float*)&_663.spots[_1631].params)[0u], dot(_1745 / float3(fast::max(_1748, 9.9999997473787516355514526367188e-05)), _663.spots[_1631].dir.xyz));
-                    if (_1759 > 0.0)
+                    float3 _1776 = _1362 - _694.spots[_1662].pos.xyz;
+                    float _1779 = length(_1776);
+                    float _1790 = smoothstep(((device float*)&_694.spots[_1662].dir)[3u], ((device float*)&_694.spots[_1662].params)[0u], dot(_1776 / float3(fast::max(_1779, 9.9999997473787516355514526367188e-05)), _694.spots[_1662].dir.xyz));
+                    if (_1790 > 0.0)
                     {
-                        int param_33 = _1631;
-                        float3 param_34 = _1331;
-                        int param_35 = _1631;
-                        float3 param_36 = _1331;
-                        float _1777 = (_1759 * vf_spot_lit(param_33, param_34, vf_shadow_smp, _663, _680, vf_spot_atlas, vf_spot_map)) * vf_spot_cookie(param_35, param_36, vf_cookie_smp, _663, vf_cookies);
-                        if (_1777 > 0.0)
+                        int param_33 = _1662;
+                        float3 param_34 = _1362;
+                        int param_35 = _1662;
+                        float3 param_36 = _1362;
+                        float _1808 = (_1790 * vf_spot_lit(param_33, param_34, vf_shadow_smp, _694, _711, vf_spot_atlas, vf_spot_map)) * vf_spot_cookie(param_35, param_36, vf_cookie_smp, _694, vf_cookies);
+                        if (_1808 > 0.0)
                         {
                             float3 param_37 = _86.vf_cam.xyz;
-                            float3 param_38 = _1157;
-                            float param_39 = _1523;
-                            float param_40 = _1527;
-                            float3 param_41 = _663.spots[_1631].pos.xyz;
-                            float param_42 = ((device float*)&_663.spots[_1631].params)[1u];
-                            float param_43 = _1748;
-                            float param_44 = ((device float*)&_663.spots[_1631].pos)[3u];
-                            float param_45 = (fd - (_1356 * 0.25)) + (_1748 * _1351);
-                            acc += (((_1777 * vf_inverse_square(param_37, param_38, param_39, param_40, param_41, param_42)) * vf_window(param_43, param_44)) * vf_transmittance(param_45, _86));
+                            float3 param_38 = _1188;
+                            float param_39 = _1554;
+                            float param_40 = _1558;
+                            float3 param_41 = _694.spots[_1662].pos.xyz;
+                            float param_42 = ((device float*)&_694.spots[_1662].params)[1u];
+                            float param_43 = _1779;
+                            float param_44 = ((device float*)&_694.spots[_1662].pos)[3u];
+                            float param_45 = (fd - (_1387 * 0.25)) + (_1779 * _1382);
+                            acc += (((_1808 * vf_inverse_square(param_37, param_38, param_39, param_40, param_41, param_42)) * vf_window(param_43, param_44)) * vf_transmittance(param_45, _86));
                         }
                     }
                     if (acc > 0.0)
                     {
-                        glow += (_663.spots[_1631].color.xyz * (((device float*)&_663.spots[_1631].params)[3u] * acc));
+                        glow += (_694.spots[_1662].color.xyz * (((device float*)&_694.spots[_1662].params)[3u] * acc));
                     }
                 }
-                light += ((glow * _86.vf_color.w) * _1351);
+                light += ((glow * _86.vf_color.w) * _1382);
             }
-            last_t = _1367;
-            vf_out.write(float4(light, _1367), uint2((int2((k % _1047) * _1030, (k / _1047) * _1026.y) + _1019)));
-            z0 = _1271;
-            p0 = _1293;
+            last_t = _1398;
+            vf_out.write(float4(light, _1398), uint2((int2((k % _1078) * _1061, (k / _1078) * _1057.y) + _1050)));
+            z0 = _1302;
+            p0 = _1324;
             k++;
             continue;
         }
@@ -6468,9 +6483,9 @@ struct vf_light_indices {
 
 @binding(3) @group(1) var vf_sun_map : texture_depth_2d;
 
-@binding(5) @group(1) var<storage, read> x_663 : vf_spots;
+@binding(5) @group(1) var<storage, read> x_694 : vf_spots;
 
-@binding(6) @group(1) var<storage, read> x_680 : vf_shadows;
+@binding(6) @group(1) var<storage, read> x_711 : vf_shadows;
 
 @binding(2) @group(1) var vf_spot_atlas : texture_depth_2d;
 
@@ -6480,11 +6495,11 @@ struct vf_light_indices {
 
 var<private> gl_GlobalInvocationID : vec3u;
 
-@binding(7) @group(1) var<storage, read> x_1488 : vf_light_clusters;
+@binding(7) @group(1) var<storage, read> x_1519 : vf_light_clusters;
 
-@binding(4) @group(1) var<storage, read> x_1545 : vf_points;
+@binding(4) @group(1) var<storage, read> x_1576 : vf_points;
 
-@binding(8) @group(1) var<storage, read> x_1550 : vf_light_indices;
+@binding(8) @group(1) var<storage, read> x_1581 : vf_light_indices;
 
 @binding(0) @group(1) var vf_out : texture_storage_2d<rgba16float, write>;
 
@@ -6603,7 +6618,7 @@ fn vf_transmittance_f1_(d : ptr<function, f32>) -> f32 {
   return x_131;
 }
 
-const x_1969 = vec2f(0.5f);
+const x_2004 = vec2f(0.5f);
 
 fn vf_cloud_vf3_(p_2 : ptr<function, vec3f>) -> f32 {
   let x_446 = x_86.vf_cloud_shadow.y;
@@ -6611,8 +6626,13 @@ fn vf_cloud_vf3_(p_2 : ptr<function, vec3f>) -> f32 {
     return 1.0f;
   }
   let x_454 = x_86.vf_sun_dir;
-  let x_492 = textureSampleLevel(vf_cloud_map, vf_cookie_smp, (((((*(p_2)).xz + ((x_454.xz / vec2f(max(x_454.y, 0.05000000074505805969f))) * (x_86.vf_cloud_shadow.w - (*(p_2)).y))) - x_86.vf_cloud_shadow.xz) * x_446) + x_1969), 0.0f);
-  return x_492.x;
+  let x_468 = x_86.vf_cloud_shadow.w;
+  let x_484 = (((((*(p_2)).xz + ((x_454.xz / vec2f(max(x_454.y, 0.05000000074505805969f))) * (x_468 - (*(p_2)).y))) - x_86.vf_cloud_shadow.xz) * x_446) + x_2004);
+  let x_487 = x_484.x;
+  let x_489 = x_484.y;
+  let x_501 = (*(p_2)).y;
+  let x_516 = textureSampleLevel(vf_cloud_map, vf_cookie_smp, x_484, 0.0f);
+  return mix(1.0f, x_516.x, (clamp((min(min(x_487, x_489), min((1.0f - x_487), (1.0f - x_489))) * 12.0f), 0.0f, 1.0f) * clamp((1.0f - ((x_501 - x_468) * 0.00039999998989515007f)), 0.0f, 1.0f)));
 }
 
 fn vf_depth_tap_t21_vf2_f1_(map : texture_depth_2d, uv : ptr<function, vec2f>, z : ptr<function, f32>) -> f32 {
@@ -6622,23 +6642,23 @@ fn vf_depth_tap_t21_vf2_f1_(map : texture_depth_2d, uv : ptr<function, vec2f>, z
   return x_441;
 }
 
-const x_1970 = vec2f(1.0f);
+const x_2005 = vec2f(1.0f);
 
 fn vf_sun_vf3_f1_(p_3 : ptr<function, vec3f>, depth : ptr<function, f32>) -> f32 {
   var k : i32;
   var i : i32;
   var param_10 : vec2f;
   var param_11 : f32;
-  var x_568 : bool;
-  var x_569 : bool;
-  var x_575 : bool;
-  var x_576 : bool;
-  var x_582 : bool;
-  var x_583 : bool;
-  var x_589 : bool;
-  var x_590 : bool;
-  var x_596 : bool;
-  var x_597 : bool;
+  var x_599 : bool;
+  var x_600 : bool;
+  var x_606 : bool;
+  var x_607 : bool;
+  var x_613 : bool;
+  var x_614 : bool;
+  var x_620 : bool;
+  var x_621 : bool;
+  var x_627 : bool;
+  var x_628 : bool;
   if ((x_86.vf_shadow_params.x < 0.5f)) {
     return 1.0f;
   }
@@ -6668,65 +6688,65 @@ fn vf_sun_vf3_f1_(p_3 : ptr<function, vec3f>, depth : ptr<function, f32>) -> f32
   if ((k < 0i)) {
     return 1.0f;
   }
-  let x_553 = *(p_3);
-  let x_558 = (x_86.vf_shadow_mat[k] * vec4f(x_553.x, x_553.y, x_553.z, 1.0f));
-  let x_561 = x_558.x;
-  let x_562 = (x_561 <= 0.0f);
-  x_569 = x_562;
-  if (!(x_562)) {
-    x_568 = (x_561 >= 1.0f);
-    x_569 = x_568;
+  let x_584 = *(p_3);
+  let x_589 = (x_86.vf_shadow_mat[k] * vec4f(x_584.x, x_584.y, x_584.z, 1.0f));
+  let x_592 = x_589.x;
+  let x_593 = (x_592 <= 0.0f);
+  x_600 = x_593;
+  if (!(x_593)) {
+    x_599 = (x_592 >= 1.0f);
+    x_600 = x_599;
   }
-  x_576 = x_569;
-  if (!(x_569)) {
-    x_575 = (x_558.y <= 0.0f);
-    x_576 = x_575;
+  x_607 = x_600;
+  if (!(x_600)) {
+    x_606 = (x_589.y <= 0.0f);
+    x_607 = x_606;
   }
-  x_583 = x_576;
-  if (!(x_576)) {
-    x_582 = (x_558.y >= 1.0f);
-    x_583 = x_582;
+  x_614 = x_607;
+  if (!(x_607)) {
+    x_613 = (x_589.y >= 1.0f);
+    x_614 = x_613;
   }
-  x_590 = x_583;
-  if (!(x_583)) {
-    x_589 = (x_558.z <= 0.0f);
-    x_590 = x_589;
+  x_621 = x_614;
+  if (!(x_614)) {
+    x_620 = (x_589.z <= 0.0f);
+    x_621 = x_620;
   }
-  x_597 = x_590;
-  if (!(x_590)) {
-    x_596 = (x_558.z >= 1.0f);
-    x_597 = x_596;
+  x_628 = x_621;
+  if (!(x_621)) {
+    x_627 = (x_589.z >= 1.0f);
+    x_628 = x_627;
   }
-  if (x_597) {
+  if (x_628) {
     return 1.0f;
   }
-  let x_606 = x_86.vf_cascade_rect[k];
-  let x_611 = x_606.zw;
-  let x_618 = x_558.xy;
-  let x_620 = ((vec2f(x_86.vf_shadow_params.z) / x_611) * 0.5f);
-  param_10 = (x_606.xy + (clamp(x_618, x_620, (x_1970 - x_620)) * x_611));
-  param_11 = x_558.z;
-  let x_637 = vf_depth_tap_t21_vf2_f1_(vf_sun_map, &(param_10), &(param_11));
-  let x_645 = min(x_618, (x_1970 - x_618));
-  return mix(1.0f, x_637, clamp((min(x_645.x, x_645.y) * 10.0f), 0.0f, 1.0f));
+  let x_637 = x_86.vf_cascade_rect[k];
+  let x_642 = x_637.zw;
+  let x_649 = x_589.xy;
+  let x_651 = ((vec2f(x_86.vf_shadow_params.z) / x_642) * 0.5f);
+  param_10 = (x_637.xy + (clamp(x_649, x_651, (x_2005 - x_651)) * x_642));
+  param_11 = x_589.z;
+  let x_668 = vf_depth_tap_t21_vf2_f1_(vf_sun_map, &(param_10), &(param_11));
+  let x_676 = min(x_649, (x_2005 - x_649));
+  return mix(1.0f, x_668, clamp((min(x_676.x, x_676.y) * 10.0f), 0.0f, 1.0f));
 }
 
 fn vf_inverse_square_vf3_vf3_f1_f1_vf3_f1_(o : ptr<function, vec3f>, dir : ptr<function, vec3f>, s0 : ptr<function, f32>, s1 : ptr<function, f32>, lp : ptr<function, vec3f>, radius : ptr<function, f32>) -> f32 {
-  let x_974 = (*(lp) - *(o));
-  let x_978 = dot(x_974, *(dir));
-  let x_992 = max(sqrt(max((dot(x_974, x_974) - (x_978 * x_978)), 0.0f)), max(*(radius), 0.25f));
-  let x_993 = *(s1);
-  let x_999 = *(s0);
-  return ((atan(((x_993 - x_978) / x_992)) - atan(((x_999 - x_978) / x_992))) / x_992);
+  let x_1005 = (*(lp) - *(o));
+  let x_1009 = dot(x_1005, *(dir));
+  let x_1023 = max(sqrt(max((dot(x_1005, x_1005) - (x_1009 * x_1009)), 0.0f)), max(*(radius), 0.25f));
+  let x_1024 = *(s1);
+  let x_1030 = *(s0);
+  return ((atan(((x_1024 - x_1009) / x_1023)) - atan(((x_1030 - x_1009) / x_1023))) / x_1023);
 }
 
 fn vf_window_f1_f1_(d_1 : ptr<function, f32>, cutoff : ptr<function, f32>) -> f32 {
   if ((*(cutoff) <= 0.0f)) {
     return 1.0f;
   }
-  let x_955 = (*(d_1) / *(cutoff));
-  let x_965 = clamp((1.0f - (((x_955 * x_955) * x_955) * x_955)), 0.0f, 1.0f);
-  return (x_965 * x_965);
+  let x_986 = (*(d_1) / *(cutoff));
+  let x_996 = clamp((1.0f - (((x_986 * x_986) * x_986) * x_986)), 0.0f, 1.0f);
+  return (x_996 * x_996);
 }
 
 fn vf_spot_lit_i1_vf3_(s : ptr<function, i32>, p_4 : ptr<function, vec3f>) -> f32 {
@@ -6736,132 +6756,132 @@ fn vf_spot_lit_i1_vf3_(s : ptr<function, i32>, p_4 : ptr<function, vec3f>) -> f3
   var param_13 : f32;
   var param_14 : vec2f;
   var param_15 : f32;
-  var x_730 : bool;
-  var x_731 : bool;
-  var x_754 : bool;
-  var x_755 : bool;
   var x_761 : bool;
   var x_762 : bool;
-  var x_768 : bool;
-  var x_769 : bool;
-  var x_775 : bool;
-  var x_776 : bool;
-  let x_667 = i32(x_663.spots[*(s)].shadow.x);
-  if ((x_667 < 0i)) {
+  var x_785 : bool;
+  var x_786 : bool;
+  var x_792 : bool;
+  var x_793 : bool;
+  var x_799 : bool;
+  var x_800 : bool;
+  var x_806 : bool;
+  var x_807 : bool;
+  let x_698 = i32(x_694.spots[*(s)].shadow.x);
+  if ((x_698 < 0i)) {
     return 1.0f;
   }
-  let x_684 = x_680.spot_shadows[x_667];
-  let x_688 = x_684.params;
-  let x_690 = x_684.rect;
-  let x_692 = x_684.soft;
-  let x_702 = (*(p_4) - x_663.spots[*(s)].pos.xyz);
-  let x_707 = (x_684.mat * vec4f(x_702.x, x_702.y, x_702.z, 1.0f));
-  let x_709 = x_707.w;
-  if ((x_709 <= 0.0f)) {
+  let x_715 = x_711.spot_shadows[x_698];
+  let x_719 = x_715.params;
+  let x_721 = x_715.rect;
+  let x_723 = x_715.soft;
+  let x_733 = (*(p_4) - x_694.spots[*(s)].pos.xyz);
+  let x_738 = (x_715.mat * vec4f(x_733.x, x_733.y, x_733.z, 1.0f));
+  let x_740 = x_738.w;
+  if ((x_740 <= 0.0f)) {
     return 1.0f;
   }
-  c = (x_707.xyz / vec3f(x_709));
-  let x_722 = x_688.x;
-  let x_724 = (x_722 > 1.5f);
-  x_731 = x_724;
-  if (x_724) {
-    x_730 = (x_722 < 2.5f);
-    x_731 = x_730;
-  }
-  if (x_731) {
-    let x_737 = x_692.y;
-    let x_1951 = c;
-    var x_1952_1 = x_1951;
-    x_1952_1.z = ((x_709 - x_737) / (x_692.z - x_737));
-    c = x_1952_1;
-  }
-  let x_748 = (c.x < 0.0f);
-  x_755 = x_748;
-  if (!(x_748)) {
-    x_754 = (c.x > 1.0f);
-    x_755 = x_754;
-  }
+  c = (x_738.xyz / vec3f(x_740));
+  let x_753 = x_719.x;
+  let x_755 = (x_753 > 1.5f);
   x_762 = x_755;
-  if (!(x_755)) {
-    x_761 = (c.y < 0.0f);
+  if (x_755) {
+    x_761 = (x_753 < 2.5f);
     x_762 = x_761;
   }
-  x_769 = x_762;
-  if (!(x_762)) {
-    x_768 = (c.y > 1.0f);
-    x_769 = x_768;
+  if (x_762) {
+    let x_768 = x_723.y;
+    let x_1986 = c;
+    var x_1987_1 = x_1986;
+    x_1987_1.z = ((x_740 - x_768) / (x_723.z - x_768));
+    c = x_1987_1;
   }
-  x_776 = x_769;
-  if (!(x_769)) {
-    x_775 = (c.z > 1.0f);
-    x_776 = x_775;
+  let x_779 = (c.x < 0.0f);
+  x_786 = x_779;
+  if (!(x_779)) {
+    x_785 = (c.x > 1.0f);
+    x_786 = x_785;
   }
-  if (x_776) {
+  x_793 = x_786;
+  if (!(x_786)) {
+    x_792 = (c.y < 0.0f);
+    x_793 = x_792;
+  }
+  x_800 = x_793;
+  if (!(x_793)) {
+    x_799 = (c.y > 1.0f);
+    x_800 = x_799;
+  }
+  x_807 = x_800;
+  if (!(x_800)) {
+    x_806 = (c.z > 1.0f);
+    x_807 = x_806;
+  }
+  if (x_807) {
     return 1.0f;
   }
-  if (x_724) {
-    let x_787 = x_688.z;
-    let x_793 = c;
-    param_12 = (x_690.xy + (clamp(c.xy, vec2f(x_787), vec2f((1.0f - x_787))) * x_690.zw));
-    param_13 = x_793.z;
-    let x_810 = vf_depth_tap_t21_vf2_f1_(vf_spot_atlas, &(param_12), &(param_13));
-    seen = x_810;
+  if (x_755) {
+    let x_818 = x_719.z;
+    let x_824 = c;
+    param_12 = (x_721.xy + (clamp(c.xy, vec2f(x_818), vec2f((1.0f - x_818))) * x_721.zw));
+    param_13 = x_824.z;
+    let x_841 = vf_depth_tap_t21_vf2_f1_(vf_spot_atlas, &(param_12), &(param_13));
+    seen = x_841;
   } else {
-    let x_814 = c;
+    let x_845 = c;
     param_14 = c.xy;
-    param_15 = x_814.z;
-    let x_819 = vf_depth_tap_t21_vf2_f1_(vf_spot_map, &(param_14), &(param_15));
-    seen = x_819;
+    param_15 = x_845.z;
+    let x_850 = vf_depth_tap_t21_vf2_f1_(vf_spot_map, &(param_14), &(param_15));
+    seen = x_850;
   }
-  let x_820 = seen;
-  let x_823 = x_663.spots[*(s)].shadow.y;
-  return mix(1.0f, x_820, x_823);
+  let x_851 = seen;
+  let x_854 = x_694.spots[*(s)].shadow.y;
+  return mix(1.0f, x_851, x_854);
 }
 
 fn vf_spot_cookie_i1_vf3_(s_1 : ptr<function, i32>, p_5 : ptr<function, vec3f>) -> f32 {
-  var x_893 : bool;
-  var x_894 : bool;
-  var x_900 : bool;
-  var x_901 : bool;
-  var x_907 : bool;
-  var x_908 : bool;
-  let x_831 = x_663.spots[*(s_1)].map;
-  if ((x_831.z <= 0.0f)) {
+  var x_924 : bool;
+  var x_925 : bool;
+  var x_931 : bool;
+  var x_932 : bool;
+  var x_938 : bool;
+  var x_939 : bool;
+  let x_862 = x_694.spots[*(s_1)].map;
+  if ((x_862.z <= 0.0f)) {
     return 1.0f;
   }
-  let x_844 = (*(p_5) - x_663.spots[*(s_1)].pos.xyz);
-  let x_866 = x_663.spots[*(s_1)].map_v;
-  let x_884 = (x_1969 + ((vec2f(dot(x_844, x_663.spots[*(s_1)].map_u.xyz), dot(x_844, vec3f(x_663.spots[*(s_1)].map_u.w, x_866.x, x_866.y))) * 0.5f) / vec2f(max(dot(x_844, x_663.spots[*(s_1)].dir.xyz), 0.00009999999747378752f))));
-  let x_886 = x_884.x;
-  let x_887 = (x_886 < 0.0f);
-  x_894 = x_887;
-  if (!(x_887)) {
-    x_893 = (x_886 > 1.0f);
-    x_894 = x_893;
+  let x_875 = (*(p_5) - x_694.spots[*(s_1)].pos.xyz);
+  let x_897 = x_694.spots[*(s_1)].map_v;
+  let x_915 = (x_2004 + ((vec2f(dot(x_875, x_694.spots[*(s_1)].map_u.xyz), dot(x_875, vec3f(x_694.spots[*(s_1)].map_u.w, x_897.x, x_897.y))) * 0.5f) / vec2f(max(dot(x_875, x_694.spots[*(s_1)].dir.xyz), 0.00009999999747378752f))));
+  let x_917 = x_915.x;
+  let x_918 = (x_917 < 0.0f);
+  x_925 = x_918;
+  if (!(x_918)) {
+    x_924 = (x_917 > 1.0f);
+    x_925 = x_924;
   }
-  x_901 = x_894;
-  if (!(x_894)) {
-    x_900 = (x_884.y < 0.0f);
-    x_901 = x_900;
+  x_932 = x_925;
+  if (!(x_925)) {
+    x_931 = (x_915.y < 0.0f);
+    x_932 = x_931;
   }
-  x_908 = x_901;
-  if (!(x_901)) {
-    x_907 = (x_884.y > 1.0f);
-    x_908 = x_907;
+  x_939 = x_932;
+  if (!(x_932)) {
+    x_938 = (x_915.y > 1.0f);
+    x_939 = x_938;
   }
-  if (x_908) {
+  if (x_939) {
     return 0.0f;
   }
-  let x_937 = textureSampleLevel(vf_cookies, vf_cookie_smp, (x_831.xy + (vec2f(x_886, (1.0f - x_884.y)) * x_831.zw)), max((x_663.spots[*(s_1)].map_v.z - 7.5f), 0.0f));
-  return dot(x_937.xyz, vec3f(0.21259999275207519531f, 0.71520000696182250977f, 0.07220000028610229492f));
+  let x_968 = textureSampleLevel(vf_cookies, vf_cookie_smp, (x_862.xy + (vec2f(x_917, (1.0f - x_915.y)) * x_862.zw)), max((x_694.spots[*(s_1)].map_v.z - 7.5f), 0.0f));
+  return dot(x_968.xyz, vec3f(0.21259999275207519531f, 0.71520000696182250977f, 0.07220000028610229492f));
 }
 
-const x_1173 = vec2f(0.00000999999974737875f);
+const x_1204 = vec2f(0.00000999999974737875f);
 
 fn main_1() {
   var i_1 : i32;
-  var x_1078 : f32;
-  var x_1091 : f32;
+  var x_1109 : f32;
+  var x_1122 : f32;
   var sub_ray : array<vec3f, 4u>;
   var side_density : f32;
   var sun_glow : f32;
@@ -6871,7 +6891,7 @@ fn main_1() {
   var z0 : f32;
   var p0 : vec3f;
   var k_1 : i32;
-  var x_1271 : f32;
+  var x_1302 : f32;
   var param_16 : f32;
   var param_17 : f32;
   var param_18 : vec3f;
@@ -6887,7 +6907,7 @@ fn main_1() {
   var param_24 : f32;
   var param_25 : vec3f;
   var param_26 : f32;
-  var x_1462 : i32;
+  var x_1493 : i32;
   var glow : vec3f;
   var i_3 : i32;
   var param_27 : vec3f;
@@ -6927,26 +6947,26 @@ fn main_1() {
   var param_59 : f32;
   var param_60 : f32;
   var param_61 : f32;
-  var x_1039 : bool;
-  var x_1040 : bool;
-  var x_1212 : bool;
-  var x_1213 : bool;
-  let x_1019 = bitcast<vec2i>(gl_GlobalInvocationID.xy);
-  let x_1026 = vec3i(x_86.vf_grid.xyz);
-  let x_1030 = x_1026.x;
-  let x_1031 = (x_1019.x >= x_1030);
-  x_1040 = x_1031;
-  if (!(x_1031)) {
-    x_1039 = (x_1019.y >= x_1026.y);
-    x_1040 = x_1039;
+  var x_1070 : bool;
+  var x_1071 : bool;
+  var x_1243 : bool;
+  var x_1244 : bool;
+  let x_1050 = bitcast<vec2i>(gl_GlobalInvocationID.xy);
+  let x_1057 = vec3i(x_86.vf_grid.xyz);
+  let x_1061 = x_1057.x;
+  let x_1062 = (x_1050.x >= x_1061);
+  x_1071 = x_1062;
+  if (!(x_1062)) {
+    x_1070 = (x_1050.y >= x_1057.y);
+    x_1071 = x_1070;
   }
-  if (x_1040) {
+  if (x_1071) {
     return;
   }
-  let x_1047 = i32(x_86.vf_grid.w);
-  let x_1055 = vec2f(x_1026.xy);
-  let x_1059 = ((((vec2f(x_1019) + x_1969) / x_1055) * 2.0f) - x_1970);
-  let x_1065 = (x_1969 / x_1055);
+  let x_1078 = i32(x_86.vf_grid.w);
+  let x_1086 = vec2f(x_1057.xy);
+  let x_1090 = ((((vec2f(x_1050) + x_2004) / x_1086) * 2.0f) - x_2005);
+  let x_1096 = (x_2004 / x_1086);
   i_1 = 0i;
   loop {
     if ((i_1 < 4i)) {
@@ -6954,101 +6974,101 @@ fn main_1() {
       break;
     }
     if (((i_1 & 1i) == 0i)) {
-      x_1078 = -(x_1065.x);
+      x_1109 = -(x_1096.x);
     } else {
-      x_1078 = x_1065.x;
+      x_1109 = x_1096.x;
     }
-    let x_1087 = x_1078;
+    let x_1118 = x_1109;
     if (((i_1 & 2i) == 0i)) {
-      x_1091 = -(x_1065.y);
+      x_1122 = -(x_1096.y);
     } else {
-      x_1091 = x_1065.y;
+      x_1122 = x_1096.y;
     }
-    let x_1105 = i_1;
-    sub_ray[x_1105] = ((x_86.vf_fwd.xyz + (x_86.vf_right.xyz * (x_1059.x + x_1087))) + (x_86.vf_up.xyz * (x_1059.y + x_1091)));
+    let x_1136 = i_1;
+    sub_ray[x_1136] = ((x_86.vf_fwd.xyz + (x_86.vf_right.xyz * (x_1090.x + x_1118))) + (x_86.vf_up.xyz * (x_1090.y + x_1122)));
 
     continuing {
       i_1 = (i_1 + 1i);
     }
   }
-  let x_1149 = ((x_86.vf_fwd.xyz + (x_86.vf_right.xyz * x_1059.x)) + (x_86.vf_up.xyz * x_1059.y));
-  let x_1152 = length(x_1149);
-  let x_1157 = (x_1149 / vec3f(x_1152));
-  let x_1161 = x_86.vf_cam.xyz;
+  let x_1180 = ((x_86.vf_fwd.xyz + (x_86.vf_right.xyz * x_1090.x)) + (x_86.vf_up.xyz * x_1090.y));
+  let x_1183 = length(x_1180);
+  let x_1188 = (x_1180 / vec3f(x_1183));
+  let x_1192 = x_86.vf_cam.xyz;
   side_density = 1.0f;
   sun_glow = 0.0f;
-  let x_1165 = x_86.vf_sun_dir.w;
-  if ((x_1165 > 0.0f)) {
-    let x_1177 = x_86.vf_sun_dir;
-    side_density = mix(x_86.vf_height.w, 1.0f, smoothstep(-0.30000001192092895508f, 0.69999998807907104492f, dot(normalize((x_1157.xz + x_1173)), normalize((x_1177.xz + x_1173)))));
-    sun_glow = pow(max(dot(x_1157, x_1177.xyz), 0.0f), x_1165);
+  let x_1196 = x_86.vf_sun_dir.w;
+  if ((x_1196 > 0.0f)) {
+    let x_1208 = x_86.vf_sun_dir;
+    side_density = mix(x_86.vf_height.w, 1.0f, smoothstep(-0.30000001192092895508f, 0.69999998807907104492f, dot(normalize((x_1188.xz + x_1204)), normalize((x_1208.xz + x_1204)))));
+    sun_glow = pow(max(dot(x_1188, x_1208.xyz), 0.0f), x_1196);
   }
-  let x_1202 = x_86.vf_sun_color.w;
-  let x_1206 = ((x_1202 > 0.0f) & (sun_glow > 0.0f));
-  x_1213 = x_1206;
-  if (x_1206) {
-    x_1212 = (i32(x_86.vf_params.w) == 3i);
-    x_1213 = x_1212;
+  let x_1233 = x_86.vf_sun_color.w;
+  let x_1237 = ((x_1233 > 0.0f) & (sun_glow > 0.0f));
+  x_1244 = x_1237;
+  if (x_1237) {
+    x_1243 = (i32(x_86.vf_params.w) == 3i);
+    x_1244 = x_1243;
   }
-  let x_1216 = x_86.vf_color.w;
-  let x_1225 = x_86.vf_clusters.xy;
-  let x_1236 = clamp(vec2i(floor((((x_1059 * 0.5f) + x_1969) * x_1225))), vec2i(), (vec2i(x_1225) - vec2i(1i)));
-  let x_1240 = i32(x_86.vf_clusters.x);
-  let x_1244 = i32(x_86.vf_clusters.y);
-  let x_1248 = i32(x_86.vf_clusters.z);
+  let x_1247 = x_86.vf_color.w;
+  let x_1256 = x_86.vf_clusters.xy;
+  let x_1267 = clamp(vec2i(floor((((x_1090 * 0.5f) + x_2004) * x_1256))), vec2i(), (vec2i(x_1256) - vec2i(1i)));
+  let x_1271 = i32(x_86.vf_clusters.x);
+  let x_1275 = i32(x_86.vf_clusters.y);
+  let x_1279 = i32(x_86.vf_clusters.z);
   fd = 0.0f;
   last_t = 1.0f;
   light = vec3f();
   z0 = 0.0f;
-  p0 = x_1161;
+  p0 = x_1192;
   k_1 = 0i;
   loop {
-    var x_1452 : bool;
-    var x_1453 : bool;
-    let x_1263 = x_1026.z;
-    if ((k_1 < x_1263)) {
+    var x_1483 : bool;
+    var x_1484 : bool;
+    let x_1294 = x_1057.z;
+    if ((k_1 < x_1294)) {
     } else {
       break;
     }
-    if (((k_1 + 1i) >= x_1263)) {
-      x_1271 = x_86.vf_depth.z;
+    if (((k_1 + 1i) >= x_1294)) {
+      x_1302 = x_86.vf_depth.z;
     } else {
-      x_1271 = (x_86.vf_depth.x * exp((f32((k_1 + 1i)) / x_86.vf_depth.y)));
+      x_1302 = (x_86.vf_depth.x * exp((f32((k_1 + 1i)) / x_86.vf_depth.y)));
     }
-    var x_1314 : f32;
-    var x_1319 : f32;
-    let x_1287 = x_1271;
-    let x_1293 = (x_1161 + (x_1149 * x_1271));
-    let x_1296 = z0;
-    let x_1304 = (0.5f * (z0 + x_1271));
-    let x_1310 = (x_1161 + (x_1149 * x_1304));
-    x_1314 = mix(z0, x_1271, 0.25f);
-    x_1319 = mix(x_1296, x_1287, 0.75f);
-    let x_1325 = (x_1161 + (x_1149 * x_1314));
-    let x_1331 = (x_1161 + (x_1149 * x_1319));
+    var x_1345 : f32;
+    var x_1350 : f32;
+    let x_1318 = x_1302;
+    let x_1324 = (x_1192 + (x_1180 * x_1302));
+    let x_1327 = z0;
+    let x_1335 = (0.5f * (z0 + x_1302));
+    let x_1341 = (x_1192 + (x_1180 * x_1335));
+    x_1345 = mix(z0, x_1302, 0.25f);
+    x_1350 = mix(x_1327, x_1318, 0.75f);
+    let x_1356 = (x_1192 + (x_1180 * x_1345));
+    let x_1362 = (x_1192 + (x_1180 * x_1350));
     param_16 = p0.y;
-    param_17 = x_1293.y;
-    let x_1339 = vf_height_mean_f1_f1_(&(param_16), &(param_17));
+    param_17 = x_1324.y;
+    let x_1370 = vf_height_mean_f1_f1_(&(param_16), &(param_17));
     param_18 = p0;
-    param_19 = x_1293;
-    let x_1344 = vf_box_fraction_vf3_vf3_(&(param_18), &(param_19));
-    let x_1346 = side_density;
-    param_20 = x_1310;
-    let x_1350 = vf_mist_vf3_(&(param_20));
-    let x_1351 = (((x_1339 * x_1344) * x_1346) * x_1350);
-    let x_1356 = (((x_1287 - x_1296) * x_1152) * x_1351);
-    let x_1358 = (fd + (x_1356 * 0.5f));
-    let x_1363 = (fd + x_1356);
-    fd = x_1363;
-    param_21 = x_1363;
-    let x_1367 = vf_transmittance_f1_(&(param_21));
+    param_19 = x_1324;
+    let x_1375 = vf_box_fraction_vf3_vf3_(&(param_18), &(param_19));
+    let x_1377 = side_density;
+    param_20 = x_1341;
+    let x_1381 = vf_mist_vf3_(&(param_20));
+    let x_1382 = (((x_1370 * x_1375) * x_1377) * x_1381);
+    let x_1387 = (((x_1318 - x_1327) * x_1183) * x_1382);
+    let x_1389 = (fd + (x_1387 * 0.5f));
+    let x_1394 = (fd + x_1387);
+    fd = x_1394;
+    param_21 = x_1394;
+    let x_1398 = vf_transmittance_f1_(&(param_21));
     own = x_86.vf_color.xyz;
     if ((sun_glow > 0.0f)) {
-      let x_1377 = sun_glow;
-      param_22 = x_1310;
-      let x_1380 = vf_cloud_vf3_(&(param_22));
-      lit = (x_1377 * x_1380);
-      if (x_1213) {
+      let x_1408 = sun_glow;
+      param_22 = x_1341;
+      let x_1411 = vf_cloud_vf3_(&(param_22));
+      lit = (x_1408 * x_1411);
+      if (x_1244) {
         seen_1 = 0.0f;
         i_2 = 0i;
         loop {
@@ -7056,68 +7076,68 @@ fn main_1() {
           } else {
             break;
           }
-          param_23 = (x_1161 + (sub_ray[i_2] * x_1314));
-          param_24 = x_1314;
-          let x_1404 = vf_sun_vf3_f1_(&(param_23), &(param_24));
-          param_25 = (x_1161 + (sub_ray[i_2] * x_1319));
-          param_26 = x_1319;
-          let x_1415 = vf_sun_vf3_f1_(&(param_25), &(param_26));
-          seen_1 = (seen_1 + (x_1404 + x_1415));
+          param_23 = (x_1192 + (sub_ray[i_2] * x_1345));
+          param_24 = x_1345;
+          let x_1435 = vf_sun_vf3_f1_(&(param_23), &(param_24));
+          param_25 = (x_1192 + (sub_ray[i_2] * x_1350));
+          param_26 = x_1350;
+          let x_1446 = vf_sun_vf3_f1_(&(param_25), &(param_26));
+          seen_1 = (seen_1 + (x_1435 + x_1446));
 
           continuing {
             i_2 = (i_2 + 1i);
           }
         }
-        lit = (lit * mix(1.0f, (seen_1 * 0.125f), x_1202));
+        lit = (lit * mix(1.0f, (seen_1 * 0.125f), x_1233));
       }
       own = mix(own, x_86.vf_sun_color.xyz, vec3f(lit));
     }
-    light = (light + (own * (last_t - x_1367)));
-    let x_1447 = ((x_1216 > 0.0f) & (x_1351 > 0.0f));
-    x_1453 = x_1447;
-    if (x_1447) {
-      x_1452 = (x_86.vf_clusters.w > 0.5f);
-      x_1453 = x_1452;
+    light = (light + (own * (last_t - x_1398)));
+    let x_1478 = ((x_1247 > 0.0f) & (x_1382 > 0.0f));
+    x_1484 = x_1478;
+    if (x_1478) {
+      x_1483 = (x_86.vf_clusters.w > 0.5f);
+      x_1484 = x_1483;
     }
-    if (x_1453) {
-      let x_1460 = x_86.vf_cluster_depth.x;
-      if ((x_1304 <= x_1460)) {
-        x_1462 = 0i;
+    if (x_1484) {
+      let x_1491 = x_86.vf_cluster_depth.x;
+      if ((x_1335 <= x_1491)) {
+        x_1493 = 0i;
       } else {
-        x_1462 = i32(floor((log((x_1304 / x_1460)) * x_86.vf_cluster_depth.y)));
+        x_1493 = i32(floor((log((x_1335 / x_1491)) * x_86.vf_cluster_depth.y)));
       }
-      let x_1502 = x_1488.clusters[(x_1236.x + (x_1240 * (x_1236.y + (x_1244 * clamp(x_1462, 0i, (x_1248 - 1i))))))].range;
-      let x_1507 = bitcast<i32>(x_1502.x);
-      let x_1511 = bitcast<i32>(x_1502.y);
-      let x_1515 = bitcast<i32>(x_1502.z);
-      let x_1519 = (z0 * x_1152);
-      let x_1523 = (x_1304 * x_1152);
-      let x_1527 = (x_1287 * x_1152);
+      let x_1533 = x_1519.clusters[(x_1267.x + (x_1271 * (x_1267.y + (x_1275 * clamp(x_1493, 0i, (x_1279 - 1i))))))].range;
+      let x_1538 = bitcast<i32>(x_1533.x);
+      let x_1542 = bitcast<i32>(x_1533.y);
+      let x_1546 = bitcast<i32>(x_1533.z);
+      let x_1550 = (z0 * x_1183);
+      let x_1554 = (x_1335 * x_1183);
+      let x_1558 = (x_1318 * x_1183);
       glow = vec3f();
       i_3 = 0i;
       loop {
-        if ((i_3 < x_1511)) {
+        if ((i_3 < x_1542)) {
         } else {
           break;
         }
-        let x_1559 = x_1545.points[x_1550.cluster_lights[(x_1507 + i_3)].index];
-        let x_1560 = x_1559.pos;
-        let x_1562 = x_1559.color;
-        let x_1569 = x_1560.xyz;
-        let x_1572 = length((x_1569 - x_1310));
-        param_27 = x_1161;
-        param_28 = x_1157;
-        param_29 = x_1519;
-        param_30 = x_1527;
-        param_31 = x_1569;
-        param_32 = x_1559.params.x;
-        let x_1589 = vf_inverse_square_vf3_vf3_f1_f1_vf3_f1_(&(param_27), &(param_28), &(param_29), &(param_30), &(param_31), &(param_32));
-        param_33 = x_1572;
-        param_34 = x_1560.w;
-        let x_1600 = vf_window_f1_f1_(&(param_33), &(param_34));
-        param_35 = (x_1358 + (x_1572 * x_1351));
-        let x_1608 = vf_transmittance_f1_(&(param_35));
-        glow = (glow + (((x_1562.xyz * x_1589) * x_1600) * x_1608));
+        let x_1590 = x_1576.points[x_1581.cluster_lights[(x_1538 + i_3)].index];
+        let x_1591 = x_1590.pos;
+        let x_1593 = x_1590.color;
+        let x_1600 = x_1591.xyz;
+        let x_1603 = length((x_1600 - x_1341));
+        param_27 = x_1192;
+        param_28 = x_1188;
+        param_29 = x_1550;
+        param_30 = x_1558;
+        param_31 = x_1600;
+        param_32 = x_1590.params.x;
+        let x_1620 = vf_inverse_square_vf3_vf3_f1_f1_vf3_f1_(&(param_27), &(param_28), &(param_29), &(param_30), &(param_31), &(param_32));
+        param_33 = x_1603;
+        param_34 = x_1591.w;
+        let x_1631 = vf_window_f1_f1_(&(param_33), &(param_34));
+        param_35 = (x_1389 + (x_1603 * x_1382));
+        let x_1639 = vf_transmittance_f1_(&(param_35));
+        glow = (glow + (((x_1593.xyz * x_1620) * x_1631) * x_1639));
 
         continuing {
           i_3 = (i_3 + 1i);
@@ -7125,96 +7145,96 @@ fn main_1() {
       }
       i_4 = 0i;
       loop {
-        if ((i_4 < x_1515)) {
+        if ((i_4 < x_1546)) {
         } else {
           break;
         }
-        let x_1631 = bitcast<i32>(x_1550.cluster_lights[((x_1507 + x_1511) + i_4)].index);
-        let x_1634 = x_663.spots[x_1631].params.w;
-        if ((x_1634 <= 0.0f)) {
+        let x_1662 = bitcast<i32>(x_1581.cluster_lights[((x_1538 + x_1542) + i_4)].index);
+        let x_1665 = x_694.spots[x_1662].params.w;
+        if ((x_1665 <= 0.0f)) {
           continue;
         }
-        var x_1672 : f32;
-        var x_1683 : f32;
-        let x_1643 = x_663.spots[x_1631].pos.xyz;
-        let x_1648 = x_663.spots[x_1631].dir.xyz;
-        let x_1652 = x_663.spots[x_1631].dir.w;
-        let x_1656 = x_663.spots[x_1631].params.x;
-        let x_1660 = x_663.spots[x_1631].params.y;
-        let x_1664 = x_663.spots[x_1631].pos.w;
+        var x_1703 : f32;
+        var x_1714 : f32;
+        let x_1674 = x_694.spots[x_1662].pos.xyz;
+        let x_1679 = x_694.spots[x_1662].dir.xyz;
+        let x_1683 = x_694.spots[x_1662].dir.w;
+        let x_1687 = x_694.spots[x_1662].params.x;
+        let x_1691 = x_694.spots[x_1662].params.y;
+        let x_1695 = x_694.spots[x_1662].pos.w;
         acc = 0.0f;
-        let x_1669 = (x_1325 - x_1643);
-        x_1672 = length(x_1669);
-        x_1683 = smoothstep(x_1652, x_1656, dot((x_1669 / vec3f(max(x_1672, 0.00009999999747378752f))), x_1648));
-        if ((x_1683 > 0.0f)) {
-          param_36 = x_1631;
-          param_37 = x_1325;
-          let x_1694 = vf_spot_lit_i1_vf3_(&(param_36), &(param_37));
-          param_38 = x_1631;
-          param_39 = x_1325;
-          let x_1700 = vf_spot_cookie_i1_vf3_(&(param_38), &(param_39));
-          let x_1701 = ((x_1683 * x_1694) * x_1700);
-          if ((x_1701 > 0.0f)) {
-            param_40 = x_1161;
-            param_41 = x_1157;
-            param_42 = x_1519;
-            param_43 = x_1523;
-            param_44 = x_1643;
-            param_45 = x_1660;
-            let x_1719 = vf_inverse_square_vf3_vf3_f1_f1_vf3_f1_(&(param_40), &(param_41), &(param_42), &(param_43), &(param_44), &(param_45));
-            param_46 = x_1672;
-            param_47 = x_1664;
-            let x_1725 = vf_window_f1_f1_(&(param_46), &(param_47));
-            param_48 = ((fd - (x_1356 * 0.75f)) + (x_1672 * x_1351));
-            let x_1738 = vf_transmittance_f1_(&(param_48));
-            acc = (acc + (((x_1701 * x_1719) * x_1725) * x_1738));
+        let x_1700 = (x_1356 - x_1674);
+        x_1703 = length(x_1700);
+        x_1714 = smoothstep(x_1683, x_1687, dot((x_1700 / vec3f(max(x_1703, 0.00009999999747378752f))), x_1679));
+        if ((x_1714 > 0.0f)) {
+          param_36 = x_1662;
+          param_37 = x_1356;
+          let x_1725 = vf_spot_lit_i1_vf3_(&(param_36), &(param_37));
+          param_38 = x_1662;
+          param_39 = x_1356;
+          let x_1731 = vf_spot_cookie_i1_vf3_(&(param_38), &(param_39));
+          let x_1732 = ((x_1714 * x_1725) * x_1731);
+          if ((x_1732 > 0.0f)) {
+            param_40 = x_1192;
+            param_41 = x_1188;
+            param_42 = x_1550;
+            param_43 = x_1554;
+            param_44 = x_1674;
+            param_45 = x_1691;
+            let x_1750 = vf_inverse_square_vf3_vf3_f1_f1_vf3_f1_(&(param_40), &(param_41), &(param_42), &(param_43), &(param_44), &(param_45));
+            param_46 = x_1703;
+            param_47 = x_1695;
+            let x_1756 = vf_window_f1_f1_(&(param_46), &(param_47));
+            param_48 = ((fd - (x_1387 * 0.75f)) + (x_1703 * x_1382));
+            let x_1769 = vf_transmittance_f1_(&(param_48));
+            acc = (acc + (((x_1732 * x_1750) * x_1756) * x_1769));
           }
         }
-        var x_1748 : f32;
-        var x_1759 : f32;
-        let x_1745 = (x_1331 - x_1643);
-        x_1748 = length(x_1745);
-        x_1759 = smoothstep(x_1652, x_1656, dot((x_1745 / vec3f(max(x_1748, 0.00009999999747378752f))), x_1648));
-        if ((x_1759 > 0.0f)) {
-          param_49 = x_1631;
-          param_50 = x_1331;
-          let x_1770 = vf_spot_lit_i1_vf3_(&(param_49), &(param_50));
-          param_51 = x_1631;
-          param_52 = x_1331;
-          let x_1776 = vf_spot_cookie_i1_vf3_(&(param_51), &(param_52));
-          let x_1777 = ((x_1759 * x_1770) * x_1776);
-          if ((x_1777 > 0.0f)) {
-            param_53 = x_1161;
-            param_54 = x_1157;
-            param_55 = x_1523;
-            param_56 = x_1527;
-            param_57 = x_1643;
-            param_58 = x_1660;
-            let x_1795 = vf_inverse_square_vf3_vf3_f1_f1_vf3_f1_(&(param_53), &(param_54), &(param_55), &(param_56), &(param_57), &(param_58));
-            param_59 = x_1748;
-            param_60 = x_1664;
-            let x_1801 = vf_window_f1_f1_(&(param_59), &(param_60));
-            param_61 = ((fd - (x_1356 * 0.25f)) + (x_1748 * x_1351));
-            let x_1814 = vf_transmittance_f1_(&(param_61));
-            acc = (acc + (((x_1777 * x_1795) * x_1801) * x_1814));
+        var x_1779 : f32;
+        var x_1790 : f32;
+        let x_1776 = (x_1362 - x_1674);
+        x_1779 = length(x_1776);
+        x_1790 = smoothstep(x_1683, x_1687, dot((x_1776 / vec3f(max(x_1779, 0.00009999999747378752f))), x_1679));
+        if ((x_1790 > 0.0f)) {
+          param_49 = x_1662;
+          param_50 = x_1362;
+          let x_1801 = vf_spot_lit_i1_vf3_(&(param_49), &(param_50));
+          param_51 = x_1662;
+          param_52 = x_1362;
+          let x_1807 = vf_spot_cookie_i1_vf3_(&(param_51), &(param_52));
+          let x_1808 = ((x_1790 * x_1801) * x_1807);
+          if ((x_1808 > 0.0f)) {
+            param_53 = x_1192;
+            param_54 = x_1188;
+            param_55 = x_1554;
+            param_56 = x_1558;
+            param_57 = x_1674;
+            param_58 = x_1691;
+            let x_1826 = vf_inverse_square_vf3_vf3_f1_f1_vf3_f1_(&(param_53), &(param_54), &(param_55), &(param_56), &(param_57), &(param_58));
+            param_59 = x_1779;
+            param_60 = x_1695;
+            let x_1832 = vf_window_f1_f1_(&(param_59), &(param_60));
+            param_61 = ((fd - (x_1387 * 0.25f)) + (x_1779 * x_1382));
+            let x_1845 = vf_transmittance_f1_(&(param_61));
+            acc = (acc + (((x_1808 * x_1826) * x_1832) * x_1845));
           }
         }
         if ((acc > 0.0f)) {
-          glow = (glow + (x_663.spots[x_1631].color.xyz * (x_1634 * acc)));
+          glow = (glow + (x_694.spots[x_1662].color.xyz * (x_1665 * acc)));
         }
 
         continuing {
           i_4 = (i_4 + 1i);
         }
       }
-      light = (light + ((glow * x_1216) * x_1351));
+      light = (light + ((glow * x_1247) * x_1382));
     }
-    last_t = x_1367;
-    let x_1845 = k_1;
-    let x_1865 = light;
-    textureStore(vf_out, (vec2i(((x_1845 % x_1047) * x_1030), ((x_1845 / x_1047) * x_1026.y)) + x_1019), vec4f(x_1865.x, x_1865.y, x_1865.z, x_1367));
-    z0 = x_1287;
-    p0 = x_1293;
+    last_t = x_1398;
+    let x_1876 = k_1;
+    let x_1896 = light;
+    textureStore(vf_out, (vec2i(((x_1876 % x_1078) * x_1061), ((x_1876 / x_1078) * x_1057.y)) + x_1050), vec4f(x_1896.x, x_1896.y, x_1896.z, x_1398));
+    z0 = x_1318;
+    p0 = x_1324;
 
     continuing {
       k_1 = (k_1 + 1i);

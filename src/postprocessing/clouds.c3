@@ -53,15 +53,15 @@ struct CloudPass {
     float near_resolution; // the near march's (default 0.25)
     float near_distance; // where the near march ends and the far starts (m; default 250)
     float near_step; // the shortest step (m; default 4)
-    float step_growth; // steps grow as sqrt(distance) times this (default 0.6)
-    float max_distance; // marched no further than this (m; default 60000)
+    float step_growth; // steps grow as sqrt(distance) times this (default 0.9)
+    float max_distance; // marched no further than this (m; default 45000)
     int view_steps; // the most steps along a view ray (default 128)
-    int light_steps; // steps towards the sun from each (default 6)
+    int light_steps; // steps towards the sun from each (default 4)
     float history; // the new frame's share of each pixel (default 0.1; 1: no blending over time)
     // ---- Their shadow
     bool cast_shadow; // on Renderer.cloud_shadow, for the sun on surfaces and in the fog (default on)
     float shadow_span; // meters the shadow map spans, around the camera (default 20000)
-    int shadow_size; // its texels a side (default 256)
+    int shadow_size; // its texels a side (default 512)
 
     // ---- GPU
     SgView noise;
@@ -131,14 +131,14 @@ fn CloudPass* cloud_pass(Renderer* renderer) {
         .near_resolution = 0.25f,
         .near_distance = 250,
         .near_step = 4,
-        .step_growth = 0.6f,
-        .max_distance = 60000,
+        .step_growth = 0.9f,
+        .max_distance = 45000,
         .view_steps = 128,
-        .light_steps = 6,
+        .light_steps = 4,
         .history = 0.1f,
         .cast_shadow = true,
         .shadow_span = 20000,
-        .shadow_size = 256,
+        .shadow_size = 512,
         .weather_coverage = -1,
     };
     SgBackend backend = sg::query_backend();
@@ -476,10 +476,10 @@ fn float worley(float px, float py, float pz, int period, uint seed) @local {
     for (int k = -1; k <= 1; k++) {
         for (int j = -1; j <= 1; j++) {
             for (int i = -1; i <= 1; i++) {
-                int gx   = cx + i;
-                int gy   = cy + j;
-                int gz   = cz + k;
-                uint h   = hash3(
+                int gx = cx + i;
+                int gy = cy + j;
+                int gz = cz + k;
+                uint h = hash3(
                     (gx % period + period) % period,
                     (gy % period + period) % period,
                     (gz % period + period) % period,

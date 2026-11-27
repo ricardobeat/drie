@@ -13,7 +13,7 @@ import std::io, std::math;
 int width            = 1280;
 int height           = 720;
 const float LAND     = 120000; // the ground's side (m)
-const int LAND_CELLS = 600;
+const int LAND_CELLS = 400;
 
 Renderer* renderer;
 Scene* scene;
@@ -130,13 +130,13 @@ fn void build_scene(Vector3 sun_dir) {
     fog.height_base = 0;
     fog.height_falloff = 1.0f / 250;
     fog.sun_sharpness = 4;
-    fog.sun_shafts = 1;
+    fog.sun_shafts = 0; // (its shafts would cost much over 80 km; the clouds darken it all the same)
     fog.shade_density = 0.7f;
     fog.noise_amount = 0.4f;
     fog.noise_scale = 1.0f / 300;
     fog.noise_wind = { 3, 0, 1 };
-    fog.resolution = 0.25f;
-    fog.slices = 128;
+    fog.resolution = 0.125f;
+    fog.slices = 64;
     if (!off.contains("fog")) scene.fog = fog;
 
     sky = objects::sky();
@@ -153,7 +153,7 @@ fn void build_scene(Vector3 sun_dir) {
     scene.add(drie::hemisphere_light(0x9fb6d8, 0x3a3428, 0.6f));
     sun = drie::directional_light(0xfff0dc, 4.0f);
     sun.cast_shadow = !off.contains("shadow");
-    sun.shadow.map_size = 4096;
+    sun.shadow.map_size = 2048;
     sun.shadow.cascades = 4;
     sun.shadow.max_distance = 6000;
     sun.shadow.far = 20000;
@@ -164,6 +164,7 @@ fn void build_scene(Vector3 sun_dir) {
 
     clouds = postprocessing::cloud_pass(renderer);
     clouds.coverage = coverage;
+    clouds.wind = { 30, 9 }; // a brisk wind, so that they are seen to drift
     clouds.time = time;
     if (cloud_res > 0) {
         clouds.resolution = cloud_res;
@@ -198,9 +199,18 @@ fn void set_sun(Vector3 dir) {
     clouds.haze_color = (Vector3) { 0.5f, 0.62f, 0.8f } * (1 - low * 0.5f) + gold * (low * 0.2f);
 }
 
+// In a window, the scene is drawn at no more than this many pixels (about 1600 x 900), stretched
+// to the window by the output pass: on a Retina screen the window has four times its points.
+const float MAX_WINDOW_PIXELS = 1600.0f * 900.0f;
+
 fn void render_frame(RenderTarget* target) {
     int w = target ? target.width : sapp::width();
     int h = target ? target.height : sapp::height();
+    if (!target && (float)w * h > MAX_WINDOW_PIXELS) {
+        float k = math::sqrt(MAX_WINDOW_PIXELS / ((float)w * h));
+        w = (int)(w * k);
+        h = (int)(h * k);
+    }
     if (!scene_rt) {
         scene_rt = drie::render_target(w, h, 1, RGBA16F);
         output = postprocessing::output_pass(renderer);
@@ -325,7 +335,7 @@ View start_view;
 fn void animate(double t) {
     // seconds, from the renderer's clock (t is not in seconds)
     static float last = -1;
-    float now         =  renderer.time;
+    float now         =  (float)stm::sec(stm::now());
     float dt          =  last < 0 ? 0 : math::min(now - last, 0.1f);
     last = now;
     if (!controls) {
@@ -334,7 +344,8 @@ fn void animate(double t) {
         place(start_view);
         controls = controls::walk_controls(camera, camera.position);
         controls.drag_look = true;
-        controls.walk_speed = 150;
+        controls.walk_speed = 500;
+        controls.walk_spring = 1.2f; // glides up to speed and coasts to a stop
     }
     time += dt;
     controls.update(dt);
@@ -394,10 +405,13 @@ fn int main(String[] args) {
             drie::commit();
         }
         gpu_timer::reset();
+        ulong t0 = stm::now();
         for (int f = 0; f < 120; f++) {
             render_frame(rt);
             drie::commit();
         }
+        // (the GPU can run at most a frame or two behind: about its time per frame)
+        io::printfn("wall %.2f ms a frame", stm::ms(stm::since(t0)) / 120);
         gpu_timer::poll();
         gpu_timer::report();
     }
