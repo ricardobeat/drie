@@ -61,7 +61,7 @@ struct CloudPass {
     // ---- Their shadow
     bool cast_shadow; // on Renderer.cloud_shadow, for the sun on surfaces and in the fog (default on)
     float shadow_span; // meters the shadow map spans, around the camera (default 20000)
-    int shadow_size; // its texels a side (default 512)
+    int shadow_size; // its texels a side (default 256)
 
     // ---- GPU
     SgView noise;
@@ -138,7 +138,7 @@ fn CloudPass* cloud_pass(Renderer* renderer) {
         .history = 0.1f,
         .cast_shadow = true,
         .shadow_span = 20000,
-        .shadow_size = 512,
+        .shadow_size = 256,
         .weather_coverage = -1,
     };
     SgBackend backend = sg::query_backend();

@@ -323,9 +323,11 @@ fn void place(View v) {
 View start_view;
 
 fn void animate(double t) {
-    static double last = -1;
-    float dt           =  last < 0 ? 1.0f / 60 : (float)(t - last);
-    last = t;
+    // seconds, from the renderer's clock (t is not in seconds)
+    static float last = -1;
+    float now         =  renderer.time;
+    float dt          =  last < 0 ? 0 : math::min(now - last, 0.1f);
+    last = now;
     if (!controls) {
         // the GPU is there from the first frame on (not yet in main())
         build_scene(start_view.sun);

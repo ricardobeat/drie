@@ -143,14 +143,20 @@ void main() {
     float len = (cl_layer.y - cl_layer.x) / l.y;
     const int STEPS = 16;
     float ds = len / float(STEPS);
-    vec3 p0 = vec3(xz.x, cl_layer.x, xz.y);
-    float sum = 0.0;
-    for (int i = 0; i < STEPS; i++) {
-        vec3 p = p0 + l * ((float(i) + 0.5) * ds);
-        float h = (p.y - cl_layer.x) / (cl_layer.y - cl_layer.x);
-        sum += cl_density(p, h, cl_weather_at(p), false);
+    // four columns over the texel and around it, averaged: soft edges, not the texels' steps
+    float texel = 1.0 / (cl_shadow.y * float(size.x));
+    float t = 0.0;
+    for (int c = 0; c < 4; c++) {
+        vec2 o = vec2((c & 1) == 0 ? -0.6 : 0.6, (c & 2) == 0 ? -0.6 : 0.6) * texel;
+        vec3 p0 = vec3(xz.x + o.x, cl_layer.x, xz.y + o.y);
+        float sum = 0.0;
+        for (int i = 0; i < STEPS; i++) {
+            vec3 p = p0 + l * ((float(i) + 0.5 + 0.25 * float(c)) * ds);
+            float h = (p.y - cl_layer.x) / (cl_layer.y - cl_layer.x);
+            sum += cl_density(p, h, cl_weather_at(p), true);
+        }
+        t += exp(-sum * ds * cl_sun_color.w) * 0.25;
     }
-    float t = exp(-sum * ds * cl_sun_color.w);
     imageStore(cl_shadow_out, at, vec4(t, t, t, 1.0));
 }
 @end

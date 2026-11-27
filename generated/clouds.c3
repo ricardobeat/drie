@@ -287,7 +287,8 @@ void main()
 {
     ivec2 _292 = ivec2(gl_GlobalInvocationID.xy);
     ivec2 _298 = ivec2(cloud_params[12].xy);
-    bool _304 = _292.x >= _298.x;
+    int _303 = _298.x;
+    bool _304 = _292.x >= _303;
     bool _313;
     if (!_304)
     {
@@ -307,20 +308,26 @@ void main()
     vec3 _349 = normalize(_342);
     float _355 = cloud_params[4].y - cloud_params[4].x;
     float _362 = (_355 / _349.y) * 0.0625;
-    vec3 _370 = vec3(_337.x, cloud_params[4].x, _337.y);
-    float sum = 0.0;
-    for (int i = 0; i < 16; i++)
+    float _370 = 1.0 / (cloud_params[14].y * float(_303));
+    float t = 0.0;
+    for (int c = 0; c < 4; c++)
     {
-        vec3 _391 = _370 + (_349 * ((float(i) + 0.5) * _362));
-        vec3 param = _391;
-        vec3 param_1 = _391;
-        float param_2 = (_391.y - cloud_params[4].x) / _355;
-        vec3 param_3 = cl_weather_at(param);
-        bool param_4 = false;
-        sum += cl_density(param_1, param_2, param_3, param_4);
+        vec2 _396 = vec2(((c & 1) == 0) ? (-0.60000002384185791015625) : 0.60000002384185791015625, ((c & 2) == 0) ? (-0.60000002384185791015625) : 0.60000002384185791015625) * _370;
+        vec3 _410 = vec3(_337.x + _396.x, cloud_params[4].x, _337.y + _396.y);
+        float sum = 0.0;
+        for (int i = 0; i < 16; i++)
+        {
+            vec3 _434 = _410 + (_349 * (((float(i) + 0.5) + (0.25 * float(c))) * _362));
+            vec3 param = _434;
+            vec3 param_1 = _434;
+            float param_2 = (_434.y - cloud_params[4].x) / _355;
+            vec3 param_3 = cl_weather_at(param);
+            bool param_4 = true;
+            sum += cl_density(param_1, param_2, param_3, param_4);
+        }
+        t += (exp(((-sum) * _362) * cloud_params[8].w) * 0.25);
     }
-    float _429 = exp(((-sum) * _362) * cloud_params[8].w);
-    imageStore(cl_shadow_out, _292, vec4(_429, _429, _429, 1.0));
+    imageStore(cl_shadow_out, _292, vec4(t, t, t, 1.0));
 }
 
 `;
@@ -1061,7 +1068,8 @@ void comp_main()
 {
     int2 _292 = int2(gl_GlobalInvocationID.xy);
     int2 _298 = int2(_69_cl_size.xy);
-    bool _304 = _292.x >= _298.x;
+    int _303 = _298.x;
+    bool _304 = _292.x >= _303;
     bool _313;
     if (!_304)
     {
@@ -1081,20 +1089,26 @@ void comp_main()
     float3 _349 = normalize(_342);
     float _355 = _69_cl_layer.y - _69_cl_layer.x;
     float _362 = (_355 / _349.y) * 0.0625f;
-    float3 _370 = float3(_337.x, _69_cl_layer.x, _337.y);
-    float sum = 0.0f;
-    for (int i = 0; i < 16; i++)
+    float _370 = 1.0f / (_69_cl_shadow.y * float(_303));
+    float t = 0.0f;
+    for (int c = 0; c < 4; c++)
     {
-        float3 _391 = _370 + (_349 * ((float(i) + 0.5f) * _362));
-        float3 param = _391;
-        float3 param_1 = _391;
-        float param_2 = (_391.y - _69_cl_layer.x) / _355;
-        float3 param_3 = cl_weather_at(param);
-        bool param_4 = false;
-        sum += cl_density(param_1, param_2, param_3, param_4);
+        float2 _396 = float2(((c & 1) == 0) ? (-0.60000002384185791015625f) : 0.60000002384185791015625f, ((c & 2) == 0) ? (-0.60000002384185791015625f) : 0.60000002384185791015625f) * _370;
+        float3 _410 = float3(_337.x + _396.x, _69_cl_layer.x, _337.y + _396.y);
+        float sum = 0.0f;
+        for (int i = 0; i < 16; i++)
+        {
+            float3 _434 = _410 + (_349 * (((float(i) + 0.5f) + (0.25f * float(c))) * _362));
+            float3 param = _434;
+            float3 param_1 = _434;
+            float param_2 = (_434.y - _69_cl_layer.x) / _355;
+            float3 param_3 = cl_weather_at(param);
+            bool param_4 = true;
+            sum += cl_density(param_1, param_2, param_3, param_4);
+        }
+        t += (exp(((-sum) * _362) * _69_cl_sun_color.w) * 0.25f);
     }
-    float _429 = exp(((-sum) * _362) * _69_cl_sun_color.w);
-    cl_shadow_out[_292] = float4(_429, _429, _429, 1.0f);
+    cl_shadow_out[_292] = float4(t, t, t, 1.0f);
 }
 
 [numthreads(8, 8, 1)]
@@ -1970,7 +1984,8 @@ kernel void main0(constant cloud_params& _69 [[buffer(0)]], texture3d<float> cl_
 {
     int2 _292 = int2(gl_GlobalInvocationID.xy);
     int2 _298 = int2(_69.cl_size.xy);
-    bool _304 = _292.x >= _298.x;
+    int _303 = _298.x;
+    bool _304 = _292.x >= _303;
     bool _313;
     if (!_304)
     {
@@ -1990,20 +2005,26 @@ kernel void main0(constant cloud_params& _69 [[buffer(0)]], texture3d<float> cl_
     float3 _349 = fast::normalize(_342);
     float _355 = _69.cl_layer.y - _69.cl_layer.x;
     float _362 = (_355 / _349.y) * 0.0625;
-    float3 _370 = float3(_337.x, _69.cl_layer.x, _337.y);
-    float sum = 0.0;
-    for (int i = 0; i < 16; i++)
+    float _370 = 1.0 / (_69.cl_shadow.y * float(_303));
+    float t = 0.0;
+    for (int c = 0; c < 4; c++)
     {
-        float3 _391 = _370 + (_349 * ((float(i) + 0.5) * _362));
-        float3 param = _391;
-        float3 param_1 = _391;
-        float param_2 = (_391.y - _69.cl_layer.x) / _355;
-        float3 param_3 = cl_weather_at(param, cl_weather_map, cl_smp, _69);
-        bool param_4 = false;
-        sum += cl_density(param_1, param_2, param_3, param_4, cl_smp, _69, cl_noise, cl_detail);
+        float2 _396 = float2(((c & 1) == 0) ? (-0.60000002384185791015625) : 0.60000002384185791015625, ((c & 2) == 0) ? (-0.60000002384185791015625) : 0.60000002384185791015625) * _370;
+        float3 _410 = float3(_337.x + _396.x, _69.cl_layer.x, _337.y + _396.y);
+        float sum = 0.0;
+        for (int i = 0; i < 16; i++)
+        {
+            float3 _434 = _410 + (_349 * (((float(i) + 0.5) + (0.25 * float(c))) * _362));
+            float3 param = _434;
+            float3 param_1 = _434;
+            float param_2 = (_434.y - _69.cl_layer.x) / _355;
+            float3 param_3 = cl_weather_at(param, cl_weather_map, cl_smp, _69);
+            bool param_4 = true;
+            sum += cl_density(param_1, param_2, param_3, param_4, cl_smp, _69, cl_noise, cl_detail);
+        }
+        t += (exp(((-sum) * _362) * _69.cl_sun_color.w) * 0.25);
     }
-    float _429 = exp(((-sum) * _362) * _69.cl_sun_color.w);
-    cl_shadow_out.write(float4(_429, _429, _429, 1.0), uint2(_292));
+    cl_shadow_out.write(float4(t, t, t, 1.0), uint2(_292));
 }
 
 `;
@@ -2810,7 +2831,8 @@ kernel void main0(constant cloud_params& _69 [[buffer(0)]], texture3d<float> cl_
 {
     int2 _292 = int2(gl_GlobalInvocationID.xy);
     int2 _298 = int2(_69.cl_size.xy);
-    bool _304 = _292.x >= _298.x;
+    int _303 = _298.x;
+    bool _304 = _292.x >= _303;
     bool _313;
     if (!_304)
     {
@@ -2830,20 +2852,26 @@ kernel void main0(constant cloud_params& _69 [[buffer(0)]], texture3d<float> cl_
     float3 _349 = fast::normalize(_342);
     float _355 = _69.cl_layer.y - _69.cl_layer.x;
     float _362 = (_355 / _349.y) * 0.0625;
-    float3 _370 = float3(_337.x, _69.cl_layer.x, _337.y);
-    float sum = 0.0;
-    for (int i = 0; i < 16; i++)
+    float _370 = 1.0 / (_69.cl_shadow.y * float(_303));
+    float t = 0.0;
+    for (int c = 0; c < 4; c++)
     {
-        float3 _391 = _370 + (_349 * ((float(i) + 0.5) * _362));
-        float3 param = _391;
-        float3 param_1 = _391;
-        float param_2 = (_391.y - _69.cl_layer.x) / _355;
-        float3 param_3 = cl_weather_at(param, cl_weather_map, cl_smp, _69);
-        bool param_4 = false;
-        sum += cl_density(param_1, param_2, param_3, param_4, cl_smp, _69, cl_noise, cl_detail);
+        float2 _396 = float2(((c & 1) == 0) ? (-0.60000002384185791015625) : 0.60000002384185791015625, ((c & 2) == 0) ? (-0.60000002384185791015625) : 0.60000002384185791015625) * _370;
+        float3 _410 = float3(_337.x + _396.x, _69.cl_layer.x, _337.y + _396.y);
+        float sum = 0.0;
+        for (int i = 0; i < 16; i++)
+        {
+            float3 _434 = _410 + (_349 * (((float(i) + 0.5) + (0.25 * float(c))) * _362));
+            float3 param = _434;
+            float3 param_1 = _434;
+            float param_2 = (_434.y - _69.cl_layer.x) / _355;
+            float3 param_3 = cl_weather_at(param, cl_weather_map, cl_smp, _69);
+            bool param_4 = true;
+            sum += cl_density(param_1, param_2, param_3, param_4, cl_smp, _69, cl_noise, cl_detail);
+        }
+        t += (exp(((-sum) * _362) * _69.cl_sun_color.w) * 0.25);
     }
-    float _429 = exp(((-sum) * _362) * _69.cl_sun_color.w);
-    cl_shadow_out.write(float4(_429, _429, _429, 1.0), uint2(_292));
+    cl_shadow_out.write(float4(t, t, t, 1.0), uint2(_292));
 }
 
 `;
@@ -3650,7 +3678,8 @@ kernel void main0(constant cloud_params& _69 [[buffer(0)]], texture3d<float> cl_
 {
     int2 _292 = int2(gl_GlobalInvocationID.xy);
     int2 _298 = int2(_69.cl_size.xy);
-    bool _304 = _292.x >= _298.x;
+    int _303 = _298.x;
+    bool _304 = _292.x >= _303;
     bool _313;
     if (!_304)
     {
@@ -3670,20 +3699,26 @@ kernel void main0(constant cloud_params& _69 [[buffer(0)]], texture3d<float> cl_
     float3 _349 = fast::normalize(_342);
     float _355 = _69.cl_layer.y - _69.cl_layer.x;
     float _362 = (_355 / _349.y) * 0.0625;
-    float3 _370 = float3(_337.x, _69.cl_layer.x, _337.y);
-    float sum = 0.0;
-    for (int i = 0; i < 16; i++)
+    float _370 = 1.0 / (_69.cl_shadow.y * float(_303));
+    float t = 0.0;
+    for (int c = 0; c < 4; c++)
     {
-        float3 _391 = _370 + (_349 * ((float(i) + 0.5) * _362));
-        float3 param = _391;
-        float3 param_1 = _391;
-        float param_2 = (_391.y - _69.cl_layer.x) / _355;
-        float3 param_3 = cl_weather_at(param, cl_weather_map, cl_smp, _69);
-        bool param_4 = false;
-        sum += cl_density(param_1, param_2, param_3, param_4, cl_smp, _69, cl_noise, cl_detail);
+        float2 _396 = float2(((c & 1) == 0) ? (-0.60000002384185791015625) : 0.60000002384185791015625, ((c & 2) == 0) ? (-0.60000002384185791015625) : 0.60000002384185791015625) * _370;
+        float3 _410 = float3(_337.x + _396.x, _69.cl_layer.x, _337.y + _396.y);
+        float sum = 0.0;
+        for (int i = 0; i < 16; i++)
+        {
+            float3 _434 = _410 + (_349 * (((float(i) + 0.5) + (0.25 * float(c))) * _362));
+            float3 param = _434;
+            float3 param_1 = _434;
+            float param_2 = (_434.y - _69.cl_layer.x) / _355;
+            float3 param_3 = cl_weather_at(param, cl_weather_map, cl_smp, _69);
+            bool param_4 = true;
+            sum += cl_density(param_1, param_2, param_3, param_4, cl_smp, _69, cl_noise, cl_detail);
+        }
+        t += (exp(((-sum) * _362) * _69.cl_sun_color.w) * 0.25);
     }
-    float _429 = exp(((-sum) * _362) * _69.cl_sun_color.w);
-    cl_shadow_out.write(float4(_429, _429, _429, 1.0), uint2(_292));
+    cl_shadow_out.write(float4(t, t, t, 1.0), uint2(_292));
 }
 
 `;
@@ -4542,9 +4577,11 @@ fn cl_density_vf3_f1_vf3_b1_(p_1 : ptr<function, vec3f>, h_1 : ptr<function, f32
   return (pow(x_274, 0.44999998807907104492f) * x_279);
 }
 
-const x_460 = vec2f(0.5f);
+const x_509 = vec2f(0.5f);
 
 fn main_1() {
+  var t : f32;
+  var c_1 : i32;
   var sum : f32;
   var i : i32;
   var param_22 : vec3f;
@@ -4556,7 +4593,8 @@ fn main_1() {
   var x_313 : bool;
   let x_292 = bitcast<vec2i>(gl_GlobalInvocationID.xy);
   let x_298 = vec2i(x_69.cl_size.xy);
-  let x_304 = (x_292.x >= x_298.x);
+  let x_303 = x_298.x;
+  let x_304 = (x_292.x >= x_303);
   x_313 = x_304;
   if (!(x_304)) {
     x_312 = (x_292.y >= x_298.y);
@@ -4565,38 +4603,54 @@ fn main_1() {
   if (x_313) {
     return;
   }
-  let x_337 = (x_69.cl_shadow.xz + ((((vec2f(x_292) + x_460) / vec2f(x_298)) - x_460) / vec2f(x_69.cl_shadow.y)));
+  let x_334 = x_69.cl_shadow.y;
+  let x_337 = (x_69.cl_shadow.xz + ((((vec2f(x_292) + x_509) / vec2f(x_298)) - x_509) / vec2f(x_334)));
   let x_341 = x_69.cl_sun_dir;
-  var x_445_1 = x_341.xyz;
-  x_445_1.y = max(x_341.y, 0.05000000074505805969f);
-  let x_349 = normalize(x_445_1);
+  var x_491_1 = x_341.xyz;
+  x_491_1.y = max(x_341.y, 0.05000000074505805969f);
+  let x_349 = normalize(x_491_1);
   let x_354 = x_69.cl_layer.x;
   let x_355 = (x_69.cl_layer.y - x_354);
   let x_362 = ((x_355 / x_349.y) * 0.0625f);
-  let x_370 = vec3f(x_337.x, x_354, x_337.y);
-  sum = 0.0f;
-  i = 0i;
+  let x_370 = (1.0f / (x_334 * f32(x_303)));
+  t = 0.0f;
+  c_1 = 0i;
   loop {
-    if ((i < 16i)) {
+    if ((c_1 < 4i)) {
     } else {
       break;
     }
-    let x_391 = (x_370 + (x_349 * ((f32(i) + 0.5f) * x_362)));
-    param_22 = x_391;
-    let x_406 = cl_weather_at_vf3_(&(param_22));
-    param_23 = x_391;
-    param_24 = ((x_391.y - x_354) / x_355);
-    param_25 = x_406;
-    param_26 = false;
-    let x_414 = cl_density_vf3_f1_vf3_b1_(&(param_23), &(param_24), &(param_25), &(param_26));
-    sum = (sum + x_414);
+    let x_396 = (vec2f(select(0.60000002384185791016f, -0.60000002384185791016f, ((c_1 & 1i) == 0i)), select(0.60000002384185791016f, -0.60000002384185791016f, ((c_1 & 2i) == 0i))) * x_370);
+    let x_410 = vec3f((x_337.x + x_396.x), x_354, (x_337.y + x_396.y));
+    sum = 0.0f;
+    i = 0i;
+    loop {
+      if ((i < 16i)) {
+      } else {
+        break;
+      }
+      let x_434 = (x_410 + (x_349 * (((f32(i) + 0.5f) + (0.25f * f32(c_1))) * x_362)));
+      param_22 = x_434;
+      let x_449 = cl_weather_at_vf3_(&(param_22));
+      param_23 = x_434;
+      param_24 = ((x_434.y - x_354) / x_355);
+      param_25 = x_449;
+      param_26 = true;
+      let x_457 = cl_density_vf3_f1_vf3_b1_(&(param_23), &(param_24), &(param_25), &(param_26));
+      sum = (sum + x_457);
+
+      continuing {
+        i = (i + 1i);
+      }
+    }
+    t = (t + (exp(((-(sum) * x_362) * x_69.cl_sun_color.w)) * 0.25f));
 
     continuing {
-      i = (i + 1i);
+      c_1 = (c_1 + 1i);
     }
   }
-  let x_429 = exp(((-(sum) * x_362) * x_69.cl_sun_color.w));
-  textureStore(cl_shadow_out, x_292, vec4f(x_429, x_429, x_429, 1.0f));
+  let x_481 = t;
+  textureStore(cl_shadow_out, x_292, vec4f(x_481, x_481, x_481, 1.0f));
   return;
 }
 
