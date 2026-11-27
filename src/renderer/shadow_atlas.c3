@@ -742,6 +742,10 @@ fn void atlas_cache_trim(AtlasSlot* s) @local {
     }
 }
 
+Light* atlas_tally_light @local;
+uint atlas_tally_frame @local;
+int atlas_tally @local;
+
 // Active mover list passed into draw_atlas_casters() when compositing (`which == 2`).
 CasterWalk* atlas_movers @local;
 List{int}* atlas_movers_near @local;
@@ -775,6 +779,8 @@ fn int draw_atlas_casters(Scene* scene, Camera* camera, Light* l, int face, int 
     Mat4 light_rel    = from_light ? light_view_proj(l, camera, true, face, size) : vp;
     Vector3 light_pos = from_light ? l.matrix_world.get_position() : (Vector3) { 0, 0, 0 };
     int drawn;
+    RenderInfo* info = &state.renderer.info;
+    int before = info.shadow_triangles;
     atlas_drawing = true;
     atlas_near = from_light ? math::max(sh.near, 0.01f) : 0;
     atlas_far = 0;
@@ -786,7 +792,18 @@ fn int draw_atlas_casters(Scene* scene, Camera* camera, Light* l, int face, int 
         drawn++;
     }
     atlas_drawing = false;
-    state.renderer.info.atlas_casters += drawn;
+    info.atlas_casters += drawn;
+    // the light that cost the most (a light's faces are drawn one after another)
+    if (l != atlas_tally_light || atlas_tally_frame != state.frame) {
+        atlas_tally_light = l;
+        atlas_tally_frame = state.frame;
+        atlas_tally = 0;
+    }
+    atlas_tally += info.shadow_triangles - before;
+    if (atlas_tally > info.shadow_top_triangles) {
+        info.shadow_top_light = l;
+        info.shadow_top_triangles = atlas_tally;
+    }
     return drawn;
 }
 

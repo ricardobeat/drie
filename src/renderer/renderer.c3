@@ -268,6 +268,8 @@ struct RenderInfo {
     int lines; // Line segments submitted (Line, LineSegments, LineLoop).
     int shadow_calls; // Draw calls submitted across all shadow passes.
     int shadow_triangles; // Triangles submitted across all shadow passes.
+    Light* shadow_top_light; // Light whose atlas tiles took the most shadow triangles this render.
+    int shadow_top_triangles; // Shadow triangles of `shadow_top_light`, all its faces together.
     int atlas_width; // Current shadow atlas texture width in pixels.
     int atlas_height; // Current shadow atlas texture height in pixels.
     usz atlas_bytes; // GPU bytes used by shadow atlas, static cache, and VSM atlas targets.
