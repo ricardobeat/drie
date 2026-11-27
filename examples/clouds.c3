@@ -293,6 +293,10 @@ fn void set_sun(Vector3 dir) {
     clouds.haze_color = (Vector3) { 0.5f, 0.62f, 0.8f } * (1 - low * 0.6f) + gold * (low * 0.35f);
     Vector3 f = (Vector3) { 0.72f, 0.77f, 0.82f } * (1 - low) + (Vector3) { 0.62f, 0.56f, 0.6f } * low;
     fog.color = drie::rgb(f.x, f.y, f.z);
+    // a hazier, redder sky as the sun sets (Preetham reddens only with much haze)
+    sky.turbidity = 4 + low * 6;
+    sky.rayleigh = 2 + low * 1.5f;
+    sky.mie_directional_g = 0.85f - low * 0.1f;
 }
 
 // In a window, the scene is drawn at no more than this many pixels (about 1600 x 900), stretched
@@ -348,7 +352,7 @@ struct View {
 }
 
 const View[*] VIEWS = {
-    { "sunset", { 6000, 16000 }, 700, { -3000, -2000 }, 1200, { -0.35f, 0.07f, -0.93f } },
+    { "sunset", { 6000, 16000 }, 1250, { -3000, -2000 }, 1500, { -0.35f, 0.07f, -0.93f } },
     { "ground", { 2000, 9000 }, 150, { -3000, -4000 }, 2200, { -0.5f, 0.45f, 0.75f } },
     { "backlit", { 2000, 9000 }, 150, { -3000, -4000 }, 2200, { 0.3f, 0.3f, -0.9f } },
     { "valley", { 0, 15000 }, 900, { 300, 5000 }, 0, { -0.45f, 0.55f, -0.7f } },
@@ -441,7 +445,7 @@ fn void animate(double t) {
         place(start_view);
         controls = controls::walk_controls(camera, camera.position);
         controls.drag_look = true;
-        controls.walk_speed = 500;
+        controls.walk_speed = 2500;
         controls.walk_spring = 1.2f; // glides up to speed and coasts to a stop
     }
     time += dt;
