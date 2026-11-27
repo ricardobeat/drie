@@ -32,6 +32,10 @@ struct OutputPass {
     // Extended-range linear Display P3 output up to `renderer.output_headroom()`. Synced from
     // `renderer.hdr_on()` automatically when rendering to the window.
     bool hdr;
+    // Blue-noise dither before the 8-bit target rounds the colors, in steps of it (1: +-half a
+    // step, enough to break up banding in smooth gradients; 0: off). Not on HDR output.
+    float dither;
+    uint frame; // moves the dither's noise on each frame
 }
 
 // Allocates an `OutputPass` reading tone-mapping settings from `renderer`.
@@ -44,6 +48,7 @@ fn OutputPass* output_pass(Renderer* renderer) {
         input_sampler: SMP_OUTPUT_SMP
     );
     p.renderer = renderer;
+    p.dither = 1;
     p.render_fn = &output_pass_render;
     p.set_sampler(SMP_OUTPUT_SMP, linear_sampler());
     return p;
@@ -69,12 +74,40 @@ fn void OutputPass.update(&self) {
             self.graded() ? 1 : 0,
             GRADE_LUT
         },
+        .params3 = {
+            self.hdr ? 0
+                : self.dither, // the golden ratio's fraction, a frame at a time: each frame's thresholds far from the last
+            (float)((double)self.frame * 0.6180339887 % 1.0),
+            0,
+            0
+        },
     };
+    self.frame++;
     self.set_uniforms(UB_OUTPUT_PARAMS, &p);
     // Bind a valid fallback view when `exposure_map` is unset.
     self.bindings.views[VIEW_OUTPUT_EXPOSURE] = self.exposure_map.id ? self.exposure_map
         : self.bindings.views[VIEW_OUTPUT_SRC];
     self.bindings.views[VIEW_OUTPUT_LUT] = self.grade && self.grade.lut.id ? self.grade.lut_texture : empty_lut();
+    self.bindings.views[VIEW_OUTPUT_NOISE] = blue_noise();
+}
+
+SgView blue_noise_view @local;
+
+// The 64x64 blue-noise tile (blue_noise_data) as an R8 texture, made on first use.
+fn SgView blue_noise() @local {
+    if (!blue_noise_view.id) {
+        SgImage img = sg::make_image(
+            &&{
+                .width = BLUE_NOISE_SIZE,
+                .height = BLUE_NOISE_SIZE,
+                .pixel_format = R8,
+                .data = { .ptr = &blue_noise_data, .size = blue_noise_data.len },
+                .label = "drie-blue-noise",
+            }
+        );
+        blue_noise_view = sg::make_view(&&{ .texture = { .image = img } });
+    }
+    return blue_noise_view;
 }
 
 // Whether the grade's LUT takes the tone mapping's place. (Not on an HDR screen, and not on

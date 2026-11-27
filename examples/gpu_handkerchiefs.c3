@@ -11,21 +11,21 @@ module gpu_handkerchiefs_example;
 import drie, drie::gpu_cloth, drie::objects, drie::postprocessing, drie::ui, drie::controls, drie::readback, drie::png, drie::gpu_timer, drie::profile, sokol;
 import std::io, std::math, std::collections::list;
 
-const int W = 1280;
-const int H = 720;
-float render_scale = env::EMSCRIPTEN ? 1.0f : 0.7f;
-const int HANDKERCHIEFS = 64;
-const int GRID = 21;
-const float SIZE = 0.4f;
-const float MASS = 0.03f;
-const float SPAWN_EVERY = 0.15f;
-const float AREA = 2.1f;
-const float SPAWN_HEIGHT = 4.6f;
-const float CHECK_EVERY = 0.25f;
-const float STILL = 0.01f;
+const int W               = 1280;
+const int H               = 720;
+float render_scale        = env::EMSCRIPTEN ? 1.0f : 0.7f;
+const int HANDKERCHIEFS   = 64;
+const int GRID            = 21;
+const float SIZE          = 0.4f;
+const float MASS          = 0.03f;
+const float SPAWN_EVERY   = 0.15f;
+const float AREA          = 2.1f;
+const float SPAWN_HEIGHT  = 4.6f;
+const float CHECK_EVERY   = 0.25f;
+const float STILL         = 0.01f;
 const float DORMANT_AFTER = 3;
-const float KNIT_REPEAT = 0.5f;
-const Color[6] COLORS = { 0xe8e4dc, 0xc8303c, 0x2c4c9c, 0xe0b030, 0x3c8c5c, 0xd87ca0 };
+const float KNIT_REPEAT   = 0.5f;
+const Color[6] COLORS     = { 0xe8e4dc, 0xc8303c, 0x2c4c9c, 0xe0b030, 0x3c8c5c, 0xd87ca0 };
 
 enum State : char {
     PARKED,
@@ -85,7 +85,16 @@ fn Texture* tiled(String path, float repeat, ColorSpace space = SRGB_COLOR_SPACE
 }
 
 fn void make_cloth() {
-    cloth = gpu_cloth::panels(HANDKERCHIEFS, GRID, GRID, { 0, -50, 0 }, { SIZE, 0, 0 }, { 0, 0, SIZE }, { SIZE * 1.5f, 0, 0 }, mass: MASS);
+    cloth = gpu_cloth::panels(
+        HANDKERCHIEFS,
+        GRID,
+        GRID,
+        { 0, -50, 0 },
+        { SIZE, 0, 0 },
+        { 0, 0, SIZE },
+        { SIZE * 1.5f, 0, 0 },
+        mass: MASS
+    );
     for (uint i = 0; i < cloth.count(); i++) cloth.pin(i);
     cloth.substeps = 8;
     cloth.drag = 0.3f;
@@ -105,11 +114,11 @@ fn void make_cloth() {
     cloth.watch_points();
     seen = mem::new_array(Vector3, (sz)cloth.count());
     last_check = mem::new_array(Vector3, (sz)cloth.count());
-    Texture* jersey = tiled("examples/textures/cotton_jersey_grey_diff.jpg", KNIT_REPEAT);
+    Texture* jersey         = tiled("examples/textures/cotton_jersey_grey_diff.jpg", KNIT_REPEAT);
     Texture* jersey_normals = tiled("examples/textures/cotton_jersey_nor_gl.jpg", KNIT_REPEAT, NO_COLOR_SPACE);
-    Texture* jersey_rough = tiled("examples/textures/cotton_jersey_rough.jpg", KNIT_REPEAT, NO_COLOR_SPACE);
+    Texture* jersey_rough   = tiled("examples/textures/cotton_jersey_rough.jpg", KNIT_REPEAT, NO_COLOR_SPACE);
     foreach (i, &h : handkerchiefs) {
-        Color col = COLORS[i % COLORS.len];
+        Color col               = COLORS[i % COLORS.len];
         MeshStandardMaterial* m = drie::mesh_standard_material(color: col, roughness: 1, side: DOUBLE_SIDE);
         m.map = jersey;
         m.roughness_map = jersey_rough;
@@ -132,7 +141,8 @@ fn int pick_handkerchief() {
     }
     int oldest = -1;
     foreach (i, h : handkerchiefs) {
-        if (h.state == DORMANT && (oldest < 0 || h.dormant_order < handkerchiefs[oldest].dormant_order)) oldest = (int)i;
+        if (h.state == DORMANT
+            && (oldest < 0 || h.dormant_order < handkerchiefs[oldest].dormant_order)) oldest = (int)i;
     }
     return oldest;
 }
@@ -147,19 +157,21 @@ fn void spawn() {
     int k = pick_handkerchief();
     if (k < 0) return;
     Handkerchief* h = &handkerchiefs[k];
-    Vector3 center = { (rand() + rand() - 1) * AREA, SPAWN_HEIGHT + rand() * 1.2f, (rand() + rand() - 1) * AREA };
-    float ax = (rand() * 2 - 1) * 1.2f;
-    float ay = rand() * 6.3f;
-    float az = (rand() * 2 - 1) * 1.2f;
+    Vector3 center  = { (rand() + rand() - 1) * AREA, SPAWN_HEIGHT + rand() * 1.2f, (rand() + rand() - 1) * AREA };
+    float ax        = (rand() * 2 - 1) * 1.2f;
+    float ay        = rand() * 6.3f;
+    float az        = (rand() * 2 - 1) * 1.2f;
     float[4] ph;
     foreach (&p : ph) *p = rand() * 6.3f;
     for (int r = 0; r < GRID; r++) {
         float v = (float)r / (GRID - 1);
         for (int c = 0; c < GRID; c++) {
-            float u = (float)c / (GRID - 1);
-            float wave = 0.02f * math::sin(u * 7 + ph[0]) * math::sin(v * 6 + ph[1]) + 0.012f * math::sin(u * 11 + v * 9 + ph[2]);
+            float u       = (float)c / (GRID - 1);
+            float wave    = 0.02f * math::sin(
+                u * 7 + ph[0]
+            ) * math::sin(v * 6 + ph[1]) + 0.012f * math::sin(u * 11 + v * 9 + ph[2]);
             Vector3 local = { (u - 0.5f) * SIZE, wave, (v - 0.5f) * SIZE };
-            uint i = point(k, c, r);
+            uint i        = point(k, c, r);
             if (cloth.inv_mass[i] != 0) cloth.pin(i);
             cloth.move_pin(i, center + turn(local, ax, ay, az));
         }
@@ -227,10 +239,10 @@ fn void step(float dt) {
 }
 
 const Vector3 START_EYE = { -2.06f, 0.74f, -4.31f };
-const Vector3 START_AT = { -1.0f, 0.61f, -2.7f };
-const float ROOM = 5;
-const float CEILING = 6.5f;
-const float THICK = 0.8f;
+const Vector3 START_AT  = { -1.0f, 0.61f, -2.7f };
+const float ROOM        = 5;
+const float CEILING     = 6.5f;
+const float THICK       = 0.8f;
 
 struct Opening {
     float u0, u1, v0, v1;
@@ -238,7 +250,7 @@ struct Opening {
 
 fn MeshStandardMaterial* surface(String name, float tile, float depth) {
     MeshStandardMaterial* m = drie::mesh_standard_material(color: 0xffffff, roughness: 1, side: DOUBLE_SIDE);
-    float r = 1 / tile;
+    float r                 = 1 / tile;
     m.map = tiled(string::tformat("examples/textures/%s_diff.jpg", name), r);
     m.normal_map = tiled(string::tformat("examples/textures/%s_nor_gl.jpg", name), r, NO_COLOR_SPACE);
     m.normal_scale = { 1, -1 };
@@ -258,16 +270,21 @@ fn MeshStandardMaterial* surface(String name, float tile, float depth) {
 float cell = 1e9;
 
 fn void quad(BufferGeometry* g, Vector3 o, Vector3 u, Vector3 v) {
-    Vector3 n = u.cross(v).normalize();
-    Vector3 du = u.normalize();
-    Vector3 dv = v.normalize();
+    Vector3 n   = u.cross(v).normalize();
+    Vector3 du  = u.normalize();
+    Vector3 dv  = v.normalize();
     Vector3 mid = o + (u + v) * 0.5f;
-    bool seen = math::abs(mid.x) <= ROOM + 0.01f && math::abs(mid.z) <= ROOM + 0.01f && mid.y >= -0.01f
-                && mid.y <= CEILING + 0.01f && n.dot(mid - (Vector3) { 0, CEILING * 0.5f, 0 }) < 0;
-    float size = seen ? (mid.y >= CEILING - 0.01f ? cell * 4 : cell) : 1e9;
-    int nu = math::max((int)math::ceil(u.length() / size), 1);
-    int nv = math::max((int)math::ceil(v.length() / size), 1);
-    uint first = (uint)(g.vertices.len() / drie::FLOATS_PER_VERTEX);
+    bool seen   = math::abs(
+        mid.x
+    ) <= ROOM + 0.01f && math::abs(
+        mid.z
+    ) <= ROOM + 0.01f && mid.y >= -0.01f && mid.y <= CEILING + 0.01f && n.dot(
+        mid - (Vector3) { 0, CEILING * 0.5f, 0 }
+    ) < 0;
+    float size  = seen ? (mid.y >= CEILING - 0.01f ? cell * 4 : cell) : 1e9;
+    int nu      = math::max((int)math::ceil(u.length() / size), 1);
+    int nv      = math::max((int)math::ceil(v.length() / size), 1);
+    uint first  = (uint)(g.vertices.len() / drie::FLOATS_PER_VERTEX);
     for (int j = 0; j <= nv; j++) {
         for (int i = 0; i <= nu; i++) {
             Vector3 p = o + u * ((float)i / nu) + v * ((float)j / nv);
@@ -332,8 +349,8 @@ fn void wall(BufferGeometry* g, int axis, float side, float from, float to, Open
 }
 
 fn void lattice(BufferGeometry* g, int axis, float side, Opening o) {
-    float mid = side * (ROOM + THICK * 0.45f);
-    const float BAR = 0.05f;
+    float mid        = side * (ROOM + THICK * 0.45f);
+    const float BAR  = 0.05f;
     const float THIN = 0.022f;
     const float DEEP = 0.04f;
     List{Vector3[2]} list;
@@ -424,7 +441,7 @@ fn void build_scene() {
     sun.cast_shadow = true;
     sun.shadow.map_size = 4096;
     sun.shadow.cascades = 1;
-    sun.shadow.normal_bias = 0.002f;
+    sun.shadow.normal_bias = 0.012f; // about two of its texels: no acne on the floor
     sun.shadow_extent = 10;
     scene.add(sun);
     scene.add(sun.target);
@@ -437,14 +454,14 @@ fn void build_scene() {
         scene.add(lamp.target);
     }
 
-    Opening[2] side_windows = { { -2.6f, -1.6f, 1.3f, 3.9f }, { 0.9f, 1.9f, 1.3f, 3.9f } };
-    Opening[2] back_holes = { { -3.4f, -2.0f, 0, 2.6f }, { 2.0f, 3.0f, 1.5f, 3.9f } };
-    bool displace = !env::EMSCRIPTEN;
+    Opening[2] side_windows          = { { -2.6f, -1.6f, 1.3f, 3.9f }, { 0.9f, 1.9f, 1.3f, 3.9f } };
+    Opening[2] back_holes            = { { -3.4f, -2.0f, 0, 2.6f }, { 2.0f, 3.0f, 1.5f, 3.9f } };
+    bool displace                    = !env::EMSCRIPTEN;
     MeshStandardMaterial* stone_look = surface("old_stone_wall", 2, displace ? 0.06f : 0);
-    MeshStandardMaterial* pebbles = surface("multicolored_pebble_floor", 2, displace ? 0.025f : 0);
+    MeshStandardMaterial* pebbles    = surface("multicolored_pebble_floor", 2, displace ? 0.025f : 0);
     cell = displace ? 0.025f : 1e9;
-    Mesh* stone = solid(hall(&side_windows, &back_holes), stone_look);
-    Mesh* floor = solid(ground(), pebbles);
+    Mesh* stone        = solid(hall(&side_windows, &back_holes), stone_look);
+    Mesh* floor        = solid(ground(), pebbles);
     Mesh* stone_shadow = stone;
     Mesh* floor_shadow = floor;
     if (displace) {
@@ -456,8 +473,11 @@ fn void build_scene() {
         floor_shadow = solid(ground(), pebbles);
         floor_shadow.shadow_only = true;
     }
-    io::printfn("room: %d vertices, its shadow %d", (stone.geometry.vertices.len() + floor.geometry.vertices.len()) / drie::FLOATS_PER_VERTEX,
-                (stone_shadow.geometry.vertices.len() + floor_shadow.geometry.vertices.len()) / drie::FLOATS_PER_VERTEX);
+    io::printfn(
+        "room: %d vertices, its shadow %d",
+        (stone.geometry.vertices.len() + floor.geometry.vertices.len()) / drie::FLOATS_PER_VERTEX,
+        (stone_shadow.geometry.vertices.len() + floor_shadow.geometry.vertices.len()) / drie::FLOATS_PER_VERTEX
+    );
 
     cell = 1e9;
     BufferGeometry* metal = drie::buffer_geometry();
@@ -475,7 +495,12 @@ fn void build_scene() {
 
     scene.update_matrix_world();
     if (!env::EMSCRIPTEN) {
-        RadianceCascades* gi = drie::radiance_cascades({ -ROOM - THICK, -0.3f, -ROOM - THICK }, { ROOM + THICK, CEILING + 0.4f, ROOM + THICK }, spacing: 0.25f, levels: 4);
+        RadianceCascades* gi = drie::radiance_cascades(
+            { -ROOM - THICK, -0.3f, -ROOM - THICK },
+            { ROOM + THICK, CEILING + 0.4f, ROOM + THICK },
+            spacing: 0.25f,
+            levels: 4
+        );
         gi.update_every = 1;
         gi.blend = 0.12f;
         gi.voxelize(scene);
@@ -514,6 +539,7 @@ fn void render_frame(RenderTarget* target) {
         grade.shadows = { -0.012f, -0.018f };
         grade.highlights = { 0.012f, 0.03f };
         output.grade = grade;
+        if (off.contains("dither")) output.dither = 0;
     } else if (scene_rt.width != w || scene_rt.height != h) {
         scene_rt.set_size(w, h);
     }
@@ -541,14 +567,21 @@ float last_time = -1;
 fn void on_event(Event* e) {
     if (e.type == KEY_DOWN && e.key_code == P) {
         Vector3 at = camera.position + controls.direction();
-        io::printfn("camera { %.2f, %.2f, %.2f } looking at { %.2f, %.2f, %.2f }", camera.position.x, camera.position.y,
-                    camera.position.z, at.x, at.y, at.z);
+        io::printfn(
+            "camera { %.2f, %.2f, %.2f } looking at { %.2f, %.2f, %.2f }",
+            camera.position.x,
+            camera.position.y,
+            camera.position.z,
+            at.x,
+            at.y,
+            at.z
+        );
     }
 }
 
 fn void animate(double time) {
     float now = renderer.time;
-    float dt = last_time < 0 ? 0 : math::min(now - last_time, 0.1f);
+    float dt  = last_time < 0 ? 0 : math::min(now - last_time, 0.1f);
     last_time = now;
     controls.update(dt);
     ulong t = profile::start();
@@ -581,9 +614,18 @@ fn void hud() {
         if (h.state == DORMANT) dormant++;
     }
     @pool() {
-        sdtx::puts(string::tformat("dropped %d   moving %d   dormant %d   (%d handkerchiefs)\n", dropped, falling, dormant, HANDKERCHIEFS).zstr_tcopy());
+        sdtx::puts(
+            string::tformat(
+                "dropped %d   moving %d   dormant %d   (%d handkerchiefs)\n",
+                dropped,
+                falling,
+                dormant,
+                HANDKERCHIEFS
+            )
+            .zstr_tcopy());
         if (gpu_timer::enabled) {
-            sdtx::puts(string::tformat("cloth on the GPU: %.2f ms\n", gpu_timer::last_ms("drie-gpu-cloth")).zstr_tcopy());
+            sdtx::puts(string::tformat("cloth on the GPU: %.2f ms\n", gpu_timer::last_ms("drie-gpu-cloth"))
+                .zstr_tcopy());
         }
     };
     sdtx::draw();
@@ -622,8 +664,8 @@ fn int main(String[] args) {
     renderer.time = at;
     build_scene();
     if (gpu_time) gpu_timer::enabled = true;
-    float dt = 1.0f / 60;
-    int frames = (int)math::round(at / dt);
+    float dt    = 1.0f / 60;
+    int frames  = (int)math::round(at / dt);
     ulong began = stm::now();
     for (int f = 0; f < frames; f++) {
         step(dt);
@@ -636,7 +678,14 @@ fn int main(String[] args) {
         if (h.state == FALLING || h.state == HELD) falling++;
         if (h.state == DORMANT) dormant++;
     }
-    io::printfn("%.1f s in %.0f ms: dropped %d, moving %d, dormant %d", at, stm::ms(stm::since(began)), dropped, falling, dormant);
+    io::printfn(
+        "%.1f s in %.0f ms: dropped %d, moving %d, dormant %d",
+        at,
+        stm::ms(stm::since(began)),
+        dropped,
+        falling,
+        dormant
+    );
     RenderTarget* rt = drie::render_target(W, H, 1, RGBA8);
     for (int f = 0; f < 60; f++) {
         render_frame(rt);

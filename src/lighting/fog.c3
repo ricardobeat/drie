@@ -21,11 +21,18 @@ struct FogVolume @local {
     SgImage image;
     SgView storage;
     SgView texture;
+    // the same, blurred across the cells (`fog_blur_cs`): what the surfaces read
+    SgImage blurred;
+    SgView blurred_storage;
+    SgView blurred_texture;
 }
 
 struct FogPassState @local {
     SgShader shader;
     SgPipeline pipeline;
+    SgShader blur_shader;
+    SgPipeline blur_pipeline;
+    SgSampler blur_sampler;
     // Ring cache keyed by `(cells_x, cells_y, slices)` so multi-target frames keep separate grids.
     FogVolume[4] volumes;
     int next;
@@ -54,6 +61,9 @@ fn FogVolume* fog_volume_for(int cells_x, int cells_y, int slices) @local {
         sg::destroy_view(v.storage);
         sg::destroy_view(v.texture);
         sg::destroy_image(v.image);
+        sg::destroy_view(v.blurred_storage);
+        sg::destroy_view(v.blurred_texture);
+        sg::destroy_image(v.blurred);
     }
     int per_row = (int)math::ceil(math::sqrt((float)slices));
     int rows    = (slices + per_row - 1) / per_row;
@@ -69,6 +79,17 @@ fn FogVolume* fog_volume_for(int cells_x, int cells_y, int slices) @local {
     );
     v.storage = sg::make_view(&&{ .storage_image = { .image = v.image } });
     v.texture = sg::make_view(&&{ .texture = { .image = v.image } });
+    v.blurred = sg::make_image(
+        &&{
+            .usage = { .storage_image = true },
+            .width = cells_x * per_row,
+            .height = cells_y * rows,
+            .pixel_format = RGBA16F,
+            .label = "drie-fog-volume-blurred",
+        }
+    );
+    v.blurred_storage = sg::make_view(&&{ .storage_image = { .image = v.blurred } });
+    v.blurred_texture = sg::make_view(&&{ .texture = { .image = v.blurred } });
     return v;
 }
 
@@ -185,7 +206,29 @@ fn SgView update_fog_volume(
     sg::dispatch((cx + 7) / 8, (cy + 7) / 8, 1);
     sg::end_pass();
 
+    // blurred across the cells, within each slice
+    if (!fog_pass.blur_shader.id) {
+        fog_pass.blur_shader = make_program(shaders::fog_blur_shader_desc(sg::query_backend()));
+        fog_pass.blur_pipeline = sg::make_pipeline(
+            &&{ .compute = true, .shader = fog_pass.blur_shader, .label = "drie-fog-blur" }
+        );
+        fog_pass.blur_sampler = sg::make_sampler(
+            &&{ .min_filter = NEAREST, .mag_filter = NEAREST, .label = "drie-fog-blur" }
+        );
+    }
+    SgBindings blur;
+    blur.views[shaders::VIEW_FB_IN] = v.texture;
+    blur.views[shaders::VIEW_FB_OUT] = v.blurred_storage;
+    blur.samplers[shaders::SMP_FB_SMP] = fog_pass.blur_sampler;
+    FogBlurParams bp = { .fb_grid = { cx, cy, slices, v.per_row } };
+    profile::begin_pass(&&{ .compute = true, .label = "drie-fog-blur" });
+    sg::apply_pipeline(fog_pass.blur_pipeline);
+    sg::apply_bindings(&blur);
+    sg::apply_uniforms(shaders::UB_FOG_BLUR_PARAMS, &&{ .ptr = &bp, .size = FogBlurParams::size });
+    sg::dispatch((cx * v.per_row + 7) / 8, (cy * ((slices + v.per_row - 1) / v.per_row) + 7) / 8, 1);
+    sg::end_pass();
+
     p.fog_grid = { cx, cy, slices, v.per_row };
     p.fog_slices = { near, per_log, far, 0 };
-    return v.texture;
+    return v.blurred_texture;
 }

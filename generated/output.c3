@@ -20,6 +20,11 @@ import sokol;
         Uniform block 'output_params':
             C3 struct: OutputParams
             Bind slot: UB_OUTPUT_PARAMS => 0
+        Texture 'output_noise':
+            Image type: SgImageType.TYPE_2D
+            Sample type: SgImageSampleType.FLOAT
+            Multisampled: false
+            Bind slot: VIEW_OUTPUT_NOISE => 3
         Texture 'output_src':
             Image type: SgImageType.TYPE_2D
             Sample type: SgImageSampleType.FLOAT
@@ -40,6 +45,7 @@ import sokol;
             Bind slot: SMP_OUTPUT_SMP => 0
 */
 const int UB_OUTPUT_PARAMS = 0;
+const int VIEW_OUTPUT_NOISE = 3;
 const int VIEW_OUTPUT_SRC = 0;
 const int VIEW_OUTPUT_EXPOSURE = 1;
 const int VIEW_OUTPUT_LUT = 2;
@@ -48,6 +54,7 @@ struct OutputParams @align(16) @packed
 {
     Vec4 params;
     Vec4 params2;
+    Vec4 params3;
 }
 const ZString OUTPUT_VS_SOURCE_GLSL430 @private @feat(!DARWIN & !WIN32 & !EMSCRIPTEN) = `#version 430
 
@@ -64,10 +71,11 @@ void main()
 `;
 const ZString OUTPUT_FS_SOURCE_GLSL430 @private @feat(!DARWIN & !WIN32 & !EMSCRIPTEN) = `#version 430
 
-uniform vec4 output_params[2];
+uniform vec4 output_params[3];
 layout(binding = 0) uniform sampler2D output_src_output_smp;
 layout(binding = 1) uniform sampler2D output_exposure_output_smp;
 layout(binding = 2) uniform sampler3D output_lut_output_smp;
+layout(binding = 3) uniform sampler2D output_noise_output_smp;
 
 layout(location = 0) in vec2 uv;
 layout(location = 0) out vec4 frag_color;
@@ -77,9 +85,35 @@ vec3 grade_shape(vec3 c)
     return clamp((log2(max(c, vec3(1.0000000133514319600180897396058e-10)) * vec3(5.5555553436279296875)) + vec3(10.0)) * vec3(0.0588235296308994293212890625), vec3(0.0), vec3(1.0));
 }
 
+vec3 dither(vec3 c)
+{
+    if (output_params[2].x <= 0.0)
+    {
+        return c;
+    }
+    return c + ((fract(vec3(texelFetch(output_noise_output_smp, ivec2(gl_FragCoord.xy) & ivec2(63), 0).x + output_params[2].y) + vec3(0.0, 0.38196599483489990234375, 0.7639319896697998046875)) - vec3(0.5)) * (output_params[2].x * 0.0039215688593685626983642578125));
+}
+
 vec3 srgb_to_linear(vec3 c)
 {
     return mix(c * vec3(0.077399380505084991455078125), pow((c + vec3(0.054999999701976776123046875)) * vec3(0.947867333889007568359375), vec3(2.400000095367431640625)), step(vec3(0.040449999272823333740234375), c));
+}
+
+vec3 dither_out(vec3 encoded, bool linear_target)
+{
+    vec3 param = encoded;
+    vec3 _706 = dither(param);
+    vec3 _708;
+    if (linear_target)
+    {
+        vec3 param_1 = max(_706, vec3(0.0));
+        _708 = srgb_to_linear(param_1);
+    }
+    else
+    {
+        _708 = _706;
+    }
+    return _708;
 }
 
 vec3 cineon(inout vec3 c)
@@ -105,15 +139,15 @@ vec3 aces_filmic_wide(inout vec3 c)
 vec3 aces_filmic(vec3 c)
 {
     vec3 param = c;
-    vec3 _173 = aces_filmic_wide(param);
-    return clamp(_173, vec3(0.0), vec3(1.0));
+    vec3 _181 = aces_filmic_wide(param);
+    return clamp(_181, vec3(0.0), vec3(1.0));
 }
 
 vec3 agx_contrast(vec3 x)
 {
-    vec3 _184 = x * x;
-    vec3 _188 = _184 * _184;
-    return (((((((_188 * 15.5) * _184) - ((_188 * 40.1399993896484375) * x)) + (_188 * 31.95999908447265625)) - ((_184 * 6.868000030517578125) * x)) + (_184 * 0.4298000037670135498046875)) + (x * 0.119099996984004974365234375)) - vec3(0.002319999970495700836181640625);
+    vec3 _192 = x * x;
+    vec3 _196 = _192 * _192;
+    return (((((((_196 * 15.5) * _192) - ((_196 * 40.1399993896484375) * x)) + (_196 * 31.95999908447265625)) - ((_192 * 6.868000030517578125) * x)) + (_192 * 0.4298000037670135498046875)) + (x * 0.119099996984004974365234375)) - vec3(0.002319999970495700836181640625);
 }
 
 vec3 agx_rec2020(inout vec3 c)
@@ -128,34 +162,34 @@ vec3 agx_rec2020(inout vec3 c)
 vec3 agx(vec3 c)
 {
     vec3 param = c;
-    vec3 _303 = agx_rec2020(param);
-    return clamp(mat3(vec3(1.660500049591064453125, -0.124600000679492950439453125, -0.01820000074803829193115234375), vec3(-0.5875999927520751953125, 1.1328999996185302734375, -0.100599996745586395263671875), vec3(-0.072800002992153167724609375, -0.008299999870359897613525390625, 1.1187000274658203125)) * _303, vec3(0.0), vec3(1.0));
+    vec3 _311 = agx_rec2020(param);
+    return clamp(mat3(vec3(1.660500049591064453125, -0.124600000679492950439453125, -0.01820000074803829193115234375), vec3(-0.5875999927520751953125, 1.1328999996185302734375, -0.100599996745586395263671875), vec3(-0.072800002992153167724609375, -0.008299999870359897613525390625, 1.1187000274658203125)) * _311, vec3(0.0), vec3(1.0));
 }
 
 vec3 neutral(inout vec3 c)
 {
-    float _322 = min(c.x, min(c.y, c.z));
-    float _327;
-    if (_322 < 0.07999999821186065673828125)
+    float _330 = min(c.x, min(c.y, c.z));
+    float _335;
+    if (_330 < 0.07999999821186065673828125)
     {
-        _327 = _322 - ((6.25 * _322) * _322);
+        _335 = _330 - ((6.25 * _330) * _330);
     }
     else
     {
-        _327 = 0.039999999105930328369140625;
+        _335 = 0.039999999105930328369140625;
     }
-    c -= vec3(_327);
-    float _346 = c.x;
-    float _348 = c.y;
-    float _350 = c.z;
-    float _352 = max(_346, max(_348, _350));
-    if (_352 < 0.7599999904632568359375)
+    c -= vec3(_335);
+    float _354 = c.x;
+    float _356 = c.y;
+    float _358 = c.z;
+    float _360 = max(_354, max(_356, _358));
+    if (_360 < 0.7599999904632568359375)
     {
         return c;
     }
-    float _371 = 1.0 - (0.057599999010562896728515625 / (_352 + (-0.519999980926513671875)));
-    c *= (_371 / _352);
-    return mix(c, vec3(_371), vec3(1.0 - (1.0 / ((0.1500000059604644775390625 * (_352 - _371)) + 1.0))));
+    float _379 = 1.0 - (0.057599999010562896728515625 / (_360 + (-0.519999980926513671875)));
+    c *= (_379 / _360);
+    return mix(c, vec3(_379), vec3(1.0 - (1.0 / ((0.1500000059604644775390625 * (_360 - _379)) + 1.0))));
 }
 
 vec3 tone_map(inout vec3 c, int mode, float exposure)
@@ -176,8 +210,8 @@ vec3 tone_map(inout vec3 c, int mode, float exposure)
     if (mode == 3)
     {
         vec3 param = c;
-        vec3 _463 = cineon(param);
-        return _463;
+        vec3 _471 = cineon(param);
+        return _471;
     }
     if (mode == 4)
     {
@@ -192,8 +226,8 @@ vec3 tone_map(inout vec3 c, int mode, float exposure)
     if (mode == 6)
     {
         vec3 param_3 = c;
-        vec3 _490 = neutral(param_3);
-        return _490;
+        vec3 _498 = neutral(param_3);
+        return _498;
     }
     return c;
 }
@@ -205,31 +239,31 @@ vec3 tone_map_gamut(vec3 c, int mode, float exposure, bool p3)
         vec3 param = c;
         int param_1 = mode;
         float param_2 = exposure;
-        vec3 _505 = tone_map(param, param_1, param_2);
-        return _505;
+        vec3 _513 = tone_map(param, param_1, param_2);
+        return _513;
     }
     if (mode == 0)
     {
         return mat3(vec3(0.8224999904632568359375, 0.0331999994814395904541015625, 0.01710000075399875640869140625), vec3(0.17739999294281005859375, 0.96689999103546142578125, 0.0724000036716461181640625), vec3(0.0, 0.0, 0.91079998016357421875)) * c;
     }
-    vec3 _529 = max(c, vec3(0.0)) * exposure;
+    vec3 _537 = max(c, vec3(0.0)) * exposure;
     if (mode == 4)
     {
-        vec3 param_3 = _529;
-        vec3 _536 = aces_filmic_wide(param_3);
-        return clamp(mat3(vec3(0.8224999904632568359375, 0.0331999994814395904541015625, 0.01710000075399875640869140625), vec3(0.17739999294281005859375, 0.96689999103546142578125, 0.0724000036716461181640625), vec3(0.0, 0.0, 0.91079998016357421875)) * _536, vec3(0.0), vec3(1.0));
+        vec3 param_3 = _537;
+        vec3 _544 = aces_filmic_wide(param_3);
+        return clamp(mat3(vec3(0.8224999904632568359375, 0.0331999994814395904541015625, 0.01710000075399875640869140625), vec3(0.17739999294281005859375, 0.96689999103546142578125, 0.0724000036716461181640625), vec3(0.0, 0.0, 0.91079998016357421875)) * _544, vec3(0.0), vec3(1.0));
     }
     if (mode == 5)
     {
-        vec3 param_4 = _529;
-        vec3 _548 = agx_rec2020(param_4);
-        return clamp(mat3(vec3(0.8224999904632568359375, 0.0331999994814395904541015625, 0.01710000075399875640869140625), vec3(0.17739999294281005859375, 0.96689999103546142578125, 0.0724000036716461181640625), vec3(0.0, 0.0, 0.91079998016357421875)) * (mat3(vec3(1.660500049591064453125, -0.124600000679492950439453125, -0.01820000074803829193115234375), vec3(-0.5875999927520751953125, 1.1328999996185302734375, -0.100599996745586395263671875), vec3(-0.072800002992153167724609375, -0.008299999870359897613525390625, 1.1187000274658203125)) * _548), vec3(0.0), vec3(1.0));
+        vec3 param_4 = _537;
+        vec3 _556 = agx_rec2020(param_4);
+        return clamp(mat3(vec3(0.8224999904632568359375, 0.0331999994814395904541015625, 0.01710000075399875640869140625), vec3(0.17739999294281005859375, 0.96689999103546142578125, 0.0724000036716461181640625), vec3(0.0, 0.0, 0.91079998016357421875)) * (mat3(vec3(1.660500049591064453125, -0.124600000679492950439453125, -0.01820000074803829193115234375), vec3(-0.5875999927520751953125, 1.1328999996185302734375, -0.100599996745586395263671875), vec3(-0.072800002992153167724609375, -0.008299999870359897613525390625, 1.1187000274658203125)) * _556), vec3(0.0), vec3(1.0));
     }
     vec3 param_5 = c;
     int param_6 = mode;
     float param_7 = exposure;
-    vec3 _561 = tone_map(param_5, param_6, param_7);
-    return mat3(vec3(0.8224999904632568359375, 0.0331999994814395904541015625, 0.01710000075399875640869140625), vec3(0.17739999294281005859375, 0.96689999103546142578125, 0.0724000036716461181640625), vec3(0.0, 0.0, 0.91079998016357421875)) * _561;
+    vec3 _569 = tone_map(param_5, param_6, param_7);
+    return mat3(vec3(0.8224999904632568359375, 0.0331999994814395904541015625, 0.01710000075399875640869140625), vec3(0.17739999294281005859375, 0.96689999103546142578125, 0.0724000036716461181640625), vec3(0.0, 0.0, 0.91079998016357421875)) * _569;
 }
 
 float hdr_boost(vec3 c, float exposure, float peak, vec3 shown)
@@ -238,9 +272,9 @@ float hdr_boost(vec3 c, float exposure, float peak, vec3 shown)
     {
         return 1.0;
     }
-    vec3 _574 = max(c, vec3(0.0)) * exposure;
-    float _602 = max(shown.x, max(shown.y, shown.z));
-    return mix(1.0, max(1.0, (peak * (1.0 - exp(((-1.5) * max(_574.x, max(_574.y, _574.z))) / peak))) / max(_602, 9.9999997473787516355514526367188e-05)), smoothstep(0.449999988079071044921875, 0.89999997615814208984375, _602));
+    vec3 _582 = max(c, vec3(0.0)) * exposure;
+    float _610 = max(shown.x, max(shown.y, shown.z));
+    return mix(1.0, max(1.0, (peak * (1.0 - exp(((-1.5) * max(_582.x, max(_582.y, _582.z))) / peak))) / max(_610, 9.9999997473787516355514526367188e-05)), smoothstep(0.449999988079071044921875, 0.89999997615814208984375, _610));
 }
 
 vec3 linear_to_srgb(vec3 c)
@@ -250,65 +284,49 @@ vec3 linear_to_srgb(vec3 c)
 
 void main()
 {
-    vec4 _653 = texture(output_src_output_smp, uv);
+    vec4 _730 = texture(output_src_output_smp, uv);
     float exposure = output_params[0].y;
     if (output_params[0].z > 0.5)
     {
         exposure *= texelFetch(output_exposure_output_smp, ivec2(0), 0).x;
     }
-    bool _679 = output_params[1].z > 0.5;
-    bool _685;
-    if (_679)
+    bool _751 = output_params[1].z > 0.5;
+    bool _757;
+    if (_751)
     {
-        _685 = output_params[1].y <= 0.0;
+        _757 = output_params[1].y <= 0.0;
     }
     else
     {
-        _685 = _679;
+        _757 = _751;
     }
-    if (_685)
+    if (_757)
     {
-        vec3 param = _653.xyz * exposure;
-        vec3 _718 = textureLod(output_lut_output_smp, (grade_shape(param) * ((output_params[1].w - 1.0) / output_params[1].w)) + vec3(0.5 / output_params[1].w), 0.0).xyz;
-        vec3 _724;
-        if (output_params[0].w > 0.5)
-        {
-            vec3 param_1 = _718;
-            _724 = srgb_to_linear(param_1);
-        }
-        else
-        {
-            _724 = _718;
-        }
-        frag_color = vec4(_724, _653.w);
+        vec3 param = _730.xyz * exposure;
+        vec3 param_1 = textureLod(output_lut_output_smp, (grade_shape(param) * ((output_params[1].w - 1.0) / output_params[1].w)) + vec3(0.5 / output_params[1].w), 0.0).xyz;
+        bool param_2 = output_params[0].w > 0.5;
+        frag_color = vec4(dither_out(param_1, param_2), _730.w);
         return;
     }
-    vec3 _749 = _653.xyz;
-    vec3 param_2 = _749;
-    int param_3 = int(output_params[0].x);
-    float param_4 = exposure;
-    bool param_5 = output_params[1].x > 0.5;
-    vec3 _754 = tone_map_gamut(param_2, param_3, param_4, param_5);
+    vec3 _816 = _730.xyz;
+    vec3 param_3 = _816;
+    int param_4 = int(output_params[0].x);
+    float param_5 = exposure;
+    bool param_6 = output_params[1].x > 0.5;
+    vec3 _821 = tone_map_gamut(param_3, param_4, param_5, param_6);
     if (output_params[1].y > 0.0)
     {
-        vec3 param_6 = _749;
-        float param_7 = exposure;
-        float param_8 = output_params[1].y;
-        vec3 param_9 = _754;
-        frag_color = vec4(_754 * hdr_boost(param_6, param_7, param_8, param_9), _653.w);
+        vec3 param_7 = _816;
+        float param_8 = exposure;
+        float param_9 = output_params[1].y;
+        vec3 param_10 = _821;
+        frag_color = vec4(_821 * hdr_boost(param_7, param_8, param_9, param_10), _730.w);
         return;
     }
-    vec3 _783;
-    if (output_params[0].w > 0.5)
-    {
-        _783 = _754;
-    }
-    else
-    {
-        vec3 param_10 = _754;
-        _783 = linear_to_srgb(param_10);
-    }
-    frag_color = vec4(_783, _653.w);
+    vec3 param_11 = _821;
+    vec3 param_12 = linear_to_srgb(param_11);
+    bool param_13 = output_params[0].w > 0.5;
+    frag_color = vec4(dither_out(param_12, param_13), _730.w);
 }
 
 `;
@@ -347,21 +365,25 @@ SPIRV_Cross_Output main(SPIRV_Cross_Input stage_input)
 `;
 const ZString OUTPUT_FS_SOURCE_HLSL5 @private @feat(WIN32) = `cbuffer output_params : register(b0)
 {
-    float4 _657_params : packoffset(c0);
-    float4 _657_params2 : packoffset(c1);
+    float4 _647_params : packoffset(c0);
+    float4 _647_params2 : packoffset(c1);
+    float4 _647_params3 : packoffset(c2);
 };
 
-Texture2D<float4> output_src : register(t0);
+Texture2D<float4> output_noise : register(t3);
 SamplerState output_smp : register(s0);
+Texture2D<float4> output_src : register(t0);
 Texture2D<float4> output_exposure : register(t1);
 Texture3D<float4> output_lut : register(t2);
 
+static float4 gl_FragCoord;
 static float2 uv;
 static float4 frag_color;
 
 struct SPIRV_Cross_Input
 {
     float2 uv : TEXCOORD0;
+    float4 gl_FragCoord : SV_Position;
 };
 
 struct SPIRV_Cross_Output
@@ -374,9 +396,35 @@ float3 grade_shape(float3 c)
     return clamp((log2(max(c, 1.0000000133514319600180897396058e-10f.xxx) * 5.5555553436279296875f.xxx) + 10.0f.xxx) * 0.0588235296308994293212890625f.xxx, 0.0f.xxx, 1.0f.xxx);
 }
 
+float3 dither(float3 c)
+{
+    if (_647_params3.x <= 0.0f)
+    {
+        return c;
+    }
+    return c + ((frac((output_noise.Load(int3(int2(gl_FragCoord.xy) & int2(63, 63), 0)).x + _647_params3.y).xxx + float3(0.0f, 0.38196599483489990234375f, 0.7639319896697998046875f)) - 0.5f.xxx) * (_647_params3.x * 0.0039215688593685626983642578125f));
+}
+
 float3 srgb_to_linear(float3 c)
 {
     return lerp(c * 0.077399380505084991455078125f.xxx, pow((c + 0.054999999701976776123046875f.xxx) * 0.947867333889007568359375f.xxx, 2.400000095367431640625f.xxx), step(0.040449999272823333740234375f.xxx, c));
+}
+
+float3 dither_out(float3 encoded, bool linear_target)
+{
+    float3 param = encoded;
+    float3 _706 = dither(param);
+    float3 _708;
+    if (linear_target)
+    {
+        float3 param_1 = max(_706, 0.0f.xxx);
+        _708 = srgb_to_linear(param_1);
+    }
+    else
+    {
+        _708 = _706;
+    }
+    return _708;
 }
 
 float3 cineon(inout float3 c)
@@ -402,15 +450,15 @@ float3 aces_filmic_wide(inout float3 c)
 float3 aces_filmic(float3 c)
 {
     float3 param = c;
-    float3 _173 = aces_filmic_wide(param);
-    return clamp(_173, 0.0f.xxx, 1.0f.xxx);
+    float3 _181 = aces_filmic_wide(param);
+    return clamp(_181, 0.0f.xxx, 1.0f.xxx);
 }
 
 float3 agx_contrast(float3 x)
 {
-    float3 _184 = x * x;
-    float3 _188 = _184 * _184;
-    return (((((((_188 * 15.5f) * _184) - ((_188 * 40.1399993896484375f) * x)) + (_188 * 31.95999908447265625f)) - ((_184 * 6.868000030517578125f) * x)) + (_184 * 0.4298000037670135498046875f)) + (x * 0.119099996984004974365234375f)) - 0.002319999970495700836181640625f.xxx;
+    float3 _192 = x * x;
+    float3 _196 = _192 * _192;
+    return (((((((_196 * 15.5f) * _192) - ((_196 * 40.1399993896484375f) * x)) + (_196 * 31.95999908447265625f)) - ((_192 * 6.868000030517578125f) * x)) + (_192 * 0.4298000037670135498046875f)) + (x * 0.119099996984004974365234375f)) - 0.002319999970495700836181640625f.xxx;
 }
 
 float3 agx_rec2020(inout float3 c)
@@ -425,34 +473,34 @@ float3 agx_rec2020(inout float3 c)
 float3 agx(float3 c)
 {
     float3 param = c;
-    float3 _303 = agx_rec2020(param);
-    return clamp(mul(_303, float3x3(float3(1.660500049591064453125f, -0.124600000679492950439453125f, -0.01820000074803829193115234375f), float3(-0.5875999927520751953125f, 1.1328999996185302734375f, -0.100599996745586395263671875f), float3(-0.072800002992153167724609375f, -0.008299999870359897613525390625f, 1.1187000274658203125f))), 0.0f.xxx, 1.0f.xxx);
+    float3 _311 = agx_rec2020(param);
+    return clamp(mul(_311, float3x3(float3(1.660500049591064453125f, -0.124600000679492950439453125f, -0.01820000074803829193115234375f), float3(-0.5875999927520751953125f, 1.1328999996185302734375f, -0.100599996745586395263671875f), float3(-0.072800002992153167724609375f, -0.008299999870359897613525390625f, 1.1187000274658203125f))), 0.0f.xxx, 1.0f.xxx);
 }
 
 float3 neutral(inout float3 c)
 {
-    float _322 = min(c.x, min(c.y, c.z));
-    float _327;
-    if (_322 < 0.07999999821186065673828125f)
+    float _330 = min(c.x, min(c.y, c.z));
+    float _335;
+    if (_330 < 0.07999999821186065673828125f)
     {
-        _327 = _322 - ((6.25f * _322) * _322);
+        _335 = _330 - ((6.25f * _330) * _330);
     }
     else
     {
-        _327 = 0.039999999105930328369140625f;
+        _335 = 0.039999999105930328369140625f;
     }
-    c -= _327.xxx;
-    float _346 = c.x;
-    float _348 = c.y;
-    float _350 = c.z;
-    float _352 = max(_346, max(_348, _350));
-    if (_352 < 0.7599999904632568359375f)
+    c -= _335.xxx;
+    float _354 = c.x;
+    float _356 = c.y;
+    float _358 = c.z;
+    float _360 = max(_354, max(_356, _358));
+    if (_360 < 0.7599999904632568359375f)
     {
         return c;
     }
-    float _371 = 1.0f - (0.057599999010562896728515625f / (_352 + (-0.519999980926513671875f)));
-    c *= (_371 / _352);
-    return lerp(c, _371.xxx, (1.0f - (1.0f / ((0.1500000059604644775390625f * (_352 - _371)) + 1.0f))).xxx);
+    float _379 = 1.0f - (0.057599999010562896728515625f / (_360 + (-0.519999980926513671875f)));
+    c *= (_379 / _360);
+    return lerp(c, _379.xxx, (1.0f - (1.0f / ((0.1500000059604644775390625f * (_360 - _379)) + 1.0f))).xxx);
 }
 
 float3 tone_map(inout float3 c, int mode, float exposure)
@@ -473,8 +521,8 @@ float3 tone_map(inout float3 c, int mode, float exposure)
     if (mode == 3)
     {
         float3 param = c;
-        float3 _463 = cineon(param);
-        return _463;
+        float3 _471 = cineon(param);
+        return _471;
     }
     if (mode == 4)
     {
@@ -489,8 +537,8 @@ float3 tone_map(inout float3 c, int mode, float exposure)
     if (mode == 6)
     {
         float3 param_3 = c;
-        float3 _490 = neutral(param_3);
-        return _490;
+        float3 _498 = neutral(param_3);
+        return _498;
     }
     return c;
 }
@@ -502,31 +550,31 @@ float3 tone_map_gamut(float3 c, int mode, float exposure, bool p3)
         float3 param = c;
         int param_1 = mode;
         float param_2 = exposure;
-        float3 _505 = tone_map(param, param_1, param_2);
-        return _505;
+        float3 _513 = tone_map(param, param_1, param_2);
+        return _513;
     }
     if (mode == 0)
     {
         return mul(c, float3x3(float3(0.8224999904632568359375f, 0.0331999994814395904541015625f, 0.01710000075399875640869140625f), float3(0.17739999294281005859375f, 0.96689999103546142578125f, 0.0724000036716461181640625f), float3(0.0f, 0.0f, 0.91079998016357421875f)));
     }
-    float3 _529 = max(c, 0.0f.xxx) * exposure;
+    float3 _537 = max(c, 0.0f.xxx) * exposure;
     if (mode == 4)
     {
-        float3 param_3 = _529;
-        float3 _536 = aces_filmic_wide(param_3);
-        return clamp(mul(_536, float3x3(float3(0.8224999904632568359375f, 0.0331999994814395904541015625f, 0.01710000075399875640869140625f), float3(0.17739999294281005859375f, 0.96689999103546142578125f, 0.0724000036716461181640625f), float3(0.0f, 0.0f, 0.91079998016357421875f))), 0.0f.xxx, 1.0f.xxx);
+        float3 param_3 = _537;
+        float3 _544 = aces_filmic_wide(param_3);
+        return clamp(mul(_544, float3x3(float3(0.8224999904632568359375f, 0.0331999994814395904541015625f, 0.01710000075399875640869140625f), float3(0.17739999294281005859375f, 0.96689999103546142578125f, 0.0724000036716461181640625f), float3(0.0f, 0.0f, 0.91079998016357421875f))), 0.0f.xxx, 1.0f.xxx);
     }
     if (mode == 5)
     {
-        float3 param_4 = _529;
-        float3 _548 = agx_rec2020(param_4);
-        return clamp(mul(mul(_548, float3x3(float3(1.660500049591064453125f, -0.124600000679492950439453125f, -0.01820000074803829193115234375f), float3(-0.5875999927520751953125f, 1.1328999996185302734375f, -0.100599996745586395263671875f), float3(-0.072800002992153167724609375f, -0.008299999870359897613525390625f, 1.1187000274658203125f))), float3x3(float3(0.8224999904632568359375f, 0.0331999994814395904541015625f, 0.01710000075399875640869140625f), float3(0.17739999294281005859375f, 0.96689999103546142578125f, 0.0724000036716461181640625f), float3(0.0f, 0.0f, 0.91079998016357421875f))), 0.0f.xxx, 1.0f.xxx);
+        float3 param_4 = _537;
+        float3 _556 = agx_rec2020(param_4);
+        return clamp(mul(mul(_556, float3x3(float3(1.660500049591064453125f, -0.124600000679492950439453125f, -0.01820000074803829193115234375f), float3(-0.5875999927520751953125f, 1.1328999996185302734375f, -0.100599996745586395263671875f), float3(-0.072800002992153167724609375f, -0.008299999870359897613525390625f, 1.1187000274658203125f))), float3x3(float3(0.8224999904632568359375f, 0.0331999994814395904541015625f, 0.01710000075399875640869140625f), float3(0.17739999294281005859375f, 0.96689999103546142578125f, 0.0724000036716461181640625f), float3(0.0f, 0.0f, 0.91079998016357421875f))), 0.0f.xxx, 1.0f.xxx);
     }
     float3 param_5 = c;
     int param_6 = mode;
     float param_7 = exposure;
-    float3 _561 = tone_map(param_5, param_6, param_7);
-    return mul(_561, float3x3(float3(0.8224999904632568359375f, 0.0331999994814395904541015625f, 0.01710000075399875640869140625f), float3(0.17739999294281005859375f, 0.96689999103546142578125f, 0.0724000036716461181640625f), float3(0.0f, 0.0f, 0.91079998016357421875f)));
+    float3 _569 = tone_map(param_5, param_6, param_7);
+    return mul(_569, float3x3(float3(0.8224999904632568359375f, 0.0331999994814395904541015625f, 0.01710000075399875640869140625f), float3(0.17739999294281005859375f, 0.96689999103546142578125f, 0.0724000036716461181640625f), float3(0.0f, 0.0f, 0.91079998016357421875f)));
 }
 
 float hdr_boost(float3 c, float exposure, float peak, float3 shown)
@@ -535,9 +583,9 @@ float hdr_boost(float3 c, float exposure, float peak, float3 shown)
     {
         return 1.0f;
     }
-    float3 _574 = max(c, 0.0f.xxx) * exposure;
-    float _602 = max(shown.x, max(shown.y, shown.z));
-    return lerp(1.0f, max(1.0f, (peak * (1.0f - exp(((-1.5f) * max(_574.x, max(_574.y, _574.z))) / peak))) / max(_602, 9.9999997473787516355514526367188e-05f)), smoothstep(0.449999988079071044921875f, 0.89999997615814208984375f, _602));
+    float3 _582 = max(c, 0.0f.xxx) * exposure;
+    float _610 = max(shown.x, max(shown.y, shown.z));
+    return lerp(1.0f, max(1.0f, (peak * (1.0f - exp(((-1.5f) * max(_582.x, max(_582.y, _582.z))) / peak))) / max(_610, 9.9999997473787516355514526367188e-05f)), smoothstep(0.449999988079071044921875f, 0.89999997615814208984375f, _610));
 }
 
 float3 linear_to_srgb(float3 c)
@@ -547,69 +595,55 @@ float3 linear_to_srgb(float3 c)
 
 void frag_main()
 {
-    float4 _653 = output_src.Sample(output_smp, uv);
-    float exposure = _657_params.y;
-    if (_657_params.z > 0.5f)
+    float4 _730 = output_src.Sample(output_smp, uv);
+    float exposure = _647_params.y;
+    if (_647_params.z > 0.5f)
     {
         exposure *= output_exposure.Load(int3(int2(0, 0), 0)).x;
     }
-    bool _679 = _657_params2.z > 0.5f;
-    bool _685;
-    if (_679)
+    bool _751 = _647_params2.z > 0.5f;
+    bool _757;
+    if (_751)
     {
-        _685 = _657_params2.y <= 0.0f;
+        _757 = _647_params2.y <= 0.0f;
     }
     else
     {
-        _685 = _679;
+        _757 = _751;
     }
-    if (_685)
+    if (_757)
     {
-        float3 param = _653.xyz * exposure;
-        float3 _718 = output_lut.SampleLevel(output_smp, (grade_shape(param) * ((_657_params2.w - 1.0f) / _657_params2.w)) + (0.5f / _657_params2.w).xxx, 0.0f).xyz;
-        float3 _724;
-        if (_657_params.w > 0.5f)
-        {
-            float3 param_1 = _718;
-            _724 = srgb_to_linear(param_1);
-        }
-        else
-        {
-            _724 = _718;
-        }
-        frag_color = float4(_724, _653.w);
+        float3 param = _730.xyz * exposure;
+        float3 param_1 = output_lut.SampleLevel(output_smp, (grade_shape(param) * ((_647_params2.w - 1.0f) / _647_params2.w)) + (0.5f / _647_params2.w).xxx, 0.0f).xyz;
+        bool param_2 = _647_params.w > 0.5f;
+        frag_color = float4(dither_out(param_1, param_2), _730.w);
         return;
     }
-    float3 _749 = _653.xyz;
-    float3 param_2 = _749;
-    int param_3 = int(_657_params.x);
-    float param_4 = exposure;
-    bool param_5 = _657_params2.x > 0.5f;
-    float3 _754 = tone_map_gamut(param_2, param_3, param_4, param_5);
-    if (_657_params2.y > 0.0f)
+    float3 _816 = _730.xyz;
+    float3 param_3 = _816;
+    int param_4 = int(_647_params.x);
+    float param_5 = exposure;
+    bool param_6 = _647_params2.x > 0.5f;
+    float3 _821 = tone_map_gamut(param_3, param_4, param_5, param_6);
+    if (_647_params2.y > 0.0f)
     {
-        float3 param_6 = _749;
-        float param_7 = exposure;
-        float param_8 = _657_params2.y;
-        float3 param_9 = _754;
-        frag_color = float4(_754 * hdr_boost(param_6, param_7, param_8, param_9), _653.w);
+        float3 param_7 = _816;
+        float param_8 = exposure;
+        float param_9 = _647_params2.y;
+        float3 param_10 = _821;
+        frag_color = float4(_821 * hdr_boost(param_7, param_8, param_9, param_10), _730.w);
         return;
     }
-    float3 _783;
-    if (_657_params.w > 0.5f)
-    {
-        _783 = _754;
-    }
-    else
-    {
-        float3 param_10 = _754;
-        _783 = linear_to_srgb(param_10);
-    }
-    frag_color = float4(_783, _653.w);
+    float3 param_11 = _821;
+    float3 param_12 = linear_to_srgb(param_11);
+    bool param_13 = _647_params.w > 0.5f;
+    frag_color = float4(dither_out(param_12, param_13), _730.w);
 }
 
 SPIRV_Cross_Output main(SPIRV_Cross_Input stage_input)
 {
+    gl_FragCoord = stage_input.gl_FragCoord;
+    gl_FragCoord.w = 1.0 / gl_FragCoord.w;
     uv = stage_input.uv;
     frag_main();
     SPIRV_Cross_Output stage_output;
@@ -650,6 +684,7 @@ struct output_params
 {
     float4 params;
     float4 params2;
+    float4 params3;
 };
 
 struct main0_out
@@ -669,9 +704,37 @@ float3 grade_shape(thread const float3& c)
 }
 
 static inline __attribute__((always_inline))
+float3 dither(thread const float3& c, constant output_params& _647, texture2d<float> output_noise, sampler output_smp, thread float4& gl_FragCoord)
+{
+    if (_647.params3.x <= 0.0)
+    {
+        return c;
+    }
+    return c + ((fract(float3(output_noise.read(uint2((int2(gl_FragCoord.xy) & int2(63))), 0).x + _647.params3.y) + float3(0.0, 0.38196599483489990234375, 0.7639319896697998046875)) - float3(0.5)) * (_647.params3.x * 0.0039215688593685626983642578125));
+}
+
+static inline __attribute__((always_inline))
 float3 srgb_to_linear(thread const float3& c)
 {
     return mix(c * float3(0.077399380505084991455078125), powr((c + float3(0.054999999701976776123046875)) * float3(0.947867333889007568359375), float3(2.400000095367431640625)), step(float3(0.040449999272823333740234375), c));
+}
+
+static inline __attribute__((always_inline))
+float3 dither_out(thread const float3& encoded, thread const bool& linear_target, constant output_params& _647, texture2d<float> output_noise, sampler output_smp, thread float4& gl_FragCoord)
+{
+    float3 param = encoded;
+    float3 _706 = dither(param, _647, output_noise, output_smp, gl_FragCoord);
+    float3 _708;
+    if (linear_target)
+    {
+        float3 param_1 = fast::max(_706, float3(0.0));
+        _708 = srgb_to_linear(param_1);
+    }
+    else
+    {
+        _708 = _706;
+    }
+    return _708;
 }
 
 static inline __attribute__((always_inline))
@@ -701,16 +764,16 @@ static inline __attribute__((always_inline))
 float3 aces_filmic(thread const float3& c)
 {
     float3 param = c;
-    float3 _173 = aces_filmic_wide(param);
-    return fast::clamp(_173, float3(0.0), float3(1.0));
+    float3 _181 = aces_filmic_wide(param);
+    return fast::clamp(_181, float3(0.0), float3(1.0));
 }
 
 static inline __attribute__((always_inline))
 float3 agx_contrast(thread const float3& x)
 {
-    float3 _184 = x * x;
-    float3 _188 = _184 * _184;
-    return (((((((_188 * 15.5) * _184) - ((_188 * 40.1399993896484375) * x)) + (_188 * 31.95999908447265625)) - ((_184 * 6.868000030517578125) * x)) + (_184 * 0.4298000037670135498046875)) + (x * 0.119099996984004974365234375)) - float3(0.002319999970495700836181640625);
+    float3 _192 = x * x;
+    float3 _196 = _192 * _192;
+    return (((((((_196 * 15.5) * _192) - ((_196 * 40.1399993896484375) * x)) + (_196 * 31.95999908447265625)) - ((_192 * 6.868000030517578125) * x)) + (_192 * 0.4298000037670135498046875)) + (x * 0.119099996984004974365234375)) - float3(0.002319999970495700836181640625);
 }
 
 static inline __attribute__((always_inline))
@@ -727,35 +790,35 @@ static inline __attribute__((always_inline))
 float3 agx(thread const float3& c)
 {
     float3 param = c;
-    float3 _303 = agx_rec2020(param);
-    return fast::clamp(float3x3(float3(1.660500049591064453125, -0.124600000679492950439453125, -0.01820000074803829193115234375), float3(-0.5875999927520751953125, 1.1328999996185302734375, -0.100599996745586395263671875), float3(-0.072800002992153167724609375, -0.008299999870359897613525390625, 1.1187000274658203125)) * _303, float3(0.0), float3(1.0));
+    float3 _311 = agx_rec2020(param);
+    return fast::clamp(float3x3(float3(1.660500049591064453125, -0.124600000679492950439453125, -0.01820000074803829193115234375), float3(-0.5875999927520751953125, 1.1328999996185302734375, -0.100599996745586395263671875), float3(-0.072800002992153167724609375, -0.008299999870359897613525390625, 1.1187000274658203125)) * _311, float3(0.0), float3(1.0));
 }
 
 static inline __attribute__((always_inline))
 float3 neutral(thread float3& c)
 {
-    float _322 = fast::min(c.x, fast::min(c.y, c.z));
-    float _327;
-    if (_322 < 0.07999999821186065673828125)
+    float _330 = fast::min(c.x, fast::min(c.y, c.z));
+    float _335;
+    if (_330 < 0.07999999821186065673828125)
     {
-        _327 = _322 - ((6.25 * _322) * _322);
+        _335 = _330 - ((6.25 * _330) * _330);
     }
     else
     {
-        _327 = 0.039999999105930328369140625;
+        _335 = 0.039999999105930328369140625;
     }
-    c -= float3(_327);
-    float _346 = c.x;
-    float _348 = c.y;
-    float _350 = c.z;
-    float _352 = fast::max(_346, fast::max(_348, _350));
-    if (_352 < 0.7599999904632568359375)
+    c -= float3(_335);
+    float _354 = c.x;
+    float _356 = c.y;
+    float _358 = c.z;
+    float _360 = fast::max(_354, fast::max(_356, _358));
+    if (_360 < 0.7599999904632568359375)
     {
         return c;
     }
-    float _371 = 1.0 - (0.057599999010562896728515625 / (_352 + (-0.519999980926513671875)));
-    c *= (_371 / _352);
-    return mix(c, float3(_371), float3(1.0 - (1.0 / ((0.1500000059604644775390625 * (_352 - _371)) + 1.0))));
+    float _379 = 1.0 - (0.057599999010562896728515625 / (_360 + (-0.519999980926513671875)));
+    c *= (_379 / _360);
+    return mix(c, float3(_379), float3(1.0 - (1.0 / ((0.1500000059604644775390625 * (_360 - _379)) + 1.0))));
 }
 
 static inline __attribute__((always_inline))
@@ -777,8 +840,8 @@ float3 tone_map(thread float3& c, thread const int& mode, thread const float& ex
     if (mode == 3)
     {
         float3 param = c;
-        float3 _463 = cineon(param);
-        return _463;
+        float3 _471 = cineon(param);
+        return _471;
     }
     if (mode == 4)
     {
@@ -793,8 +856,8 @@ float3 tone_map(thread float3& c, thread const int& mode, thread const float& ex
     if (mode == 6)
     {
         float3 param_3 = c;
-        float3 _490 = neutral(param_3);
-        return _490;
+        float3 _498 = neutral(param_3);
+        return _498;
     }
     return c;
 }
@@ -807,31 +870,31 @@ float3 tone_map_gamut(thread const float3& c, thread const int& mode, thread con
         float3 param = c;
         int param_1 = mode;
         float param_2 = exposure;
-        float3 _505 = tone_map(param, param_1, param_2);
-        return _505;
+        float3 _513 = tone_map(param, param_1, param_2);
+        return _513;
     }
     if (mode == 0)
     {
         return float3x3(float3(0.8224999904632568359375, 0.0331999994814395904541015625, 0.01710000075399875640869140625), float3(0.17739999294281005859375, 0.96689999103546142578125, 0.0724000036716461181640625), float3(0.0, 0.0, 0.91079998016357421875)) * c;
     }
-    float3 _529 = fast::max(c, float3(0.0)) * exposure;
+    float3 _537 = fast::max(c, float3(0.0)) * exposure;
     if (mode == 4)
     {
-        float3 param_3 = _529;
-        float3 _536 = aces_filmic_wide(param_3);
-        return fast::clamp(float3x3(float3(0.8224999904632568359375, 0.0331999994814395904541015625, 0.01710000075399875640869140625), float3(0.17739999294281005859375, 0.96689999103546142578125, 0.0724000036716461181640625), float3(0.0, 0.0, 0.91079998016357421875)) * _536, float3(0.0), float3(1.0));
+        float3 param_3 = _537;
+        float3 _544 = aces_filmic_wide(param_3);
+        return fast::clamp(float3x3(float3(0.8224999904632568359375, 0.0331999994814395904541015625, 0.01710000075399875640869140625), float3(0.17739999294281005859375, 0.96689999103546142578125, 0.0724000036716461181640625), float3(0.0, 0.0, 0.91079998016357421875)) * _544, float3(0.0), float3(1.0));
     }
     if (mode == 5)
     {
-        float3 param_4 = _529;
-        float3 _548 = agx_rec2020(param_4);
-        return fast::clamp(float3x3(float3(0.8224999904632568359375, 0.0331999994814395904541015625, 0.01710000075399875640869140625), float3(0.17739999294281005859375, 0.96689999103546142578125, 0.0724000036716461181640625), float3(0.0, 0.0, 0.91079998016357421875)) * (float3x3(float3(1.660500049591064453125, -0.124600000679492950439453125, -0.01820000074803829193115234375), float3(-0.5875999927520751953125, 1.1328999996185302734375, -0.100599996745586395263671875), float3(-0.072800002992153167724609375, -0.008299999870359897613525390625, 1.1187000274658203125)) * _548), float3(0.0), float3(1.0));
+        float3 param_4 = _537;
+        float3 _556 = agx_rec2020(param_4);
+        return fast::clamp(float3x3(float3(0.8224999904632568359375, 0.0331999994814395904541015625, 0.01710000075399875640869140625), float3(0.17739999294281005859375, 0.96689999103546142578125, 0.0724000036716461181640625), float3(0.0, 0.0, 0.91079998016357421875)) * (float3x3(float3(1.660500049591064453125, -0.124600000679492950439453125, -0.01820000074803829193115234375), float3(-0.5875999927520751953125, 1.1328999996185302734375, -0.100599996745586395263671875), float3(-0.072800002992153167724609375, -0.008299999870359897613525390625, 1.1187000274658203125)) * _556), float3(0.0), float3(1.0));
     }
     float3 param_5 = c;
     int param_6 = mode;
     float param_7 = exposure;
-    float3 _561 = tone_map(param_5, param_6, param_7);
-    return float3x3(float3(0.8224999904632568359375, 0.0331999994814395904541015625, 0.01710000075399875640869140625), float3(0.17739999294281005859375, 0.96689999103546142578125, 0.0724000036716461181640625), float3(0.0, 0.0, 0.91079998016357421875)) * _561;
+    float3 _569 = tone_map(param_5, param_6, param_7);
+    return float3x3(float3(0.8224999904632568359375, 0.0331999994814395904541015625, 0.01710000075399875640869140625), float3(0.17739999294281005859375, 0.96689999103546142578125, 0.0724000036716461181640625), float3(0.0, 0.0, 0.91079998016357421875)) * _569;
 }
 
 static inline __attribute__((always_inline))
@@ -841,9 +904,9 @@ float hdr_boost(thread const float3& c, thread const float& exposure, thread con
     {
         return 1.0;
     }
-    float3 _574 = fast::max(c, float3(0.0)) * exposure;
-    float _602 = fast::max(shown.x, fast::max(shown.y, shown.z));
-    return mix(1.0, fast::max(1.0, (peak * (1.0 - exp(((-1.5) * fast::max(_574.x, fast::max(_574.y, _574.z))) / peak))) / fast::max(_602, 9.9999997473787516355514526367188e-05)), smoothstep(0.449999988079071044921875, 0.89999997615814208984375, _602));
+    float3 _582 = fast::max(c, float3(0.0)) * exposure;
+    float _610 = fast::max(shown.x, fast::max(shown.y, shown.z));
+    return mix(1.0, fast::max(1.0, (peak * (1.0 - exp(((-1.5) * fast::max(_582.x, fast::max(_582.y, _582.z))) / peak))) / fast::max(_610, 9.9999997473787516355514526367188e-05)), smoothstep(0.449999988079071044921875, 0.89999997615814208984375, _610));
 }
 
 static inline __attribute__((always_inline))
@@ -852,68 +915,52 @@ float3 linear_to_srgb(thread const float3& c)
     return mix(c * 12.9200000762939453125, (powr(c, float3(0.4166666567325592041015625)) * 1.05499994754791259765625) - float3(0.054999999701976776123046875), step(float3(0.003130800090730190277099609375), c));
 }
 
-fragment main0_out main0(main0_in in [[stage_in]], constant output_params& _657 [[buffer(0)]], texture2d<float> output_src [[texture(0)]], texture2d<float> output_exposure [[texture(1)]], texture3d<float> output_lut [[texture(2)]], sampler output_smp [[sampler(0)]])
+fragment main0_out main0(main0_in in [[stage_in]], constant output_params& _647 [[buffer(0)]], texture2d<float> output_src [[texture(0)]], texture2d<float> output_exposure [[texture(1)]], texture3d<float> output_lut [[texture(2)]], texture2d<float> output_noise [[texture(3)]], sampler output_smp [[sampler(0)]], float4 gl_FragCoord [[position]])
 {
     main0_out out = {};
-    float4 _653 = output_src.sample(output_smp, in.uv);
-    float exposure = _657.params.y;
-    if (_657.params.z > 0.5)
+    float4 _730 = output_src.sample(output_smp, in.uv);
+    float exposure = _647.params.y;
+    if (_647.params.z > 0.5)
     {
         exposure *= output_exposure.read(uint2(int2(0)), 0).x;
     }
-    bool _679 = _657.params2.z > 0.5;
-    bool _685;
-    if (_679)
+    bool _751 = _647.params2.z > 0.5;
+    bool _757;
+    if (_751)
     {
-        _685 = _657.params2.y <= 0.0;
+        _757 = _647.params2.y <= 0.0;
     }
     else
     {
-        _685 = _679;
+        _757 = _751;
     }
-    if (_685)
+    if (_757)
     {
-        float3 param = _653.xyz * exposure;
-        float3 _718 = output_lut.sample(output_smp, ((grade_shape(param) * ((_657.params2.w - 1.0) / _657.params2.w)) + float3(0.5 / _657.params2.w)), level(0.0)).xyz;
-        float3 _724;
-        if (_657.params.w > 0.5)
-        {
-            float3 param_1 = _718;
-            _724 = srgb_to_linear(param_1);
-        }
-        else
-        {
-            _724 = _718;
-        }
-        out.frag_color = float4(_724, _653.w);
+        float3 param = _730.xyz * exposure;
+        float3 param_1 = output_lut.sample(output_smp, ((grade_shape(param) * ((_647.params2.w - 1.0) / _647.params2.w)) + float3(0.5 / _647.params2.w)), level(0.0)).xyz;
+        bool param_2 = _647.params.w > 0.5;
+        out.frag_color = float4(dither_out(param_1, param_2, _647, output_noise, output_smp, gl_FragCoord), _730.w);
         return out;
     }
-    float3 _749 = _653.xyz;
-    float3 param_2 = _749;
-    int param_3 = int(_657.params.x);
-    float param_4 = exposure;
-    bool param_5 = _657.params2.x > 0.5;
-    float3 _754 = tone_map_gamut(param_2, param_3, param_4, param_5);
-    if (_657.params2.y > 0.0)
+    float3 _816 = _730.xyz;
+    float3 param_3 = _816;
+    int param_4 = int(_647.params.x);
+    float param_5 = exposure;
+    bool param_6 = _647.params2.x > 0.5;
+    float3 _821 = tone_map_gamut(param_3, param_4, param_5, param_6);
+    if (_647.params2.y > 0.0)
     {
-        float3 param_6 = _749;
-        float param_7 = exposure;
-        float param_8 = _657.params2.y;
-        float3 param_9 = _754;
-        out.frag_color = float4(_754 * hdr_boost(param_6, param_7, param_8, param_9), _653.w);
+        float3 param_7 = _816;
+        float param_8 = exposure;
+        float param_9 = _647.params2.y;
+        float3 param_10 = _821;
+        out.frag_color = float4(_821 * hdr_boost(param_7, param_8, param_9, param_10), _730.w);
         return out;
     }
-    float3 _783;
-    if (_657.params.w > 0.5)
-    {
-        _783 = _754;
-    }
-    else
-    {
-        float3 param_10 = _754;
-        _783 = linear_to_srgb(param_10);
-    }
-    out.frag_color = float4(_783, _653.w);
+    float3 param_11 = _821;
+    float3 param_12 = linear_to_srgb(param_11);
+    bool param_13 = _647.params.w > 0.5;
+    out.frag_color = float4(dither_out(param_12, param_13, _647, output_noise, output_smp, gl_FragCoord), _730.w);
     return out;
 }
 
@@ -951,6 +998,7 @@ struct output_params
 {
     float4 params;
     float4 params2;
+    float4 params3;
 };
 
 struct main0_out
@@ -970,9 +1018,37 @@ float3 grade_shape(thread const float3& c)
 }
 
 static inline __attribute__((always_inline))
+float3 dither(thread const float3& c, constant output_params& _647, texture2d<float> output_noise, sampler output_smp, thread float4& gl_FragCoord)
+{
+    if (_647.params3.x <= 0.0)
+    {
+        return c;
+    }
+    return c + ((fract(float3(output_noise.read(uint2((int2(gl_FragCoord.xy) & int2(63))), 0).x + _647.params3.y) + float3(0.0, 0.38196599483489990234375, 0.7639319896697998046875)) - float3(0.5)) * (_647.params3.x * 0.0039215688593685626983642578125));
+}
+
+static inline __attribute__((always_inline))
 float3 srgb_to_linear(thread const float3& c)
 {
     return mix(c * float3(0.077399380505084991455078125), powr((c + float3(0.054999999701976776123046875)) * float3(0.947867333889007568359375), float3(2.400000095367431640625)), step(float3(0.040449999272823333740234375), c));
+}
+
+static inline __attribute__((always_inline))
+float3 dither_out(thread const float3& encoded, thread const bool& linear_target, constant output_params& _647, texture2d<float> output_noise, sampler output_smp, thread float4& gl_FragCoord)
+{
+    float3 param = encoded;
+    float3 _706 = dither(param, _647, output_noise, output_smp, gl_FragCoord);
+    float3 _708;
+    if (linear_target)
+    {
+        float3 param_1 = fast::max(_706, float3(0.0));
+        _708 = srgb_to_linear(param_1);
+    }
+    else
+    {
+        _708 = _706;
+    }
+    return _708;
 }
 
 static inline __attribute__((always_inline))
@@ -1002,16 +1078,16 @@ static inline __attribute__((always_inline))
 float3 aces_filmic(thread const float3& c)
 {
     float3 param = c;
-    float3 _173 = aces_filmic_wide(param);
-    return fast::clamp(_173, float3(0.0), float3(1.0));
+    float3 _181 = aces_filmic_wide(param);
+    return fast::clamp(_181, float3(0.0), float3(1.0));
 }
 
 static inline __attribute__((always_inline))
 float3 agx_contrast(thread const float3& x)
 {
-    float3 _184 = x * x;
-    float3 _188 = _184 * _184;
-    return (((((((_188 * 15.5) * _184) - ((_188 * 40.1399993896484375) * x)) + (_188 * 31.95999908447265625)) - ((_184 * 6.868000030517578125) * x)) + (_184 * 0.4298000037670135498046875)) + (x * 0.119099996984004974365234375)) - float3(0.002319999970495700836181640625);
+    float3 _192 = x * x;
+    float3 _196 = _192 * _192;
+    return (((((((_196 * 15.5) * _192) - ((_196 * 40.1399993896484375) * x)) + (_196 * 31.95999908447265625)) - ((_192 * 6.868000030517578125) * x)) + (_192 * 0.4298000037670135498046875)) + (x * 0.119099996984004974365234375)) - float3(0.002319999970495700836181640625);
 }
 
 static inline __attribute__((always_inline))
@@ -1028,35 +1104,35 @@ static inline __attribute__((always_inline))
 float3 agx(thread const float3& c)
 {
     float3 param = c;
-    float3 _303 = agx_rec2020(param);
-    return fast::clamp(float3x3(float3(1.660500049591064453125, -0.124600000679492950439453125, -0.01820000074803829193115234375), float3(-0.5875999927520751953125, 1.1328999996185302734375, -0.100599996745586395263671875), float3(-0.072800002992153167724609375, -0.008299999870359897613525390625, 1.1187000274658203125)) * _303, float3(0.0), float3(1.0));
+    float3 _311 = agx_rec2020(param);
+    return fast::clamp(float3x3(float3(1.660500049591064453125, -0.124600000679492950439453125, -0.01820000074803829193115234375), float3(-0.5875999927520751953125, 1.1328999996185302734375, -0.100599996745586395263671875), float3(-0.072800002992153167724609375, -0.008299999870359897613525390625, 1.1187000274658203125)) * _311, float3(0.0), float3(1.0));
 }
 
 static inline __attribute__((always_inline))
 float3 neutral(thread float3& c)
 {
-    float _322 = fast::min(c.x, fast::min(c.y, c.z));
-    float _327;
-    if (_322 < 0.07999999821186065673828125)
+    float _330 = fast::min(c.x, fast::min(c.y, c.z));
+    float _335;
+    if (_330 < 0.07999999821186065673828125)
     {
-        _327 = _322 - ((6.25 * _322) * _322);
+        _335 = _330 - ((6.25 * _330) * _330);
     }
     else
     {
-        _327 = 0.039999999105930328369140625;
+        _335 = 0.039999999105930328369140625;
     }
-    c -= float3(_327);
-    float _346 = c.x;
-    float _348 = c.y;
-    float _350 = c.z;
-    float _352 = fast::max(_346, fast::max(_348, _350));
-    if (_352 < 0.7599999904632568359375)
+    c -= float3(_335);
+    float _354 = c.x;
+    float _356 = c.y;
+    float _358 = c.z;
+    float _360 = fast::max(_354, fast::max(_356, _358));
+    if (_360 < 0.7599999904632568359375)
     {
         return c;
     }
-    float _371 = 1.0 - (0.057599999010562896728515625 / (_352 + (-0.519999980926513671875)));
-    c *= (_371 / _352);
-    return mix(c, float3(_371), float3(1.0 - (1.0 / ((0.1500000059604644775390625 * (_352 - _371)) + 1.0))));
+    float _379 = 1.0 - (0.057599999010562896728515625 / (_360 + (-0.519999980926513671875)));
+    c *= (_379 / _360);
+    return mix(c, float3(_379), float3(1.0 - (1.0 / ((0.1500000059604644775390625 * (_360 - _379)) + 1.0))));
 }
 
 static inline __attribute__((always_inline))
@@ -1078,8 +1154,8 @@ float3 tone_map(thread float3& c, thread const int& mode, thread const float& ex
     if (mode == 3)
     {
         float3 param = c;
-        float3 _463 = cineon(param);
-        return _463;
+        float3 _471 = cineon(param);
+        return _471;
     }
     if (mode == 4)
     {
@@ -1094,8 +1170,8 @@ float3 tone_map(thread float3& c, thread const int& mode, thread const float& ex
     if (mode == 6)
     {
         float3 param_3 = c;
-        float3 _490 = neutral(param_3);
-        return _490;
+        float3 _498 = neutral(param_3);
+        return _498;
     }
     return c;
 }
@@ -1108,31 +1184,31 @@ float3 tone_map_gamut(thread const float3& c, thread const int& mode, thread con
         float3 param = c;
         int param_1 = mode;
         float param_2 = exposure;
-        float3 _505 = tone_map(param, param_1, param_2);
-        return _505;
+        float3 _513 = tone_map(param, param_1, param_2);
+        return _513;
     }
     if (mode == 0)
     {
         return float3x3(float3(0.8224999904632568359375, 0.0331999994814395904541015625, 0.01710000075399875640869140625), float3(0.17739999294281005859375, 0.96689999103546142578125, 0.0724000036716461181640625), float3(0.0, 0.0, 0.91079998016357421875)) * c;
     }
-    float3 _529 = fast::max(c, float3(0.0)) * exposure;
+    float3 _537 = fast::max(c, float3(0.0)) * exposure;
     if (mode == 4)
     {
-        float3 param_3 = _529;
-        float3 _536 = aces_filmic_wide(param_3);
-        return fast::clamp(float3x3(float3(0.8224999904632568359375, 0.0331999994814395904541015625, 0.01710000075399875640869140625), float3(0.17739999294281005859375, 0.96689999103546142578125, 0.0724000036716461181640625), float3(0.0, 0.0, 0.91079998016357421875)) * _536, float3(0.0), float3(1.0));
+        float3 param_3 = _537;
+        float3 _544 = aces_filmic_wide(param_3);
+        return fast::clamp(float3x3(float3(0.8224999904632568359375, 0.0331999994814395904541015625, 0.01710000075399875640869140625), float3(0.17739999294281005859375, 0.96689999103546142578125, 0.0724000036716461181640625), float3(0.0, 0.0, 0.91079998016357421875)) * _544, float3(0.0), float3(1.0));
     }
     if (mode == 5)
     {
-        float3 param_4 = _529;
-        float3 _548 = agx_rec2020(param_4);
-        return fast::clamp(float3x3(float3(0.8224999904632568359375, 0.0331999994814395904541015625, 0.01710000075399875640869140625), float3(0.17739999294281005859375, 0.96689999103546142578125, 0.0724000036716461181640625), float3(0.0, 0.0, 0.91079998016357421875)) * (float3x3(float3(1.660500049591064453125, -0.124600000679492950439453125, -0.01820000074803829193115234375), float3(-0.5875999927520751953125, 1.1328999996185302734375, -0.100599996745586395263671875), float3(-0.072800002992153167724609375, -0.008299999870359897613525390625, 1.1187000274658203125)) * _548), float3(0.0), float3(1.0));
+        float3 param_4 = _537;
+        float3 _556 = agx_rec2020(param_4);
+        return fast::clamp(float3x3(float3(0.8224999904632568359375, 0.0331999994814395904541015625, 0.01710000075399875640869140625), float3(0.17739999294281005859375, 0.96689999103546142578125, 0.0724000036716461181640625), float3(0.0, 0.0, 0.91079998016357421875)) * (float3x3(float3(1.660500049591064453125, -0.124600000679492950439453125, -0.01820000074803829193115234375), float3(-0.5875999927520751953125, 1.1328999996185302734375, -0.100599996745586395263671875), float3(-0.072800002992153167724609375, -0.008299999870359897613525390625, 1.1187000274658203125)) * _556), float3(0.0), float3(1.0));
     }
     float3 param_5 = c;
     int param_6 = mode;
     float param_7 = exposure;
-    float3 _561 = tone_map(param_5, param_6, param_7);
-    return float3x3(float3(0.8224999904632568359375, 0.0331999994814395904541015625, 0.01710000075399875640869140625), float3(0.17739999294281005859375, 0.96689999103546142578125, 0.0724000036716461181640625), float3(0.0, 0.0, 0.91079998016357421875)) * _561;
+    float3 _569 = tone_map(param_5, param_6, param_7);
+    return float3x3(float3(0.8224999904632568359375, 0.0331999994814395904541015625, 0.01710000075399875640869140625), float3(0.17739999294281005859375, 0.96689999103546142578125, 0.0724000036716461181640625), float3(0.0, 0.0, 0.91079998016357421875)) * _569;
 }
 
 static inline __attribute__((always_inline))
@@ -1142,9 +1218,9 @@ float hdr_boost(thread const float3& c, thread const float& exposure, thread con
     {
         return 1.0;
     }
-    float3 _574 = fast::max(c, float3(0.0)) * exposure;
-    float _602 = fast::max(shown.x, fast::max(shown.y, shown.z));
-    return mix(1.0, fast::max(1.0, (peak * (1.0 - exp(((-1.5) * fast::max(_574.x, fast::max(_574.y, _574.z))) / peak))) / fast::max(_602, 9.9999997473787516355514526367188e-05)), smoothstep(0.449999988079071044921875, 0.89999997615814208984375, _602));
+    float3 _582 = fast::max(c, float3(0.0)) * exposure;
+    float _610 = fast::max(shown.x, fast::max(shown.y, shown.z));
+    return mix(1.0, fast::max(1.0, (peak * (1.0 - exp(((-1.5) * fast::max(_582.x, fast::max(_582.y, _582.z))) / peak))) / fast::max(_610, 9.9999997473787516355514526367188e-05)), smoothstep(0.449999988079071044921875, 0.89999997615814208984375, _610));
 }
 
 static inline __attribute__((always_inline))
@@ -1153,68 +1229,52 @@ float3 linear_to_srgb(thread const float3& c)
     return mix(c * 12.9200000762939453125, (powr(c, float3(0.4166666567325592041015625)) * 1.05499994754791259765625) - float3(0.054999999701976776123046875), step(float3(0.003130800090730190277099609375), c));
 }
 
-fragment main0_out main0(main0_in in [[stage_in]], constant output_params& _657 [[buffer(0)]], texture2d<float> output_src [[texture(0)]], texture2d<float> output_exposure [[texture(1)]], texture3d<float> output_lut [[texture(2)]], sampler output_smp [[sampler(0)]])
+fragment main0_out main0(main0_in in [[stage_in]], constant output_params& _647 [[buffer(0)]], texture2d<float> output_src [[texture(0)]], texture2d<float> output_exposure [[texture(1)]], texture3d<float> output_lut [[texture(2)]], texture2d<float> output_noise [[texture(3)]], sampler output_smp [[sampler(0)]], float4 gl_FragCoord [[position]])
 {
     main0_out out = {};
-    float4 _653 = output_src.sample(output_smp, in.uv);
-    float exposure = _657.params.y;
-    if (_657.params.z > 0.5)
+    float4 _730 = output_src.sample(output_smp, in.uv);
+    float exposure = _647.params.y;
+    if (_647.params.z > 0.5)
     {
         exposure *= output_exposure.read(uint2(int2(0)), 0).x;
     }
-    bool _679 = _657.params2.z > 0.5;
-    bool _685;
-    if (_679)
+    bool _751 = _647.params2.z > 0.5;
+    bool _757;
+    if (_751)
     {
-        _685 = _657.params2.y <= 0.0;
+        _757 = _647.params2.y <= 0.0;
     }
     else
     {
-        _685 = _679;
+        _757 = _751;
     }
-    if (_685)
+    if (_757)
     {
-        float3 param = _653.xyz * exposure;
-        float3 _718 = output_lut.sample(output_smp, ((grade_shape(param) * ((_657.params2.w - 1.0) / _657.params2.w)) + float3(0.5 / _657.params2.w)), level(0.0)).xyz;
-        float3 _724;
-        if (_657.params.w > 0.5)
-        {
-            float3 param_1 = _718;
-            _724 = srgb_to_linear(param_1);
-        }
-        else
-        {
-            _724 = _718;
-        }
-        out.frag_color = float4(_724, _653.w);
+        float3 param = _730.xyz * exposure;
+        float3 param_1 = output_lut.sample(output_smp, ((grade_shape(param) * ((_647.params2.w - 1.0) / _647.params2.w)) + float3(0.5 / _647.params2.w)), level(0.0)).xyz;
+        bool param_2 = _647.params.w > 0.5;
+        out.frag_color = float4(dither_out(param_1, param_2, _647, output_noise, output_smp, gl_FragCoord), _730.w);
         return out;
     }
-    float3 _749 = _653.xyz;
-    float3 param_2 = _749;
-    int param_3 = int(_657.params.x);
-    float param_4 = exposure;
-    bool param_5 = _657.params2.x > 0.5;
-    float3 _754 = tone_map_gamut(param_2, param_3, param_4, param_5);
-    if (_657.params2.y > 0.0)
+    float3 _816 = _730.xyz;
+    float3 param_3 = _816;
+    int param_4 = int(_647.params.x);
+    float param_5 = exposure;
+    bool param_6 = _647.params2.x > 0.5;
+    float3 _821 = tone_map_gamut(param_3, param_4, param_5, param_6);
+    if (_647.params2.y > 0.0)
     {
-        float3 param_6 = _749;
-        float param_7 = exposure;
-        float param_8 = _657.params2.y;
-        float3 param_9 = _754;
-        out.frag_color = float4(_754 * hdr_boost(param_6, param_7, param_8, param_9), _653.w);
+        float3 param_7 = _816;
+        float param_8 = exposure;
+        float param_9 = _647.params2.y;
+        float3 param_10 = _821;
+        out.frag_color = float4(_821 * hdr_boost(param_7, param_8, param_9, param_10), _730.w);
         return out;
     }
-    float3 _783;
-    if (_657.params.w > 0.5)
-    {
-        _783 = _754;
-    }
-    else
-    {
-        float3 param_10 = _754;
-        _783 = linear_to_srgb(param_10);
-    }
-    out.frag_color = float4(_783, _653.w);
+    float3 param_11 = _821;
+    float3 param_12 = linear_to_srgb(param_11);
+    bool param_13 = _647.params.w > 0.5;
+    out.frag_color = float4(dither_out(param_12, param_13, _647, output_noise, output_smp, gl_FragCoord), _730.w);
     return out;
 }
 
@@ -1252,6 +1312,7 @@ struct output_params
 {
     float4 params;
     float4 params2;
+    float4 params3;
 };
 
 struct main0_out
@@ -1271,9 +1332,37 @@ float3 grade_shape(thread const float3& c)
 }
 
 static inline __attribute__((always_inline))
+float3 dither(thread const float3& c, constant output_params& _647, texture2d<float> output_noise, sampler output_smp, thread float4& gl_FragCoord)
+{
+    if (_647.params3.x <= 0.0)
+    {
+        return c;
+    }
+    return c + ((fract(float3(output_noise.read(uint2((int2(gl_FragCoord.xy) & int2(63))), 0).x + _647.params3.y) + float3(0.0, 0.38196599483489990234375, 0.7639319896697998046875)) - float3(0.5)) * (_647.params3.x * 0.0039215688593685626983642578125));
+}
+
+static inline __attribute__((always_inline))
 float3 srgb_to_linear(thread const float3& c)
 {
     return mix(c * float3(0.077399380505084991455078125), powr((c + float3(0.054999999701976776123046875)) * float3(0.947867333889007568359375), float3(2.400000095367431640625)), step(float3(0.040449999272823333740234375), c));
+}
+
+static inline __attribute__((always_inline))
+float3 dither_out(thread const float3& encoded, thread const bool& linear_target, constant output_params& _647, texture2d<float> output_noise, sampler output_smp, thread float4& gl_FragCoord)
+{
+    float3 param = encoded;
+    float3 _706 = dither(param, _647, output_noise, output_smp, gl_FragCoord);
+    float3 _708;
+    if (linear_target)
+    {
+        float3 param_1 = fast::max(_706, float3(0.0));
+        _708 = srgb_to_linear(param_1);
+    }
+    else
+    {
+        _708 = _706;
+    }
+    return _708;
 }
 
 static inline __attribute__((always_inline))
@@ -1303,16 +1392,16 @@ static inline __attribute__((always_inline))
 float3 aces_filmic(thread const float3& c)
 {
     float3 param = c;
-    float3 _173 = aces_filmic_wide(param);
-    return fast::clamp(_173, float3(0.0), float3(1.0));
+    float3 _181 = aces_filmic_wide(param);
+    return fast::clamp(_181, float3(0.0), float3(1.0));
 }
 
 static inline __attribute__((always_inline))
 float3 agx_contrast(thread const float3& x)
 {
-    float3 _184 = x * x;
-    float3 _188 = _184 * _184;
-    return (((((((_188 * 15.5) * _184) - ((_188 * 40.1399993896484375) * x)) + (_188 * 31.95999908447265625)) - ((_184 * 6.868000030517578125) * x)) + (_184 * 0.4298000037670135498046875)) + (x * 0.119099996984004974365234375)) - float3(0.002319999970495700836181640625);
+    float3 _192 = x * x;
+    float3 _196 = _192 * _192;
+    return (((((((_196 * 15.5) * _192) - ((_196 * 40.1399993896484375) * x)) + (_196 * 31.95999908447265625)) - ((_192 * 6.868000030517578125) * x)) + (_192 * 0.4298000037670135498046875)) + (x * 0.119099996984004974365234375)) - float3(0.002319999970495700836181640625);
 }
 
 static inline __attribute__((always_inline))
@@ -1329,35 +1418,35 @@ static inline __attribute__((always_inline))
 float3 agx(thread const float3& c)
 {
     float3 param = c;
-    float3 _303 = agx_rec2020(param);
-    return fast::clamp(float3x3(float3(1.660500049591064453125, -0.124600000679492950439453125, -0.01820000074803829193115234375), float3(-0.5875999927520751953125, 1.1328999996185302734375, -0.100599996745586395263671875), float3(-0.072800002992153167724609375, -0.008299999870359897613525390625, 1.1187000274658203125)) * _303, float3(0.0), float3(1.0));
+    float3 _311 = agx_rec2020(param);
+    return fast::clamp(float3x3(float3(1.660500049591064453125, -0.124600000679492950439453125, -0.01820000074803829193115234375), float3(-0.5875999927520751953125, 1.1328999996185302734375, -0.100599996745586395263671875), float3(-0.072800002992153167724609375, -0.008299999870359897613525390625, 1.1187000274658203125)) * _311, float3(0.0), float3(1.0));
 }
 
 static inline __attribute__((always_inline))
 float3 neutral(thread float3& c)
 {
-    float _322 = fast::min(c.x, fast::min(c.y, c.z));
-    float _327;
-    if (_322 < 0.07999999821186065673828125)
+    float _330 = fast::min(c.x, fast::min(c.y, c.z));
+    float _335;
+    if (_330 < 0.07999999821186065673828125)
     {
-        _327 = _322 - ((6.25 * _322) * _322);
+        _335 = _330 - ((6.25 * _330) * _330);
     }
     else
     {
-        _327 = 0.039999999105930328369140625;
+        _335 = 0.039999999105930328369140625;
     }
-    c -= float3(_327);
-    float _346 = c.x;
-    float _348 = c.y;
-    float _350 = c.z;
-    float _352 = fast::max(_346, fast::max(_348, _350));
-    if (_352 < 0.7599999904632568359375)
+    c -= float3(_335);
+    float _354 = c.x;
+    float _356 = c.y;
+    float _358 = c.z;
+    float _360 = fast::max(_354, fast::max(_356, _358));
+    if (_360 < 0.7599999904632568359375)
     {
         return c;
     }
-    float _371 = 1.0 - (0.057599999010562896728515625 / (_352 + (-0.519999980926513671875)));
-    c *= (_371 / _352);
-    return mix(c, float3(_371), float3(1.0 - (1.0 / ((0.1500000059604644775390625 * (_352 - _371)) + 1.0))));
+    float _379 = 1.0 - (0.057599999010562896728515625 / (_360 + (-0.519999980926513671875)));
+    c *= (_379 / _360);
+    return mix(c, float3(_379), float3(1.0 - (1.0 / ((0.1500000059604644775390625 * (_360 - _379)) + 1.0))));
 }
 
 static inline __attribute__((always_inline))
@@ -1379,8 +1468,8 @@ float3 tone_map(thread float3& c, thread const int& mode, thread const float& ex
     if (mode == 3)
     {
         float3 param = c;
-        float3 _463 = cineon(param);
-        return _463;
+        float3 _471 = cineon(param);
+        return _471;
     }
     if (mode == 4)
     {
@@ -1395,8 +1484,8 @@ float3 tone_map(thread float3& c, thread const int& mode, thread const float& ex
     if (mode == 6)
     {
         float3 param_3 = c;
-        float3 _490 = neutral(param_3);
-        return _490;
+        float3 _498 = neutral(param_3);
+        return _498;
     }
     return c;
 }
@@ -1409,31 +1498,31 @@ float3 tone_map_gamut(thread const float3& c, thread const int& mode, thread con
         float3 param = c;
         int param_1 = mode;
         float param_2 = exposure;
-        float3 _505 = tone_map(param, param_1, param_2);
-        return _505;
+        float3 _513 = tone_map(param, param_1, param_2);
+        return _513;
     }
     if (mode == 0)
     {
         return float3x3(float3(0.8224999904632568359375, 0.0331999994814395904541015625, 0.01710000075399875640869140625), float3(0.17739999294281005859375, 0.96689999103546142578125, 0.0724000036716461181640625), float3(0.0, 0.0, 0.91079998016357421875)) * c;
     }
-    float3 _529 = fast::max(c, float3(0.0)) * exposure;
+    float3 _537 = fast::max(c, float3(0.0)) * exposure;
     if (mode == 4)
     {
-        float3 param_3 = _529;
-        float3 _536 = aces_filmic_wide(param_3);
-        return fast::clamp(float3x3(float3(0.8224999904632568359375, 0.0331999994814395904541015625, 0.01710000075399875640869140625), float3(0.17739999294281005859375, 0.96689999103546142578125, 0.0724000036716461181640625), float3(0.0, 0.0, 0.91079998016357421875)) * _536, float3(0.0), float3(1.0));
+        float3 param_3 = _537;
+        float3 _544 = aces_filmic_wide(param_3);
+        return fast::clamp(float3x3(float3(0.8224999904632568359375, 0.0331999994814395904541015625, 0.01710000075399875640869140625), float3(0.17739999294281005859375, 0.96689999103546142578125, 0.0724000036716461181640625), float3(0.0, 0.0, 0.91079998016357421875)) * _544, float3(0.0), float3(1.0));
     }
     if (mode == 5)
     {
-        float3 param_4 = _529;
-        float3 _548 = agx_rec2020(param_4);
-        return fast::clamp(float3x3(float3(0.8224999904632568359375, 0.0331999994814395904541015625, 0.01710000075399875640869140625), float3(0.17739999294281005859375, 0.96689999103546142578125, 0.0724000036716461181640625), float3(0.0, 0.0, 0.91079998016357421875)) * (float3x3(float3(1.660500049591064453125, -0.124600000679492950439453125, -0.01820000074803829193115234375), float3(-0.5875999927520751953125, 1.1328999996185302734375, -0.100599996745586395263671875), float3(-0.072800002992153167724609375, -0.008299999870359897613525390625, 1.1187000274658203125)) * _548), float3(0.0), float3(1.0));
+        float3 param_4 = _537;
+        float3 _556 = agx_rec2020(param_4);
+        return fast::clamp(float3x3(float3(0.8224999904632568359375, 0.0331999994814395904541015625, 0.01710000075399875640869140625), float3(0.17739999294281005859375, 0.96689999103546142578125, 0.0724000036716461181640625), float3(0.0, 0.0, 0.91079998016357421875)) * (float3x3(float3(1.660500049591064453125, -0.124600000679492950439453125, -0.01820000074803829193115234375), float3(-0.5875999927520751953125, 1.1328999996185302734375, -0.100599996745586395263671875), float3(-0.072800002992153167724609375, -0.008299999870359897613525390625, 1.1187000274658203125)) * _556), float3(0.0), float3(1.0));
     }
     float3 param_5 = c;
     int param_6 = mode;
     float param_7 = exposure;
-    float3 _561 = tone_map(param_5, param_6, param_7);
-    return float3x3(float3(0.8224999904632568359375, 0.0331999994814395904541015625, 0.01710000075399875640869140625), float3(0.17739999294281005859375, 0.96689999103546142578125, 0.0724000036716461181640625), float3(0.0, 0.0, 0.91079998016357421875)) * _561;
+    float3 _569 = tone_map(param_5, param_6, param_7);
+    return float3x3(float3(0.8224999904632568359375, 0.0331999994814395904541015625, 0.01710000075399875640869140625), float3(0.17739999294281005859375, 0.96689999103546142578125, 0.0724000036716461181640625), float3(0.0, 0.0, 0.91079998016357421875)) * _569;
 }
 
 static inline __attribute__((always_inline))
@@ -1443,9 +1532,9 @@ float hdr_boost(thread const float3& c, thread const float& exposure, thread con
     {
         return 1.0;
     }
-    float3 _574 = fast::max(c, float3(0.0)) * exposure;
-    float _602 = fast::max(shown.x, fast::max(shown.y, shown.z));
-    return mix(1.0, fast::max(1.0, (peak * (1.0 - exp(((-1.5) * fast::max(_574.x, fast::max(_574.y, _574.z))) / peak))) / fast::max(_602, 9.9999997473787516355514526367188e-05)), smoothstep(0.449999988079071044921875, 0.89999997615814208984375, _602));
+    float3 _582 = fast::max(c, float3(0.0)) * exposure;
+    float _610 = fast::max(shown.x, fast::max(shown.y, shown.z));
+    return mix(1.0, fast::max(1.0, (peak * (1.0 - exp(((-1.5) * fast::max(_582.x, fast::max(_582.y, _582.z))) / peak))) / fast::max(_610, 9.9999997473787516355514526367188e-05)), smoothstep(0.449999988079071044921875, 0.89999997615814208984375, _610));
 }
 
 static inline __attribute__((always_inline))
@@ -1454,68 +1543,52 @@ float3 linear_to_srgb(thread const float3& c)
     return mix(c * 12.9200000762939453125, (powr(c, float3(0.4166666567325592041015625)) * 1.05499994754791259765625) - float3(0.054999999701976776123046875), step(float3(0.003130800090730190277099609375), c));
 }
 
-fragment main0_out main0(main0_in in [[stage_in]], constant output_params& _657 [[buffer(0)]], texture2d<float> output_src [[texture(0)]], texture2d<float> output_exposure [[texture(1)]], texture3d<float> output_lut [[texture(2)]], sampler output_smp [[sampler(0)]])
+fragment main0_out main0(main0_in in [[stage_in]], constant output_params& _647 [[buffer(0)]], texture2d<float> output_src [[texture(0)]], texture2d<float> output_exposure [[texture(1)]], texture3d<float> output_lut [[texture(2)]], texture2d<float> output_noise [[texture(3)]], sampler output_smp [[sampler(0)]], float4 gl_FragCoord [[position]])
 {
     main0_out out = {};
-    float4 _653 = output_src.sample(output_smp, in.uv);
-    float exposure = _657.params.y;
-    if (_657.params.z > 0.5)
+    float4 _730 = output_src.sample(output_smp, in.uv);
+    float exposure = _647.params.y;
+    if (_647.params.z > 0.5)
     {
         exposure *= output_exposure.read(uint2(int2(0)), 0).x;
     }
-    bool _679 = _657.params2.z > 0.5;
-    bool _685;
-    if (_679)
+    bool _751 = _647.params2.z > 0.5;
+    bool _757;
+    if (_751)
     {
-        _685 = _657.params2.y <= 0.0;
+        _757 = _647.params2.y <= 0.0;
     }
     else
     {
-        _685 = _679;
+        _757 = _751;
     }
-    if (_685)
+    if (_757)
     {
-        float3 param = _653.xyz * exposure;
-        float3 _718 = output_lut.sample(output_smp, ((grade_shape(param) * ((_657.params2.w - 1.0) / _657.params2.w)) + float3(0.5 / _657.params2.w)), level(0.0)).xyz;
-        float3 _724;
-        if (_657.params.w > 0.5)
-        {
-            float3 param_1 = _718;
-            _724 = srgb_to_linear(param_1);
-        }
-        else
-        {
-            _724 = _718;
-        }
-        out.frag_color = float4(_724, _653.w);
+        float3 param = _730.xyz * exposure;
+        float3 param_1 = output_lut.sample(output_smp, ((grade_shape(param) * ((_647.params2.w - 1.0) / _647.params2.w)) + float3(0.5 / _647.params2.w)), level(0.0)).xyz;
+        bool param_2 = _647.params.w > 0.5;
+        out.frag_color = float4(dither_out(param_1, param_2, _647, output_noise, output_smp, gl_FragCoord), _730.w);
         return out;
     }
-    float3 _749 = _653.xyz;
-    float3 param_2 = _749;
-    int param_3 = int(_657.params.x);
-    float param_4 = exposure;
-    bool param_5 = _657.params2.x > 0.5;
-    float3 _754 = tone_map_gamut(param_2, param_3, param_4, param_5);
-    if (_657.params2.y > 0.0)
+    float3 _816 = _730.xyz;
+    float3 param_3 = _816;
+    int param_4 = int(_647.params.x);
+    float param_5 = exposure;
+    bool param_6 = _647.params2.x > 0.5;
+    float3 _821 = tone_map_gamut(param_3, param_4, param_5, param_6);
+    if (_647.params2.y > 0.0)
     {
-        float3 param_6 = _749;
-        float param_7 = exposure;
-        float param_8 = _657.params2.y;
-        float3 param_9 = _754;
-        out.frag_color = float4(_754 * hdr_boost(param_6, param_7, param_8, param_9), _653.w);
+        float3 param_7 = _816;
+        float param_8 = exposure;
+        float param_9 = _647.params2.y;
+        float3 param_10 = _821;
+        out.frag_color = float4(_821 * hdr_boost(param_7, param_8, param_9, param_10), _730.w);
         return out;
     }
-    float3 _783;
-    if (_657.params.w > 0.5)
-    {
-        _783 = _754;
-    }
-    else
-    {
-        float3 param_10 = _754;
-        _783 = linear_to_srgb(param_10);
-    }
-    out.frag_color = float4(_783, _653.w);
+    float3 param_11 = _821;
+    float3 param_12 = linear_to_srgb(param_11);
+    bool param_13 = _647.params.w > 0.5;
+    out.frag_color = float4(dither_out(param_12, param_13, _647, output_noise, output_smp, gl_FragCoord), _730.w);
     return out;
 }
 
@@ -1558,15 +1631,21 @@ struct output_params {
   params : vec4f,
   /* @offset(16) */
   params2 : vec4f,
+  /* @offset(32) */
+  params3 : vec4f,
 }
 
-@binding(0) @group(1) var output_src : texture_2d<f32>;
+@binding(0) @group(0) var<uniform> x_647 : output_params;
+
+@binding(3) @group(1) var output_noise : texture_2d<f32>;
 
 @binding(32) @group(1) var output_smp : sampler;
 
-var<private> uv : vec2f;
+var<private> gl_FragCoord : vec4f;
 
-@binding(0) @group(0) var<uniform> x_657 : output_params;
+@binding(0) @group(1) var output_src : texture_2d<f32>;
+
+var<private> uv : vec2f;
 
 @binding(1) @group(1) var output_exposure : texture_2d<f32>;
 
@@ -1574,41 +1653,71 @@ var<private> uv : vec2f;
 
 var<private> frag_color : vec4f;
 
-const x_619 = vec3f(0.00000000010000000134f);
+const x_627 = vec3f(0.00000000010000000134f);
 
-const x_448 = vec3f(1.0f);
+const x_456 = vec3f(1.0f);
 
 fn grade_shape_vf3_(c_11 : ptr<function, vec3f>) -> vec3f {
-  let x_618 = *(c_11);
-  return clamp(((log2((max(x_618, x_619) * vec3f(5.5555553436279296875f))) + vec3f(10.0f)) * vec3f(0.05882352963089942932f)), vec3f(), x_448);
+  let x_626 = *(c_11);
+  return clamp(((log2((max(x_626, x_627) * vec3f(5.5555553436279296875f))) + vec3f(10.0f)) * vec3f(0.05882352963089942932f)), vec3f(), x_456);
 }
 
-const x_815 = vec3f(0.05499999970197677612f);
+const x_898 = vec3f(0.5f);
+
+fn dither_vf3_(c_12 : ptr<function, vec3f>) -> vec3f {
+  let x_650 = x_647.params3.x;
+  if ((x_650 <= 0.0f)) {
+    let x_654 = *(c_12);
+    return x_654;
+  }
+  let x_684 = (textureLoad(output_noise, (vec2i(gl_FragCoord.xy) & vec2i(63i)), 0i).x + x_647.params3.y);
+  let x_693 = *(c_12);
+  return (x_693 + ((fract((vec3f(x_684) + vec3f(0.0f, 0.38196599483489990234f, 0.76393198966979980469f))) - x_898) * (x_650 * 0.0039215688593685627f)));
+}
+
+const x_879 = vec3f(0.05499999970197677612f);
 
 fn srgb_to_linear_vf3_(c_1 : ptr<function, vec3f>) -> vec3f {
-  let x_87 = *(c_1);
-  let x_90 = *(c_1);
-  let x_100 = *(c_1);
-  return mix((x_87 * vec3f(0.07739938050508499146f)), pow(((x_90 + x_815) * vec3f(0.94786733388900756836f)), vec3f(2.40000009536743164062f)), step(vec3f(0.04044999927282333374f), x_100));
+  let x_95 = *(c_1);
+  let x_98 = *(c_1);
+  let x_108 = *(c_1);
+  return mix((x_95 * vec3f(0.07739938050508499146f)), pow(((x_98 + x_879) * vec3f(0.94786733388900756836f)), vec3f(2.40000009536743164062f)), step(vec3f(0.04044999927282333374f), x_108));
 }
 
-const x_284 = vec3f(2.20000004768371582031f);
+fn dither_out_vf3_b1_(encoded : ptr<function, vec3f>, linear_target : ptr<function, bool>) -> vec3f {
+  var param_16 : vec3f;
+  var x_708 : vec3f;
+  var param_17 : vec3f;
+  param_16 = *(encoded);
+  let x_706 = dither_vf3_(&(param_16));
+  if (*(linear_target)) {
+    param_17 = max(x_706, vec3f());
+    let x_715 = srgb_to_linear_vf3_(&(param_17));
+    x_708 = x_715;
+  } else {
+    x_708 = x_706;
+  }
+  let x_718 = x_708;
+  return x_718;
+}
+
+const x_292 = vec3f(2.20000004768371582031f);
 
 fn cineon_vf3_(c_7 : ptr<function, vec3f>) -> vec3f {
   *(c_7) = max(vec3f(), (*(c_7) - vec3f(0.00400000018998980522f)));
-  let x_399 = *(c_7);
-  let x_401 = *(c_7);
   let x_407 = *(c_7);
-  let x_408 = *(c_7);
-  return pow(((x_399 * ((x_401 * 6.19999980926513671875f) + vec3f(0.5f))) / ((x_407 * ((x_408 * 6.19999980926513671875f) + vec3f(1.70000004768371582031f))) + vec3f(0.05999999865889549255f))), x_284);
+  let x_409 = *(c_7);
+  let x_415 = *(c_7);
+  let x_416 = *(c_7);
+  return pow(((x_407 * ((x_409 * 6.19999980926513671875f) + x_898)) / ((x_415 * ((x_416 * 6.19999980926513671875f) + vec3f(1.70000004768371582031f))) + vec3f(0.05999999865889549255f))), x_292);
 }
 
 fn rrt_odt_fit_vf3_(v : ptr<function, vec3f>) -> vec3f {
-  let x_106 = *(v);
-  let x_107 = *(v);
-  let x_116 = *(v);
-  let x_118 = *(v);
-  return (((x_106 * (x_107 + vec3f(0.02457859925925731659f))) - vec3f(0.00009053700341610238f)) / ((x_116 * ((x_118 * 0.98372900485992431641f) + vec3f(0.4329510033130645752f))) + vec3f(0.23808099329471588135f)));
+  let x_114 = *(v);
+  let x_115 = *(v);
+  let x_124 = *(v);
+  let x_126 = *(v);
+  return (((x_114 * (x_115 + vec3f(0.02457859925925731659f))) - vec3f(0.00009053700341610238f)) / ((x_124 * ((x_126 * 0.98372900485992431641f) + vec3f(0.4329510033130645752f))) + vec3f(0.23808099329471588135f)));
 }
 
 fn aces_filmic_wide_vf3_(c_2 : ptr<function, vec3f>) -> vec3f {
@@ -1616,67 +1725,67 @@ fn aces_filmic_wide_vf3_(c_2 : ptr<function, vec3f>) -> vec3f {
   *(c_2) = (*(c_2) * 1.66666662693023681641f);
   *(c_2) = (mat3x3f(vec3f(0.59719002246856689453f, 0.07599999755620956421f, 0.0284000001847743988f), vec3f(0.35457998514175415039f, 0.90833997726440429688f, 0.13382999598979949951f), vec3f(0.048229999840259552f, 0.01565999910235404968f, 0.83776998519897460938f)) * *(c_2));
   param = *(c_2);
-  let x_153 = rrt_odt_fit_vf3_(&(param));
-  *(c_2) = x_153;
-  let x_167 = *(c_2);
-  return (mat3x3f(vec3f(1.60475003719329833984f, -0.10208000242710113525f, -0.00326999998651444912f), vec3f(-0.53108000755310058594f, 1.10812997817993164062f, -0.07276000082492828369f), vec3f(-0.07366999983787536621f, -0.00604999996721744537f, 1.07602000236511230469f)) * x_167);
+  let x_161 = rrt_odt_fit_vf3_(&(param));
+  *(c_2) = x_161;
+  let x_175 = *(c_2);
+  return (mat3x3f(vec3f(1.60475003719329833984f, -0.10208000242710113525f, -0.00326999998651444912f), vec3f(-0.53108000755310058594f, 1.10812997817993164062f, -0.07276000082492828369f), vec3f(-0.07366999983787536621f, -0.00604999996721744537f, 1.07602000236511230469f)) * x_175);
 }
 
 fn aces_filmic_vf3_(c_3 : ptr<function, vec3f>) -> vec3f {
   var param_1 : vec3f;
   param_1 = *(c_3);
-  let x_173 = aces_filmic_wide_vf3_(&(param_1));
-  return clamp(x_173, vec3f(), x_448);
+  let x_181 = aces_filmic_wide_vf3_(&(param_1));
+  return clamp(x_181, vec3f(), x_456);
 }
 
 fn agx_contrast_vf3_(x : ptr<function, vec3f>) -> vec3f {
-  let x_184 = (*(x) * *(x));
-  let x_188 = (x_184 * x_184);
-  let x_197 = *(x);
-  let x_207 = *(x);
+  let x_192 = (*(x) * *(x));
+  let x_196 = (x_192 * x_192);
+  let x_205 = *(x);
   let x_215 = *(x);
-  return ((((((((x_188 * 15.5f) * x_184) - ((x_188 * 40.1399993896484375f) * x_197)) + (x_188 * 31.95999908447265625f)) - ((x_184 * 6.868000030517578125f) * x_207)) + (x_184 * 0.4298000037670135498f)) + (x_215 * 0.11909999698400497437f)) - vec3f(0.00231999997049570084f));
+  let x_223 = *(x);
+  return ((((((((x_196 * 15.5f) * x_192) - ((x_196 * 40.1399993896484375f) * x_205)) + (x_196 * 31.95999908447265625f)) - ((x_192 * 6.868000030517578125f) * x_215)) + (x_192 * 0.4298000037670135498f)) + (x_223 * 0.11909999698400497437f)) - vec3f(0.00231999997049570084f));
 }
 
 fn agx_rec2020_vf3_(c_4 : ptr<function, vec3f>) -> vec3f {
   var param_2 : vec3f;
   *(c_4) = (mat3x3f(vec3f(0.8566271662712097168f, 0.13731896877288818359f, 0.11189821362495422363f), vec3f(0.09512124210596084595f, 0.76124197244644165039f, 0.07679941505193710327f), vec3f(0.0482516065239906311f, 0.10143903642892837524f, 0.81130236387252807617f)) * (mat3x3f(vec3f(0.62739998102188110352f, 0.06909999996423721313f, 0.01640000008046627045f), vec3f(0.32929998636245727539f, 0.91949999332427978516f, 0.0879999995231628418f), vec3f(0.04329999908804893494f, 0.01130000036209821701f, 0.8956000208854675293f)) * *(c_4)));
-  *(c_4) = clamp(((log2(max(*(c_4), x_619)) - vec3f(-12.47393035888671875f)) * vec3f(0.06060606613755226135f)), vec3f(), x_448);
+  *(c_4) = clamp(((log2(max(*(c_4), x_627)) - vec3f(-12.47393035888671875f)) * vec3f(0.06060606613755226135f)), vec3f(), x_456);
   param_2 = *(c_4);
-  let x_278 = agx_contrast_vf3_(&(param_2));
-  *(c_4) = (mat3x3f(vec3f(1.12710058689117431641f, -0.14132976531982421875f, -0.14132976531982421875f), vec3f(-0.11060664057731628418f, 1.15782368183135986328f, -0.11060664057731628418f), vec3f(-0.0164939388632774353f, -0.0164939388632774353f, 1.25193643569946289062f)) * x_278);
-  let x_280 = *(c_4);
-  return pow(max(x_280, vec3f()), x_284);
+  let x_286 = agx_contrast_vf3_(&(param_2));
+  *(c_4) = (mat3x3f(vec3f(1.12710058689117431641f, -0.14132976531982421875f, -0.14132976531982421875f), vec3f(-0.11060664057731628418f, 1.15782368183135986328f, -0.11060664057731628418f), vec3f(-0.0164939388632774353f, -0.0164939388632774353f, 1.25193643569946289062f)) * x_286);
+  let x_288 = *(c_4);
+  return pow(max(x_288, vec3f()), x_292);
 }
 
-const x_300 = mat3x3f(vec3f(1.66050004959106445312f, -0.12460000067949295044f, -0.01820000074803829193f), vec3f(-0.58759999275207519531f, 1.13289999961853027344f, -0.10059999674558639526f), vec3f(-0.07280000299215316772f, -0.00829999987035989761f, 1.1187000274658203125f));
+const x_308 = mat3x3f(vec3f(1.66050004959106445312f, -0.12460000067949295044f, -0.01820000074803829193f), vec3f(-0.58759999275207519531f, 1.13289999961853027344f, -0.10059999674558639526f), vec3f(-0.07280000299215316772f, -0.00829999987035989761f, 1.1187000274658203125f));
 
 fn agx_vf3_(c_5 : ptr<function, vec3f>) -> vec3f {
   var param_3 : vec3f;
   param_3 = *(c_5);
-  let x_303 = agx_rec2020_vf3_(&(param_3));
-  return clamp((x_300 * x_303), vec3f(), x_448);
+  let x_311 = agx_rec2020_vf3_(&(param_3));
+  return clamp((x_308 * x_311), vec3f(), x_456);
 }
 
 fn neutral_vf3_(c_6 : ptr<function, vec3f>) -> vec3f {
-  var x_327 : f32;
-  let x_322 = min((*(c_6)).x, min((*(c_6)).y, (*(c_6)).z));
-  if ((x_322 < 0.07999999821186065674f)) {
-    x_327 = (x_322 - ((6.25f * x_322) * x_322));
+  var x_335 : f32;
+  let x_330 = min((*(c_6)).x, min((*(c_6)).y, (*(c_6)).z));
+  if ((x_330 < 0.07999999821186065674f)) {
+    x_335 = (x_330 - ((6.25f * x_330) * x_330));
   } else {
-    x_327 = 0.03999999910593032837f;
+    x_335 = 0.03999999910593032837f;
   }
-  *(c_6) = (*(c_6) - vec3f(x_327));
-  let x_352 = max((*(c_6)).x, max((*(c_6)).y, (*(c_6)).z));
-  if ((x_352 < 0.75999999046325683594f)) {
-    let x_358 = *(c_6);
-    return x_358;
+  *(c_6) = (*(c_6) - vec3f(x_335));
+  let x_360 = max((*(c_6)).x, max((*(c_6)).y, (*(c_6)).z));
+  if ((x_360 < 0.75999999046325683594f)) {
+    let x_366 = *(c_6);
+    return x_366;
   }
-  let x_371 = (1.0f - (0.05759999901056289673f / (x_352 + -0.51999998092651367188f)));
-  *(c_6) = (*(c_6) * (x_371 / x_352));
-  let x_385 = (1.0f - (1.0f / ((0.15000000596046447754f * (x_352 - x_371)) + 1.0f)));
-  let x_386 = *(c_6);
-  return mix(x_386, vec3f(x_371), vec3f(x_385));
+  let x_379 = (1.0f - (0.05759999901056289673f / (x_360 + -0.51999998092651367188f)));
+  *(c_6) = (*(c_6) * (x_379 / x_360));
+  let x_393 = (1.0f - (1.0f / ((0.15000000596046447754f * (x_360 - x_379)) + 1.0f)));
+  let x_394 = *(c_6);
+  return mix(x_394, vec3f(x_379), vec3f(x_393));
 }
 
 fn tone_map_vf3_i1_f1_(c_8 : ptr<function, vec3f>, mode : ptr<function, i32>, exposure : ptr<function, f32>) -> vec3f {
@@ -1685,44 +1794,44 @@ fn tone_map_vf3_i1_f1_(c_8 : ptr<function, vec3f>, mode : ptr<function, i32>, ex
   var param_6 : vec3f;
   var param_7 : vec3f;
   if ((*(mode) == 0i)) {
-    let x_426 = *(c_8);
-    return x_426;
+    let x_434 = *(c_8);
+    return x_434;
   }
   *(c_8) = (max(*(c_8), vec3f()) * *(exposure));
   if ((*(mode) == 1i)) {
-    let x_437 = *(c_8);
-    return clamp(x_437, vec3f(), x_448);
+    let x_445 = *(c_8);
+    return clamp(x_445, vec3f(), x_456);
   }
   if ((*(mode) == 2i)) {
-    let x_447 = *(c_8);
-    let x_449 = *(c_8);
-    return clamp((x_447 / (x_448 + x_449)), vec3f(), x_448);
+    let x_455 = *(c_8);
+    let x_457 = *(c_8);
+    return clamp((x_455 / (x_456 + x_457)), vec3f(), x_456);
   }
   if ((*(mode) == 3i)) {
     param_4 = *(c_8);
-    let x_463 = cineon_vf3_(&(param_4));
-    return x_463;
+    let x_471 = cineon_vf3_(&(param_4));
+    return x_471;
   }
   if ((*(mode) == 4i)) {
     param_5 = *(c_8);
-    let x_472 = aces_filmic_vf3_(&(param_5));
-    return x_472;
+    let x_480 = aces_filmic_vf3_(&(param_5));
+    return x_480;
   }
   if ((*(mode) == 5i)) {
     param_6 = *(c_8);
-    let x_481 = agx_vf3_(&(param_6));
-    return x_481;
+    let x_489 = agx_vf3_(&(param_6));
+    return x_489;
   }
   if ((*(mode) == 6i)) {
     param_7 = *(c_8);
-    let x_490 = neutral_vf3_(&(param_7));
-    return x_490;
+    let x_498 = neutral_vf3_(&(param_7));
+    return x_498;
   }
-  let x_492 = *(c_8);
-  return x_492;
+  let x_500 = *(c_8);
+  return x_500;
 }
 
-const x_521 = mat3x3f(vec3f(0.82249999046325683594f, 0.03319999948143959045f, 0.01710000075399875641f), vec3f(0.17739999294281005859f, 0.96689999103546142578f, 0.07240000367164611816f), vec3f(0.0f, 0.0f, 0.91079998016357421875f));
+const x_529 = mat3x3f(vec3f(0.82249999046325683594f, 0.03319999948143959045f, 0.01710000075399875641f), vec3f(0.17739999294281005859f, 0.96689999103546142578f, 0.07240000367164611816f), vec3f(0.0f, 0.0f, 0.91079998016357421875f));
 
 fn tone_map_gamut_vf3_i1_f1_b1_(c_9 : ptr<function, vec3f>, mode_1 : ptr<function, i32>, exposure_1 : ptr<function, f32>, p3 : ptr<function, bool>) -> vec3f {
   var param_8 : vec3f;
@@ -1737,120 +1846,116 @@ fn tone_map_gamut_vf3_i1_f1_b1_(c_9 : ptr<function, vec3f>, mode_1 : ptr<functio
     param_8 = *(c_9);
     param_9 = *(mode_1);
     param_10 = *(exposure_1);
-    let x_505 = tone_map_vf3_i1_f1_(&(param_8), &(param_9), &(param_10));
-    return x_505;
+    let x_513 = tone_map_vf3_i1_f1_(&(param_8), &(param_9), &(param_10));
+    return x_513;
   }
   if ((*(mode_1) == 0i)) {
-    let x_522 = *(c_9);
-    return (x_521 * x_522);
+    let x_530 = *(c_9);
+    return (x_529 * x_530);
   }
-  let x_529 = (max(*(c_9), vec3f()) * *(exposure_1));
+  let x_537 = (max(*(c_9), vec3f()) * *(exposure_1));
   if ((*(mode_1) == 4i)) {
-    param_11 = x_529;
-    let x_536 = aces_filmic_wide_vf3_(&(param_11));
-    return clamp((x_521 * x_536), vec3f(), x_448);
+    param_11 = x_537;
+    let x_544 = aces_filmic_wide_vf3_(&(param_11));
+    return clamp((x_529 * x_544), vec3f(), x_456);
   }
   if ((*(mode_1) == 5i)) {
-    param_12 = x_529;
-    let x_548 = agx_rec2020_vf3_(&(param_12));
-    return clamp((x_521 * (x_300 * x_548)), vec3f(), x_448);
+    param_12 = x_537;
+    let x_556 = agx_rec2020_vf3_(&(param_12));
+    return clamp((x_529 * (x_308 * x_556)), vec3f(), x_456);
   }
   param_13 = *(c_9);
   param_14 = *(mode_1);
   param_15 = *(exposure_1);
-  let x_561 = tone_map_vf3_i1_f1_(&(param_13), &(param_14), &(param_15));
-  return (x_521 * x_561);
+  let x_569 = tone_map_vf3_i1_f1_(&(param_13), &(param_14), &(param_15));
+  return (x_529 * x_569);
 }
 
 fn hdr_boost_vf3_f1_f1_vf3_(c_10 : ptr<function, vec3f>, exposure_2 : ptr<function, f32>, peak : ptr<function, f32>, shown : ptr<function, vec3f>) -> f32 {
   if ((*(peak) <= 1.0f)) {
     return 1.0f;
   }
-  let x_574 = (max(*(c_10), vec3f()) * *(exposure_2));
-  let x_585 = *(peak);
-  let x_589 = *(peak);
-  let x_602 = max((*(shown)).x, max((*(shown)).y, (*(shown)).z));
-  return mix(1.0f, max(1.0f, ((x_585 * (1.0f - exp(((-1.5f * max(x_574.x, max(x_574.y, x_574.z))) / x_589)))) / max(x_602, 0.00009999999747378752f))), smoothstep(0.44999998807907104492f, 0.89999997615814208984f, x_602));
+  let x_582 = (max(*(c_10), vec3f()) * *(exposure_2));
+  let x_593 = *(peak);
+  let x_597 = *(peak);
+  let x_610 = max((*(shown)).x, max((*(shown)).y, (*(shown)).z));
+  return mix(1.0f, max(1.0f, ((x_593 * (1.0f - exp(((-1.5f * max(x_582.x, max(x_582.y, x_582.z))) / x_597)))) / max(x_610, 0.00009999999747378752f))), smoothstep(0.44999998807907104492f, 0.89999997615814208984f, x_610));
 }
 
 fn linear_to_srgb_vf3_(c : ptr<function, vec3f>) -> vec3f {
-  let x_68 = *(c);
-  let x_72 = *(c);
-  let x_82 = *(c);
-  return mix((x_68 * 12.9200000762939453125f), ((pow(x_72, vec3f(0.4166666567325592041f)) * 1.05499994754791259766f) - x_815), step(vec3f(0.00313080009073019028f), x_82));
+  let x_76 = *(c);
+  let x_80 = *(c);
+  let x_90 = *(c);
+  return mix((x_76 * 12.9200000762939453125f), ((pow(x_80, vec3f(0.4166666567325592041f)) * 1.05499994754791259766f) - x_879), step(vec3f(0.00313080009073019028f), x_90));
 }
 
 fn main_1() {
   var exposure_3 : f32;
-  var param_16 : vec3f;
-  var x_724 : vec3f;
-  var param_17 : vec3f;
   var param_18 : vec3f;
-  var param_19 : i32;
-  var param_20 : f32;
-  var param_21 : bool;
-  var param_22 : vec3f;
+  var param_19 : vec3f;
+  var param_20 : bool;
+  var param_21 : vec3f;
+  var param_22 : i32;
   var param_23 : f32;
-  var param_24 : f32;
+  var param_24 : bool;
   var param_25 : vec3f;
-  var x_783 : vec3f;
-  var param_26 : vec3f;
-  var x_684 : bool;
-  var x_685 : bool;
-  let x_652 = uv;
-  let x_653 = textureSample(output_src, output_smp, x_652);
-  exposure_3 = x_657.params.y;
-  if ((x_657.params.z > 0.5f)) {
+  var param_26 : f32;
+  var param_27 : f32;
+  var param_28 : vec3f;
+  var param_29 : vec3f;
+  var param_30 : vec3f;
+  var param_31 : bool;
+  var x_756 : bool;
+  var x_757 : bool;
+  let x_729 = uv;
+  let x_730 = textureSample(output_src, output_smp, x_729);
+  exposure_3 = x_647.params.y;
+  if ((x_647.params.z > 0.5f)) {
     exposure_3 = (exposure_3 * textureLoad(output_exposure, vec2i(), 0i).x);
   }
-  let x_679 = (x_657.params2.z > 0.5f);
-  x_685 = x_679;
-  if (x_679) {
-    x_684 = (x_657.params2.y <= 0.0f);
-    x_685 = x_684;
+  let x_751 = (x_647.params2.z > 0.5f);
+  x_757 = x_751;
+  if (x_751) {
+    x_756 = (x_647.params2.y <= 0.0f);
+    x_757 = x_756;
   }
-  if (x_685) {
-    let x_691 = x_657.params2.w;
-    param_16 = (x_653.xyz * exposure_3);
-    let x_698 = grade_shape_vf3_(&(param_16));
-    let x_718 = textureSampleLevel(output_lut, output_smp, ((x_698 * ((x_691 - 1.0f) / x_691)) + vec3f((0.5f / x_691))), 0.0f).xyz;
-    if ((x_657.params.w > 0.5f)) {
-      param_17 = x_718;
-      let x_729 = srgb_to_linear_vf3_(&(param_17));
-      x_724 = x_729;
-    } else {
-      x_724 = x_718;
-    }
-    frag_color = vec4f(x_724.x, x_724.y, x_724.z, x_653.w);
+  if (x_757) {
+    let x_763 = x_647.params2.w;
+    param_18 = (x_730.xyz * exposure_3);
+    let x_770 = grade_shape_vf3_(&(param_18));
+    let x_794 = x_647.params.w;
+    param_19 = textureSampleLevel(output_lut, output_smp, ((x_770 * ((x_763 - 1.0f) / x_763)) + vec3f((0.5f / x_763))), 0.0f).xyz;
+    param_20 = (x_794 > 0.5f);
+    let x_799 = dither_out_vf3_b1_(&(param_19), &(param_20));
+    frag_color = vec4f(x_799.x, x_799.y, x_799.z, x_730.w);
     return;
   }
-  let x_742 = x_657.params.x;
-  let x_745 = x_657.params2.x;
-  let x_749 = x_653.xyz;
-  param_18 = x_749;
-  param_19 = i32(x_742);
-  param_20 = exposure_3;
-  param_21 = (x_745 > 0.5f);
-  let x_754 = tone_map_gamut_vf3_i1_f1_b1_(&(param_18), &(param_19), &(param_20), &(param_21));
-  let x_756 = x_657.params2.y;
-  if ((x_756 > 0.0f)) {
-    param_22 = x_749;
-    param_23 = exposure_3;
-    param_24 = x_756;
-    param_25 = x_754;
-    let x_771 = hdr_boost_vf3_f1_f1_vf3_(&(param_22), &(param_23), &(param_24), &(param_25));
-    let x_772 = (x_754 * x_771);
-    frag_color = vec4f(x_772.x, x_772.y, x_772.z, x_653.w);
+  let x_809 = x_647.params.x;
+  let x_812 = x_647.params2.x;
+  let x_816 = x_730.xyz;
+  param_21 = x_816;
+  param_22 = i32(x_809);
+  param_23 = exposure_3;
+  param_24 = (x_812 > 0.5f);
+  let x_821 = tone_map_gamut_vf3_i1_f1_b1_(&(param_21), &(param_22), &(param_23), &(param_24));
+  let x_823 = x_647.params2.y;
+  if ((x_823 > 0.0f)) {
+    param_25 = x_816;
+    param_26 = exposure_3;
+    param_27 = x_823;
+    param_28 = x_821;
+    let x_838 = hdr_boost_vf3_f1_f1_vf3_(&(param_25), &(param_26), &(param_27), &(param_28));
+    let x_839 = (x_821 * x_838);
+    frag_color = vec4f(x_839.x, x_839.y, x_839.z, x_730.w);
     return;
   }
-  if ((x_657.params.w > 0.5f)) {
-    x_783 = x_754;
-  } else {
-    param_26 = x_754;
-    let x_790 = linear_to_srgb_vf3_(&(param_26));
-    x_783 = x_790;
-  }
-  frag_color = vec4f(x_783.x, x_783.y, x_783.z, x_653.w);
+  param_29 = x_821;
+  let x_849 = linear_to_srgb_vf3_(&(param_29));
+  let x_851 = x_647.params.w;
+  param_30 = x_849;
+  param_31 = (x_851 > 0.5f);
+  let x_855 = dither_out_vf3_b1_(&(param_30), &(param_31));
+  frag_color = vec4f(x_855.x, x_855.y, x_855.z, x_730.w);
   return;
 }
 
@@ -1860,7 +1965,8 @@ struct main_out {
 }
 
 @fragment
-fn main(@location(0) uv_param : vec2f) -> main_out {
+fn main(@builtin(position) gl_FragCoord_param : vec4f, @location(0) uv_param : vec2f) -> main_out {
+  gl_FragCoord = gl_FragCoord_param;
   uv = uv_param;
   main_1();
   return main_out(frag_color);
@@ -1880,9 +1986,9 @@ fn SgShaderDesc output_shader_desc(SgBackend backend)
             desc.fragment_func.entry = "main";
             desc.uniform_blocks[0].stage = SgShaderStage.FRAGMENT;
             desc.uniform_blocks[0].layout = SgUniformLayout.STD140;
-            desc.uniform_blocks[0].size = 32;
+            desc.uniform_blocks[0].size = 48;
             desc.uniform_blocks[0].glsl_uniforms[0].type = SgUniformType.FLOAT4;
-            desc.uniform_blocks[0].glsl_uniforms[0].array_count = 2;
+            desc.uniform_blocks[0].glsl_uniforms[0].array_count = 3;
             desc.uniform_blocks[0].glsl_uniforms[0].glsl_name = "output_params";
             desc.views[0].texture.stage = SgShaderStage.FRAGMENT;
             desc.views[0].texture.multisampled = false;
@@ -1896,6 +2002,10 @@ fn SgShaderDesc output_shader_desc(SgBackend backend)
             desc.views[2].texture.multisampled = false;
             desc.views[2].texture.image_type = SgImageType.TYPE_3D;
             desc.views[2].texture.sample_type = SgImageSampleType.FLOAT;
+            desc.views[3].texture.stage = SgShaderStage.FRAGMENT;
+            desc.views[3].texture.multisampled = false;
+            desc.views[3].texture.image_type = SgImageType.TYPE_2D;
+            desc.views[3].texture.sample_type = SgImageSampleType.FLOAT;
             desc.samplers[0].stage = SgShaderStage.FRAGMENT;
             desc.samplers[0].sampler_type = SgSamplerType.FILTERING;
             desc.texture_sampler_pairs[0].stage = SgShaderStage.FRAGMENT;
@@ -1910,6 +2020,10 @@ fn SgShaderDesc output_shader_desc(SgBackend backend)
             desc.texture_sampler_pairs[2].view_slot = 2;
             desc.texture_sampler_pairs[2].sampler_slot = 0;
             desc.texture_sampler_pairs[2].glsl_name = "output_lut_output_smp";
+            desc.texture_sampler_pairs[3].stage = SgShaderStage.FRAGMENT;
+            desc.texture_sampler_pairs[3].view_slot = 3;
+            desc.texture_sampler_pairs[3].sampler_slot = 0;
+            desc.texture_sampler_pairs[3].glsl_name = "output_noise_output_smp";
             $else
                 break;
             $endif
@@ -1923,7 +2037,7 @@ fn SgShaderDesc output_shader_desc(SgBackend backend)
             desc.fragment_func.entry = "main";
             desc.uniform_blocks[0].stage = SgShaderStage.FRAGMENT;
             desc.uniform_blocks[0].layout = SgUniformLayout.STD140;
-            desc.uniform_blocks[0].size = 32;
+            desc.uniform_blocks[0].size = 48;
             desc.uniform_blocks[0].hlsl_register_b_n = 0;
             desc.views[0].texture.stage = SgShaderStage.FRAGMENT;
             desc.views[0].texture.multisampled = false;
@@ -1940,6 +2054,11 @@ fn SgShaderDesc output_shader_desc(SgBackend backend)
             desc.views[2].texture.image_type = SgImageType.TYPE_3D;
             desc.views[2].texture.sample_type = SgImageSampleType.FLOAT;
             desc.views[2].texture.hlsl_register_t_n = 2;
+            desc.views[3].texture.stage = SgShaderStage.FRAGMENT;
+            desc.views[3].texture.multisampled = false;
+            desc.views[3].texture.image_type = SgImageType.TYPE_2D;
+            desc.views[3].texture.sample_type = SgImageSampleType.FLOAT;
+            desc.views[3].texture.hlsl_register_t_n = 3;
             desc.samplers[0].stage = SgShaderStage.FRAGMENT;
             desc.samplers[0].sampler_type = SgSamplerType.FILTERING;
             desc.samplers[0].hlsl_register_s_n = 0;
@@ -1952,6 +2071,9 @@ fn SgShaderDesc output_shader_desc(SgBackend backend)
             desc.texture_sampler_pairs[2].stage = SgShaderStage.FRAGMENT;
             desc.texture_sampler_pairs[2].view_slot = 2;
             desc.texture_sampler_pairs[2].sampler_slot = 0;
+            desc.texture_sampler_pairs[3].stage = SgShaderStage.FRAGMENT;
+            desc.texture_sampler_pairs[3].view_slot = 3;
+            desc.texture_sampler_pairs[3].sampler_slot = 0;
             $else
                 break;
             $endif
@@ -1963,7 +2085,7 @@ fn SgShaderDesc output_shader_desc(SgBackend backend)
             desc.fragment_func.entry = "main0";
             desc.uniform_blocks[0].stage = SgShaderStage.FRAGMENT;
             desc.uniform_blocks[0].layout = SgUniformLayout.STD140;
-            desc.uniform_blocks[0].size = 32;
+            desc.uniform_blocks[0].size = 48;
             desc.uniform_blocks[0].msl_buffer_n = 0;
             desc.views[0].texture.stage = SgShaderStage.FRAGMENT;
             desc.views[0].texture.multisampled = false;
@@ -1980,6 +2102,11 @@ fn SgShaderDesc output_shader_desc(SgBackend backend)
             desc.views[2].texture.image_type = SgImageType.TYPE_3D;
             desc.views[2].texture.sample_type = SgImageSampleType.FLOAT;
             desc.views[2].texture.msl_texture_n = 2;
+            desc.views[3].texture.stage = SgShaderStage.FRAGMENT;
+            desc.views[3].texture.multisampled = false;
+            desc.views[3].texture.image_type = SgImageType.TYPE_2D;
+            desc.views[3].texture.sample_type = SgImageSampleType.FLOAT;
+            desc.views[3].texture.msl_texture_n = 3;
             desc.samplers[0].stage = SgShaderStage.FRAGMENT;
             desc.samplers[0].sampler_type = SgSamplerType.FILTERING;
             desc.samplers[0].msl_sampler_n = 0;
@@ -1992,6 +2119,9 @@ fn SgShaderDesc output_shader_desc(SgBackend backend)
             desc.texture_sampler_pairs[2].stage = SgShaderStage.FRAGMENT;
             desc.texture_sampler_pairs[2].view_slot = 2;
             desc.texture_sampler_pairs[2].sampler_slot = 0;
+            desc.texture_sampler_pairs[3].stage = SgShaderStage.FRAGMENT;
+            desc.texture_sampler_pairs[3].view_slot = 3;
+            desc.texture_sampler_pairs[3].sampler_slot = 0;
             $else
                 break;
             $endif
@@ -2003,7 +2133,7 @@ fn SgShaderDesc output_shader_desc(SgBackend backend)
             desc.fragment_func.entry = "main0";
             desc.uniform_blocks[0].stage = SgShaderStage.FRAGMENT;
             desc.uniform_blocks[0].layout = SgUniformLayout.STD140;
-            desc.uniform_blocks[0].size = 32;
+            desc.uniform_blocks[0].size = 48;
             desc.uniform_blocks[0].msl_buffer_n = 0;
             desc.views[0].texture.stage = SgShaderStage.FRAGMENT;
             desc.views[0].texture.multisampled = false;
@@ -2020,6 +2150,11 @@ fn SgShaderDesc output_shader_desc(SgBackend backend)
             desc.views[2].texture.image_type = SgImageType.TYPE_3D;
             desc.views[2].texture.sample_type = SgImageSampleType.FLOAT;
             desc.views[2].texture.msl_texture_n = 2;
+            desc.views[3].texture.stage = SgShaderStage.FRAGMENT;
+            desc.views[3].texture.multisampled = false;
+            desc.views[3].texture.image_type = SgImageType.TYPE_2D;
+            desc.views[3].texture.sample_type = SgImageSampleType.FLOAT;
+            desc.views[3].texture.msl_texture_n = 3;
             desc.samplers[0].stage = SgShaderStage.FRAGMENT;
             desc.samplers[0].sampler_type = SgSamplerType.FILTERING;
             desc.samplers[0].msl_sampler_n = 0;
@@ -2032,6 +2167,9 @@ fn SgShaderDesc output_shader_desc(SgBackend backend)
             desc.texture_sampler_pairs[2].stage = SgShaderStage.FRAGMENT;
             desc.texture_sampler_pairs[2].view_slot = 2;
             desc.texture_sampler_pairs[2].sampler_slot = 0;
+            desc.texture_sampler_pairs[3].stage = SgShaderStage.FRAGMENT;
+            desc.texture_sampler_pairs[3].view_slot = 3;
+            desc.texture_sampler_pairs[3].sampler_slot = 0;
             $else
                 break;
             $endif
@@ -2043,7 +2181,7 @@ fn SgShaderDesc output_shader_desc(SgBackend backend)
             desc.fragment_func.entry = "main0";
             desc.uniform_blocks[0].stage = SgShaderStage.FRAGMENT;
             desc.uniform_blocks[0].layout = SgUniformLayout.STD140;
-            desc.uniform_blocks[0].size = 32;
+            desc.uniform_blocks[0].size = 48;
             desc.uniform_blocks[0].msl_buffer_n = 0;
             desc.views[0].texture.stage = SgShaderStage.FRAGMENT;
             desc.views[0].texture.multisampled = false;
@@ -2060,6 +2198,11 @@ fn SgShaderDesc output_shader_desc(SgBackend backend)
             desc.views[2].texture.image_type = SgImageType.TYPE_3D;
             desc.views[2].texture.sample_type = SgImageSampleType.FLOAT;
             desc.views[2].texture.msl_texture_n = 2;
+            desc.views[3].texture.stage = SgShaderStage.FRAGMENT;
+            desc.views[3].texture.multisampled = false;
+            desc.views[3].texture.image_type = SgImageType.TYPE_2D;
+            desc.views[3].texture.sample_type = SgImageSampleType.FLOAT;
+            desc.views[3].texture.msl_texture_n = 3;
             desc.samplers[0].stage = SgShaderStage.FRAGMENT;
             desc.samplers[0].sampler_type = SgSamplerType.FILTERING;
             desc.samplers[0].msl_sampler_n = 0;
@@ -2072,6 +2215,9 @@ fn SgShaderDesc output_shader_desc(SgBackend backend)
             desc.texture_sampler_pairs[2].stage = SgShaderStage.FRAGMENT;
             desc.texture_sampler_pairs[2].view_slot = 2;
             desc.texture_sampler_pairs[2].sampler_slot = 0;
+            desc.texture_sampler_pairs[3].stage = SgShaderStage.FRAGMENT;
+            desc.texture_sampler_pairs[3].view_slot = 3;
+            desc.texture_sampler_pairs[3].sampler_slot = 0;
             $else
                 break;
             $endif
@@ -2083,7 +2229,7 @@ fn SgShaderDesc output_shader_desc(SgBackend backend)
             desc.fragment_func.entry = "main";
             desc.uniform_blocks[0].stage = SgShaderStage.FRAGMENT;
             desc.uniform_blocks[0].layout = SgUniformLayout.STD140;
-            desc.uniform_blocks[0].size = 32;
+            desc.uniform_blocks[0].size = 48;
             desc.uniform_blocks[0].wgsl_group0_binding_n = 0;
             desc.views[0].texture.stage = SgShaderStage.FRAGMENT;
             desc.views[0].texture.multisampled = false;
@@ -2100,6 +2246,11 @@ fn SgShaderDesc output_shader_desc(SgBackend backend)
             desc.views[2].texture.image_type = SgImageType.TYPE_3D;
             desc.views[2].texture.sample_type = SgImageSampleType.FLOAT;
             desc.views[2].texture.wgsl_group1_binding_n = 2;
+            desc.views[3].texture.stage = SgShaderStage.FRAGMENT;
+            desc.views[3].texture.multisampled = false;
+            desc.views[3].texture.image_type = SgImageType.TYPE_2D;
+            desc.views[3].texture.sample_type = SgImageSampleType.FLOAT;
+            desc.views[3].texture.wgsl_group1_binding_n = 3;
             desc.samplers[0].stage = SgShaderStage.FRAGMENT;
             desc.samplers[0].sampler_type = SgSamplerType.FILTERING;
             desc.samplers[0].wgsl_group1_binding_n = 32;
@@ -2112,6 +2263,9 @@ fn SgShaderDesc output_shader_desc(SgBackend backend)
             desc.texture_sampler_pairs[2].stage = SgShaderStage.FRAGMENT;
             desc.texture_sampler_pairs[2].view_slot = 2;
             desc.texture_sampler_pairs[2].sampler_slot = 0;
+            desc.texture_sampler_pairs[3].stage = SgShaderStage.FRAGMENT;
+            desc.texture_sampler_pairs[3].view_slot = 3;
+            desc.texture_sampler_pairs[3].sampler_slot = 0;
             $else
                 break;
             $endif

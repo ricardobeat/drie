@@ -373,6 +373,15 @@ void main() {
     if (cell.x >= grid.x || cell.y >= grid.y) return;
     int per_row = int(vf_grid.w);
     vec2 ndc = (vec2(cell) + 0.5) / vec2(grid.xy) * 2.0 - 1.0;
+    // The sun's shadow is taken over the cell, not at its middle: four rays through its quarters
+    // (each at the slice's two points), so a shaft's edge crossing the cell gives part of the
+    // light, and the cells' values run smoothly into each other, the same on every frame.
+    vec2 quarter = 0.5 / vec2(grid.xy);
+    vec3 sub_ray[4];
+    for (int i = 0; i < 4; i++) {
+        vec2 o = vec2((i & 1) == 0 ? -quarter.x : quarter.x, (i & 2) == 0 ? -quarter.y : quarter.y);
+        sub_ray[i] = vf_fwd.xyz + vf_right.xyz * (ndc.x + o.x) + vf_up.xyz * (ndc.y + o.y);
+    }
     // a step of 1 m in view depth along this cell's ray
     vec3 ray = vf_fwd.xyz + vf_right.xyz * ndc.x + vf_up.xyz * ndc.y;
     float ray_len = length(ray);
@@ -399,14 +408,16 @@ void main() {
     vec3 light = vec3(0.0);
     float z0 = 0.0;
     vec3 p0 = cam;
+    const float qa = 0.25;
+    const float qb = 0.75;
     for (int k = 0; k < grid.z; k++) {
         float z1 = k + 1 >= grid.z ? vf_depth.z : vf_depth.x * exp(float(k + 1) / vf_depth.y);
         vec3 p1 = cam + ray * z1;
         float seg = (z1 - z0) * ray_len;
         float zm = 0.5 * (z0 + z1);
         vec3 pm = cam + ray * zm;
-        float za = mix(z0, z1, 0.25);
-        float zb = mix(z0, z1, 0.75);
+        float za = mix(z0, z1, qa);
+        float zb = mix(z0, z1, qb);
         vec3 pa = cam + ray * za;
         vec3 pb = cam + ray * zb;
         float w = vf_height_mean(p0.y, p1.y) * vf_box_fraction(p0, p1) * side_density * vf_mist(pm);
@@ -417,7 +428,11 @@ void main() {
         vec3 own = vf_color.rgb;
         if (sun_glow > 0.0) {
             float lit = sun_glow;
-            if (shafts) lit *= mix(1.0, 0.5 * (vf_sun(pa, za) + vf_sun(pb, zb)), vf_sun_color.w);
+            if (shafts) {
+                float seen = 0.0;
+                for (int i = 0; i < 4; i++) seen += vf_sun(cam + sub_ray[i] * za, za) + vf_sun(cam + sub_ray[i] * zb, zb);
+                lit *= mix(1.0, seen * 0.125, vf_sun_color.w);
+            }
             own = mix(own, vf_sun_color.rgb, lit);
         }
         light += own * (last_t - t);
@@ -458,7 +473,7 @@ void main() {
                     float lit0 = c0 * vf_spot_lit(s, pa) * vf_spot_cookie(s, pa);
                     if (lit0 > 0.0) {
                         acc += lit0 * vf_inverse_square(cam, look, s0, sm, sp, rad)
-                             * vf_window(d0, cutoff) * vf_transmittance(fd - seg * w * 0.75 + d0 * w);
+                             * vf_window(d0, cutoff) * vf_transmittance(fd - seg * w * (1.0 - qa) + d0 * w);
                     }
                 }
                 vec3 lv1 = pb - sp;
@@ -468,7 +483,7 @@ void main() {
                     float lit1 = c1 * vf_spot_lit(s, pb) * vf_spot_cookie(s, pb);
                     if (lit1 > 0.0) {
                         acc += lit1 * vf_inverse_square(cam, look, sm, s1, sp, rad)
-                             * vf_window(d1, cutoff) * vf_transmittance(fd - seg * w * 0.25 + d1 * w);
+                             * vf_window(d1, cutoff) * vf_transmittance(fd - seg * w * (1.0 - qb) + d1 * w);
                     }
                 }
                 if (acc > 0.0) glow += spots[s].color.rgb * (spots[s].params.w * acc);
@@ -486,4 +501,36 @@ void main() {
 
 @program cluster cluster_cs
 @program cull cull_cs
+// The fog volume, blurred across its cells (3x3, 1-2-1 each way) within each slice's tile: the
+// softer edges of the shafts and of the cells, as Godot's fog filter. Depth is left alone.
+@cs fog_blur_cs
+layout(binding=0) uniform fog_blur_params {
+    vec4 fb_grid;   // as vf_grid: x, y = cells, z = slices, w = slices per row of tiles
+};
+layout(binding=0) uniform texture2D fb_in;
+layout(binding=0) uniform sampler fb_smp;
+layout(binding=1, rgba16f) uniform writeonly image2D fb_out;
+layout(local_size_x=8, local_size_y=8) in;
+
+void main() {
+    ivec2 cells = ivec2(fb_grid.xy);
+    int per_row = int(fb_grid.w);
+    ivec2 at = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 tile = at / cells;
+    if (tile.y * per_row + tile.x >= int(fb_grid.z) || tile.x >= per_row) return;
+    ivec2 cell = at - tile * cells;
+    ivec2 origin = tile * cells;
+    vec4 sum = vec4(0.0);
+    for (int y = -1; y <= 1; y++) {
+        for (int x = -1; x <= 1; x++) {
+            ivec2 c = clamp(cell + ivec2(x, y), ivec2(0), cells - 1);
+            float w = (x == 0 ? 2.0 : 1.0) * (y == 0 ? 2.0 : 1.0);
+            sum += texelFetch(sampler2D(fb_in, fb_smp), origin + c, 0) * w;
+        }
+    }
+    imageStore(fb_out, at, sum / 16.0);
+}
+@end
+
 @program fog fog_cs
+@program fog_blur fog_blur_cs
