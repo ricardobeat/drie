@@ -320,10 +320,20 @@ fn void place(View v) {
 
 // ---- In a window
 
+View start_view;
+
 fn void animate(double t) {
     static double last = -1;
     float dt           =  last < 0 ? 1.0f / 60 : (float)(t - last);
     last = t;
+    if (!controls) {
+        // the GPU is there from the first frame on (not yet in main())
+        build_scene(start_view.sun);
+        place(start_view);
+        controls = controls::walk_controls(camera, camera.position);
+        controls.drag_look = true;
+        controls.walk_speed = 150;
+    }
     time += dt;
     controls.update(dt);
     render_frame(null);
@@ -359,11 +369,7 @@ fn int main(String[] args) {
     if (!png_path) {
         renderer = drie::renderer(antialias: false, width: width, height: height, title: "drie: clouds");
         camera = drie::perspective_camera(60, (float)width / height, 1, 80000);
-        build_scene(v.sun);
-        place(v);
-        controls = controls::walk_controls(camera, camera.position);
-        controls.drag_look = true;
-        controls.walk_speed = 150;
+        start_view = v;
         renderer.set_animation_loop(&animate);
         return 0;
     }
