@@ -35,7 +35,7 @@ struct CloudPass {
     float density; // density inside them (default 3)
     float extinction; // light lost per meter at density 1 (1/m; default 0.02)
     float weather_scale; // meters the weather map spans before it repeats (default 30000)
-    float shape_scale; // meters the shape noise spans (default 4500)
+    float shape_scale; // meters the shape noise spans (default 6000)
     float detail_scale; // meters the detail noise spans (default 600)
     float detail_erosion; // how much the detail noise eats into their edges, 0..1 (default 0.85)
     Vector2 wind; // drift in x and z (m/s), times `time`
@@ -53,8 +53,8 @@ struct CloudPass {
     float near_resolution; // the near march's (default 0.25)
     float near_distance; // where the near march ends and the far starts (m; default 250)
     float near_step; // the shortest step (m; default 4)
-    float step_growth; // steps grow as sqrt(distance) times this (default 0.9)
-    float max_distance; // marched no further than this (m; default 45000)
+    float step_growth; // steps grow as sqrt(distance) times this (default 0.6)
+    float max_distance; // marched no further than this (m; default 60000)
     int view_steps; // the most steps along a view ray (default 128)
     int light_steps; // steps towards the sun from each (default 4)
     float history; // the new frame's share of each pixel (default 0.1; 1: no blending over time)
@@ -115,8 +115,8 @@ fn CloudPass* cloud_pass(Renderer* renderer) {
         .coverage = 0.5f,
         .density = 3,
         .extinction = 0.02f,
-        .weather_scale = 50000,
-        .shape_scale = 4500,
+        .weather_scale = 80000,
+        .shape_scale = 6000,
         .detail_scale = 600,
         .detail_erosion = 0.85f,
         .wind = { 10, 3 },
@@ -131,8 +131,8 @@ fn CloudPass* cloud_pass(Renderer* renderer) {
         .near_resolution = 0.25f,
         .near_distance = 250,
         .near_step = 4,
-        .step_growth = 0.9f,
-        .max_distance = 45000,
+        .step_growth = 0.6f,
+        .max_distance = 60000,
         .view_steps = 128,
         .light_steps = 4,
         .history = 0.1f,

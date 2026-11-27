@@ -186,10 +186,9 @@ float scene_distance(ivec2 at, float ray_len) {
 }
 
 // The sun's light reaching p through the cloud towards it: a few steps, growing.
-float light_march(vec3 p, vec3 l, float h0) {
+float light_march(vec3 p, vec3 l, float h0, int steps) {
     float sum = 0.0;
     float t = 0.0;
-    int steps = int(cl_amb_top.w);
     float thick = cl_layer.y - cl_layer.x;
     float seg = thick * 0.012;
     for (int i = 0; i < steps; i++) {
@@ -257,7 +256,7 @@ void main() {
             // cheap until it finds cloud: the shape alone, longer steps; then back a step, fine
             if (coarse) {
                 if (cl_density(p, h, w, false) <= 0.0) {
-                    t += dt * 2.0;
+                    t += dt * 1.5;
                     continue;
                 }
                 coarse = false;
@@ -265,14 +264,17 @@ void main() {
                 t = max(t - dt, t0);
                 continue;
             }
-            float dens = cl_density(p, h, w, true);
+            // far away, less detail (as Nubis does): no erosion past 15 km, fewer light steps
+            bool near_detail = t < 15000.0;
+            float dens = cl_density(p, h, w, near_detail);
             if (dens <= 0.0) {
                 if (++empty >= 6) coarse = true;
             } else {
                 empty = 0;
             }
             if (dens > 0.0) {
-                float od = light_march(p, l, h) * sigma;
+                int ls = int(cl_amb_top.w);
+                float od = light_march(p, l, h, near_detail ? ls : max(ls / 2, 2)) * sigma;
                 vec3 sun = cl_sun_color.rgb * (exp(-od) * ph0 + 0.6 * exp(-od * 0.3) * ph1 + 0.35 * exp(-od * 0.1) * ph2);
                 // the sky's light: more on the tops, less deep in the cloud's lower part
                 vec3 amb = mix(cl_amb_bottom.rgb, cl_amb_top.rgb, clamp(h * 1.2, 0.0, 1.0)) * mix(0.55, 1.0, pow(1.0 - dim, 0.5));
