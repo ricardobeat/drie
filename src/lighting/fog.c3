@@ -104,6 +104,7 @@ struct FogShadowViews @private {
     // Spotlight projection cookies (`SpotLight.map`) and their regular linear sampler.
     SgView cookies;
     SgSampler cookie_sampler;
+    SgView clouds; // the clouds' shadow (Renderer.cloud_shadow), or white
 }
 
 // Marches `scene`'s volumetric fog for `camera` into a froxel atlas sized to `width` x `height`
@@ -183,6 +184,7 @@ fn SgView update_fog_volume(
     c.vf_cascade_rect = p.dir_cascade_rect;
     c.vf_cascade_info = p.dir_cascade_info;
     c.vf_cascade_params = p.dir_cascade_params;
+    c.vf_cloud_shadow = p.cloud_shadow;
 
     SgBindings bind;
     bind.views[shaders::VIEW_VF_OUT] = v.storage;
@@ -191,6 +193,7 @@ fn SgView update_fog_volume(
     bind.views[shaders::VIEW_VF_SUN_MAP] = views.sun_map;
     bind.samplers[shaders::SMP_VF_SHADOW_SMP] = views.sampler;
     bind.views[shaders::VIEW_VF_COOKIES] = views.cookies;
+    bind.views[shaders::VIEW_VF_CLOUD_MAP] = views.clouds;
     bind.samplers[shaders::SMP_VF_COOKIE_SMP] = views.cookie_sampler;
     LightBufferSet* s = lights_gpu.current;
     bind.views[shaders::VIEW_VF_POINTS] = s.points.view;

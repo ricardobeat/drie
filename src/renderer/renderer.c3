@@ -44,6 +44,13 @@ enum ShadowType {
     VSM,
 }
 
+// The froxel fog a render() left (Renderer.fog_info).
+struct FogInfo {
+    SgView view; // the atlas: per slice, rgb = light scattered towards the camera, a = transmittance
+    Vec4 grid; // x, y = cells, z = slices, w = slices to a row of the atlas
+    Vec4 slices; // x = where slices start (m of view depth), y = slices per unit of log(depth / x)
+}
+
 // Main rendering context owning window settings, quality knobs, render target binding, and stats.
 struct Renderer {
     int width; // Window width in logical pixels.
@@ -144,6 +151,16 @@ struct Renderer {
     float ssr_max_step;
     // Global resolution multiplier for volumetric fog grid dimensions (Fog.resolution, Fog.slices).
     float fog_resolution_scale;
+    // The clouds' shadow on the first directional light (the sun), set before render() by
+    // drie::postprocessing's CloudPass.prepare(): r of `cloud_shadow` is the share of sunlight
+    // they let through at a point of a plane at altitude `cloud_shadow_params.w`, whose middle is
+    // x, z = `cloud_shadow_params.xz` and span 1 / `cloud_shadow_params.y` (m; 0: no shadow).
+    // Lit surfaces and the volumetric fog look along the light to it.
+    SgView cloud_shadow;
+    Vec4 cloud_shadow_params;
+    // The volumetric fog of the last render(): its froxel atlas (`view`, zero when none) and grid,
+    // as FsParams' fog_grid and fog_slices, for passes drawing over the picture (CloudPass).
+    FogInfo fog_info;
     // Resolution multiplier for the separate transmission pass (non-linear targets; default 1).
     float transmission_resolution_scale;
     // Previous-frame inputs bound for screen-space reflections via set_reflection_source().
@@ -1227,7 +1244,8 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera) {
             state.sun_view,
             state.shadow_sampler,
             lights_gpu.cookie ? lights_gpu.cookie.view : ready(state.white).view,
-            clamp_sampler()
+            clamp_sampler(),
+            self.cloud_shadow.id ? self.cloud_shadow : ready(state.white).view
         };
         state.fog_view = update_fog_volume(
             scene,
@@ -1239,6 +1257,9 @@ fn void Renderer.render(&self, Scene* scene, Camera* camera) {
             self.time,
             self.fog_resolution_scale
         );
+        self.fog_info = { state.fog_view, fs.fog_grid, fs.fog_slices };
+    } else {
+        self.fog_info = { };
     }
     profile::stop("render: volumetric fog", pt);
     pt = profile::start();

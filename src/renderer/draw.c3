@@ -408,6 +408,7 @@ fn FsParams build_light_params(Scene* scene, Camera* camera, SpotLight* caster) 
     int nrect        = (int)g.rects.len();
     ClusterGrid grid = cluster_grid(camera);
     p.cluster_view_proj = camera.projection_matrix.mul(camera.matrix_world_inverse);
+    p.cloud_shadow = r.cloud_shadow.id && ndir > 0 ? r.cloud_shadow_params : (Vec4) { };
     p.cluster_grid = { CLUSTER_X, CLUSTER_Y, CLUSTER_Z, 0 };
     p.cluster_depth = { grid.near, grid.log_scale, grid.far, 0 };
     g.upload(&grid, r.assign_clusters, r.check_compute);
@@ -997,6 +998,7 @@ fn void material_key_of(
         .vsm = (shadows || shafts) && vsm_on(),
         .soft_shadows = shadows && lights_gpu.soft_shadows,
         .sun_shadow = shadows && fs.dir_shadow_params.x > 0.5f,
+        .cloud_shadow = lit && m.receive_shadow && fs.cloud_shadow.y > 0,
         .dir_tiles = shadows && lights_gpu.dir_tiles,
         .point_shadows = shadows && lights_gpu.point_shadows,
         .spot_shadows = shadows && lights_gpu.spot_shadows,
@@ -1280,6 +1282,7 @@ fn void draw_item(
         bind.views[shaders::VIEW_SUN_SHADOW] = state.sun_view;
     }
     bind.views[shaders::VIEW_FOG_VOLUME] = state.fog_view;
+    bind.views[shaders::VIEW_CLOUD_SHADOW] = r.cloud_shadow.id ? r.cloud_shadow : ready(state.white).view;
     bool ssr = r.ssr_color.id != 0 && r.ssr_depth.id != 0 && mat.ssr > 0;
     bind.views[shaders::VIEW_SSR_COLOR] = ssr ? r.ssr_color : ready(state.white).view;
     // Lightmap baking binds the previous accumulation target in `VIEW_SSR_COLOR`.

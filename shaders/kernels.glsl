@@ -184,12 +184,15 @@ layout(binding=0) uniform fog_cs_params {
     vec4 vf_cascade_rect[4];
     vec4 vf_cascade_info[4];
     vec4 vf_cascade_params; // x = cascades, w = 1: one box
+    vec4 vf_cloud_shadow;   // the clouds' shadow map (Renderer.cloud_shadow): xz = its middle,
+                            //   y = 1 / its span (m, 0: none), w = the altitude it lies at
 };
 layout(binding=0, rgba16f) uniform writeonly image2D vf_out;
 layout(binding=1) uniform texture2D vf_spot_map;   // the spot light's map, drawn every frame
 layout(binding=2) uniform texture2D vf_spot_atlas; // the maps drawn once
 layout(binding=3) uniform texture2D vf_sun_map;    // the sun's cascades
 layout(binding=9) uniform texture2D vf_cookies;    // SpotLight.map atlas (light_cookies in shaders/shader_core.glsl)
+layout(binding=10) uniform texture2D vf_cloud_map; // the clouds' shadow (r: the sunlight they let through)
 layout(binding=0) uniform sampler vf_shadow_smp;
 layout(binding=1) uniform sampler vf_cookie_smp;
 
@@ -288,6 +291,15 @@ float vf_mist(vec3 p) {
 
 float vf_depth_tap(texture2D map, vec2 uv, float z) {
     return textureLod(sampler2DShadow(map, vf_shadow_smp), vec3(uv, z), 0.0);
+}
+
+// How much of the sun the clouds let through to p (cloud_shadow_cs in shaders/clouds.glsl).
+float vf_cloud(vec3 p) {
+    if (vf_cloud_shadow.y <= 0.0) return 1.0;
+    vec3 l = vf_sun_dir.xyz;
+    vec2 q = p.xz + l.xz / max(l.y, 0.05) * (vf_cloud_shadow.w - p.y);
+    vec2 uv = (q - vf_cloud_shadow.xz) * vf_cloud_shadow.y + 0.5;
+    return textureLod(sampler2D(vf_cloud_map, vf_cookie_smp), uv, 0.0).r;
 }
 
 // How much of the sun gets to p (1 outside of its shadow map).
@@ -427,7 +439,7 @@ void main() {
         // the fog's own light, the sun's towards it
         vec3 own = vf_color.rgb;
         if (sun_glow > 0.0) {
-            float lit = sun_glow;
+            float lit = sun_glow * vf_cloud(pm);
             if (shafts) {
                 float seen = 0.0;
                 for (int i = 0; i < 4; i++) seen += vf_sun(cam + sub_ray[i] * za, za) + vf_sun(cam + sub_ray[i] * zb, zb);

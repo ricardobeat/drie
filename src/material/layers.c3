@@ -855,6 +855,15 @@ fn Node ssr_march(Node n, Node geo_n, Node v, Node rough, Node world, Node frag)
 
 // ---- Volumetric fog and light shafts
 
+// The share of the sun the clouds let through to `p`, along `l` (towards the light) to the plane
+// of their shadow map (Renderer.cloud_shadow; cloud_shadow_cs in shaders/clouds.glsl).
+fn Node cloud_shadow_at(Node p, Node l) @private {
+    Node cs = fs_in("cloud_shadow");
+    Node q  = p.swizzle("xz") + l.swizzle("xz") / nodes::max(l.y(), 0.05f) * (cs.w() - p.y());
+    Node uv = (q - cs.swizzle("xz")) * cs.y() + 0.5f;
+    return node_sample(LEVEL, shaders::VIEW_CLOUD_SHADOW, shaders::SMP_SSR_SMP, TEX_2D, uv, nodes::num(0)).x();
+}
+
 // Volumetric fog in front of world position `p`: rgb = in-scattered light toward the camera,
 // a = transmittance. Interpolates between the two froxel depth slices straddling `p` (the camera
 // plane starts at transmittance 1).

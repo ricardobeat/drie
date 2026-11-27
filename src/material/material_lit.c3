@@ -204,7 +204,7 @@ fn void Lit.shade(&self, FragUv* f, Node rgb, Node map_rgb, Node v_color) {
         Node[6] pre;
         int np;
         Node skip;
-        if (key.sun_shadow || key.dir_tiles || key.parallax || key.contact_shadows) {
+        if (key.sun_shadow || key.dir_tiles || key.parallax || key.contact_shadows || key.cloud_shadow) {
             Node world = self.world;
             Node lit   = nodes::variable(nodes::num(1));
             pre[np++] = drie::node_eval(l);
@@ -222,6 +222,13 @@ fn void Lit.shade(&self, FragUv* f, Node rgb, Node map_rgb, Node v_color) {
                 Node on_tile = dsi.greater_than_equal(nodes::int_(0));
                 if (key.deferred_light) on_tile = nodes::logical_and(on_tile, self.df_shadow);
                 pre[np++] = nodes::if_then(on_tile, nodes::block(lit.assign(tile)));
+            }
+            if (key.cloud_shadow) {
+                // the clouds' shadow, on the first one (the sun)
+                pre[np++] = nodes::if_then(
+                    i.equal(nodes::uint_(0)),
+                    nodes::block(lit.assign(lit * cloud_shadow_at(world, l)))
+                );
             }
             if (key.parallax) {
                 // parallax_map: the bumps' own shadows, toward the first directional light

@@ -127,6 +127,7 @@ fn MaterialKey deferred_key_of(Renderer* r, Scene* scene, FsParams* fs, RenderTa
         .vsm = (shadows || shafts) && vsm_on(),
         .soft_shadows = shadows && lights_gpu.soft_shadows,
         .sun_shadow = shadows && fs.dir_shadow_params.x > 0.5f,
+        .cloud_shadow = fs.cloud_shadow.y > 0,
         .dir_tiles = shadows && lights_gpu.dir_tiles,
         .point_shadows = shadows && lights_gpu.point_shadows,
         .spot_shadows = shadows && lights_gpu.spot_shadows,
@@ -237,6 +238,7 @@ fn void draw_deferred_lighting(
     }
     classic.samplers[shaders::SMP_SHADOW_SMP] = state.shadow_sampler;
     classic.views[shaders::VIEW_FOG_VOLUME] = state.fog_view;
+    classic.views[shaders::VIEW_CLOUD_SHADOW] = r.cloud_shadow.id ? r.cloud_shadow : none.view;
     bool ssr = r.ssr_color.id != 0 && r.ssr_depth.id != 0;
     classic.views[shaders::VIEW_SSR_COLOR] = ssr ? r.ssr_color : none.view;
     classic.views[shaders::VIEW_SSR_DEPTH] = ssr ? r.ssr_depth : none.view;

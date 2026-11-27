@@ -147,6 +147,7 @@ bitstruct MaterialKey : char[32] {
     bool deferred_light : 89;
     bool contact_shadows : 90; // Screen-space contact shadows in the deferred lighting pass.
     bool rt_shadows : 91; // Hardware ray-traced rect area light shadow mask (VIEW_TEX_EXT5).
+    bool cloud_shadow : 92; // the clouds' shadow on the first directional light (Renderer.cloud_shadow)
 }
 
 // Logical view ID for the GPU morph delta buffer (between engine slots < 32 and NODE_USER_VIEW).

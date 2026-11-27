@@ -42,6 +42,7 @@ const int VIEW_SPOT_LIGHTS      = 12;
 const int VIEW_SPOT_SHADOWS     = 13;
 const int VIEW_LIGHT_CLUSTERS   = 14;
 const int VIEW_LIGHT_INDICES    = 15;
+const int VIEW_CLOUD_SHADOW     = 16;
 const int VIEW_FOG_VOLUME       = 19;
 const int VIEW_SSR_BACK         = 20;
 const int VIEW_LIGHT_COOKIES    = 21;
@@ -138,6 +139,7 @@ struct FsParams @align(16) @packed {
     Vec4 env_combine;
     Vec4 focus_params;
     Vec4 shadow_ext;
+    Vec4 cloud_shadow; // Renderer.cloud_shadow_params
     Vec4 bake_params;
     Vec4[16] uv_rel;
 }

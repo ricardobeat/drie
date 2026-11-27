@@ -96,7 +96,7 @@ fn void OutputPass.update(&self) {
 SgView blue_noise_view @local;
 
 // The 64x64 blue-noise tile (blue_noise_data) as an R8 texture, made on first use.
-fn SgView blue_noise() @local {
+fn SgView blue_noise() @private {
     if (!blue_noise_view.id) {
         SgImage img = sg::make_image(
             &&{
