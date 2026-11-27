@@ -29,6 +29,8 @@ for (const k of ['error', 'warn']) {{
   const f = console[k].bind(console);
   console[k] = (...a) => {{ f(...a); (window.drieLog = window.drieLog || []).push(k + ': ' + a.join(' ')); }};
 }}
+// the right button turns the view: no context menu over the canvas
+document.getElementById('canvas').addEventListener('contextmenu', (e) => e.preventDefault());
 window.addEventListener('error', (e) => (window.drieLog = window.drieLog || []).push('error: ' + e.message + ' ' + (e.error && e.error.stack)));
 </script>
 <script type="text/x-drie" id="main">{code}</script>

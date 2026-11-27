@@ -35,6 +35,9 @@ struct OutputPass {
     // Blue-noise dither before the 8-bit target rounds the colors, in steps of it (1: +-half a
     // step, enough to break up banding in smooth gradients; 0: off). Not on HDR output.
     float dither;
+    // Film grain (0: off; 0.15 is light, as house's cinematic look): coarser than a pixel,
+    // strongest in the half-dark, a little different per color, new on each frame. Not on HDR.
+    float grain;
     uint frame; // moves the dither's noise on each frame
 }
 
@@ -75,11 +78,10 @@ fn void OutputPass.update(&self) {
             GRADE_LUT
         },
         .params3 = {
-            self.hdr ? 0
-                : self.dither, // the golden ratio's fraction, a frame at a time: each frame's thresholds far from the last
+            self.hdr ? 0 : self.dither,
             (float)((double)self.frame * 0.6180339887 % 1.0),
-            0,
-            0
+            self.hdr ? 0 : self.grain,
+            (float)(self.frame % 256)
         },
     };
     self.frame++;

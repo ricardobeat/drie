@@ -2911,19 +2911,20 @@ uniform gc_params _50;
 layout(binding = 2, std430) buffer gc_write_verts
 {
     gc_vertex verts[];
-} _355;
+} _350;
 
-vec4 gc_cr(float t)
+vec4 gc_bs(float t)
 {
-    float _64 = t * t;
-    float _68 = _64 * t;
-    return vec4((((-0.5) * _68) + _64) - (0.5 * t), ((1.5 * _68) - (2.5 * _64)) + 1.0, (((-1.5) * _68) + (2.0 * _64)) + (0.5 * t), (0.5 * _68) - (0.5 * _64));
+    float _64 = 1.0 - t;
+    float _68 = t * t;
+    float _72 = _68 * t;
+    return vec4((_64 * _64) * _64, ((3.0 * _72) - (6.0 * _68)) + 4.0, ((((-3.0) * _72) + (3.0 * _68)) + (3.0 * t)) + 1.0, _72) * vec4(0.16666667163372039794921875);
 }
 
-vec4 gc_cr_slope(float t)
+vec4 gc_bs_slope(float t)
 {
-    float _108 = t * t;
-    return vec4((((-1.5) * _108) + (2.0 * t)) - 0.5, (4.5 * _108) - (5.0 * t), (((-4.5) * _108) + (4.0 * t)) + 0.5, (1.5 * _108) - t);
+    float _109 = t * t;
+    return vec4((t - 1.0) * (1.0 - t), (3.0 * _109) - (4.0 * t), (((-3.0) * _109) + (2.0 * t)) + 1.0, _109) * 0.5;
 }
 
 vec3 gc_shown(int i)
@@ -2933,59 +2934,59 @@ vec3 gc_shown(int i)
 
 void main()
 {
-    int _145 = int(gl_GlobalInvocationID.x);
-    int _165 = _50.gc_grid.x - 1;
-    int _168 = (_165 * _50.gc_grid.z) + 1;
-    int _171 = _50.gc_counts.z - 1;
-    if (_145 >= (_168 * ((_171 * _50.gc_grid.z) + 1)))
+    int _140 = int(gl_GlobalInvocationID.x);
+    int _160 = _50.gc_grid.x - 1;
+    int _163 = (_160 * _50.gc_grid.z) + 1;
+    int _166 = _50.gc_counts.z - 1;
+    if (_140 >= (_163 * ((_166 * _50.gc_grid.z) + 1)))
     {
         return;
     }
-    int _187 = _145 % _168;
-    int _191 = _145 / _168;
-    int _199 = min((_187 / _50.gc_grid.z), (_50.gc_grid.x - 2));
-    int _206 = min((_191 / _50.gc_grid.z), (_50.gc_counts.z - 2));
-    float _215 = float(_50.gc_grid.z);
-    float _216 = float(_187 - (_199 * _50.gc_grid.z)) / _215;
-    float _226 = float(_191 - (_206 * _50.gc_grid.z)) / _215;
-    float param = _216;
-    vec4 bu = gc_cr(param);
-    float param_1 = _226;
-    vec4 bv = gc_cr(param_1);
-    float param_2 = _216;
-    vec4 su = gc_cr_slope(param_2);
-    float param_3 = _226;
-    vec4 sv = gc_cr_slope(param_3);
+    int _182 = _140 % _163;
+    int _186 = _140 / _163;
+    int _194 = min((_182 / _50.gc_grid.z), (_50.gc_grid.x - 2));
+    int _201 = min((_186 / _50.gc_grid.z), (_50.gc_counts.z - 2));
+    float _210 = float(_50.gc_grid.z);
+    float _211 = float(_182 - (_194 * _50.gc_grid.z)) / _210;
+    float _221 = float(_186 - (_201 * _50.gc_grid.z)) / _210;
+    float param = _211;
+    vec4 bu = gc_bs(param);
+    float param_1 = _221;
+    vec4 bv = gc_bs(param_1);
+    float param_2 = _211;
+    vec4 su = gc_bs_slope(param_2);
+    float param_3 = _221;
+    vec4 sv = gc_bs_slope(param_3);
     vec3 p = vec3(0.0);
     vec3 du = vec3(0.0);
     vec3 dv = vec3(0.0);
     for (int y = 0; y < 4; y++)
     {
-        int _265 = clamp((_206 - 1) + y, 0, _171);
+        int _260 = clamp((_201 - 1) + y, 0, _166);
         for (int x = 0; x < 4; x++)
         {
-            int param_4 = ((_265 * _50.gc_counts.y) + _50.gc_grid.y) + clamp((_199 - 1) + x, 0, _165);
-            vec3 _292 = gc_shown(param_4);
-            p += (_292 * (bu[x] * bv[y]));
-            du += (_292 * (su[x] * bv[y]));
-            dv += (_292 * (bu[x] * sv[y]));
+            int param_4 = ((_260 * _50.gc_counts.y) + _50.gc_grid.y) + clamp((_194 - 1) + x, 0, _160);
+            vec3 _287 = gc_shown(param_4);
+            p += (_287 * (bu[x] * bv[y]));
+            du += (_287 * (su[x] * bv[y]));
+            dv += (_287 * (bu[x] * sv[y]));
         }
     }
-    vec3 _334 = cross(du, -dv);
-    vec3 n = _334;
-    float _337 = length(_334);
-    vec3 _341;
-    if (_337 > 9.9999999600419720025001879548654e-13)
+    vec3 _329 = cross(du, -dv);
+    vec3 n = _329;
+    float _332 = length(_329);
+    vec3 _336;
+    if (_332 > 9.9999999600419720025001879548654e-13)
     {
-        _341 = n / vec3(_337);
+        _336 = n / vec3(_332);
     }
     else
     {
-        _341 = vec3(0.0, 0.0, 1.0);
+        _336 = vec3(0.0, 0.0, 1.0);
     }
-    n = _341;
-    _355.verts[_145].a = vec4(_50.gc_origin.xyz + p, _341.x);
-    _355.verts[_145].b = vec4(_341.yz, _355.verts[_145].b.zw);
+    n = _336;
+    _350.verts[_140].a = vec4(_50.gc_origin.xyz + p, _336.x);
+    _350.verts[_140].b = vec4(_336.yz, _350.verts[_140].b.zw);
 }
 
 `;
@@ -5417,7 +5418,7 @@ cbuffer gc_params : register(b0)
     int4 _50_gc_grid : packoffset(c10);
 };
 
-RWByteAddressBuffer _355 : register(u0);
+RWByteAddressBuffer _350 : register(u0);
 
 static uint3 gl_GlobalInvocationID;
 struct SPIRV_Cross_Input
@@ -5425,17 +5426,18 @@ struct SPIRV_Cross_Input
     uint3 gl_GlobalInvocationID : SV_DispatchThreadID;
 };
 
-float4 gc_cr(float t)
+float4 gc_bs(float t)
 {
-    float _64 = t * t;
-    float _68 = _64 * t;
-    return float4((((-0.5f) * _68) + _64) - (0.5f * t), ((1.5f * _68) - (2.5f * _64)) + 1.0f, (((-1.5f) * _68) + (2.0f * _64)) + (0.5f * t), (0.5f * _68) - (0.5f * _64));
+    float _64 = 1.0f - t;
+    float _68 = t * t;
+    float _72 = _68 * t;
+    return float4((_64 * _64) * _64, ((3.0f * _72) - (6.0f * _68)) + 4.0f, ((((-3.0f) * _72) + (3.0f * _68)) + (3.0f * t)) + 1.0f, _72) * 0.16666667163372039794921875f.xxxx;
 }
 
-float4 gc_cr_slope(float t)
+float4 gc_bs_slope(float t)
 {
-    float _108 = t * t;
-    return float4((((-1.5f) * _108) + (2.0f * t)) - 0.5f, (4.5f * _108) - (5.0f * t), (((-4.5f) * _108) + (4.0f * t)) + 0.5f, (1.5f * _108) - t);
+    float _109 = t * t;
+    return float4((t - 1.0f) * (1.0f - t), (3.0f * _109) - (4.0f * t), (((-3.0f) * _109) + (2.0f * t)) + 1.0f, _109) * 0.5f;
 }
 
 float3 gc_shown(int i)
@@ -5445,59 +5447,59 @@ float3 gc_shown(int i)
 
 void comp_main()
 {
-    int _145 = int(gl_GlobalInvocationID.x);
-    int _165 = _50_gc_grid.x - 1;
-    int _168 = (_165 * _50_gc_grid.z) + 1;
-    int _171 = _50_gc_counts.z - 1;
-    if (_145 >= (_168 * ((_171 * _50_gc_grid.z) + 1)))
+    int _140 = int(gl_GlobalInvocationID.x);
+    int _160 = _50_gc_grid.x - 1;
+    int _163 = (_160 * _50_gc_grid.z) + 1;
+    int _166 = _50_gc_counts.z - 1;
+    if (_140 >= (_163 * ((_166 * _50_gc_grid.z) + 1)))
     {
         return;
     }
-    int _187 = _145 % _168;
-    int _191 = _145 / _168;
-    int _199 = min((_187 / _50_gc_grid.z), (_50_gc_grid.x - 2));
-    int _206 = min((_191 / _50_gc_grid.z), (_50_gc_counts.z - 2));
-    float _215 = float(_50_gc_grid.z);
-    float _216 = float(_187 - (_199 * _50_gc_grid.z)) / _215;
-    float _226 = float(_191 - (_206 * _50_gc_grid.z)) / _215;
-    float param = _216;
-    float4 bu = gc_cr(param);
-    float param_1 = _226;
-    float4 bv = gc_cr(param_1);
-    float param_2 = _216;
-    float4 su = gc_cr_slope(param_2);
-    float param_3 = _226;
-    float4 sv = gc_cr_slope(param_3);
+    int _182 = _140 % _163;
+    int _186 = _140 / _163;
+    int _194 = min((_182 / _50_gc_grid.z), (_50_gc_grid.x - 2));
+    int _201 = min((_186 / _50_gc_grid.z), (_50_gc_counts.z - 2));
+    float _210 = float(_50_gc_grid.z);
+    float _211 = float(_182 - (_194 * _50_gc_grid.z)) / _210;
+    float _221 = float(_186 - (_201 * _50_gc_grid.z)) / _210;
+    float param = _211;
+    float4 bu = gc_bs(param);
+    float param_1 = _221;
+    float4 bv = gc_bs(param_1);
+    float param_2 = _211;
+    float4 su = gc_bs_slope(param_2);
+    float param_3 = _221;
+    float4 sv = gc_bs_slope(param_3);
     float3 p = 0.0f.xxx;
     float3 du = 0.0f.xxx;
     float3 dv = 0.0f.xxx;
     for (int y = 0; y < 4; y++)
     {
-        int _265 = clamp((_206 - 1) + y, 0, _171);
+        int _260 = clamp((_201 - 1) + y, 0, _166);
         for (int x = 0; x < 4; x++)
         {
-            int param_4 = ((_265 * _50_gc_counts.y) + _50_gc_grid.y) + clamp((_199 - 1) + x, 0, _165);
-            float3 _292 = gc_shown(param_4);
-            p += (_292 * (bu[x] * bv[y]));
-            du += (_292 * (su[x] * bv[y]));
-            dv += (_292 * (bu[x] * sv[y]));
+            int param_4 = ((_260 * _50_gc_counts.y) + _50_gc_grid.y) + clamp((_194 - 1) + x, 0, _160);
+            float3 _287 = gc_shown(param_4);
+            p += (_287 * (bu[x] * bv[y]));
+            du += (_287 * (su[x] * bv[y]));
+            dv += (_287 * (bu[x] * sv[y]));
         }
     }
-    float3 _334 = cross(du, -dv);
-    float3 n = _334;
-    float _337 = length(_334);
-    float3 _341;
-    if (_337 > 9.9999999600419720025001879548654e-13f)
+    float3 _329 = cross(du, -dv);
+    float3 n = _329;
+    float _332 = length(_329);
+    float3 _336;
+    if (_332 > 9.9999999600419720025001879548654e-13f)
     {
-        _341 = n / _337.xxx;
+        _336 = n / _332.xxx;
     }
     else
     {
-        _341 = float3(0.0f, 0.0f, 1.0f);
+        _336 = float3(0.0f, 0.0f, 1.0f);
     }
-    n = _341;
-    _355.Store4(_145 * 48 + 0, asuint(float4(_50_gc_origin.xyz + p, _341.x)));
-    _355.Store4(_145 * 48 + 16, asuint(float4(_341.yz, asfloat(_355.Load4(_145 * 48 + 16)).zw)));
+    n = _336;
+    _350.Store4(_140 * 48 + 0, asuint(float4(_50_gc_origin.xyz + p, _336.x)));
+    _350.Store4(_140 * 48 + 16, asuint(float4(_336.yz, asfloat(_350.Load4(_140 * 48 + 16)).zw)));
 }
 
 [numthreads(128, 1, 1)]
@@ -8195,18 +8197,19 @@ struct gc_write_verts
 constant uint3 gl_WorkGroupSize [[maybe_unused]] = uint3(128u, 1u, 1u);
 
 static inline __attribute__((always_inline))
-float4 gc_cr(thread const float& t)
+float4 gc_bs(thread const float& t)
 {
-    float _64 = t * t;
-    float _68 = _64 * t;
-    return float4((((-0.5) * _68) + _64) - (0.5 * t), ((1.5 * _68) - (2.5 * _64)) + 1.0, (((-1.5) * _68) + (2.0 * _64)) + (0.5 * t), (0.5 * _68) - (0.5 * _64));
+    float _64 = 1.0 - t;
+    float _68 = t * t;
+    float _72 = _68 * t;
+    return float4((_64 * _64) * _64, ((3.0 * _72) - (6.0 * _68)) + 4.0, ((((-3.0) * _72) + (3.0 * _68)) + (3.0 * t)) + 1.0, _72) * float4(0.16666667163372039794921875);
 }
 
 static inline __attribute__((always_inline))
-float4 gc_cr_slope(thread const float& t)
+float4 gc_bs_slope(thread const float& t)
 {
-    float _108 = t * t;
-    return float4((((-1.5) * _108) + (2.0 * t)) - 0.5, (4.5 * _108) - (5.0 * t), (((-4.5) * _108) + (4.0 * t)) + 0.5, (1.5 * _108) - t);
+    float _109 = t * t;
+    return float4((t - 1.0) * (1.0 - t), (3.0 * _109) - (4.0 * t), (((-3.0) * _109) + (2.0 * t)) + 1.0, _109) * 0.5;
 }
 
 static inline __attribute__((always_inline))
@@ -8215,61 +8218,61 @@ float3 gc_shown(thread const int& i, const device gc_write_start& _29, const dev
     return _29.start[i].p.xyz + ((_40.pos[i].p.xyz - _29.start[i].p.xyz) * _50.gc_origin.w);
 }
 
-kernel void main0(constant gc_params& _50 [[buffer(0)]], const device gc_write_pos& _40 [[buffer(8)]], const device gc_write_start& _29 [[buffer(9)]], device gc_write_verts& _355 [[buffer(10)]], uint3 gl_GlobalInvocationID [[thread_position_in_grid]])
+kernel void main0(constant gc_params& _50 [[buffer(0)]], const device gc_write_pos& _40 [[buffer(8)]], const device gc_write_start& _29 [[buffer(9)]], device gc_write_verts& _350 [[buffer(10)]], uint3 gl_GlobalInvocationID [[thread_position_in_grid]])
 {
-    int _145 = int(gl_GlobalInvocationID.x);
-    int _165 = _50.gc_grid.x - 1;
-    int _168 = (_165 * _50.gc_grid.z) + 1;
-    int _171 = _50.gc_counts.z - 1;
-    if (_145 >= (_168 * ((_171 * _50.gc_grid.z) + 1)))
+    int _140 = int(gl_GlobalInvocationID.x);
+    int _160 = _50.gc_grid.x - 1;
+    int _163 = (_160 * _50.gc_grid.z) + 1;
+    int _166 = _50.gc_counts.z - 1;
+    if (_140 >= (_163 * ((_166 * _50.gc_grid.z) + 1)))
     {
         return;
     }
-    int _187 = _145 % _168;
-    int _191 = _145 / _168;
-    int _199 = min((_187 / _50.gc_grid.z), (_50.gc_grid.x - 2));
-    int _206 = min((_191 / _50.gc_grid.z), (_50.gc_counts.z - 2));
-    float _215 = float(_50.gc_grid.z);
-    float _216 = float(_187 - (_199 * _50.gc_grid.z)) / _215;
-    float _226 = float(_191 - (_206 * _50.gc_grid.z)) / _215;
-    float param = _216;
-    float4 bu = gc_cr(param);
-    float param_1 = _226;
-    float4 bv = gc_cr(param_1);
-    float param_2 = _216;
-    float4 su = gc_cr_slope(param_2);
-    float param_3 = _226;
-    float4 sv = gc_cr_slope(param_3);
+    int _182 = _140 % _163;
+    int _186 = _140 / _163;
+    int _194 = min((_182 / _50.gc_grid.z), (_50.gc_grid.x - 2));
+    int _201 = min((_186 / _50.gc_grid.z), (_50.gc_counts.z - 2));
+    float _210 = float(_50.gc_grid.z);
+    float _211 = float(_182 - (_194 * _50.gc_grid.z)) / _210;
+    float _221 = float(_186 - (_201 * _50.gc_grid.z)) / _210;
+    float param = _211;
+    float4 bu = gc_bs(param);
+    float param_1 = _221;
+    float4 bv = gc_bs(param_1);
+    float param_2 = _211;
+    float4 su = gc_bs_slope(param_2);
+    float param_3 = _221;
+    float4 sv = gc_bs_slope(param_3);
     float3 p = float3(0.0);
     float3 du = float3(0.0);
     float3 dv = float3(0.0);
     for (int y = 0; y < 4; y++)
     {
-        int _265 = clamp((_206 - 1) + y, 0, _171);
+        int _260 = clamp((_201 - 1) + y, 0, _166);
         for (int x = 0; x < 4; x++)
         {
-            int param_4 = ((_265 * _50.gc_counts.y) + _50.gc_grid.y) + clamp((_199 - 1) + x, 0, _165);
-            float3 _292 = gc_shown(param_4, _29, _40, _50);
-            p += (_292 * (bu[x] * bv[y]));
-            du += (_292 * (su[x] * bv[y]));
-            dv += (_292 * (bu[x] * sv[y]));
+            int param_4 = ((_260 * _50.gc_counts.y) + _50.gc_grid.y) + clamp((_194 - 1) + x, 0, _160);
+            float3 _287 = gc_shown(param_4, _29, _40, _50);
+            p += (_287 * (bu[x] * bv[y]));
+            du += (_287 * (su[x] * bv[y]));
+            dv += (_287 * (bu[x] * sv[y]));
         }
     }
-    float3 _334 = cross(du, -dv);
-    float3 n = _334;
-    float _337 = length(_334);
-    float3 _341;
-    if (_337 > 9.9999999600419720025001879548654e-13)
+    float3 _329 = cross(du, -dv);
+    float3 n = _329;
+    float _332 = length(_329);
+    float3 _336;
+    if (_332 > 9.9999999600419720025001879548654e-13)
     {
-        _341 = n / float3(_337);
+        _336 = n / float3(_332);
     }
     else
     {
-        _341 = float3(0.0, 0.0, 1.0);
+        _336 = float3(0.0, 0.0, 1.0);
     }
-    n = _341;
-    _355.verts[_145].a = float4(_50.gc_origin.xyz + p, _341.x);
-    _355.verts[_145].b = float4(_341.yz, _355.verts[_145].b.zw);
+    n = _336;
+    _350.verts[_140].a = float4(_50.gc_origin.xyz + p, _336.x);
+    _350.verts[_140].b = float4(_336.yz, _350.verts[_140].b.zw);
 }
 
 `;
@@ -10961,18 +10964,19 @@ struct gc_write_verts
 constant uint3 gl_WorkGroupSize [[maybe_unused]] = uint3(128u, 1u, 1u);
 
 static inline __attribute__((always_inline))
-float4 gc_cr(thread const float& t)
+float4 gc_bs(thread const float& t)
 {
-    float _64 = t * t;
-    float _68 = _64 * t;
-    return float4((((-0.5) * _68) + _64) - (0.5 * t), ((1.5 * _68) - (2.5 * _64)) + 1.0, (((-1.5) * _68) + (2.0 * _64)) + (0.5 * t), (0.5 * _68) - (0.5 * _64));
+    float _64 = 1.0 - t;
+    float _68 = t * t;
+    float _72 = _68 * t;
+    return float4((_64 * _64) * _64, ((3.0 * _72) - (6.0 * _68)) + 4.0, ((((-3.0) * _72) + (3.0 * _68)) + (3.0 * t)) + 1.0, _72) * float4(0.16666667163372039794921875);
 }
 
 static inline __attribute__((always_inline))
-float4 gc_cr_slope(thread const float& t)
+float4 gc_bs_slope(thread const float& t)
 {
-    float _108 = t * t;
-    return float4((((-1.5) * _108) + (2.0 * t)) - 0.5, (4.5 * _108) - (5.0 * t), (((-4.5) * _108) + (4.0 * t)) + 0.5, (1.5 * _108) - t);
+    float _109 = t * t;
+    return float4((t - 1.0) * (1.0 - t), (3.0 * _109) - (4.0 * t), (((-3.0) * _109) + (2.0 * t)) + 1.0, _109) * 0.5;
 }
 
 static inline __attribute__((always_inline))
@@ -10981,61 +10985,61 @@ float3 gc_shown(thread const int& i, const device gc_write_start& _29, const dev
     return _29.start[i].p.xyz + ((_40.pos[i].p.xyz - _29.start[i].p.xyz) * _50.gc_origin.w);
 }
 
-kernel void main0(constant gc_params& _50 [[buffer(0)]], const device gc_write_pos& _40 [[buffer(8)]], const device gc_write_start& _29 [[buffer(9)]], device gc_write_verts& _355 [[buffer(10)]], uint3 gl_GlobalInvocationID [[thread_position_in_grid]])
+kernel void main0(constant gc_params& _50 [[buffer(0)]], const device gc_write_pos& _40 [[buffer(8)]], const device gc_write_start& _29 [[buffer(9)]], device gc_write_verts& _350 [[buffer(10)]], uint3 gl_GlobalInvocationID [[thread_position_in_grid]])
 {
-    int _145 = int(gl_GlobalInvocationID.x);
-    int _165 = _50.gc_grid.x - 1;
-    int _168 = (_165 * _50.gc_grid.z) + 1;
-    int _171 = _50.gc_counts.z - 1;
-    if (_145 >= (_168 * ((_171 * _50.gc_grid.z) + 1)))
+    int _140 = int(gl_GlobalInvocationID.x);
+    int _160 = _50.gc_grid.x - 1;
+    int _163 = (_160 * _50.gc_grid.z) + 1;
+    int _166 = _50.gc_counts.z - 1;
+    if (_140 >= (_163 * ((_166 * _50.gc_grid.z) + 1)))
     {
         return;
     }
-    int _187 = _145 % _168;
-    int _191 = _145 / _168;
-    int _199 = min((_187 / _50.gc_grid.z), (_50.gc_grid.x - 2));
-    int _206 = min((_191 / _50.gc_grid.z), (_50.gc_counts.z - 2));
-    float _215 = float(_50.gc_grid.z);
-    float _216 = float(_187 - (_199 * _50.gc_grid.z)) / _215;
-    float _226 = float(_191 - (_206 * _50.gc_grid.z)) / _215;
-    float param = _216;
-    float4 bu = gc_cr(param);
-    float param_1 = _226;
-    float4 bv = gc_cr(param_1);
-    float param_2 = _216;
-    float4 su = gc_cr_slope(param_2);
-    float param_3 = _226;
-    float4 sv = gc_cr_slope(param_3);
+    int _182 = _140 % _163;
+    int _186 = _140 / _163;
+    int _194 = min((_182 / _50.gc_grid.z), (_50.gc_grid.x - 2));
+    int _201 = min((_186 / _50.gc_grid.z), (_50.gc_counts.z - 2));
+    float _210 = float(_50.gc_grid.z);
+    float _211 = float(_182 - (_194 * _50.gc_grid.z)) / _210;
+    float _221 = float(_186 - (_201 * _50.gc_grid.z)) / _210;
+    float param = _211;
+    float4 bu = gc_bs(param);
+    float param_1 = _221;
+    float4 bv = gc_bs(param_1);
+    float param_2 = _211;
+    float4 su = gc_bs_slope(param_2);
+    float param_3 = _221;
+    float4 sv = gc_bs_slope(param_3);
     float3 p = float3(0.0);
     float3 du = float3(0.0);
     float3 dv = float3(0.0);
     for (int y = 0; y < 4; y++)
     {
-        int _265 = clamp((_206 - 1) + y, 0, _171);
+        int _260 = clamp((_201 - 1) + y, 0, _166);
         for (int x = 0; x < 4; x++)
         {
-            int param_4 = ((_265 * _50.gc_counts.y) + _50.gc_grid.y) + clamp((_199 - 1) + x, 0, _165);
-            float3 _292 = gc_shown(param_4, _29, _40, _50);
-            p += (_292 * (bu[x] * bv[y]));
-            du += (_292 * (su[x] * bv[y]));
-            dv += (_292 * (bu[x] * sv[y]));
+            int param_4 = ((_260 * _50.gc_counts.y) + _50.gc_grid.y) + clamp((_194 - 1) + x, 0, _160);
+            float3 _287 = gc_shown(param_4, _29, _40, _50);
+            p += (_287 * (bu[x] * bv[y]));
+            du += (_287 * (su[x] * bv[y]));
+            dv += (_287 * (bu[x] * sv[y]));
         }
     }
-    float3 _334 = cross(du, -dv);
-    float3 n = _334;
-    float _337 = length(_334);
-    float3 _341;
-    if (_337 > 9.9999999600419720025001879548654e-13)
+    float3 _329 = cross(du, -dv);
+    float3 n = _329;
+    float _332 = length(_329);
+    float3 _336;
+    if (_332 > 9.9999999600419720025001879548654e-13)
     {
-        _341 = n / float3(_337);
+        _336 = n / float3(_332);
     }
     else
     {
-        _341 = float3(0.0, 0.0, 1.0);
+        _336 = float3(0.0, 0.0, 1.0);
     }
-    n = _341;
-    _355.verts[_145].a = float4(_50.gc_origin.xyz + p, _341.x);
-    _355.verts[_145].b = float4(_341.yz, _355.verts[_145].b.zw);
+    n = _336;
+    _350.verts[_140].a = float4(_50.gc_origin.xyz + p, _336.x);
+    _350.verts[_140].b = float4(_336.yz, _350.verts[_140].b.zw);
 }
 
 `;
@@ -13727,18 +13731,19 @@ struct gc_write_verts
 constant uint3 gl_WorkGroupSize [[maybe_unused]] = uint3(128u, 1u, 1u);
 
 static inline __attribute__((always_inline))
-float4 gc_cr(thread const float& t)
+float4 gc_bs(thread const float& t)
 {
-    float _64 = t * t;
-    float _68 = _64 * t;
-    return float4((((-0.5) * _68) + _64) - (0.5 * t), ((1.5 * _68) - (2.5 * _64)) + 1.0, (((-1.5) * _68) + (2.0 * _64)) + (0.5 * t), (0.5 * _68) - (0.5 * _64));
+    float _64 = 1.0 - t;
+    float _68 = t * t;
+    float _72 = _68 * t;
+    return float4((_64 * _64) * _64, ((3.0 * _72) - (6.0 * _68)) + 4.0, ((((-3.0) * _72) + (3.0 * _68)) + (3.0 * t)) + 1.0, _72) * float4(0.16666667163372039794921875);
 }
 
 static inline __attribute__((always_inline))
-float4 gc_cr_slope(thread const float& t)
+float4 gc_bs_slope(thread const float& t)
 {
-    float _108 = t * t;
-    return float4((((-1.5) * _108) + (2.0 * t)) - 0.5, (4.5 * _108) - (5.0 * t), (((-4.5) * _108) + (4.0 * t)) + 0.5, (1.5 * _108) - t);
+    float _109 = t * t;
+    return float4((t - 1.0) * (1.0 - t), (3.0 * _109) - (4.0 * t), (((-3.0) * _109) + (2.0 * t)) + 1.0, _109) * 0.5;
 }
 
 static inline __attribute__((always_inline))
@@ -13747,61 +13752,61 @@ float3 gc_shown(thread const int& i, const device gc_write_start& _29, const dev
     return _29.start[i].p.xyz + ((_40.pos[i].p.xyz - _29.start[i].p.xyz) * _50.gc_origin.w);
 }
 
-kernel void main0(constant gc_params& _50 [[buffer(0)]], const device gc_write_pos& _40 [[buffer(8)]], const device gc_write_start& _29 [[buffer(9)]], device gc_write_verts& _355 [[buffer(10)]], uint3 gl_GlobalInvocationID [[thread_position_in_grid]])
+kernel void main0(constant gc_params& _50 [[buffer(0)]], const device gc_write_pos& _40 [[buffer(8)]], const device gc_write_start& _29 [[buffer(9)]], device gc_write_verts& _350 [[buffer(10)]], uint3 gl_GlobalInvocationID [[thread_position_in_grid]])
 {
-    int _145 = int(gl_GlobalInvocationID.x);
-    int _165 = _50.gc_grid.x - 1;
-    int _168 = (_165 * _50.gc_grid.z) + 1;
-    int _171 = _50.gc_counts.z - 1;
-    if (_145 >= (_168 * ((_171 * _50.gc_grid.z) + 1)))
+    int _140 = int(gl_GlobalInvocationID.x);
+    int _160 = _50.gc_grid.x - 1;
+    int _163 = (_160 * _50.gc_grid.z) + 1;
+    int _166 = _50.gc_counts.z - 1;
+    if (_140 >= (_163 * ((_166 * _50.gc_grid.z) + 1)))
     {
         return;
     }
-    int _187 = _145 % _168;
-    int _191 = _145 / _168;
-    int _199 = min((_187 / _50.gc_grid.z), (_50.gc_grid.x - 2));
-    int _206 = min((_191 / _50.gc_grid.z), (_50.gc_counts.z - 2));
-    float _215 = float(_50.gc_grid.z);
-    float _216 = float(_187 - (_199 * _50.gc_grid.z)) / _215;
-    float _226 = float(_191 - (_206 * _50.gc_grid.z)) / _215;
-    float param = _216;
-    float4 bu = gc_cr(param);
-    float param_1 = _226;
-    float4 bv = gc_cr(param_1);
-    float param_2 = _216;
-    float4 su = gc_cr_slope(param_2);
-    float param_3 = _226;
-    float4 sv = gc_cr_slope(param_3);
+    int _182 = _140 % _163;
+    int _186 = _140 / _163;
+    int _194 = min((_182 / _50.gc_grid.z), (_50.gc_grid.x - 2));
+    int _201 = min((_186 / _50.gc_grid.z), (_50.gc_counts.z - 2));
+    float _210 = float(_50.gc_grid.z);
+    float _211 = float(_182 - (_194 * _50.gc_grid.z)) / _210;
+    float _221 = float(_186 - (_201 * _50.gc_grid.z)) / _210;
+    float param = _211;
+    float4 bu = gc_bs(param);
+    float param_1 = _221;
+    float4 bv = gc_bs(param_1);
+    float param_2 = _211;
+    float4 su = gc_bs_slope(param_2);
+    float param_3 = _221;
+    float4 sv = gc_bs_slope(param_3);
     float3 p = float3(0.0);
     float3 du = float3(0.0);
     float3 dv = float3(0.0);
     for (int y = 0; y < 4; y++)
     {
-        int _265 = clamp((_206 - 1) + y, 0, _171);
+        int _260 = clamp((_201 - 1) + y, 0, _166);
         for (int x = 0; x < 4; x++)
         {
-            int param_4 = ((_265 * _50.gc_counts.y) + _50.gc_grid.y) + clamp((_199 - 1) + x, 0, _165);
-            float3 _292 = gc_shown(param_4, _29, _40, _50);
-            p += (_292 * (bu[x] * bv[y]));
-            du += (_292 * (su[x] * bv[y]));
-            dv += (_292 * (bu[x] * sv[y]));
+            int param_4 = ((_260 * _50.gc_counts.y) + _50.gc_grid.y) + clamp((_194 - 1) + x, 0, _160);
+            float3 _287 = gc_shown(param_4, _29, _40, _50);
+            p += (_287 * (bu[x] * bv[y]));
+            du += (_287 * (su[x] * bv[y]));
+            dv += (_287 * (bu[x] * sv[y]));
         }
     }
-    float3 _334 = cross(du, -dv);
-    float3 n = _334;
-    float _337 = length(_334);
-    float3 _341;
-    if (_337 > 9.9999999600419720025001879548654e-13)
+    float3 _329 = cross(du, -dv);
+    float3 n = _329;
+    float _332 = length(_329);
+    float3 _336;
+    if (_332 > 9.9999999600419720025001879548654e-13)
     {
-        _341 = n / float3(_337);
+        _336 = n / float3(_332);
     }
     else
     {
-        _341 = float3(0.0, 0.0, 1.0);
+        _336 = float3(0.0, 0.0, 1.0);
     }
-    n = _341;
-    _355.verts[_145].a = float4(_50.gc_origin.xyz + p, _341.x);
-    _355.verts[_145].b = float4(_341.yz, _355.verts[_145].b.zw);
+    n = _336;
+    _350.verts[_140].a = float4(_50.gc_origin.xyz + p, _336.x);
+    _350.verts[_140].b = float4(_336.yz, _350.verts[_140].b.zw);
 }
 
 `;
@@ -17255,23 +17260,22 @@ struct gc_write_verts {
 
 var<private> gl_GlobalInvocationID : vec3u;
 
-@binding(2) @group(1) var<storage, read_write> x_355 : gc_write_verts;
+@binding(2) @group(1) var<storage, read_write> x_350 : gc_write_verts;
 
-fn gc_cr_f1_(t : ptr<function, f32>) -> vec4f {
-  let x_64 = (*(t) * *(t));
-  let x_68 = (x_64 * *(t));
-  let x_75 = *(t);
-  let x_94 = *(t);
-  return vec4f((((-0.5f * x_68) + x_64) - (0.5f * x_75)), (((1.5f * x_68) - (2.5f * x_64)) + 1.0f), (((-1.5f * x_68) + (2.0f * x_64)) + (0.5f * x_94)), ((0.5f * x_68) - (0.5f * x_64)));
+fn gc_bs_f1_(t : ptr<function, f32>) -> vec4f {
+  let x_64 = (1.0f - *(t));
+  let x_68 = (*(t) * *(t));
+  let x_72 = (x_68 * *(t));
+  let x_93 = *(t);
+  return (vec4f(((x_64 * x_64) * x_64), (((3.0f * x_72) - (6.0f * x_68)) + 4.0f), ((((-3.0f * x_72) + (3.0f * x_68)) + (3.0f * x_93)) + 1.0f), x_72) * vec4f(0.16666667163372039795f));
 }
 
-fn gc_cr_slope_f1_(t_1 : ptr<function, f32>) -> vec4f {
-  let x_108 = (*(t_1) * *(t_1));
-  let x_111 = *(t_1);
-  let x_119 = *(t_1);
-  let x_126 = *(t_1);
-  let x_132 = *(t_1);
-  return vec4f((((-1.5f * x_108) + (2.0f * x_111)) - 0.5f), ((4.5f * x_108) - (5.0f * x_119)), (((-4.5f * x_108) + (4.0f * x_126)) + 0.5f), ((1.5f * x_108) - x_132));
+fn gc_bs_slope_f1_(t_1 : ptr<function, f32>) -> vec4f {
+  let x_104 = *(t_1);
+  let x_109 = (*(t_1) * *(t_1));
+  let x_116 = *(t_1);
+  let x_122 = *(t_1);
+  return (vec4f(((x_104 - 1.0f) * (1.0f - x_104)), ((3.0f * x_109) - (4.0f * x_116)), (((-3.0f * x_109) + (2.0f * x_122)) + 1.0f), x_109) * 0.5f);
 }
 
 fn gc_shown_i1_(i : ptr<function, i32>) -> vec3f {
@@ -17297,37 +17301,37 @@ fn main_1() {
   var x : i32;
   var param_4 : i32;
   var n : vec3f;
-  var x_341 : vec3f;
-  let x_145 = bitcast<i32>(gl_GlobalInvocationID.x);
-  let x_150 = x_50.gc_counts.y;
-  let x_154 = x_50.gc_counts.z;
-  let x_158 = x_50.gc_grid.x;
-  let x_161 = x_50.gc_grid.z;
-  let x_165 = (x_158 - 1i);
-  let x_168 = ((x_165 * x_161) + 1i);
-  let x_171 = (x_154 - 1i);
-  if ((x_145 >= (x_168 * ((x_171 * x_161) + 1i)))) {
+  var x_336 : vec3f;
+  let x_140 = bitcast<i32>(gl_GlobalInvocationID.x);
+  let x_145 = x_50.gc_counts.y;
+  let x_149 = x_50.gc_counts.z;
+  let x_153 = x_50.gc_grid.x;
+  let x_156 = x_50.gc_grid.z;
+  let x_160 = (x_153 - 1i);
+  let x_163 = ((x_160 * x_156) + 1i);
+  let x_166 = (x_149 - 1i);
+  if ((x_140 >= (x_163 * ((x_166 * x_156) + 1i)))) {
     return;
   }
-  let x_187 = (x_145 % x_168);
-  let x_191 = (x_145 / x_168);
-  let x_199 = min((x_187 / x_161), (x_158 - 2i));
-  let x_206 = min((x_191 / x_161), (x_154 - 2i));
-  let x_215 = f32(x_161);
-  let x_216 = (f32((x_187 - (x_199 * x_161))) / x_215);
-  let x_226 = (f32((x_191 - (x_206 * x_161))) / x_215);
-  param = x_216;
-  let x_231 = gc_cr_f1_(&(param));
-  bu = x_231;
-  param_1 = x_226;
-  let x_235 = gc_cr_f1_(&(param_1));
-  bv = x_235;
-  param_2 = x_216;
-  let x_239 = gc_cr_slope_f1_(&(param_2));
-  su = x_239;
-  param_3 = x_226;
-  let x_243 = gc_cr_slope_f1_(&(param_3));
-  sv = x_243;
+  let x_182 = (x_140 % x_163);
+  let x_186 = (x_140 / x_163);
+  let x_194 = min((x_182 / x_156), (x_153 - 2i));
+  let x_201 = min((x_186 / x_156), (x_149 - 2i));
+  let x_210 = f32(x_156);
+  let x_211 = (f32((x_182 - (x_194 * x_156))) / x_210);
+  let x_221 = (f32((x_186 - (x_201 * x_156))) / x_210);
+  param = x_211;
+  let x_226 = gc_bs_f1_(&(param));
+  bu = x_226;
+  param_1 = x_221;
+  let x_230 = gc_bs_f1_(&(param_1));
+  bv = x_230;
+  param_2 = x_211;
+  let x_234 = gc_bs_slope_f1_(&(param_2));
+  su = x_234;
+  param_3 = x_221;
+  let x_238 = gc_bs_slope_f1_(&(param_3));
+  sv = x_238;
   p = vec3f();
   du = vec3f();
   dv = vec3f();
@@ -17337,20 +17341,20 @@ fn main_1() {
     } else {
       break;
     }
-    let x_265 = clamp(((x_206 - 1i) + y), 0i, x_171);
+    let x_260 = clamp(((x_201 - 1i) + y), 0i, x_166);
     x = 0i;
     loop {
       if ((x < 4i)) {
       } else {
         break;
       }
-      param_4 = (((x_265 * x_150) + x_50.gc_grid.y) + clamp(((x_199 - 1i) + x), 0i, x_165));
-      let x_292 = gc_shown_i1_(&(param_4));
-      let x_294 = x;
-      let x_297 = y;
-      p = (p + (x_292 * (bu[x] * bv[y])));
-      du = (du + (x_292 * (su[x_294] * bv[x_297])));
-      dv = (dv + (x_292 * (bu[x_294] * sv[x_297])));
+      param_4 = (((x_260 * x_145) + x_50.gc_grid.y) + clamp(((x_194 - 1i) + x), 0i, x_160));
+      let x_287 = gc_shown_i1_(&(param_4));
+      let x_289 = x;
+      let x_292 = y;
+      p = (p + (x_287 * (bu[x] * bv[y])));
+      du = (du + (x_287 * (su[x_289] * bv[x_292])));
+      dv = (dv + (x_287 * (bu[x_289] * sv[x_292])));
 
       continuing {
         x = (x + 1i);
@@ -17361,21 +17365,21 @@ fn main_1() {
       y = (y + 1i);
     }
   }
-  let x_334 = cross(du, -(dv));
-  n = x_334;
-  let x_337 = length(x_334);
-  if ((x_337 > 0.000000000001f)) {
-    x_341 = (n / vec3f(x_337));
+  let x_329 = cross(du, -(dv));
+  n = x_329;
+  let x_332 = length(x_329);
+  if ((x_332 > 0.000000000001f)) {
+    x_336 = (n / vec3f(x_332));
   } else {
-    x_341 = vec3f(0.0f, 0.0f, 1.0f);
+    x_336 = vec3f(0.0f, 0.0f, 1.0f);
   }
-  let x_350 = x_341;
-  n = x_341;
-  let x_361 = (x_50.gc_origin.xyz + p);
-  x_355.verts[x_145].a = vec4f(x_361.x, x_361.y, x_361.z, x_350.x);
-  let x_371_save = x_145;
-  let x_372 = x_355.verts[x_145].b;
-  x_355.verts[x_371_save].b = vec4f(x_350.y, x_350.z, x_372.z, x_372.w);
+  let x_345 = x_336;
+  n = x_336;
+  let x_356 = (x_50.gc_origin.xyz + p);
+  x_350.verts[x_140].a = vec4f(x_356.x, x_356.y, x_356.z, x_345.x);
+  let x_366_save = x_140;
+  let x_367 = x_350.verts[x_140].b;
+  x_350.verts[x_366_save].b = vec4f(x_345.y, x_345.z, x_367.z, x_367.w);
   return;
 }
 

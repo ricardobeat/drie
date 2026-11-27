@@ -4,33 +4,37 @@
 // still something the others land on. When every handkerchief is in use, the one dormant
 // longest goes back up to fall again.
 //
-//   just example gpu_handkerchiefs                  in a window (the mouse looks round, WASD to
-//                                                   walk, E and Q up and down, Esc frees the mouse)
+//   just example gpu_handkerchiefs                  in a window (drag to look round, drag a
+//                                                   handkerchief to pick it up by that point, WASD
+//                                                   to walk, E and Q up and down)
 //   just example gpu_handkerchiefs --png out.png    one frame, headless, at --time t (default 20 s)
 module gpu_handkerchiefs_example;
 import drie, drie::gpu_cloth, drie::objects, drie::postprocessing, drie::ui, drie::controls, drie::readback, drie::png, drie::gpu_timer, drie::profile, sokol;
 import std::io, std::math, std::collections::list;
 
-const int W               = 1280;
-const int H               = 720;
-float render_scale        = env::EMSCRIPTEN ? 1.0f : 0.7f;
-const int HANDKERCHIEFS   = 64;
-const int GRID            = 21;
-const float SIZE          = 0.4f;
-const float MASS          = 0.03f;
-const float SPAWN_EVERY   = 0.15f;
-const float AREA          = 2.1f;
-const float SPAWN_HEIGHT  = 4.6f;
-const float CHECK_EVERY   = 0.25f;
-const float STILL         = 0.01f;
-const float DORMANT_AFTER = 3;
-const float KNIT_REPEAT   = 0.5f;
-const Color[6] COLORS     = { 0xe8e4dc, 0xc8303c, 0x2c4c9c, 0xe0b030, 0x3c8c5c, 0xd87ca0 };
+const int W                   = 1280;
+const int H                   = 720;
+float render_scale            = env::EMSCRIPTEN ? 1.0f : 0.7f;
+// the most pixels the scene is rendered at (2560 x 1440, quad HD), whatever the screen
+const float MAX_RENDER_PIXELS = 2560.0f * 1440.0f;
+const int HANDKERCHIEFS       = 36;
+const int GRID                = 25;
+const float SIZE              = 0.4f;
+const float MASS              = 0.03f;
+const float SPAWN_EVERY       = 0.15f;
+const float AREA              = 2.1f;
+const float SPAWN_HEIGHT      = 4.6f;
+const float CHECK_EVERY       = 0.25f;
+const float STILL             = 0.015f;
+const float DORMANT_AFTER     = 1.5f;
+const float KNIT_REPEAT       = 0.5f;
+const Color[6] COLORS         = { 0xe8e4dc, 0xc8303c, 0x2c4c9c, 0xe0b030, 0x3c8c5c, 0xd87ca0 };
 
 enum State : char {
     PARKED,
     HELD,
     FALLING,
+    DRAGGED,
     DORMANT,
 }
 
@@ -107,7 +111,9 @@ fn void make_cloth() {
     cloth.internal_damping = 0.6f;
     cloth.stretch_compliance = 2e-5f;
     cloth.thickness = 0.006f;
-    cloth.floor_y = 0.018f;
+    // on the displaced pebbles, their tops; with parallax, a little over the floor's plane (the
+    // pebbles' tops), enough for the contact shadows to find the gap under the cloth
+    cloth.floor_y = DISPLACE ? 0.018f : 0.008f;
     cloth.friction = 0.6f;
     cloth.self_distance = SIZE / (GRID - 1);
     cloth.self_every = 3;
@@ -225,6 +231,7 @@ fn void step(float dt) {
         spawn_clock -= SPAWN_EVERY;
         spawn();
     }
+    follow_drag(dt);
     int steps = cloth.update(dt);
     foreach (k, &h : handkerchiefs) {
         if (h.state != HELD) continue;
@@ -248,6 +255,11 @@ struct Opening {
     float u0, u1, v0, v1;
 }
 
+// Displacement moves the vertices (the room cut into quads of `cell`: about 680k vertices); on the
+// web, too many to build and keep, the same heights are parallax-occlusion mapped instead (on
+// the flat walls, the bumps going down from them).
+const bool DISPLACE = !env::EMSCRIPTEN;
+
 fn MeshStandardMaterial* surface(String name, float tile, float depth) {
     MeshStandardMaterial* m = drie::mesh_standard_material(color: 0xffffff, roughness: 1, side: DOUBLE_SIDE);
     float r                 = 1 / tile;
@@ -257,7 +269,12 @@ fn MeshStandardMaterial* surface(String name, float tile, float depth) {
     m.roughness_map = tiled(string::tformat("examples/textures/%s_rough.jpg", name), r, NO_COLOR_SPACE);
     m.ao_map = tiled(string::tformat("examples/textures/%s_ao.jpg", name), r, NO_COLOR_SPACE);
     m.ao_intensity = 1;
-    if (depth > 0) {
+    if (depth > 0 && !DISPLACE) {
+        m.parallax_map = tiled(string::tformat("examples/textures/%s_disp.jpg", name), r, NO_COLOR_SPACE);
+        m.parallax_scale = depth;
+        m.parallax_distance = 12;
+        m.parallax_shadow = 0.5f;
+    } else if (depth > 0) {
         Texture* heights = tiled(string::tformat("examples/textures/%s_disp.jpg", name), r, NO_COLOR_SPACE);
         heights.keep_pixels = true;
         m.displacement_map = heights;
@@ -446,19 +463,23 @@ fn void build_scene() {
     scene.add(sun);
     scene.add(sun.target);
     if (env::EMSCRIPTEN) {
-        SpotLight* lamp = drie::spot_light(0xffe6c4, 60.0f, 12.0f, 0.6f, 0.5f, 2.0f);
-        lamp.position = { 0, CEILING - 0.1f, 0 };
+        // in the far corner of the roof from the sun's side, aimed at the middle of the floor
+        SpotLight* lamp = drie::spot_light(0xffe6c4, 60.0f, 14.0f, 0.6f, 0.5f, 2.0f);
+        lamp.position = { -ROOM + 0.4f, CEILING - 0.1f, ROOM - 0.4f };
         lamp.target.position = { 0, 0, 0 };
         lamp.cast_shadow = true;
+        // its map is coarse over the floor (about 1.2 cm a texel): its taps spread over 5 texels
+        // (turned at each pixel and frame, for TAA to smooth), so the texels don't show as blocks
+        lamp.shadow.radius = 5;
         scene.add(lamp);
         scene.add(lamp.target);
     }
 
     Opening[2] side_windows          = { { -2.6f, -1.6f, 1.3f, 3.9f }, { 0.9f, 1.9f, 1.3f, 3.9f } };
     Opening[2] back_holes            = { { -3.4f, -2.0f, 0, 2.6f }, { 2.0f, 3.0f, 1.5f, 3.9f } };
-    bool displace                    = !env::EMSCRIPTEN;
-    MeshStandardMaterial* stone_look = surface("old_stone_wall", 2, displace ? 0.06f : 0);
-    MeshStandardMaterial* pebbles    = surface("multicolored_pebble_floor", 2, displace ? 0.025f : 0);
+    bool displace                    = DISPLACE;
+    MeshStandardMaterial* stone_look = surface("old_stone_wall", 2, 0.06f);
+    MeshStandardMaterial* pebbles    = surface("multicolored_pebble_floor", 2, 0.025f);
     cell = displace ? 0.025f : 1e9;
     Mesh* stone        = solid(hall(&side_windows, &back_holes), stone_look);
     Mesh* floor        = solid(ground(), pebbles);
@@ -516,9 +537,33 @@ fn void build_scene() {
 String off = "";
 DirectionalLight* sun;
 
+// The size the scene is rendered at for an output of `out_w` x `out_h`, worked out again only
+// when that changes: render_scale of it, at most MAX_RENDER_PIXELS (on a 4K screen, about 1440p),
+// stretched to the window by the output pass.
+int sized_w = -1;
+int sized_h = -1;
+int render_w;
+int render_h;
+
+fn void render_size(int out_w, int out_h) {
+    if (out_w == sized_w && out_h == sized_h) return;
+    sized_w = out_w;
+    sized_h = out_h;
+    float fw   = out_w * render_scale;
+    float fh   = out_h * render_scale;
+    float over = fw * fh / MAX_RENDER_PIXELS;
+    if (over > 1) {
+        fw /= math::sqrt(over);
+        fh /= math::sqrt(over);
+    }
+    render_w = math::max((int)fw, 1);
+    render_h = math::max((int)fh, 1);
+}
+
 fn void render_frame(RenderTarget* target) {
-    int w = math::max((int)((target ? target.width : sapp::width()) * render_scale), 1);
-    int h = math::max((int)((target ? target.height : sapp::height()) * render_scale), 1);
+    render_size(target ? target.width : sapp::width(), target ? target.height : sapp::height());
+    int w = render_w;
+    int h = render_h;
     if (!scene_rt) {
         scene_rt = drie::render_target(w, h, 1, RGBA16F, mrt: true);
         taa = postprocessing::taa_pass();
@@ -539,6 +584,7 @@ fn void render_frame(RenderTarget* target) {
         grade.shadows = { -0.012f, -0.018f };
         grade.highlights = { 0.012f, 0.03f };
         output.grade = grade;
+        output.grain = off.contains("grain") ? 0 : 0.10f;
         if (off.contains("dither")) output.dither = 0;
     } else if (scene_rt.width != w || scene_rt.height != h) {
         scene_rt.set_size(w, h);
@@ -564,7 +610,120 @@ fn void render_frame(RenderTarget* target) {
 
 float last_time = -1;
 
+// ---- Dragging a handkerchief by the point clicked
+
+const int GRAB          =  1; // the points within this many of the one picked are held
+int grabbed             = -1;
+float grab_along;    // how far along the mouse's ray the point picked is held
+Vector3[(2 * GRAB + 1) * (2 * GRAB + 1)] grab_offsets;
+Vector3 grab_target; // where the mouse wants the point picked
+Vector3 grab_at;     // where it is held: following grab_target on a spring, at most DRAG_SPEED
+                     // m/s, so a handkerchief let go is thrown no faster than that
+const float DRAG_SPEED  =  3;
+const float DRAG_SPRING =  25;
+
+fn Ray mouse_ray(float x, float y) {
+    Raycaster r = drie::raycaster();
+    r.set_from_camera({ 2 * x / sapp::widthf() - 1, 1 - 2 * y / sapp::heightf() }, camera);
+    return r.ray;
+}
+
+// The point of a handkerchief (in the air or lying still) nearest along the mouse's ray, within
+// PICK_REACH of it: its handkerchief (-1: none), its column and row, and how far along the ray it
+// is. The points are as last read back from the GPU.
+const float PICK_REACH = 0.04f;
+
+fn int pick_at(Ray ray, int* col, int* row, float* along) {
+    cloth.seen_points(seen);
+    int best = -1;
+    foreach (k, h : handkerchiefs) {
+        if (h.state != FALLING && h.state != DORMANT) continue;
+        for (int r = 0; r < GRID; r++) {
+            for (int c = 0; c < GRID; c++) {
+                Vector3 p = seen[point((int)k, c, r)];
+                float t   = (p - ray.origin).dot(ray.direction);
+                if (t <= 0 || (best >= 0 && t >= *along)) continue;
+                if ((ray.origin + ray.direction * t - p).length() > PICK_REACH) continue;
+                best = (int)k;
+                *col = c;
+                *row = r;
+                *along = t;
+            }
+        }
+    }
+    return best;
+}
+
+// The points held: those within GRAB of the one picked, on the handkerchief.
+uint[(2 * GRAB + 1) * (2 * GRAB + 1)] held;
+int held_count;
+
+fn void grab(int k, int col, int row, float along) {
+    if (handkerchiefs[k].state == DORMANT) let_go(k);
+    Vector3 at = seen[point(k, col, row)];
+    held_count = 0;
+    for (int r = math::max(row - GRAB, 0); r <= math::min(row + GRAB, GRID - 1); r++) {
+        for (int c = math::max(col - GRAB, 0); c <= math::min(col + GRAB, GRID - 1); c++) {
+            uint i = point(k, c, r);
+            held[held_count] = i;
+            grab_offsets[held_count++] = seen[i] - at;
+            cloth.pin(i);
+            cloth.move_pin(i, seen[i]);
+        }
+    }
+    handkerchiefs[k].state = DRAGGED;
+    grabbed = k;
+    grab_along = along;
+    grab_at = grab_target = at;
+}
+
+// Where the held point `i` may be: above the floor (the pinned points don't collide) and
+// inside the walls.
+fn Vector3 inside_room(Vector3 p) {
+    float wall = ROOM - 0.05f;
+    return {
+        math::clamp(p.x, -wall, wall),
+        math::clamp(p.y, cloth.floor_y + 0.01f, CEILING - 0.05f),
+        math::clamp(p.z, -wall, wall)
+    };
+}
+
+fn void drag_to(Ray ray) => grab_target = ray.origin + ray.direction * grab_along;
+
+// Moves the held point `dt` seconds on towards the mouse, the held points with it.
+fn void follow_drag(float dt) {
+    if (grabbed < 0) return;
+    Vector3 step = (grab_target - grab_at) * (1 - math::exp(-DRAG_SPRING * dt));
+    float most   = DRAG_SPEED * dt;
+    if (step.length() > most) step = step.normalize() * most;
+    grab_at += step;
+    for (int n = 0; n < held_count; n++) cloth.move_pin(held[n], inside_room(grab_at + grab_offsets[n]));
+}
+
+fn void release() {
+    for (int n = 0; n < held_count; n++) cloth.unpin(held[n]);
+    handkerchiefs[grabbed].state = FALLING;
+    handkerchiefs[grabbed].still = 0;
+    grabbed = -1;
+}
+
 fn void on_event(Event* e) {
+    switch (e.type) {
+        case MOUSE_DOWN:
+            if (e.mouse_button != LEFT) break;
+            float along;
+            int col;
+            int row;
+            int k = pick_at(mouse_ray(e.mouse_x, e.mouse_y), &col, &row, &along);
+            if (k < 0) break;
+            controls.dragging = false; // the drag is the handkerchief's, not the view's
+            grab(k, col, row, along);
+        case MOUSE_MOVE:
+            if (grabbed >= 0) drag_to(mouse_ray(e.mouse_x, e.mouse_y));
+        case MOUSE_UP:
+            if (e.mouse_button == LEFT && grabbed >= 0) release();
+        default:
+    }
     if (e.type == KEY_DOWN && e.key_code == P) {
         Vector3 at = camera.position + controls.direction();
         io::printfn(
@@ -610,7 +769,7 @@ fn void hud() {
     int falling;
     int dormant;
     foreach (h : handkerchiefs) {
-        if (h.state == FALLING || h.state == HELD) falling++;
+        if (h.state == FALLING || h.state == HELD || h.state == DRAGGED) falling++;
         if (h.state == DORMANT) dormant++;
     }
     @pool() {
@@ -628,6 +787,10 @@ fn void hud() {
                 .zstr_tcopy());
         }
     };
+    // the hint, in the top right corner (8 pixels to a character)
+    String hint = "click to drag, right-click to pan";
+    sdtx::pos(sapp::widthf() / scale / 8 - hint.len - 2, 0);
+    sdtx::puts(hint.zstr_tcopy());
     sdtx::draw();
 }
 
@@ -650,6 +813,7 @@ fn int main(String[] args) {
         renderer = drie::renderer(antialias: true, width: W, height: H, title: "drie: handkerchiefs");
         build_scene();
         controls = controls::walk_controls(camera, START_AT);
+        controls.drag_look = true;
         controls.bounded = true;
         controls.min = { -ROOM + 0.25f, 0.25f, -ROOM + 0.25f };
         controls.max = { ROOM - 0.25f, CEILING - 0.25f, ROOM - 0.25f };
@@ -675,7 +839,7 @@ fn int main(String[] args) {
     int falling;
     int dormant;
     foreach (h : handkerchiefs) {
-        if (h.state == FALLING || h.state == HELD) falling++;
+        if (h.state == FALLING || h.state == HELD || h.state == DRAGGED) falling++;
         if (h.state == DORMANT) dormant++;
     }
     io::printfn(

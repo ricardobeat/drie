@@ -50,10 +50,14 @@ fn Node shadow_taps(float base) @local {
     );
 }
 
-// The rotation of the tap disk at the pixel (a random angle per pixel and frame).
+// The rotation of the tap disk at the pixel: interleaved gradient noise (Jimenez), moved on each
+// frame, whose angles neighbouring pixels share out evenly (a white-noise hash clumps them), so
+// TAA averages the disk's turns into a smooth penumbra sooner.
 fn Node[2] tap_rotation(Node frag) @local {
-    Node seed  = frag + fs_in("ssr_params", FLOAT, 2) * nodes::vec2(5, 3);
-    Node angle = nodes::fract(nodes::sin(nodes::dot(seed, nodes::vec2(12.9898f, 78.233f))) * 43758.5453f) * 6.2831f;
+    Node seed  = frag + fs_in("ssr_params", FLOAT, 2) * nodes::vec2(5.588238f, 5.588238f);
+    Node angle = nodes::fract(
+        nodes::fract(nodes::dot(seed, nodes::vec2(0.06711056f, 0.00583715f))) * 52.9829189f
+    ) * 6.2831f;
     return { nodes::cos(angle), nodes::sin(angle) };
 }
 

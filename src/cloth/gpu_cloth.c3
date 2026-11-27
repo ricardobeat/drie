@@ -859,8 +859,8 @@ fn HeapEntry heap_pop(List{HeapEntry}* h) @local {
 // GPU. Use a DOUBLE_SIDE material to see both faces. Its uvs are in meters along the cloth at
 // rest, as Cloth's. Its bounding sphere (for culling and shadows) is centered on the panel at
 // rest, as wide as its diagonal. With `detail` above 1 it is finer than the points, `detail`
-// vertices to a cell's side, on a smooth surface through them (as Cloth's from_fine, without
-// simulating more): round folds and edges from a coarse grid.
+// vertices to a cell's side, on a smooth surface of them (a cubic B-spline, a little inside the
+// points), without simulating more: round folds and edges from a coarse grid.
 fn Mesh* GpuCloth.make_mesh(&self, Material* material = null, int panel = 0, int detail = 1) {
     int cols  = self.panel_cols;
     int rows  = self.rows;

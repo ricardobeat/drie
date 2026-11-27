@@ -30,6 +30,12 @@ struct WalkControls {
     Vector3 velocity; // Current smoothed world-space velocity in meters per second.
     bool[6] held; // Key state for W, S, A, D, E, Q in that order.
     bool locked_once; // True after the initial pointer lock in `update()`.
+    // Looks round while the left or right button is held and dragged, without locking the pointer (a page
+    // where the mouse also points at things), instead of mouse look.
+    bool drag_look;
+    // While true (drag_look), mouse motion turns the view: set on the left or right button going
+    // down, cleared on its release. A listener after this one may clear it to take the drag for itself.
+    bool dragging;
 }
 
 List{WalkControls*} walkers @local;
@@ -72,11 +78,17 @@ fn void WalkControls.handle_event(&self, SappEvent* e) {
     if (!self.enabled) return;
     switch (e.type) {
         case MOUSE_MOVE:
-            if (!sapp::mouse_locked()) return;
+            if (self.drag_look ? !self.dragging : !sapp::mouse_locked()) return;
             self.want_yaw += e.mouse_dx * self.look_speed;
             self.want_pitch = math::clamp(self.want_pitch - e.mouse_dy * self.look_speed, -1.5f, 1.5f);
         case MOUSE_DOWN:
-            sapp::lock_mouse(true);
+            if (!self.drag_look) {
+                sapp::lock_mouse(true);
+            } else if (e.mouse_button == LEFT || e.mouse_button == RIGHT) {
+                self.dragging = true;
+            }
+        case MOUSE_UP:
+            if (e.mouse_button == LEFT || e.mouse_button == RIGHT) self.dragging = false;
         case KEY_DOWN:
         case KEY_UP:
             bool down = e.type == KEY_DOWN;
@@ -92,6 +104,7 @@ fn void WalkControls.handle_event(&self, SappEvent* e) {
             }
         case UNFOCUSED:
             self.held = { };
+            self.dragging = false;
         default:
     }
 }
@@ -99,7 +112,7 @@ fn void WalkControls.handle_event(&self, SappEvent* e) {
 // Advances look and movement springs by `dt` seconds and updates the camera transform.
 fn void WalkControls.update(&self, float dt) {
     if (!self.enabled) return;
-    if (!self.locked_once) {
+    if (!self.locked_once && !self.drag_look) {
         sapp::lock_mouse(true);
         self.locked_once = true;
     }

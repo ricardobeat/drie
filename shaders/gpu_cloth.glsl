@@ -884,20 +884,26 @@ vec3 gc_shown(int i) {
     return s + (pos[i].p.xyz - s) * gc_origin.w;
 }
 
-vec4 gc_cr(float t) {
+// Uniform cubic B-spline weights of the four points around a cell, and their slopes. (Not
+// Catmull-Rom: that goes through the points but its curvature jumps at each one, so its
+// normals crease along every cell's sides, a pattern of squares in the shading. The B-spline's
+// curvature runs on across the cells: no seams; it passes a little inside the points.)
+vec4 gc_bs(float t) {
+    float s = 1.0 - t;
     float t2 = t * t;
     float t3 = t2 * t;
-    return vec4(-0.5 * t3 + t2 - 0.5 * t, 1.5 * t3 - 2.5 * t2 + 1.0, -1.5 * t3 + 2.0 * t2 + 0.5 * t, 0.5 * t3 - 0.5 * t2);
+    return vec4(s * s * s, 3.0 * t3 - 6.0 * t2 + 4.0, -3.0 * t3 + 3.0 * t2 + 3.0 * t + 1.0, t3) / 6.0;
 }
 
-vec4 gc_cr_slope(float t) {
+vec4 gc_bs_slope(float t) {
+    float s = 1.0 - t;
     float t2 = t * t;
-    return vec4(-1.5 * t2 + 2.0 * t - 0.5, 4.5 * t2 - 5.0 * t, -4.5 * t2 + 4.0 * t + 0.5, 1.5 * t2 - t);
+    return vec4(-s * s, 3.0 * t2 - 4.0 * t, -3.0 * t2 + 2.0 * t + 1.0, t2) * 0.5;
 }
 
 // vertex i of the mesh of the panel from column gc_grid.y, gc_grid.z vertices to a cell's side:
-// on the Catmull-Rom surface through the points (through each point, smooth between them), its
-// normal from the surface's slopes
+// on the cubic B-spline surface of the points (smooth, its curvature too, a little inside them),
+// its normal from the surface's slopes
 void main() {
     int i = int(gl_GlobalInvocationID.x);
     int cols = gc_counts.y;
@@ -913,10 +919,10 @@ void main() {
     int r0 = min(fr / d, rows - 2);
     float tu = float(fk - k0 * d) / float(d);
     float tv = float(fr - r0 * d) / float(d);
-    vec4 bu = gc_cr(tu);
-    vec4 bv = gc_cr(tv);
-    vec4 su = gc_cr_slope(tu);
-    vec4 sv = gc_cr_slope(tv);
+    vec4 bu = gc_bs(tu);
+    vec4 bv = gc_bs(tv);
+    vec4 su = gc_bs_slope(tu);
+    vec4 sv = gc_bs_slope(tv);
     vec3 p = vec3(0.0);
     vec3 du = vec3(0.0);
     vec3 dv = vec3(0.0);
