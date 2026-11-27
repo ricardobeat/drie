@@ -4,7 +4,7 @@
 //
 //   just example clouds                       in a window (drag to look round, WASD to fly, E and
 //                                             Q up and down, shift faster)
-//   just example clouds --png out.png         one frame, headless (--view ground, valley, inside,
+//   just example clouds --png out.png         one frame, headless (--view sunset, ground, valley, inside,
 //                                             above, dusk; --size 2560x1440; --off clouds,fog,shadow)
 module clouds_example;
 import drie, drie::objects, drie::postprocessing, drie::controls, drie::readback, drie::png, drie::gpu_timer, sokol;
@@ -13,7 +13,7 @@ import std::io, std::math;
 int width            = 1280;
 int height           = 720;
 const float LAND     = 120000; // the ground's side (m)
-const int LAND_CELLS = 400;
+const int LAND_CELLS = 512;
 
 Renderer* renderer;
 Scene* scene;
@@ -27,7 +27,7 @@ RenderTarget* scene_rt;
 OutputPass* output;
 String off;
 float time          = 600;
-float coverage      = 0.48f; // --coverage
+float coverage      = 0.55f; // --coverage
 String tune;
 float cloud_res     = 0; // --res: CloudPass.resolution (and half that near), 0: its own
 float cloud_history = 0; // --history: CloudPass.history, 0: its own
@@ -58,21 +58,94 @@ fn float value_noise(float x, float y) {
     return a + (b - a) * u + (c - a) * v + (a - b - c + d) * u * v;
 }
 
-// Height of the ground (m): rolling hills, ridged mountains to the north, a valley along x = 0.
+// Value noise and its gradient (for the erosion-like fBm below).
+fn Vector3 noise_d(float x, float y) {
+    int ix   = (int)math::floor(x);
+    int iy   = (int)math::floor(y);
+    float fx = x - ix;
+    float fy = y - iy;
+    float u  = fx * fx * (3 - 2 * fx);
+    float v  = fy * fy * (3 - 2 * fy);
+    float du = 6 * fx * (1 - fx);
+    float dv = 6 * fy * (1 - fy);
+    float a  = hash2(ix, iy);
+    float b  = hash2(ix + 1, iy);
+    float c  = hash2(ix, iy + 1);
+    float d  = hash2(ix + 1, iy + 1);
+    float k  = a - b - c + d;
+    return { a + (b - a) * u + (c - a) * v + k * u * v, du * ((b - a) + k * v), dv * ((c - a) + k * u) };
+}
+
+// Height of the ground (m): fBm whose octaves are damped where the slope so far is steep (so that
+// the detail gathers in the valleys and the ridges stay sharp, as if eroded), its coordinates
+// warped, mountains rising to the north and a broad valley along x = 0.
 fn float ground_height(float x, float z) {
+    float wx  = x + (value_noise(x / 9000, z / 9000) - 0.5f) * 5000;
+    float wz  = z + (value_noise(x / 9000 + 31, z / 9000 - 7) - 0.5f) * 5000;
     float h   = 0;
     float amp = 1;
-    float f   = 1.0f / 6000;
-    for (int o = 0; o < 6; o++) {
-        float n = value_noise(x * f + o * 17.3f, z * f - o * 9.1f);
-        if (o < 3) n = 1 - math::abs(n * 2 - 1); // ridges
-        h += n * amp;
-        amp *= 0.45f;
-        f *= 2.1f;
+    float f   = 1.0f / 9000;
+    float gx  = 0;
+    float gz  = 0;
+    for (int o = 0; o < 8; o++) {
+        Vector3 n = noise_d(wx * f + o * 17.3f, wz * f - o * 9.1f);
+        gx += n.y * amp;
+        gz += n.z * amp;
+        h += n.x * amp / (1 + (gx * gx + gz * gz) * 0.7f);
+        amp *= 0.5f;
+        f *= 2.0f;
     }
-    float north  = math::clamp((-z - 2000) / 9000, 0.0f, 1.0f);
-    float valley = 1 - math::exp(-(x * x) / (2 * 1800.0f * 1800.0f)) * 0.7f;
-    return (h * 380 + north * north * h * 1300) * valley - 40;
+    float north  = math::clamp((-z + 4000) / 25000, 0.0f, 1.0f);
+    float valley = 1 - math::exp(-(x * x) / (2 * 2500.0f * 2500.0f)) * 0.75f;
+    float lift   = 420 + north * north * 1500;
+    float k      = math::max(h, 0.0f);
+    return k * math::sqrt(k) * lift * valley - 60;
+}
+
+// A tiling grey detail texture for the ground, around 1 so that it only breaks up the vertex colors
+// close by: clumps and speckles over a few octaves of noise. It repeats every 60 m.
+const int DETAIL = 256;
+
+fn Texture* detail_texture() {
+    char[] px = mem::new_array(char, DETAIL * DETAIL * 4);
+    for (int j = 0; j < DETAIL; j++) {
+        for (int i = 0; i < DETAIL; i++) {
+            float v   = 0;
+            float amp = 0.5f;
+            int p     = 8;
+            for (int o = 0; o < 5; o++) {
+                // tileable: the lattice wraps every `p` cells
+                float x  = (float)i / DETAIL * p;
+                float y  = (float)j / DETAIL * p;
+                int ix   = (int)x;
+                int iy   = (int)y;
+                float fx = x - ix;
+                float fy = y - iy;
+                float u  = fx * fx * (3 - 2 * fx);
+                float w  = fy * fy * (3 - 2 * fy);
+                float a  = hash2(ix % p + o * 101, iy % p);
+                float b  = hash2((ix + 1) % p + o * 101, iy % p);
+                float c  = hash2(ix % p + o * 101, (iy + 1) % p);
+                float d  = hash2((ix + 1) % p + o * 101, (iy + 1) % p);
+                v += (a + (b - a) * u + (c - a) * w + (a - b - c + d) * u * w) * amp;
+                amp *= 0.5f;
+                p *= 2;
+            }
+            float speck = hash2(i + 7777, j) > 0.95f ? 0.88f : 1;
+            float g     = math::clamp((0.7f + v * 0.6f) * speck, 0.0f, 1.0f);
+            char c      = (char)(g * 255);
+            usz k       = (usz)(j * DETAIL + i) * 4;
+            px[k] = c;
+            px[k + 1] = c;
+            px[k + 2] = c;
+            px[k + 3] = 255;
+        }
+    }
+    Texture* t = drie::data_texture(px, DETAIL, DETAIL);
+    t.wrap_s = REPEAT_WRAPPING;
+    t.wrap_t = REPEAT_WRAPPING;
+    t.repeat = { LAND / 60, LAND / 60 };
+    return t;
 }
 
 fn Mesh* make_ground() {
@@ -90,16 +163,26 @@ fn Mesh* make_ground() {
                 2 * e,
                 ground_height(x, z - e) - ground_height(x, z + e)
             }).normalize();
-            // grass in the low ground, rock where it is steep, snow up high
-            Vector3 grass = { 0.16f, 0.22f, 0.08f };
-            Vector3 dry   = { 0.3f, 0.28f, 0.16f };
-            Vector3 rock  = { 0.28f, 0.26f, 0.24f };
-            Vector3 snow  = { 0.85f, 0.87f, 0.9f };
-            float t       = value_noise(x / 700, z / 700);
-            Vector3 col   = grass + (dry - grass) * t;
-            float steep   = math::clamp((0.9f - nrm.y) * 6, 0.0f, 1.0f);
-            col = col + (rock - col) * steep;
-            float high = math::clamp((y - 1100) / 250, 0.0f, 1.0f) * math::clamp((nrm.y - 0.6f) * 4, 0.0f, 1.0f);
+            // meadow and forest in the low ground, scree and rock where it is steep, snow up high
+            Vector3 grass  = { 0.2f, 0.25f, 0.09f };
+            Vector3 dry    = { 0.36f, 0.31f, 0.17f };
+            Vector3 forest = { 0.06f, 0.1f, 0.05f };
+            Vector3 rock   = { 0.3f, 0.27f, 0.24f };
+            Vector3 scree  = { 0.42f, 0.39f, 0.34f };
+            Vector3 snow   = { 0.88f, 0.9f, 0.94f };
+            float t        = value_noise(x / 900, z / 900) * 0.7f + value_noise(x / 210, z / 210) * 0.3f;
+            Vector3 col    = grass + (dry - grass) * math::clamp(t * 1.4f - 0.3f + y / 2500, 0.0f, 1.0f);
+            float trees    = math::clamp(
+                (value_noise(x / 400 + 5, z / 400) - 0.45f) * 5,
+                0.0f,
+                1.0f
+            ) * math::clamp((nrm.y - 0.8f) * 8, 0.0f, 1.0f) * math::clamp((1500 - y) / 300, 0.0f, 1.0f);
+            col = col + (forest - col) * trees;
+            float steep   = math::clamp((0.86f - nrm.y) * 7, 0.0f, 1.0f);
+            Vector3 stone = scree + (rock - scree) * value_noise(x / 150, z / 150);
+            col = col + (stone - col) * steep;
+            float line = 1400 + (value_noise(x / 600, z / 600) - 0.5f) * 500;
+            float high = math::clamp((y - line) / 200, 0.0f, 1.0f) * math::clamp((nrm.y - 0.55f) * 5, 0.0f, 1.0f);
             col = col + (snow - col) * high;
             g.add_vertex({ x, y, z }, nrm, { (float)i / n, (float)j / n }, col);
         }
@@ -115,7 +198,8 @@ fn Mesh* make_ground() {
         }
     }
     MeshStandardMaterial* m = drie::mesh_standard_material(0xffffff, roughness: 0.95f, vertex_colors: true);
-    Mesh* ground            = drie::mesh(g, m);
+    m.map = detail_texture();
+    Mesh* ground = drie::mesh(g, m);
     ground.cast_shadow = true;
     ground.receive_shadow = true;
     return ground;
@@ -126,9 +210,9 @@ fn Mesh* make_ground() {
 fn void build_scene(Vector3 sun_dir) {
     scene = drie::scene();
     scene.background = 0x8cb0d8;
-    fog = drie::volumetric_fog(0xb8c4d0, 0.00035f, 0);
+    fog = drie::volumetric_fog(0xb8c4d0, 0.0002f, 0);
     fog.height_base = 0;
-    fog.height_falloff = 1.0f / 250;
+    fog.height_falloff = 1.0f / 180;
     fog.sun_sharpness = 4;
     fog.sun_shafts = 0; // (its shafts would cost much over 80 km; the clouds darken it all the same)
     fog.shade_density = 0.7f;
@@ -142,8 +226,8 @@ fn void build_scene(Vector3 sun_dir) {
     sky = objects::sky();
     sky.sun_position = sun_dir;
     sky.cloud_coverage = 0; // the volumetric ones in its place
-    sky.turbidity = 2.5f;
-    sky.rayleigh = 1.2f;
+    sky.turbidity = 4.0f;
+    sky.rayleigh = 2.0f;
     sky.mie_coefficient = 0.004f;
     sky.mie_directional_g = 0.85f;
     scene.add(sky);
@@ -164,6 +248,10 @@ fn void build_scene(Vector3 sun_dir) {
 
     clouds = postprocessing::cloud_pass(renderer);
     clouds.coverage = coverage;
+    clouds.top = 6000; // towering
+    clouds.weather_scale = 160000; // masses of several km
+    clouds.shape_scale = 7000;
+    clouds.detail_scale = 700;
     clouds.wind = { 30, 9 }; // a brisk wind, so that they are seen to drift
     clouds.time = time;
     if (cloud_res > 0) {
@@ -187,16 +275,24 @@ fn void set_sun(Vector3 dir) {
     sky.sun_position = dir;
     sun.target.position = camera ? camera.position : (Vector3) { };
     sun.position = sun.target.position + dir * 10000;
-    float low     = math::clamp(1 - dir.y * 3, 0.0f, 1.0f);
+    float low = math::clamp(1 - dir.y * 3, 0.0f, 1.0f);
+    low = low * low * (3 - 2 * low);
     Vector3 white = { 1, 0.95f, 0.88f };
-    Vector3 gold  = { 1, 0.62f, 0.35f };
+    Vector3 gold  = { 1, 0.48f, 0.2f };
     Vector3 c     = white + (gold - white) * low;
     sun.color = drie::rgb(c.x, c.y, c.z);
+    sun.intensity = 4.0f - low * 1.2f;
     clouds.sun_direction = dir;
-    clouds.sun_color = c * 18;
-    clouds.ambient_top = (Vector3) { 0.32f, 0.42f, 0.62f } * (1 - low * 0.6f);
-    clouds.ambient_bottom = (Vector3) { 0.14f, 0.15f, 0.16f } * (1 - low * 0.6f);
-    clouds.haze_color = (Vector3) { 0.5f, 0.62f, 0.8f } * (1 - low * 0.5f) + gold * (low * 0.2f);
+    clouds.sun_color = c * (18 + low * 6);
+    clouds.ambient_top = (Vector3) { 0.32f, 0.42f, 0.62f } * (1 - low * 0.55f) + (Vector3) { 0.2f, 0.08f, 0.1f } * low;
+    clouds.ambient_bottom = (Vector3) {
+        0.14f,
+        0.15f,
+        0.16f
+    } * (1 - low * 0.6f) + (Vector3) { 0.06f, 0.03f, 0.03f } * low;
+    clouds.haze_color = (Vector3) { 0.5f, 0.62f, 0.8f } * (1 - low * 0.6f) + gold * (low * 0.35f);
+    Vector3 f = (Vector3) { 0.72f, 0.77f, 0.82f } * (1 - low) + (Vector3) { 0.62f, 0.56f, 0.6f } * low;
+    fog.color = drie::rgb(f.x, f.y, f.z);
 }
 
 // In a window, the scene is drawn at no more than this many pixels (about 1600 x 900), stretched
@@ -252,11 +348,12 @@ struct View {
 }
 
 const View[*] VIEWS = {
+    { "sunset", { 6000, 16000 }, 700, { -3000, -2000 }, 1200, { -0.35f, 0.07f, -0.93f } },
     { "ground", { 2000, 9000 }, 150, { -3000, -4000 }, 2200, { -0.5f, 0.45f, 0.75f } },
     { "backlit", { 2000, 9000 }, 150, { -3000, -4000 }, 2200, { 0.3f, 0.3f, -0.9f } },
     { "valley", { 0, 15000 }, 900, { 300, 5000 }, 0, { -0.45f, 0.55f, -0.7f } },
     { "inside", { -1500, 2000 }, 2350, { 2500, -4000 }, 2500, { 0.4f, 0.5f, -0.75f } },
-    { "above", { 0, 6000 }, 5600, { 4000, -8000 }, 3800, { 0.62f, 0.2f, -0.76f } },
+    { "above", { 0, 24000 }, 7000, { 4000, 8000 }, 4000, { 0.62f, 0.2f, -0.76f } },
     {
         "dusk",
         { 1200, 7000 },
@@ -354,7 +451,7 @@ fn void animate(double t) {
 
 fn int main(String[] args) {
     String png_path;
-    String view_name = "ground";
+    String view_name = "sunset";
     bool gpu_time;
     for (usz i = 1; i < args.len; i++) {
         switch (args[i]) {
